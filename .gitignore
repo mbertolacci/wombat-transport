@@ -1,0 +1,11 @@
+fluxes/
+scaling-grids/
+ExtData
+GCClassic/
+OutputDir/
+Restarts/
+build/
+CodeDir
+build_info/
+gcclassic
+kpp_standalone

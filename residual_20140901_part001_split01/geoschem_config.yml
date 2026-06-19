@@ -1,0 +1,94 @@
+simulation:
+  name: TransportTracers
+  start_date:
+  - 20140901
+  - 0
+  end_date:
+  - 20150101
+  - 0
+  root_data_dir: ../ExtData
+  met_field: MERRA2
+  species_database_file: ./species_database.yml
+  species_metadata_output_file: OutputDir/geoschem_species_metadata.yml
+  verbose:
+    activate: false
+    on_cores: root
+  use_gcclassic_timers: false
+grid:
+  resolution: 2.0x2.5
+  number_of_levels: 47
+  longitude:
+    range:
+    - -180.0
+    - 180.0
+    center_at_180: true
+  latitude:
+    range:
+    - -90.0
+    - 90.0
+    half_size_polar_boxes: true
+  nested_grid_simulation:
+    activate: false
+    buffer_zone_NSEW:
+    - 0
+    - 0
+    - 0
+    - 0
+timesteps:
+  transport_timestep_in_s: 600
+  chemistry_timestep_in_s: 1200
+operations:
+  chemistry:
+    activate: false
+  convection:
+    activate: true
+  dry_deposition:
+    activate: false
+  pbl_mixing:
+    activate: true
+    use_non_local_pbl: true
+  wet_deposition:
+    activate: false
+  transport:
+    gcclassic_tpcore:
+      activate: true
+      fill_negative_values: true
+      iord_jord_kord:
+      - 3
+      - 3
+      - 7
+    transported_species:
+    - r0002p001s001
+    - r0002p001s002
+    - r0002p001s003
+    - r0002p001s004
+    - r0002p001s005
+    - r0002p001s006
+    - r0002p001s007
+    - r0002p001s008
+    - r0002p001s009
+    - r0002p001s010
+    - r0002p001s011
+    - r0002p001s012
+    - r0002p001s013
+    - r0002p001s014
+    - r0002p001s015
+    - r0002p001s016
+    - r0002p001s017
+    - r0002p001s018
+    - r0002p001s019
+    - r0002p001s020
+    - r0002p001s021
+    - r0002p001s022
+    - r0002p001s023
+    - r0002p001s024
+extra_diagnostics:
+  obspack:
+    activate: false
+  planeflight:
+    activate: false
+  obsoperator:
+    activate: false
+    verbose: false
+    input_file: ../../../../3a_transport_gc/intermediates/obsoperator-entries/obsoperator-YYYYMMDD.yml
+    output_file: OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4

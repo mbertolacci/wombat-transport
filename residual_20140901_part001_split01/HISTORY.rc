@@ -1,0 +1,24 @@
+EXPID: OutputDir/GEOSChem
+
+COLLECTIONS: 'Restart',
+'SpeciesConcThreeHourly',
+::
+Restart.filename: './Restarts/GEOSChem.Restart.%y4%m2%d2_%h2%n2z.nc4',
+Restart.format: 'CFIO',
+Restart.frequency: 00000100 000000,
+Restart.duration: 00000100 000000,
+Restart.mode: 'instantaneous',
+Restart.fields: 'SpeciesRst_?ALL?', 'GIGCchem',
+'Met_DELPDRY', 'GIGCchem',
+'Met_PS1WET', 'GIGCchem',
+'Met_PS1DRY', 'GIGCchem',
+'Met_SPHU1', 'GIGCchem',
+'Met_TMPU1', 'GIGCchem',
+::
+SpeciesConcThreeHourly.template: '%y4%m2%d2_%h2%n2z.nc4',
+SpeciesConcThreeHourly.format: 'CFIO',
+SpeciesConcThreeHourly.frequency: 00000000 030000,
+SpeciesConcThreeHourly.duration: 00000001 000000,
+SpeciesConcThreeHourly.mode: 'time-averaged',
+SpeciesConcThreeHourly.fields: 'SpeciesConcVV_?ADV?', 'GIGCchem',
+::
