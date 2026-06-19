@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import netCDF4
@@ -11,6 +12,9 @@ from wombat_transport.io import initialize_tracers, load_species_conc, write_res
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import run_emissions_replay
 from wombat_transport.species import load_species_database
+from wombat_transport.transport import load_transport_forcing, run_transport_one_step
+
+CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,7 +25,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("run_config", type=Path)
-    parser.add_argument("--mode", choices=["init-only", "emissions-only"], default="emissions-only")
+    parser.add_argument(
+        "--mode",
+        choices=["init-only", "emissions-only", "transport-one-step"],
+        default="emissions-only",
+    )
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--write-output", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -34,9 +42,31 @@ def main(argv: list[str] | None = None) -> int:
             template_path=config.grid_template,
         )
         result = None
+        transport_result = None
+    elif args.mode == "transport-one-step":
+        state = initialize_tracers(
+            config.initial_restart,
+            config.species_database,
+            template_path=config.grid_template,
+        )
+        forcing = load_transport_forcing(
+            _resolve_config_value(config.root, config.transport["met_root"]),
+            datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+            config.grid_template,
+            time_index=int(config.transport.get("met_time_index", 0)),
+        )
+        transport_result = run_transport_one_step(
+            state,
+            forcing,
+            config.grid_template,
+            dt_s=float(config.transport.get("dt_s", 600.0)),
+        )
+        state = transport_result.state
+        result = None
     else:
         result = run_emissions_replay(config, max_steps=args.max_steps)
         state = result.state
+        transport_result = None
 
     if args.write_output is not None:
         write_restart_like(args.write_output, state, config.grid_template)
@@ -54,14 +84,22 @@ def main(argv: list[str] | None = None) -> int:
         for diagnostic in result.skipped_files:
             print(f"skipped_invalid_emissions: {diagnostic.path.name}")
         print(f"total_emitted_mass_kg: {result.total_emitted_mass:.8e}")
+    if transport_result is not None:
+        scalar_mass_error = transport_result.final_scalar_mass - transport_result.initial_scalar_mass
+        print("transport_steps: 1")
+        print(f"transport_dt_s: {float(config.transport.get('dt_s', 600.0)):.8e}")
+        print(f"max_transport_scalar_mass_error: {np.max(np.abs(scalar_mass_error)):.8e}")
 
     comparison_path = config.comparison.get("species_conc_sample")
     if comparison_path:
         reference = load_species_conc(config.root / comparison_path)
         time_index = int(config.comparison.get("species_conc_time_index", -1))
         with netCDF4.Dataset(config.grid_template) as dataset:
-            delp_dry_hpa = np.asarray(dataset.variables["Met_DELPDRY"][:])
             area_m2 = np.asarray(dataset.variables["AREA"][:])
+            if transport_result is None:
+                delp_dry_hpa = np.asarray(dataset.variables["Met_DELPDRY"][:])
+            else:
+                delp_dry_hpa = transport_result.delp_dry_hpa
         metrics = compare_to_time_slice(
             state,
             reference,
@@ -73,6 +111,13 @@ def main(argv: list[str] | None = None) -> int:
         print(format_metrics(metrics))
 
     return 0
+
+
+def _resolve_config_value(root: Path, value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
 
 
 if __name__ == "__main__":

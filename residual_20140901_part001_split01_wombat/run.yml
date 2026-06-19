@@ -16,3 +16,8 @@ replay:
 comparison:
   species_conc_sample: ../residual_20140901_part001_split01/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140904_0000z.nc4
   species_conc_time_index: -1
+transport:
+  met_root: ../ExtData/GEOS_2x2.5/MERRA2
+  start: "2014-09-01 00:00"
+  met_time_index: 0
+  dt_s: 600

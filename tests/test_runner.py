@@ -204,6 +204,29 @@ def test_run_cli_base_init_only_smoke():
     assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
 
 
+def test_run_cli_base_transport_one_step_smoke():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "wombat_transport.run",
+            BASE_CONFIG,
+            "--mode",
+            "transport-one-step",
+            "--max-steps",
+            "1",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "mode: transport-one-step" in completed.stdout
+    assert "transport_steps: 1" in completed.stdout
+    assert "max_transport_scalar_mass_error:" in completed.stdout
+    assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
+
+
 def test_run_cli_writes_restart_like_output(tmp_path):
     output_path = tmp_path / "wombat_restart.nc4"
     completed = subprocess.run(

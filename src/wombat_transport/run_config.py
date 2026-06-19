@@ -19,6 +19,7 @@ class RunConfig:
     diagnostics: dict[str, str]
     replay: dict[str, Any]
     comparison: dict[str, Any]
+    transport: dict[str, Any]
 
 
 def load_run_config(path: str | Path) -> RunConfig:
@@ -47,4 +48,5 @@ def load_run_config(path: str | Path) -> RunConfig:
         diagnostics=dict(raw.get("diagnostics", {})),
         replay=dict(raw.get("replay", {})),
         comparison=dict(raw.get("comparison", {})),
+        transport=dict(raw.get("transport", {})),
     )

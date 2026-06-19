@@ -24,6 +24,15 @@ from wombat_transport.runner import (
     run_emissions_replay,
 )
 from wombat_transport.species import Species, load_species_database
+from wombat_transport.transport import (
+    TransportForcing,
+    TransportStepResult,
+    advect_horizontal_upwind,
+    dry_air_mass_from_pressure,
+    dry_pressure_thickness_hpa,
+    load_transport_forcing,
+    run_transport_one_step,
+)
 
 __all__ = [
     "FIXED_GRID",
@@ -32,10 +41,15 @@ __all__ = [
     "RunConfig",
     "Species",
     "TracerField",
+    "TransportForcing",
+    "TransportStepResult",
     "apply_emissions",
+    "advect_horizontal_upwind",
     "compare_to_time_slice",
     "discover_hemco_diagnostics",
+    "dry_air_mass_from_pressure",
     "dry_air_mass_per_area",
+    "dry_pressure_thickness_hpa",
     "emission_increment_vv",
     "initialize_tracers",
     "load_base_met",
@@ -44,7 +58,9 @@ __all__ = [
     "load_run_config",
     "load_species_conc",
     "load_species_database",
+    "load_transport_forcing",
     "run_emissions_replay",
+    "run_transport_one_step",
     "tracer_gridbox_mass_kg",
     "tracer_mass_kg",
     "write_restart_like",

@@ -12,3 +12,8 @@ diagnostics:
 comparison:
   species_conc_sample: ../base/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
   species_conc_time_index: 0
+transport:
+  met_root: ../ExtData/GEOS_2x2.5/MERRA2
+  start: "2014-09-01 00:00"
+  met_time_index: 0
+  dt_s: 600
