@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import numpy as np
+import netCDF4
 
+from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2
+from wombat_transport.emissions import (
+    apply_emissions,
+    dry_air_mass_per_area,
+    emission_increment_vv,
+)
 from wombat_transport.io import (
     FIXED_GRID,
     initialize_tracers,
@@ -102,3 +109,69 @@ def test_run_configs_resolve_fixture_paths():
     assert residual.initial_restart is None
     assert residual.grid_template.exists()
     assert residual.species_database.exists()
+
+
+def test_dry_air_mass_per_area_uses_geos_chem_pressure_conversion():
+    delp = np.array([1000.0, 500.0])
+    expected = delp * 100.0 / G0_M_PER_S2
+
+    np.testing.assert_allclose(dry_air_mass_per_area(delp), expected)
+
+
+def test_emission_increment_vv_converts_co2_mass_flux_to_mixing_ratio():
+    species = load_species_database(BASE_SPECIES)
+    emis = np.ones((1, 1, 1, 1, 1))
+    delp = np.full((1, 1, 1, 1), 1000.0)
+    dt_s = 10.0
+    expected_kgkg = emis * dt_s / (1000.0 * 100.0 / G0_M_PER_S2)
+    expected_vv = expected_kgkg * AIRMW_G_PER_MOL / species[0].molecular_weight_g
+
+    np.testing.assert_allclose(emission_increment_vv(emis, delp, species, dt_s), expected_vv)
+
+
+def test_residual_emissions_increment_has_expected_shape_and_zero_behavior():
+    species = load_species_database(RESIDUAL_SPECIES)
+    emissions = load_hemco_emissions(RESIDUAL_HEMCO)
+    with netCDF4.Dataset(BASE_RESTART) as dataset:
+        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
+
+    increment = emission_increment_vv(emissions.data, delp, species, dt_s=3600.0)
+
+    assert increment.shape == emissions.shape
+    np.testing.assert_array_equal(
+        increment[emissions.data == 0.0],
+        np.zeros_like(increment[emissions.data == 0.0]),
+    )
+
+
+def test_apply_emissions_adds_increment_to_initialized_residual_field():
+    species = load_species_database(RESIDUAL_SPECIES)
+    initialized = initialize_tracers(None, RESIDUAL_SPECIES, template_path=BASE_RESTART)
+    emissions = load_hemco_emissions(RESIDUAL_HEMCO)
+    with netCDF4.Dataset(BASE_RESTART) as dataset:
+        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
+
+    increment = emission_increment_vv(emissions.data, delp, species, dt_s=3600.0)
+    updated = apply_emissions(initialized, emissions, delp, species, dt_s=3600.0)
+
+    np.testing.assert_allclose(updated.data, initialized.data + increment)
+
+
+def test_emissions_increment_preserves_global_emitted_mass():
+    species = load_species_database(RESIDUAL_SPECIES)
+    emissions = load_hemco_emissions(RESIDUAL_HEMCO)
+    with netCDF4.Dataset(BASE_RESTART) as dataset:
+        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
+        area = np.asarray(dataset.variables["AREA"][:])
+
+    dt_s = 3600.0
+    increment = emission_increment_vv(emissions.data, delp, species, dt_s=dt_s)
+    dry_air = dry_air_mass_per_area(delp)[np.newaxis, ...]
+    area_5d = area[np.newaxis, np.newaxis, np.newaxis, :, :]
+    species_mw = np.asarray([item.molecular_weight_g for item in species])
+    species_mw = species_mw[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+
+    expected_mass_kg = np.sum(emissions.data * dt_s * area_5d)
+    actual_mass_kg = np.sum(increment * (species_mw / AIRMW_G_PER_MOL) * dry_air * area_5d)
+
+    np.testing.assert_allclose(actual_mass_kg, expected_mass_kg, rtol=1e-12)

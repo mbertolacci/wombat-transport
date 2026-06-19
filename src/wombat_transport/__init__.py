@@ -1,6 +1,11 @@
 """NumPy-oriented GEOS-Chem transport prototype utilities."""
 
 from wombat_transport.fields import TracerField
+from wombat_transport.emissions import (
+    apply_emissions,
+    dry_air_mass_per_area,
+    emission_increment_vv,
+)
 from wombat_transport.io import (
     FIXED_GRID,
     initialize_tracers,
@@ -17,6 +22,9 @@ __all__ = [
     "RunConfig",
     "Species",
     "TracerField",
+    "apply_emissions",
+    "dry_air_mass_per_area",
+    "emission_increment_vv",
     "initialize_tracers",
     "load_base_met",
     "load_hemco_emissions",
