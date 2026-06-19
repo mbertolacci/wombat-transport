@@ -12,7 +12,12 @@ from wombat_transport.io import initialize_tracers, load_species_conc, write_res
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import run_emissions_replay
 from wombat_transport.species import load_species_database
-from wombat_transport.transport import load_transport_forcing, run_transport_one_step
+from wombat_transport.transport import (
+    dry_pressure_edges_from_thickness_hpa,
+    load_transport_forcing,
+    run_transport_one_step,
+    run_transport_window,
+)
 
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 
@@ -27,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("run_config", type=Path)
     parser.add_argument(
         "--mode",
-        choices=["init-only", "emissions-only", "transport-one-step"],
+        choices=["init-only", "emissions-only", "transport-one-step", "transport-window"],
         default="emissions-only",
     )
     parser.add_argument("--max-steps", type=int, default=None)
@@ -43,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         result = None
         transport_result = None
+        comparison_state = state
+        comparison_delp_dry_hpa = None
     elif args.mode == "transport-one-step":
         state = initialize_tracers(
             config.initial_restart,
@@ -62,11 +69,35 @@ def main(argv: list[str] | None = None) -> int:
             dt_s=float(config.transport.get("dt_s", 600.0)),
         )
         state = transport_result.state
+        comparison_state = state
+        comparison_delp_dry_hpa = transport_result.delp_dry_hpa
+        result = None
+    elif args.mode == "transport-window":
+        state = initialize_tracers(
+            config.initial_restart,
+            config.species_database,
+            template_path=config.grid_template,
+        )
+        steps = int(config.transport.get("window_steps", args.max_steps or 18))
+        transport_result = run_transport_window(
+            state,
+            _resolve_config_value(config.root, config.transport["met_root"]),
+            datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+            config.grid_template,
+            steps=steps,
+            dt_s=float(config.transport.get("dt_s", 600.0)),
+            initial_met_time_index=int(config.transport.get("met_time_index", 0)),
+        )
+        state = transport_result.state
+        comparison_state = transport_result.average_state
+        comparison_delp_dry_hpa = transport_result.average_delp_dry_hpa
         result = None
     else:
         result = run_emissions_replay(config, max_steps=args.max_steps)
         state = result.state
         transport_result = None
+        comparison_state = state
+        comparison_delp_dry_hpa = None
 
     if args.write_output is not None:
         write_restart_like(args.write_output, state, config.grid_template)
@@ -86,8 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"total_emitted_mass_kg: {result.total_emitted_mass:.8e}")
     if transport_result is not None:
         scalar_mass_error = transport_result.final_scalar_mass - transport_result.initial_scalar_mass
-        print("transport_steps: 1")
-        print(f"transport_dt_s: {float(config.transport.get('dt_s', 600.0)):.8e}")
+        transport_steps = getattr(transport_result, "steps", 1)
+        transport_dt_s = getattr(transport_result, "dt_s", float(config.transport.get("dt_s", 600.0)))
+        print(f"transport_steps: {transport_steps}")
+        print(f"transport_dt_s: {transport_dt_s:.8e}")
         print(f"max_transport_scalar_mass_error: {np.max(np.abs(scalar_mass_error)):.8e}")
 
     comparison_path = config.comparison.get("species_conc_sample")
@@ -96,12 +129,12 @@ def main(argv: list[str] | None = None) -> int:
         time_index = int(config.comparison.get("species_conc_time_index", -1))
         with netCDF4.Dataset(config.grid_template) as dataset:
             area_m2 = np.asarray(dataset.variables["AREA"][:])
-            if transport_result is None:
+            if comparison_delp_dry_hpa is None:
                 delp_dry_hpa = np.asarray(dataset.variables["Met_DELPDRY"][:])
             else:
-                delp_dry_hpa = transport_result.delp_dry_hpa
+                delp_dry_hpa = comparison_delp_dry_hpa
         metrics = compare_to_time_slice(
-            state,
+            comparison_state,
             reference,
             reference_time_index=time_index,
             species=species,
@@ -109,6 +142,23 @@ def main(argv: list[str] | None = None) -> int:
             area_m2=area_m2,
         )
         print(format_metrics(metrics))
+
+    level_edge_path = config.diagnostics.get("level_edge_sample")
+    if transport_result is not None and level_edge_path and comparison_delp_dry_hpa is not None:
+        time_index = int(config.comparison.get("species_conc_time_index", 0))
+        with netCDF4.Dataset(config.root / level_edge_path) as dataset:
+            reference_edges = np.asarray(dataset.variables["Met_PEDGEDRY"][time_index : time_index + 1])
+        reference_delp = np.abs(reference_edges[:, :-1, :, :] - reference_edges[:, 1:, :, :])
+        pressure_error = np.abs(comparison_delp_dry_hpa - reference_delp)
+        modeled_edges = dry_pressure_edges_from_thickness_hpa(
+            comparison_delp_dry_hpa,
+            top_edge_hpa=reference_edges[:, -1:, :, :],
+        )
+        edge_error = np.abs(modeled_edges - reference_edges)
+        print(f"pressure_dry_max_abs_error_hpa: {np.max(pressure_error):.8e}")
+        print(f"pressure_dry_mean_abs_error_hpa: {np.mean(pressure_error):.8e}")
+        print(f"pressure_edge_dry_max_abs_error_hpa: {np.max(edge_error):.8e}")
+        print(f"pressure_edge_dry_mean_abs_error_hpa: {np.mean(edge_error):.8e}")
 
     return 0
 
