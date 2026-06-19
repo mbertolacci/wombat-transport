@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wombat-transport"
+version = "0.1.0"
+description = "NumPy-based GEOS-Chem transport prototype"
+readme = "AGENTS.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "netCDF4",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

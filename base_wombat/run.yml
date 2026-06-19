@@ -1,0 +1,11 @@
+name: base_wombat
+source_run_dir: ../base
+species_database: ../base/species_database.yml
+initial_restart: ../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4
+grid_template: ../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4
+output_dir: ./OutputDir
+diagnostics:
+  species_conc_sample: ../base/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
+  level_edge_sample: ../base/OutputDir/GEOSChem.LevelEdgeDiagsThreeHourly.20140901_0000z.nc4
+  state_met_sample: ../base/OutputDir/GEOSChem.StateMetThreeHourly.20140901_0000z.nc4
+  hemco_sample: ../base/OutputDir/HEMCO_diagnostics.201409010030.nc

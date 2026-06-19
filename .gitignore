@@ -9,3 +9,6 @@ CodeDir
 build_info/
 gcclassic
 kpp_standalone
+__pycache__/
+.pytest_cache/
+*.egg-info/
