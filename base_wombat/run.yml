@@ -9,3 +9,6 @@ diagnostics:
   level_edge_sample: ../base/OutputDir/GEOSChem.LevelEdgeDiagsThreeHourly.20140901_0000z.nc4
   state_met_sample: ../base/OutputDir/GEOSChem.StateMetThreeHourly.20140901_0000z.nc4
   hemco_sample: ../base/OutputDir/HEMCO_diagnostics.201409010030.nc
+comparison:
+  species_conc_sample: ../base/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
+  species_conc_time_index: 0

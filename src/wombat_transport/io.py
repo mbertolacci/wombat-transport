@@ -32,6 +32,41 @@ def load_base_met(path: str | Path) -> dict[str, np.ndarray]:
         return {name: np.asarray(dataset.variables[name][:]) for name in wanted if name in dataset.variables}
 
 
+def write_restart_like(path: str | Path, tracer_field: TracerField, template_path: str | Path) -> None:
+    """Write a restart-like NetCDF file with one ``SpeciesRst_*`` variable per tracer."""
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
+        _assert_fixed_grid(template)
+        _assert_tracer_shape(tracer_field)
+
+        for dim_name in ("time", "lev", "ilev", "lat", "lon"):
+            size = tracer_field.data.shape[1] if dim_name == "time" else len(template.dimensions[dim_name])
+            output.createDimension(dim_name, size)
+
+        for coord_name in GRID_COORDS:
+            if coord_name not in template.variables:
+                continue
+            source = template.variables[coord_name]
+            variable = output.createVariable(coord_name, source.datatype, source.dimensions)
+            variable.setncatts({name: source.getncattr(name) for name in source.ncattrs()})
+            if source.dimensions:
+                variable[:] = np.asarray(source[:])
+            else:
+                variable.assignValue(source.getValue())
+
+        output.title = "Wombat Transport restart-like output"
+        output.Conventions = "COARDS"
+
+        for index, name in enumerate(tracer_field.names):
+            variable = output.createVariable(f"SpeciesRst_{name}", "f8", ("time", "lev", "lat", "lon"))
+            variable.units = tracer_field.units[index] if index < len(tracer_field.units) else ""
+            variable.long_name = f"Wombat restart-like concentration of species {name}"
+            variable[:] = tracer_field.data[index]
+
+
 def initialize_tracers(
     restart_path: str | Path | None,
     species_db_path: str | Path,
@@ -129,6 +164,16 @@ def _assert_fixed_grid(dataset: netCDF4.Dataset) -> None:
         actual = len(dataset.dimensions[dim])
         if actual != expected:
             raise ValueError(f"expected {dim}={expected}, found {actual}")
+
+
+def _assert_tracer_shape(tracer_field: TracerField) -> None:
+    if tracer_field.data.ndim != 5:
+        raise ValueError(f"expected tracer data to be 5-D, found {tracer_field.data.ndim}-D")
+    if tracer_field.data.shape[0] != len(tracer_field.names):
+        raise ValueError("tracer name count does not match data first dimension")
+    expected = (FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    if tracer_field.data.shape[2:] != expected:
+        raise ValueError(f"expected tracer grid {expected}, found {tracer_field.data.shape[2:]}")
 
 
 def _read_coords(dataset: netCDF4.Dataset) -> dict[str, np.ndarray]:

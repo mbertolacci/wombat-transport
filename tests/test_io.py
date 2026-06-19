@@ -16,6 +16,7 @@ from wombat_transport.io import (
     load_hemco_emissions,
     load_restart,
     load_species_conc,
+    write_restart_like,
 )
 from wombat_transport.run_config import load_run_config
 from wombat_transport.species import load_species_database
@@ -69,6 +70,32 @@ def test_residual_monthly_restart_stacks_in_species_order():
 
     assert restart.names == tuple(item.name for item in species)
     assert restart.shape == (24, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+
+
+def test_write_restart_like_roundtrips_base_initialized_field(tmp_path):
+    initialized = initialize_tracers(BASE_RESTART, BASE_SPECIES)
+    output_path = tmp_path / "base_restart_like.nc4"
+
+    write_restart_like(output_path, initialized, BASE_RESTART)
+    loaded = load_restart(output_path, load_species_database(BASE_SPECIES))
+
+    assert loaded.names == initialized.names
+    assert loaded.shape == initialized.shape
+    assert loaded.units == initialized.units
+    np.testing.assert_array_equal(loaded.data, initialized.data)
+
+
+def test_write_restart_like_roundtrips_residual_species_order(tmp_path):
+    initialized = initialize_tracers(None, RESIDUAL_SPECIES, template_path=BASE_RESTART)
+    output_path = tmp_path / "residual_restart_like.nc4"
+
+    write_restart_like(output_path, initialized, BASE_RESTART)
+    loaded = load_restart(output_path, load_species_database(RESIDUAL_SPECIES))
+
+    assert loaded.names == initialized.names
+    assert loaded.shape == initialized.shape
+    assert loaded.units == initialized.units
+    np.testing.assert_array_equal(loaded.data, initialized.data)
 
 
 def test_species_conc_readers_stack_base_and_residual():
