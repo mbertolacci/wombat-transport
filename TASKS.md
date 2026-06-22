@@ -1,10 +1,10 @@
 # Wombat Transport Status
 
-Last checkpoint: `edad736 Add mass-flux transport window`
+Last checkpoint: `ac8aeb7 Document transport prototype status`
 
 Validation at that checkpoint:
 
-- Full test suite passed: `44 passed`.
+- Full test suite passed at that checkpoint: `44 passed`.
 - Working tree was clean immediately after the commit.
 
 ## Where We Are
@@ -28,6 +28,10 @@ Validation at that checkpoint:
     diagnostics;
   - pressure-thickness and pressure-edge comparison output against
     `Met_PEDGEDRY` when LevelEdge diagnostics are available.
+- A GEOS-Chem-backed operator harness exists under `tools/gc_harness/`. It
+  writes NetCDF fixtures from a Wombat run config, calls `DO_PJC_PFIX` through
+  a small Fortran executable linked against `base/build`, and can also run one
+  `TPCORE_FVDAS` tracer step when the fixture includes `tracer_conc`.
 
 ## Important Caveats
 
@@ -36,6 +40,9 @@ Validation at that checkpoint:
   GEOS-Chem/PJC high-order limiter path.
 - The vertical flux currently redistributes mass by column continuity rather
   than porting the full GEOS-Chem pressure fixer/TPCORE machinery.
+- The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
+  one-step TPCORE stages. The current NumPy transport path is still the older
+  first-order scaffold and should be ported against this oracle next.
 - PBL mixing, convection, negative-value filling, and performance benchmarks
   are not implemented yet.
 - Base run diagnostics are the best short-window target because base has
@@ -45,7 +52,31 @@ Validation at that checkpoint:
 
 ## Good Next Steps
 
-1. Add a transport verification command.
+1. Port NumPy transport against the one-step GEOS-Chem oracle.
+   - Use `python -m wombat_transport.gc_harness transport-step
+     base_wombat/run.yml --max-tracers 1` to generate the reference fixture.
+   - Start by matching PJC `XMASS`/`YMASS`, then TPCORE pressure/CFL setup,
+     horizontal update, vertical update, pole handling, and negative fill.
+   - Keep comparisons per substage; do not tune against only an aggregate
+     concentration error.
+
+2. Use the PJC harness to lock down pressure-fixer semantics.
+   - Run `python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml`
+     as the first smoke check.
+   - Compare GEOS-Chem `XMASS`/`YMASS` against an explicit NumPy port of
+     `pjc_pfix_mod.F90`/`PJC_PFIX_WINDOW` internals, not just the current
+     approximate flux scaffold.
+   - Check dimension order, vertical orientation, surface-pressure timing
+     (`P_TP1`/`P_TP2`), and pressure-coordinate constants before coupling to
+     tracer advection.
+
+3. Extend transport-step fixtures beyond one base tracer.
+   - Run the same harness on residual tracers once the one-tracer orientation
+     and units are verified.
+   - Add larger synthetic tracer-count fixtures after the oracle comparison is
+     stable enough to benchmark.
+
+4. Add a transport verification command.
    - Walk base `SpeciesConcThreeHourly`, `LevelEdgeDiagsThreeHourly`, and
      `StateMetThreeHourly` files in chronological order.
    - Run Wombat in repeated three-hour windows.
@@ -54,36 +85,36 @@ Validation at that checkpoint:
    - Include `--max-windows` for quick smoke runs and `--output-csv` for longer
      verification runs.
 
-2. Port and verify transport in GEOS-Chem operator order.
+5. Port and verify transport in GEOS-Chem operator order.
    - Treat GEOS-Chem as the reference semantics, not as an approximate target.
    - For each operator, add the closest practical single-step or short-window
      check before moving on.
    - Keep current scaffold behavior clearly labeled until the corresponding
      GEOS-Chem algorithm has been ported or directly justified.
 
-3. Add negative-value filling.
+6. Add negative-value filling.
    - Match GEOS-Chem behavior before any high-order advection work depends on
      it.
    - Track negative counts/minima before and after filling in verification
      output.
 
-4. Replace the advection scaffold with a closer TPCORE/PJC port.
+7. Replace the advection scaffold with a closer TPCORE/PJC port.
    - Use `transport_mod.F90`, `tpcore_fvdas_mod.F90`, and `pjc_pfix_mod.F90` as
      references.
    - Verify pressure fixer behavior, horizontal/vertical flux bookkeeping,
      tracer reconstruction, limiter behavior, and mass conservation as separate
      checks where possible.
 
-5. Add PBL mixing.
+8. Add PBL mixing.
    - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.
    - Verify it as its own operator stage before coupling it into longer
      transport windows.
 
-6. Add convection.
+9. Add convection.
    - Use `convection_mod.F90` as the reference.
    - Keep it behind a clear operator stage so it can be tested independently.
 
-7. Benchmark vectorized multi-tracer scaling once the verification harness
+10. Benchmark vectorized multi-tracer scaling once the verification harness
    exists.
    - Measure 1 tracer, 24 tracers, and larger synthetic tracer counts.
    - Report operator time separately from NetCDF I/O.
@@ -92,6 +123,9 @@ Validation at that checkpoint:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 pytest -q -p no:cacheprovider
+tools/gc_harness/build_pjc_pfix_harness.sh
+python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
+python -m wombat_transport.gc_harness transport-step base_wombat/run.yml --max-tracers 1
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```

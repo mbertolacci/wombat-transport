@@ -86,6 +86,14 @@ Keep the first Python implementation correctness-oriented. Match GEOS-Chem
 field ordering, units, pressure/mass bookkeeping, operator sequencing, and
 restart conventions before adding optional acceleration.
 
+`tools/gc_harness/` contains the first GEOS-Chem-backed operator harness. It
+is intentionally full-state-shaped but narrow: it can populate the grid state
+and array inputs needed by `DO_PJC_PFIX`, and can also populate minimal
+`ChmState`/`DgnState` fields for one `TPCORE_FVDAS` tracer step when the input
+fixture includes tracer concentrations. Extend this harness by filling more
+state fields as operators need them, rather than creating unrelated one-off
+interfaces.
+
 ## Initial Python Policy
 
 Use `numpy` and `netCDF4` for the first prototype. These are available in the

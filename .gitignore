@@ -12,3 +12,4 @@ kpp_standalone
 __pycache__/
 .pytest_cache/
 *.egg-info/
+tools/gc_harness/work/
