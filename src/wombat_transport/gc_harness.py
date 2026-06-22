@@ -12,9 +12,8 @@ import numpy as np
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
-    dry_pressure_thickness_hpa,
-    horizontal_mass_flux_hpa,
     load_transport_forcing,
+    pjc_mass_flux_hpa,
 )
 
 
@@ -222,22 +221,26 @@ def compare_pjc_output(input_path: str | Path, output_path: str | Path) -> PjcCo
         lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
         hyai = np.asarray(dataset.variables["hyai"][:], dtype=np.float64)
         hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
         p1 = np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64)
+        p2 = np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64)
         u = np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64)
         v = np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64)
         dt_s = float(getattr(dataset, "dt_s"))
-    surface_pressure_pa = p1[np.newaxis, :, :] * 100.0
-    delp = dry_pressure_thickness_hpa(surface_pressure_pa, hyai, hybi)
-    expected_x, expected_y = horizontal_mass_flux_hpa(
-        delp,
-        u[np.newaxis, :, :, :],
-        v[np.newaxis, :, :, :],
-        lat,
+    expected_x, expected_y = pjc_mass_flux_hpa(
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
         dt_s=dt_s,
     )
     observed_x, observed_y = read_pjc_output(output_path)
-    x_error = np.abs(observed_x - expected_x[0])
-    y_error = np.abs(observed_y - expected_y[0])
+    x_error = np.abs(observed_x - expected_x)
+    y_error = np.abs(observed_y - expected_y)
     return PjcComparison(
         xmass_max_abs_error_hpa=float(np.max(x_error)),
         xmass_mean_abs_error_hpa=float(np.mean(x_error)),

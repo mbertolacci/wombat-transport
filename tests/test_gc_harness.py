@@ -15,7 +15,7 @@ from wombat_transport.gc_harness import (
     run_pjc_harness,
     write_pjc_input,
 )
-from wombat_transport.transport import dry_pressure_thickness_hpa, horizontal_mass_flux_hpa
+from wombat_transport.transport import pjc_mass_flux_hpa
 
 
 def test_write_pjc_input_records_fixture_contract(tmp_path):
@@ -25,39 +25,44 @@ def test_write_pjc_input_records_fixture_contract(tmp_path):
         assert dataset.harness == PJC_INPUT_VERSION
         assert dataset.dt_s == 600.0
         assert dataset.dimensions["lon"].size == 3
-        assert dataset.dimensions["lat"].size == 2
+        assert dataset.dimensions["lat"].size == 7
         assert dataset.dimensions["lev"].size == 4
         assert dataset.dimensions["ilev"].size == 5
-        assert dataset.variables["u_m_s"].shape == (4, 2, 3)
-        assert dataset.variables["area_m2"].shape == (2, 3)
+        assert dataset.variables["u_m_s"].shape == (4, 7, 3)
+        assert dataset.variables["area_m2"].shape == (7, 3)
 
 
-def test_compare_pjc_output_reports_zero_for_matching_wombat_fluxes(tmp_path):
+def test_compare_pjc_output_reports_zero_for_matching_numpy_pjc_fluxes(tmp_path):
     input_path = _write_synthetic_pjc_input(tmp_path / "pjc_input.nc")
     with netCDF4.Dataset(input_path) as dataset:
         lat = np.asarray(dataset.variables["lat"][:])
         hyai = np.asarray(dataset.variables["hyai"][:])
         hybi = np.asarray(dataset.variables["hybi"][:])
+        area = np.asarray(dataset.variables["area_m2"][:])
         p1 = np.asarray(dataset.variables["p1_hpa"][:])
+        p2 = np.asarray(dataset.variables["p2_hpa"][:])
         u = np.asarray(dataset.variables["u_m_s"][:])
         v = np.asarray(dataset.variables["v_m_s"][:])
         dt_s = float(dataset.dt_s)
-    delp = dry_pressure_thickness_hpa(p1[np.newaxis, :, :] * 100.0, hyai, hybi)
-    xmass, ymass = horizontal_mass_flux_hpa(
-        delp,
-        u[np.newaxis, :, :, :],
-        v[np.newaxis, :, :, :],
-        lat,
+    xmass, ymass = pjc_mass_flux_hpa(
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
         dt_s=dt_s,
     )
     output_path = tmp_path / "pjc_output.nc"
     with netCDF4.Dataset(output_path, "w") as dataset:
         dataset.createDimension("lev", 4)
-        dataset.createDimension("lat", 2)
+        dataset.createDimension("lat", xmass.shape[1])
         dataset.createDimension("lon", 3)
         dataset.harness = PJC_OUTPUT_VERSION
-        dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = xmass[0]
-        dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = ymass[0]
+        dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = xmass
+        dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = ymass
 
     comparison = compare_pjc_output(input_path, output_path)
 
@@ -67,9 +72,42 @@ def test_compare_pjc_output_reports_zero_for_matching_wombat_fluxes(tmp_path):
     assert comparison.ymass_mean_abs_error_hpa == 0.0
 
 
+def test_pjc_mass_flux_preserves_contract_on_geos_like_grid():
+    nlon = 8
+    nlat = 7
+    nlev = 4
+    lat = np.linspace(-90.0, 90.0, nlat)
+    area = np.broadcast_to(np.cos(np.deg2rad(np.clip(lat, -89.0, 89.0)))[:, np.newaxis], (nlat, nlon)).copy()
+    area *= 1.0e10
+    hyai = np.array([0.0, 10.0, 40.0, 100.0, 0.01])
+    hybi = np.array([1.0, 0.9, 0.5, 0.1, 0.0])
+    p1 = np.full((nlat, nlon), 950.0)
+    p2 = p1.copy()
+    u = np.ones((nlev, nlat, nlon))
+    v = np.zeros_like(u)
+
+    xmass, ymass = pjc_mass_flux_hpa(
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
+        dt_s=600.0,
+    )
+
+    assert xmass.shape == (nlev, nlat, nlon)
+    assert ymass.shape == (nlev, nlat, nlon)
+    assert np.all(np.isfinite(xmass))
+    assert np.all(np.isfinite(ymass))
+    np.testing.assert_allclose(ymass, 0.0, atol=1.0e-12)
+
+
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
     input_path = _write_synthetic_pjc_input(tmp_path / "transport_input.nc")
-    tracer_conc = np.arange(2 * 4 * 2 * 3, dtype=np.float64).reshape(2, 4, 2, 3)
+    tracer_conc = np.arange(2 * 4 * 7 * 3, dtype=np.float64).reshape(2, 4, 7, 3)
 
     append_transport_step_tracers(input_path, tracer_conc, tracer_names=("A", "B"))
 
@@ -77,7 +115,7 @@ def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
         assert dataset.harness == TRANSPORT_INPUT_VERSION
         assert dataset.dimensions["tracer"].size == 2
         assert dataset.dimensions["name_strlen"].size == 1
-        assert dataset.variables["tracer_conc"].shape == (2, 4, 2, 3)
+        assert dataset.variables["tracer_conc"].shape == (2, 4, 7, 3)
         assert np.array_equal(np.asarray(dataset.variables["tracer_conc"][:]), tracer_conc)
 
 
@@ -132,14 +170,15 @@ def test_append_transport_step_tracers_rejects_bad_shape(tmp_path):
 
 
 def _write_synthetic_pjc_input(path):
-    lat = np.array([-1.0, 1.0])
+    lat = np.array([-89.0, -87.0, -45.0, 0.0, 45.0, 87.0, 89.0])
     lon = np.array([0.0, 2.5, 5.0])
-    area = np.full((2, 3), 1.0e10)
+    area = np.broadcast_to(np.cos(np.deg2rad(lat))[:, np.newaxis], (lat.size, lon.size)).copy()
+    area *= 1.0e10
     hyai = np.array([1000.0, 800.0, 500.0, 100.0, 0.01])
     hybi = np.zeros_like(hyai)
-    p1 = np.full((2, 3), 1000.0)
+    p1 = np.full((lat.size, lon.size), 1000.0)
     p2 = p1.copy()
-    u = np.arange(4 * 2 * 3, dtype=np.float64).reshape(4, 2, 3) * 0.01
+    u = np.arange(4 * lat.size * lon.size, dtype=np.float64).reshape(4, lat.size, lon.size) * 0.01
     v = u * -0.25
     return write_pjc_input(
         path,

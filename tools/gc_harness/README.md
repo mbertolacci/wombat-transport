@@ -56,10 +56,10 @@ Current smoke result on `base_wombat/run.yml` after building against
 
 ```text
 metric,value
-xmass_max_abs_error_hpa,1.83529079e+01
-xmass_mean_abs_error_hpa,1.01810656e-01
-ymass_max_abs_error_hpa,4.91098969e-03
-ymass_mean_abs_error_hpa,5.55552666e-04
+xmass_max_abs_error_hpa,2.28936869e-11
+xmass_mean_abs_error_hpa,7.84349743e-14
+ymass_max_abs_error_hpa,1.77635684e-15
+ymass_mean_abs_error_hpa,2.66716245e-17
 ```
 
 Current one-tracer transport-step smoke result on `base_wombat/run.yml`:

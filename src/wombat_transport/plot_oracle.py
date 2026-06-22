@@ -134,12 +134,12 @@ pre {{ overflow-x: auto; background: #f8fafc; padding: 12px; }}
 <body>
 <header>
 <h1>Wombat transport: current Python vs GEOS-Chem oracle</h1>
-<p>Generated from the local one-step GEOS-Chem PJC+TPCORE harness and the current NumPy transport scaffold.</p>
+<p>Generated from the local one-step GEOS-Chem PJC+TPCORE harness and the current NumPy PJC plus transport scaffold.</p>
 </header>
 <main>
 <section>
 <h2>What this tracks</h2>
-<p>The GEOS-Chem oracle runs <code>DO_PJC_PFIX</code> followed by <code>TPCORE_FVDAS</code>. The Python side is the current conservative transport scaffold. These plots are intended as a visual progress tracker while the NumPy PJC/TPCORE port is implemented.</p>
+<p>The GEOS-Chem oracle runs <code>DO_PJC_PFIX</code> followed by <code>TPCORE_FVDAS</code>. The Python side now uses the NumPy PJC mass-flux port, while tracer transport remains the conservative scaffold. These plots are intended as a visual progress tracker while the NumPy TPCORE port is implemented.</p>
 <table>{metric_rows}</table>
 </section>
 {card_html}

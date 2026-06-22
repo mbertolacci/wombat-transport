@@ -22,6 +22,8 @@ Validation at that checkpoint:
 - Transport currently has:
   - pressure and dry-air-mass bookkeeping on the fixed 2x2.5, 47-level grid;
   - pressure-weighted MERRA2 72-to-47 level collapse;
+  - a NumPy port of the GEOS-Chem PJC pressure-fixer mass-flux path for
+    `XMASS`/`YMASS`;
   - horizontal mass-flux advection scaffold;
   - closed-boundary vertical continuity/advection scaffold;
   - three-hour window averaging for equivalence checks against GEOS-Chem
@@ -35,14 +37,16 @@ Validation at that checkpoint:
 
 ## Important Caveats
 
-- The transport scaffold is still not a TPCORE parity implementation.
+- The transport scaffold is still not a TPCORE tracer-advection parity
+  implementation.
 - Horizontal and vertical tracer reconstruction is first-order upwind, not the
-  GEOS-Chem/PJC high-order limiter path.
+  GEOS-Chem TPCORE high-order limiter path.
 - The vertical flux currently redistributes mass by column continuity rather
-  than porting the full GEOS-Chem pressure fixer/TPCORE machinery.
+  than porting the full GEOS-Chem TPCORE pressure machinery.
 - The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
-  one-step TPCORE stages. The current NumPy transport path is still the older
-  first-order scaffold and should be ported against this oracle next.
+  one-step TPCORE stages. The current NumPy transport path now uses the PJC
+  mass-flux port for a single configured step, but the tracer update is still
+  the older first-order scaffold and should be ported against this oracle next.
 - PBL mixing, convection, negative-value filling, and performance benchmarks
   are not implemented yet.
 - Base run diagnostics are the best short-window target because base has
@@ -55,20 +59,19 @@ Validation at that checkpoint:
 1. Port NumPy transport against the one-step GEOS-Chem oracle.
    - Use `python -m wombat_transport.gc_harness transport-step
      base_wombat/run.yml --max-tracers 1` to generate the reference fixture.
-   - Start by matching PJC `XMASS`/`YMASS`, then TPCORE pressure/CFL setup,
-     horizontal update, vertical update, pole handling, and negative fill.
+   - PJC `XMASS`/`YMASS` now matches the oracle at roundoff-scale on the
+     current base fixture (`xmass` max error about `2.3e-11 hPa`, `ymass`
+     max error about `1.8e-15 hPa`).
+   - Continue with TPCORE pressure/CFL setup, horizontal update, vertical
+     update, pole handling, and negative fill.
    - Keep comparisons per substage; do not tune against only an aggregate
      concentration error.
 
-2. Use the PJC harness to lock down pressure-fixer semantics.
-   - Run `python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml`
-     as the first smoke check.
-   - Compare GEOS-Chem `XMASS`/`YMASS` against an explicit NumPy port of
-     `pjc_pfix_mod.F90`/`PJC_PFIX_WINDOW` internals, not just the current
-     approximate flux scaffold.
-   - Check dimension order, vertical orientation, surface-pressure timing
-     (`P_TP1`/`P_TP2`), and pressure-coordinate constants before coupling to
-     tracer advection.
+2. Lock down any remaining PJC differences before treating it as exact.
+   - The current residual mass-flux differences are small but nonzero.
+   - If needed, expose intermediate diagnostics from `pjc_pfix_mod.F90` to
+     isolate whether the remaining difference is constants, pressure
+     coordinate setup, or floating-point/order-of-operations.
 
 3. Extend transport-step fixtures beyond one base tracer.
    - Run the same harness on residual tracers once the one-tracer orientation
