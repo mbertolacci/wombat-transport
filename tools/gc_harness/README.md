@@ -23,8 +23,7 @@ executable runs one `DO_PJC_PFIX` plus `TPCORE_FVDAS` step and writes
 `tracer_conc_after`, `xmass_hpa`, `ymass_hpa`, and `surface_pressure_hpa`.
 The tracked TPCORE snapshot fixture records this one-step GEOS-Chem oracle
 boundary for fast unit tests. The production transport driver now routes
-one-step and window modes through the NumPy TPCORE port; the older scaffold
-helpers remain available for focused unit tests.
+one-step and window modes through the NumPy TPCORE port.
 
 ## Python Fixture Commands
 

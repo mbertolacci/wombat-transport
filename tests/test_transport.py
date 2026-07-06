@@ -5,25 +5,18 @@ from datetime import datetime
 import netCDF4
 import numpy as np
 
-from wombat_transport.constants import G0_M_PER_S2
-from wombat_transport.fields import TracerField
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
-    advect_horizontal_mass_flux,
-    advect_vertical_mass_flux,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_hpa,
-    horizontal_mass_flux_hpa,
     load_transport_forcing,
     run_transport_one_step,
     run_transport_window,
-    scalar_mass_by_tracer,
-    vertical_mass_flux_hpa,
     _map_met_levels_to_47,
 )
 
@@ -86,172 +79,6 @@ def test_pressure_bookkeeping_returns_positive_dry_air_mass():
     assert dry_air_mass.shape == delp.shape
     assert np.all(delp > 0.0)
     assert np.all(dry_air_mass > 0.0)
-
-
-def test_horizontal_mass_fluxes_are_finite_with_closed_southern_edge():
-    config = load_run_config(BASE_CONFIG)
-    forcing = _load_forcing(config)
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        hyai = np.asarray(dataset.variables["hyai"][:])
-        hybi = np.asarray(dataset.variables["hybi"][:])
-    delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
-
-    xmass, ymass = horizontal_mass_flux_hpa(
-        delp,
-        forcing.u_m_s,
-        forcing.v_m_s,
-        forcing.lat_deg,
-        dt_s=600.0,
-    )
-
-    assert xmass.shape == delp.shape
-    assert ymass.shape == delp.shape
-    assert np.all(np.isfinite(xmass))
-    assert np.all(np.isfinite(ymass))
-    np.testing.assert_array_equal(ymass[:, :, 0, :], 0.0)
-
-
-def test_zero_mass_flux_transport_leaves_field_and_air_mass_unchanged():
-    config = load_run_config(BASE_CONFIG)
-    field = initialize_tracers(config.initial_restart, config.species_database)
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
-        area = np.asarray(dataset.variables["AREA"][:])
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
-    zero = np.zeros_like(delp)
-
-    transported, next_air_mass = advect_horizontal_mass_flux(
-        field,
-        dry_air_mass,
-        zero,
-        zero,
-        area,
-    )
-
-    np.testing.assert_array_equal(transported.data, field.data)
-    np.testing.assert_array_equal(next_air_mass, dry_air_mass)
-
-
-def test_zero_vertical_flux_transport_leaves_field_and_air_mass_unchanged():
-    config = load_run_config(BASE_CONFIG)
-    field = initialize_tracers(config.initial_restart, config.species_database)
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
-        area = np.asarray(dataset.variables["AREA"][:])
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
-    zero = np.zeros((dry_air_mass.shape[0], dry_air_mass.shape[1] + 1, dry_air_mass.shape[2], dry_air_mass.shape[3]))
-
-    transported, next_air_mass = advect_vertical_mass_flux(
-        field,
-        dry_air_mass,
-        zero,
-        area,
-    )
-
-    np.testing.assert_array_equal(transported.data, field.data)
-    np.testing.assert_array_equal(next_air_mass, dry_air_mass)
-
-
-def test_vertical_mass_flux_closes_boundaries_and_follows_horizontal_tendency():
-    previous = np.array([[[[10.0]], [[20.0]], [[30.0]]]])
-    horizontal = np.array([[[[12.0]], [[19.0]], [[31.0]]]])
-    area = np.array([[1.0]])
-
-    zflux_hpa = vertical_mass_flux_hpa(previous, horizontal, area)
-    zflux_kg = zflux_hpa * 100.0 / G0_M_PER_S2
-
-    assert zflux_hpa.shape == (1, 4, 1, 1)
-    np.testing.assert_allclose(zflux_kg[:, 0, :, :], 0.0)
-    np.testing.assert_allclose(zflux_kg[:, -1, :, :], 0.0)
-    assert zflux_kg[0, 1, 0, 0] > 0.0
-    np.testing.assert_allclose(zflux_kg[0, 2, 0, 0], 0.0, atol=1e-14)
-
-
-def test_vertical_mass_flux_transport_reaches_column_fraction_target():
-    field = TracerField(
-        names=("CO2",),
-        data=np.array([[[[[1.0]], [[2.0]], [[3.0]]]]]),
-        units=("mol mol-1 dry",),
-        coords={},
-    )
-    previous = np.array([[[[10.0]], [[20.0]], [[30.0]]]])
-    horizontal = np.array([[[[12.0]], [[19.0]], [[31.0]]]])
-    area = np.array([[1.0]])
-    zflux_hpa = vertical_mass_flux_hpa(previous, horizontal, area)
-
-    transported, next_air_mass = advect_vertical_mass_flux(field, horizontal, zflux_hpa, area)
-
-    expected_mass = previous * (np.sum(horizontal, axis=1, keepdims=True) / np.sum(previous, axis=1, keepdims=True))
-    np.testing.assert_allclose(next_air_mass, expected_mass, rtol=1e-14)
-    np.testing.assert_allclose(
-        scalar_mass_by_tracer(transported.data, next_air_mass),
-        scalar_mass_by_tracer(field.data, horizontal),
-        rtol=1e-14,
-    )
-
-
-def test_uniform_field_stays_uniform_with_mass_flux_transport():
-    config = load_run_config(BASE_CONFIG)
-    field = initialize_tracers(config.initial_restart, config.species_database)
-    uniform = TracerField(
-        names=field.names,
-        data=np.full_like(field.data, 0.0004),
-        units=field.units,
-        coords=field.coords,
-    )
-    forcing = _load_forcing(config)
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        hyai = np.asarray(dataset.variables["hyai"][:])
-        hybi = np.asarray(dataset.variables["hybi"][:])
-        area = np.asarray(dataset.variables["AREA"][:])
-    delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
-    xmass, ymass = horizontal_mass_flux_hpa(
-        delp,
-        forcing.u_m_s,
-        forcing.v_m_s,
-        forcing.lat_deg,
-        dt_s=600.0,
-    )
-
-    transported, next_air_mass = advect_horizontal_mass_flux(
-        uniform,
-        dry_air_mass,
-        xmass,
-        ymass,
-        area,
-    )
-
-    np.testing.assert_allclose(transported.data, uniform.data, rtol=0.0, atol=1e-18)
-    np.testing.assert_allclose(np.sum(next_air_mass), np.sum(dry_air_mass), rtol=1e-14)
-    np.testing.assert_allclose(
-        scalar_mass_by_tracer(transported.data, next_air_mass),
-        scalar_mass_by_tracer(uniform.data, dry_air_mass),
-        rtol=1e-14,
-    )
-
-
-def test_uniform_field_stays_uniform_with_vertical_mass_flux_transport():
-    field = TracerField(
-        names=("CO2",),
-        data=np.full((1, 1, 3, 1, 1), 0.0004),
-        units=("mol mol-1 dry",),
-        coords={},
-    )
-    previous = np.array([[[[10.0]], [[20.0]], [[30.0]]]])
-    horizontal = np.array([[[[12.0]], [[19.0]], [[31.0]]]])
-    area = np.array([[1.0]])
-    zflux_hpa = vertical_mass_flux_hpa(previous, horizontal, area)
-
-    transported, next_air_mass = advect_vertical_mass_flux(field, horizontal, zflux_hpa, area)
-
-    np.testing.assert_allclose(transported.data, field.data, rtol=0.0, atol=1e-18)
-    np.testing.assert_allclose(np.sum(next_air_mass), np.sum(horizontal), rtol=1e-14)
-    np.testing.assert_allclose(
-        scalar_mass_by_tracer(transported.data, next_air_mass),
-        scalar_mass_by_tracer(field.data, horizontal),
-        rtol=1e-14,
-    )
 
 
 def test_dry_pressure_edges_from_thickness_reconstructs_bottom_to_top_edges():

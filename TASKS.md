@@ -29,8 +29,6 @@ Validation at that checkpoint:
     low-Courant fixture, the full-grid base initial-condition fixture, and the
     24-tracer residual initial-condition fixture for pressure, mass fluxes,
     and final tracer concentrations;
-  - legacy horizontal and vertical advection scaffold helpers retained for
-    focused unit tests;
   - three-hour window averaging for equivalence checks against GEOS-Chem
     diagnostics;
   - pressure-thickness and pressure-edge comparison output against
@@ -55,9 +53,8 @@ Validation at that checkpoint:
 - `transport-one-step` and `transport-window` now route through the
   GEOS-Chem-oriented NumPy TPCORE port. PBL mixing and convection are still not
   included in the production transport sequence.
-- The older first-order horizontal and vertical scaffold remains in the package
-  for unit tests and narrow comparisons, but it is no longer used by the main
-  transport driver modes.
+- The supported transport driver path is the GEOS-Chem-oriented NumPy TPCORE
+  port.
 - The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
   one-step TPCORE stages. The Python `compare-python-tpcore-output` path and
   main transport driver modes route through the GEOS-Chem-oriented NumPy
@@ -146,8 +143,8 @@ Validation at that checkpoint:
    - Treat GEOS-Chem as the reference semantics, not as an approximate target.
    - For each operator, add the closest practical single-step or short-window
      check before moving on.
-   - Keep current scaffold behavior clearly labeled until the corresponding
-     GEOS-Chem algorithm has been ported or directly justified.
+   - Keep each new operator behind a clear stage until it has its own parity
+     check or direct GEOS-Chem justification.
 
 6. Add negative-value filling.
    - Match GEOS-Chem behavior before any high-order advection work depends on
@@ -155,12 +152,11 @@ Validation at that checkpoint:
    - Track negative counts/minima before and after filling in verification
      output.
 
-7. Route the main transport path through the GEOS-Chem-oriented TPCORE port.
+7. Extend the main transport path beyond TPCORE.
    - Use `transport_mod.F90`, `tpcore_fvdas_mod.F90`, and `pjc_pfix_mod.F90` as
      references.
-   - Replace the older scaffold only after pressure fixer behavior,
-     horizontal/vertical flux bookkeeping, tracer reconstruction, limiter
-     behavior, and mass conservation are verified on a full-grid smoke case.
+   - Preserve the current TPCORE parity checks while adding the next
+     GEOS-Chem operator stages.
 
 8. Add PBL mixing.
    - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.

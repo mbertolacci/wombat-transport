@@ -28,17 +28,13 @@ from wombat_transport.transport import (
     TransportForcing,
     TransportStepResult,
     TransportWindowResult,
-    advect_horizontal_mass_flux,
-    advect_vertical_mass_flux,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_hpa,
-    horizontal_mass_flux_hpa,
     load_transport_forcing,
     pjc_mass_flux_hpa,
     run_transport_one_step,
     run_transport_window,
-    vertical_mass_flux_hpa,
 )
 
 __all__ = [
@@ -51,9 +47,7 @@ __all__ = [
     "TransportForcing",
     "TransportStepResult",
     "TransportWindowResult",
-    "advect_horizontal_mass_flux",
     "apply_emissions",
-    "advect_vertical_mass_flux",
     "compare_to_time_slice",
     "discover_hemco_diagnostics",
     "dry_air_mass_from_pressure",
@@ -61,7 +55,6 @@ __all__ = [
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
     "emission_increment_vv",
-    "horizontal_mass_flux_hpa",
     "initialize_tracers",
     "load_base_met",
     "load_hemco_emissions",
@@ -76,6 +69,5 @@ __all__ = [
     "run_transport_window",
     "tracer_gridbox_mass_kg",
     "tracer_mass_kg",
-    "vertical_mass_flux_hpa",
     "write_restart_like",
 ]
