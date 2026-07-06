@@ -24,6 +24,9 @@ Validation at that checkpoint:
   - pressure-weighted MERRA2 72-to-47 level collapse;
   - a NumPy port of the GEOS-Chem PJC pressure-fixer mass-flux path for
     `XMASS`/`YMASS`;
+  - a first NumPy `TPCORE_FVDAS` one-step path matching the compact
+    low-Courant oracle fixture for pressure, mass fluxes, and final tracer
+    concentrations;
   - horizontal mass-flux advection scaffold;
   - closed-boundary vertical continuity/advection scaffold;
   - three-hour window averaging for equivalence checks against GEOS-Chem
@@ -41,28 +44,31 @@ Validation at that checkpoint:
 
 ## Important Caveats
 
-- The transport scaffold is still not a TPCORE tracer-advection parity
-  implementation.
+- The transport scaffold is still separate from the new GEOS-Chem-oriented
+  TPCORE oracle path; full-window transport is not yet routed through a
+  production TPCORE/PBL/convection sequence.
 - Horizontal and vertical tracer reconstruction is first-order upwind, not the
-  GEOS-Chem TPCORE high-order limiter path.
+  GEOS-Chem TPCORE high-order limiter path in the older scaffold.
 - The vertical flux currently redistributes mass by column continuity rather
-  than porting the full GEOS-Chem TPCORE pressure machinery.
+  than porting the full GEOS-Chem TPCORE pressure machinery in the older
+  scaffold.
 - The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
-  one-step TPCORE stages. The current NumPy transport path now uses the PJC
-  mass-flux port for a single configured step, but the tracer update is still
-  the older first-order scaffold and should be ported against this oracle next.
-- The TPCORE snapshot currently verifies the shared PJC mass-flux stage and
-  records GEOS-Chem's one-step final tracer field. It is the target for the
-  next NumPy TPCORE port, not evidence that the current scaffold matches
-  `TPCORE_FVDAS`.
+  one-step TPCORE stages. The Python `compare-python-tpcore-output` path now
+  routes through the GEOS-Chem-oriented NumPy TPCORE port; the older scaffold
+  remains for non-oracle transport commands until the full operator sequence is
+  ready.
+- The TPCORE snapshot verifies the shared PJC mass-flux stage and GEOS-Chem's
+  one-step final tracer field on the compact fixture. It is evidence of
+  compact low-Courant one-step `TPCORE_FVDAS` parity, not evidence that the
+  full transport window matches GEOS-Chem.
 - The tracked compact TPCORE snapshot is a low-Courant fixture. Current
   diagnostics report max `|cx|` about `0.0023` and max `|cy|` about `0.0008`,
   so one-step parity on this fixture will cover the ordinary low-Courant
   branches but will not prove the large-Courant polar/semi-Lagrangian TPCORE
   branches. Add higher-Courant oracle coverage before claiming full TPCORE
   parity on full-up tests.
-- PBL mixing, convection, negative-value filling, and performance benchmarks
-  are not implemented yet.
+- PBL mixing, convection, full-grid/high-Courant TPCORE fixtures, and
+  performance benchmarks are not implemented yet.
 - Base run diagnostics are the best short-window target because base has
   matching SpeciesConc, LevelEdge, and StateMet files through 2014-09-22.
   Residual currently has SpeciesConc and HEMCO diagnostics but no StateMet or
@@ -70,16 +76,15 @@ Validation at that checkpoint:
 
 ## Good Next Steps
 
-1. Port NumPy transport against the one-step GEOS-Chem oracle.
+1. Extend TPCORE validation beyond the compact low-Courant oracle.
    - Use the tracked compact fixture in `tests/fixtures/tpcore_snapshot_v1/`
      for fast iteration and `python -m wombat_transport.gc_harness
      transport-step base_wombat/run.yml --max-tracers 1` for full-grid smoke
      checks.
-   - PJC `XMASS`/`YMASS` now matches the oracle at roundoff-scale on the
-     current base fixture (`xmass` max error about `2.3e-11 hPa`, `ymass`
-     max error about `1.8e-15 hPa`).
-   - Continue with TPCORE pressure/CFL setup, horizontal update, vertical
-     update, pole handling, and negative fill.
+   - The compact fixture now matches final surface pressure exactly and final
+     tracer concentrations with max error below `1e-11`.
+   - Add a full-grid or deliberately higher-Courant oracle before claiming
+     coverage for large-Courant polar/semi-Lagrangian branches.
    - Keep comparisons per substage; do not tune against only an aggregate
      concentration error.
    - Use `compare-python-tpcore-output` to keep PJC flux, surface pressure,
@@ -119,12 +124,12 @@ Validation at that checkpoint:
    - Track negative counts/minima before and after filling in verification
      output.
 
-7. Replace the advection scaffold with a closer TPCORE/PJC port.
+7. Route the main transport path through the GEOS-Chem-oriented TPCORE port.
    - Use `transport_mod.F90`, `tpcore_fvdas_mod.F90`, and `pjc_pfix_mod.F90` as
      references.
-   - Verify pressure fixer behavior, horizontal/vertical flux bookkeeping,
-     tracer reconstruction, limiter behavior, and mass conservation as separate
-     checks where possible.
+   - Replace the older scaffold only after pressure fixer behavior,
+     horizontal/vertical flux bookkeeping, tracer reconstruction, limiter
+     behavior, and mass conservation are verified on a full-grid smoke case.
 
 8. Add PBL mixing.
    - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.

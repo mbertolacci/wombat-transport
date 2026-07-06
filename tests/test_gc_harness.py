@@ -30,7 +30,7 @@ from wombat_transport.gc_harness import (
     write_pjc_input,
 )
 from wombat_transport.transport import pjc_mass_flux_hpa
-from wombat_transport.transport.tpcore import setup_tpcore_terms
+from wombat_transport.transport.tpcore import run_tpcore_one_step, setup_tpcore_terms
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
@@ -208,7 +208,7 @@ def test_python_tpcore_setup_matches_oracle_pressure_on_low_courant_fixture():
     assert float(np.max(np.abs(setup.cy))) < 1.0
 
 
-def test_python_tpcore_comparison_reports_tracer_kernel_gap_explicitly():
+def test_python_tpcore_matches_low_courant_oracle_tracer_step():
     comparison = compare_python_tpcore_output(
         TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
         TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME,
@@ -217,9 +217,30 @@ def test_python_tpcore_comparison_reports_tracer_kernel_gap_explicitly():
     assert comparison.xmass_max_abs_error_hpa < 1.0e-12
     assert comparison.ymass_max_abs_error_hpa < 1.0e-12
     assert comparison.surface_pressure_max_abs_error_hpa == 0.0
-    assert comparison.tracer_max_abs_error > 0.0
+    assert comparison.tracer_max_abs_error < 1.0e-11
+    assert comparison.tracer_mean_abs_error < 1.0e-12
     assert comparison.max_abs_cx < 1.0
     assert comparison.max_abs_cy < 1.0
+
+
+def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        tracer[:] = 4.0e-4
+        state = run_tpcore_one_step(
+            tracer_conc=tracer,
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    np.testing.assert_allclose(state.tracer_conc_after, 4.0e-4, atol=1.0e-18, rtol=0.0)
 
 
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
