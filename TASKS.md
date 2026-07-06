@@ -67,6 +67,10 @@ Validation at that checkpoint:
   branches but will not prove the large-Courant polar/semi-Lagrangian TPCORE
   branches. Add higher-Courant oracle coverage before claiming full TPCORE
   parity on full-up tests.
+- The Python TPCORE path now preflights the active branch set and raises a
+  clear `NotImplementedError` for currently unsupported large-Courant or full
+  X-PPM branches instead of continuing silently outside the validated compact
+  path.
 - PBL mixing, convection, full-grid/high-Courant TPCORE fixtures, and
   performance benchmarks are not implemented yet.
 - Base run diagnostics are the best short-window target because base has

@@ -54,6 +54,23 @@ class TpcoreSetup:
     geofac_pc: float
 
 
+@dataclass(frozen=True)
+class TpcoreBranchReport:
+    shape: tuple[int, int, int]
+    max_abs_cx: float
+    max_abs_cy: float
+    has_large_cx: bool
+    has_large_cy: bool
+    needs_fxppm: bool
+    jn: tuple[int, ...]
+    js: tuple[int, ...]
+    unsupported_reasons: tuple[str, ...]
+
+    @property
+    def is_supported(self) -> bool:
+        return not self.unsupported_reasons
+
+
 def run_tpcore_one_step(
     *,
     tracer_conc: np.ndarray,
@@ -85,6 +102,7 @@ def run_tpcore_one_step(
         lat_deg=lat_deg,
         dt_s=dt_s,
     )
+    validate_tpcore_branch_support(setup)
     tracer = _advect_tracers(
         tracer_conc=np.asarray(tracer_conc, dtype=np.float64),
         setup=setup,
@@ -103,6 +121,68 @@ def run_tpcore_one_step(
         delp2_hpa=setup.delp2_hpa,
         vertical_mass_flux_hpa=setup.vertical_mass_flux_hpa,
     )
+
+
+def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
+    """Classify which currently ported TPCORE branches a setup would use."""
+
+    cx = setup.cx[::-1]
+    cy = setup.cy[::-1]
+    nlev, nlat, nlon = cx.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    jn, js = _set_jn_js(cx)
+    jvan = max(1, nlat // 18)
+    max_abs_cx = float(np.max(np.abs(cx)))
+    max_abs_cy = float(np.max(np.abs(cy)))
+    has_large_cx = bool(max_abs_cx > 1.0)
+    has_large_cy = bool(max_abs_cy > 1.0)
+    needs_fxppm = False
+    for level in range(nlev):
+        for lat_index in range(j1p, j2p + 1):
+            if lat_index <= js[level] or lat_index >= jn[level]:
+                continue
+            if lat_index == j1p or lat_index == j2p:
+                continue
+            if lat_index <= j1p + jvan or lat_index >= j2p - jvan:
+                continue
+            needs_fxppm = True
+            break
+        if needs_fxppm:
+            break
+
+    reasons: list[str] = []
+    if has_large_cx:
+        reasons.append("large-Courant E-W branch has not been validated")
+    if has_large_cy:
+        reasons.append("large-Courant N-S branch has not been validated")
+    if needs_fxppm:
+        reasons.append("X full-PPM Fxppm branch is not implemented")
+
+    return TpcoreBranchReport(
+        shape=(nlev, nlat, nlon),
+        max_abs_cx=max_abs_cx,
+        max_abs_cy=max_abs_cy,
+        has_large_cx=has_large_cx,
+        has_large_cy=has_large_cy,
+        needs_fxppm=needs_fxppm,
+        jn=tuple(int(value) for value in jn),
+        js=tuple(int(value) for value in js),
+        unsupported_reasons=tuple(reasons),
+    )
+
+
+def validate_tpcore_branch_support(setup: TpcoreSetup) -> TpcoreBranchReport:
+    """Raise before tracer advection if the setup leaves the validated path."""
+
+    report = analyze_tpcore_branches(setup)
+    if not report.is_supported:
+        reasons = "; ".join(report.unsupported_reasons)
+        raise NotImplementedError(
+            "TPCORE branch set is outside the currently validated compact low-Courant path: "
+            f"{reasons}. shape={report.shape}, max_abs_cx={report.max_abs_cx:.8e}, "
+            f"max_abs_cy={report.max_abs_cy:.8e}"
+        )
+    return report
 
 
 def setup_tpcore_terms(

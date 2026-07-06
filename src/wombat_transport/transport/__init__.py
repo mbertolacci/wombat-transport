@@ -30,10 +30,13 @@ from wombat_transport.transport.scaffold import (
     vertical_mass_flux_hpa,
 )
 from wombat_transport.transport.tpcore import (
+    TpcoreBranchReport,
     TpcoreSetup,
     TpcoreState,
+    analyze_tpcore_branches,
     run_tpcore_one_step,
     setup_tpcore_terms,
+    validate_tpcore_branch_support,
 )
 
 __all__ = [
@@ -44,11 +47,13 @@ __all__ = [
     "TransportForcing",
     "TransportStepResult",
     "TransportWindowResult",
+    "TpcoreBranchReport",
     "TpcoreSetup",
     "TpcoreState",
     "_map_met_levels_to_47",
     "advect_horizontal_mass_flux",
     "advect_vertical_mass_flux",
+    "analyze_tpcore_branches",
     "dry_air_mass_from_pressure",
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
@@ -61,5 +66,6 @@ __all__ = [
     "run_tpcore_one_step",
     "scalar_mass_by_tracer",
     "setup_tpcore_terms",
+    "validate_tpcore_branch_support",
     "vertical_mass_flux_hpa",
 ]

@@ -30,7 +30,13 @@ from wombat_transport.gc_harness import (
     write_pjc_input,
 )
 from wombat_transport.transport import pjc_mass_flux_hpa
-from wombat_transport.transport.tpcore import run_tpcore_one_step, setup_tpcore_terms
+from wombat_transport.transport.tpcore import (
+    TpcoreSetup,
+    analyze_tpcore_branches,
+    run_tpcore_one_step,
+    setup_tpcore_terms,
+    validate_tpcore_branch_support,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
@@ -208,6 +214,52 @@ def test_python_tpcore_setup_matches_oracle_pressure_on_low_courant_fixture():
     assert float(np.max(np.abs(setup.cy))) < 1.0
 
 
+def test_tpcore_branch_report_accepts_low_courant_oracle_path():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    report = analyze_tpcore_branches(setup)
+
+    assert report.is_supported
+    assert report.shape == (47, 7, 8)
+    assert not report.has_large_cx
+    assert not report.has_large_cy
+    assert not report.needs_fxppm
+
+
+def test_tpcore_branch_preflight_rejects_unimplemented_fxppm_path():
+    setup = _zero_tpcore_setup(nlev=4, nlat=11, nlon=8)
+
+    report = analyze_tpcore_branches(setup)
+
+    assert not report.is_supported
+    assert report.needs_fxppm
+    with pytest.raises(NotImplementedError, match="Fxppm"):
+        validate_tpcore_branch_support(setup)
+
+
+def test_tpcore_branch_preflight_rejects_large_courant_path():
+    setup = _zero_tpcore_setup(nlev=4, nlat=7, nlon=8)
+    setup.cx[0, 2, 0] = 1.1
+
+    report = analyze_tpcore_branches(setup)
+
+    assert not report.is_supported
+    assert report.has_large_cx
+    with pytest.raises(NotImplementedError, match="large-Courant E-W"):
+        validate_tpcore_branch_support(setup)
+
+
 def test_python_tpcore_matches_low_courant_oracle_tracer_step():
     comparison = compare_python_tpcore_output(
         TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
@@ -351,6 +403,24 @@ def test_append_transport_step_tracers_rejects_bad_shape(tmp_path):
 
     with pytest.raises(ValueError, match="tracer_conc grid"):
         append_transport_step_tracers(input_path, np.ones((1, 3, 2, 3)))
+
+
+def _zero_tpcore_setup(*, nlev: int, nlat: int, nlon: int) -> TpcoreSetup:
+    field = np.zeros((nlev, nlat, nlon), dtype=np.float64)
+    return TpcoreSetup(
+        xmass_hpa=field.copy(),
+        ymass_hpa=field.copy(),
+        surface_pressure_hpa=np.zeros((nlat, nlon), dtype=np.float64),
+        delp1_hpa=np.ones_like(field),
+        delpm_hpa=np.ones_like(field),
+        delp2_hpa=np.ones_like(field),
+        pu_hpa=np.ones_like(field),
+        vertical_mass_flux_hpa=field.copy(),
+        cx=field.copy(),
+        cy=field.copy(),
+        geofac=np.ones(nlat, dtype=np.float64),
+        geofac_pc=1.0,
+    )
 
 
 def _write_synthetic_pjc_input(path):
