@@ -24,8 +24,11 @@ PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
 PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
 TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
 TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
+TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v1"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
 SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
+TPCORE_SNAPSHOT_INPUT_NAME = "tpcore_input.nc"
+TPCORE_SNAPSHOT_OUTPUT_NAME = "tpcore_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 
 GEOS_47_AP_HPA = np.array(
@@ -146,6 +149,20 @@ class PjcComparison:
 
 
 @dataclass(frozen=True)
+class TransportStepComparison:
+    xmass_max_abs_error_hpa: float
+    xmass_mean_abs_error_hpa: float
+    ymass_max_abs_error_hpa: float
+    ymass_mean_abs_error_hpa: float
+    tracer_max_abs_change: float
+    tracer_min_after: float
+    tracer_max_after: float
+    negative_count_after: int
+    surface_pressure_min_hpa: float
+    surface_pressure_max_hpa: float
+
+
+@dataclass(frozen=True)
 class TransportStepOutput:
     tracer_conc_after: np.ndarray
     xmass_hpa: np.ndarray
@@ -259,6 +276,31 @@ def write_synthetic_pjc_snapshot_input(path: str | Path, *, dt_s: float = 600.0)
     )
 
 
+def write_synthetic_tpcore_snapshot_input(path: str | Path, *, dt_s: float = 600.0, ntracer: int = 2) -> Path:
+    """Write a compact deterministic 47-level one-step TPCORE oracle input."""
+
+    if ntracer <= 0:
+        raise ValueError("ntracer must be positive")
+    path = write_synthetic_pjc_snapshot_input(path, dt_s=dt_s)
+    with netCDF4.Dataset(path) as dataset:
+        nlev = len(dataset.dimensions["lev"])
+        nlat = len(dataset.dimensions["lat"])
+        nlon = len(dataset.dimensions["lon"])
+        lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
+        lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
+
+    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    lev_index = np.arange(nlev, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
+    lat_wave = np.sin(np.deg2rad(lat))[np.newaxis, np.newaxis, :, np.newaxis]
+    lon_wave = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer = 4.0e-4
+    tracer = tracer + (tracer_index + 1.0) * 1.0e-7
+    tracer = tracer + 2.5e-8 * lev_index / max(float(nlev - 1), 1.0)
+    tracer = tracer + 1.0e-8 * lat_wave + 5.0e-9 * lon_wave
+    names = tuple(f"synthetic_{index + 1:02d}" for index in range(ntracer))
+    return append_transport_step_tracers(path, tracer, tracer_names=names)
+
+
 def snapshot_pjc_oracle(
     output_dir: str | Path,
     *,
@@ -272,6 +314,30 @@ def snapshot_pjc_oracle(
     output_path = output_dir / SNAPSHOT_OUTPUT_NAME
     run_pjc_harness(executable, input_path, output_path)
     metadata = _pjc_snapshot_metadata(input_path, output_path, executable=Path(executable), repo_root=Path(repo_root))
+    with (output_dir / SNAPSHOT_METADATA_NAME).open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return output_dir
+
+
+def snapshot_tpcore_oracle(
+    output_dir: str | Path,
+    *,
+    executable: str | Path,
+    dt_s: float = 600.0,
+    ntracer: int = 2,
+    repo_root: str | Path = ".",
+) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    input_path = write_synthetic_tpcore_snapshot_input(
+        output_dir / TPCORE_SNAPSHOT_INPUT_NAME,
+        dt_s=dt_s,
+        ntracer=ntracer,
+    )
+    output_path = output_dir / TPCORE_SNAPSHOT_OUTPUT_NAME
+    run_pjc_harness(executable, input_path, output_path)
+    metadata = _tpcore_snapshot_metadata(input_path, output_path, executable=Path(executable), repo_root=Path(repo_root))
     with (output_dir / SNAPSHOT_METADATA_NAME).open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2, sort_keys=True)
         handle.write("\n")
@@ -419,6 +485,49 @@ def compare_pjc_output(input_path: str | Path, output_path: str | Path) -> PjcCo
     )
 
 
+def compare_transport_step_output(input_path: str | Path, output_path: str | Path) -> TransportStepComparison:
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != TRANSPORT_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {TRANSPORT_INPUT_VERSION} file")
+        lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
+        hyai = np.asarray(dataset.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        p1 = np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64)
+        p2 = np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64)
+        u = np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64)
+        v = np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64)
+        tracer_before = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        dt_s = float(getattr(dataset, "dt_s"))
+    expected_x, expected_y = pjc_mass_flux_hpa(
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
+        dt_s=dt_s,
+    )
+    output = read_transport_step_output(output_path)
+    x_error = np.abs(output.xmass_hpa - expected_x)
+    y_error = np.abs(output.ymass_hpa - expected_y)
+    tracer_change = np.abs(output.tracer_conc_after - tracer_before)
+    return TransportStepComparison(
+        xmass_max_abs_error_hpa=float(np.max(x_error)),
+        xmass_mean_abs_error_hpa=float(np.mean(x_error)),
+        ymass_max_abs_error_hpa=float(np.max(y_error)),
+        ymass_mean_abs_error_hpa=float(np.mean(y_error)),
+        tracer_max_abs_change=float(np.max(tracer_change)),
+        tracer_min_after=float(np.min(output.tracer_conc_after)),
+        tracer_max_after=float(np.max(output.tracer_conc_after)),
+        negative_count_after=int(np.count_nonzero(output.tracer_conc_after < 0.0)),
+        surface_pressure_min_hpa=float(np.min(output.surface_pressure_hpa)),
+        surface_pressure_max_hpa=float(np.max(output.surface_pressure_hpa)),
+    )
+
+
 def run_pjc_harness(executable: str | Path, input_path: str | Path, output_path: str | Path) -> None:
     executable = Path(executable)
     if not executable.exists():
@@ -467,6 +576,32 @@ def _pjc_snapshot_metadata(
     }
 
 
+def _tpcore_snapshot_metadata(
+    input_path: Path,
+    output_path: Path,
+    *,
+    executable: Path,
+    repo_root: Path,
+) -> dict[str, object]:
+    with netCDF4.Dataset(input_path) as dataset:
+        nlev = len(dataset.dimensions["lev"])
+        nlat = len(dataset.dimensions["lat"])
+        nlon = len(dataset.dimensions["lon"])
+        ntracer = len(dataset.dimensions["tracer"])
+        dt_s = float(getattr(dataset, "dt_s"))
+    return {
+        "snapshot": TPCORE_SNAPSHOT_VERSION,
+        "input_harness": TRANSPORT_INPUT_VERSION,
+        "output_harness": TRANSPORT_OUTPUT_VERSION,
+        "input_file": input_path.name,
+        "output_file": output_path.name,
+        "shape": {"tracer": ntracer, "lev": nlev, "lat": nlat, "lon": nlon},
+        "dt_s": dt_s,
+        "executable": str(executable),
+        "gcclassic_head": _git_head(repo_root / "GCClassic"),
+    }
+
+
 def _git_head(path: Path) -> str | None:
     try:
         result = subprocess.run(
@@ -508,6 +643,24 @@ def format_pjc_comparison(comparison: PjcComparison) -> str:
     )
 
 
+def format_transport_step_comparison(comparison: TransportStepComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"xmass_max_abs_error_hpa,{comparison.xmass_max_abs_error_hpa:.8e}",
+            f"xmass_mean_abs_error_hpa,{comparison.xmass_mean_abs_error_hpa:.8e}",
+            f"ymass_max_abs_error_hpa,{comparison.ymass_max_abs_error_hpa:.8e}",
+            f"ymass_mean_abs_error_hpa,{comparison.ymass_mean_abs_error_hpa:.8e}",
+            f"tracer_max_abs_change,{comparison.tracer_max_abs_change:.8e}",
+            f"tracer_min_after,{comparison.tracer_min_after:.8e}",
+            f"tracer_max_after,{comparison.tracer_max_after:.8e}",
+            f"negative_count_after,{comparison.negative_count_after}",
+            f"surface_pressure_min_hpa,{comparison.surface_pressure_min_hpa:.8e}",
+            f"surface_pressure_max_hpa,{comparison.surface_pressure_max_hpa:.8e}",
+        ]
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare and compare GEOS-Chem operator harness fixtures.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -536,10 +689,20 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument("input", type=Path)
     compare_parser.add_argument("output", type=Path)
 
+    compare_transport_parser = subparsers.add_parser("compare-transport-step-output")
+    compare_transport_parser.add_argument("input", type=Path)
+    compare_transport_parser.add_argument("output", type=Path)
+
     snapshot_parser = subparsers.add_parser("snapshot-pjc")
     snapshot_parser.add_argument("output_dir", type=Path)
     snapshot_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
     snapshot_parser.add_argument("--dt-s", type=float, default=600.0)
+
+    tpcore_snapshot_parser = subparsers.add_parser("snapshot-tpcore")
+    tpcore_snapshot_parser.add_argument("output_dir", type=Path)
+    tpcore_snapshot_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
+    tpcore_snapshot_parser.add_argument("--dt-s", type=float, default=600.0)
+    tpcore_snapshot_parser.add_argument("--ntracer", type=int, default=2)
 
     args = parser.parse_args(argv)
     if args.command == "write-pjc-input":
@@ -571,9 +734,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compare-pjc-output":
         print(format_pjc_comparison(compare_pjc_output(args.input, args.output)))
         return 0
+    if args.command == "compare-transport-step-output":
+        print(format_transport_step_comparison(compare_transport_step_output(args.input, args.output)))
+        return 0
     if args.command == "snapshot-pjc":
         output_dir = snapshot_pjc_oracle(args.output_dir, executable=args.executable, dt_s=args.dt_s)
         print(f"wrote_pjc_snapshot: {output_dir}")
+        return 0
+    if args.command == "snapshot-tpcore":
+        output_dir = snapshot_tpcore_oracle(
+            args.output_dir,
+            executable=args.executable,
+            dt_s=args.dt_s,
+            ntracer=args.ntracer,
+        )
+        print(f"wrote_tpcore_snapshot: {output_dir}")
         return 0
     raise AssertionError(f"unhandled command {args.command}")
 

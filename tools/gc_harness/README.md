@@ -21,6 +21,9 @@ suite without requiring the GEOS-Chem executable during normal test runs.
 When the fixture includes `tracer_conc(tracer, lev, lat, lon)`, the same
 executable runs one `DO_PJC_PFIX` plus `TPCORE_FVDAS` step and writes
 `tracer_conc_after`, `xmass_hpa`, `ymass_hpa`, and `surface_pressure_hpa`.
+The tracked TPCORE snapshot fixture records this one-step GEOS-Chem oracle
+boundary for fast unit tests. It does not mean the current Python scaffold is a
+TPCORE port; it gives the next NumPy implementation a stable target.
 
 ## Python Fixture Commands
 
@@ -36,11 +39,20 @@ python -m wombat_transport.gc_harness transport-step \
 
 python -m wombat_transport.gc_harness snapshot-pjc \
   tests/fixtures/pjc_snapshot_v1
+
+python -m wombat_transport.gc_harness snapshot-tpcore \
+  tests/fixtures/tpcore_snapshot_v1
+
+python -m wombat_transport.gc_harness compare-transport-step-output \
+  tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc \
+  tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
 ```
 
 The `snapshot-pjc` command regenerates the small tracked PJC oracle fixture
 used by unit tests. Run it deliberately when the GEOS-Chem reference version or
 the PJC fixture contract changes, then review the NetCDF/metadata diff.
+The `snapshot-tpcore` command does the same for the compact one-step
+`DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle fixture.
 
 ## Build Sketch
 

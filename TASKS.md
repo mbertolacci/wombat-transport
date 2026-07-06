@@ -34,6 +34,10 @@ Validation at that checkpoint:
   writes NetCDF fixtures from a Wombat run config, calls `DO_PJC_PFIX` through
   a small Fortran executable linked against `base/build`, and can also run one
   `TPCORE_FVDAS` tracer step when the fixture includes `tracer_conc`.
+- Fast tracked oracle snapshots now exist for:
+  - PJC mass fluxes, under `tests/fixtures/pjc_snapshot_v1/`;
+  - one-step PJC plus `TPCORE_FVDAS`, under
+    `tests/fixtures/tpcore_snapshot_v1/`.
 
 ## Important Caveats
 
@@ -47,6 +51,10 @@ Validation at that checkpoint:
   one-step TPCORE stages. The current NumPy transport path now uses the PJC
   mass-flux port for a single configured step, but the tracer update is still
   the older first-order scaffold and should be ported against this oracle next.
+- The TPCORE snapshot currently verifies the shared PJC mass-flux stage and
+  records GEOS-Chem's one-step final tracer field. It is the target for the
+  next NumPy TPCORE port, not evidence that the current scaffold matches
+  `TPCORE_FVDAS`.
 - PBL mixing, convection, negative-value filling, and performance benchmarks
   are not implemented yet.
 - Base run diagnostics are the best short-window target because base has
@@ -57,8 +65,10 @@ Validation at that checkpoint:
 ## Good Next Steps
 
 1. Port NumPy transport against the one-step GEOS-Chem oracle.
-   - Use `python -m wombat_transport.gc_harness transport-step
-     base_wombat/run.yml --max-tracers 1` to generate the reference fixture.
+   - Use the tracked compact fixture in `tests/fixtures/tpcore_snapshot_v1/`
+     for fast iteration and `python -m wombat_transport.gc_harness
+     transport-step base_wombat/run.yml --max-tracers 1` for full-grid smoke
+     checks.
    - PJC `XMASS`/`YMASS` now matches the oracle at roundoff-scale on the
      current base fixture (`xmass` max error about `2.3e-11 hPa`, `ymass`
      max error about `1.8e-15 hPa`).
@@ -129,6 +139,8 @@ PYTHONDONTWRITEBYTECODE=1 pytest -q -p no:cacheprovider
 tools/gc_harness/build_pjc_pfix_harness.sh
 python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
 python -m wombat_transport.gc_harness transport-step base_wombat/run.yml --max-tracers 1
+python -m wombat_transport.gc_harness snapshot-tpcore tests/fixtures/tpcore_snapshot_v1
+python -m wombat_transport.gc_harness compare-transport-step-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```

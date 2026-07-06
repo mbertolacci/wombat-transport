@@ -14,18 +14,24 @@ from wombat_transport.gc_harness import (
     SNAPSHOT_INPUT_NAME,
     SNAPSHOT_METADATA_NAME,
     SNAPSHOT_OUTPUT_NAME,
+    TPCORE_SNAPSHOT_INPUT_NAME,
+    TPCORE_SNAPSHOT_OUTPUT_NAME,
+    TPCORE_SNAPSHOT_VERSION,
     TRANSPORT_INPUT_VERSION,
     TRANSPORT_OUTPUT_VERSION,
     append_transport_step_tracers,
     compare_pjc_output,
+    compare_transport_step_output,
     read_transport_step_output,
     run_pjc_harness,
     write_synthetic_pjc_snapshot_input,
+    write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
 )
 from wombat_transport.transport import pjc_mass_flux_hpa
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
+TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
 
 
 def test_write_pjc_input_records_fixture_contract(tmp_path):
@@ -129,6 +135,23 @@ def test_write_synthetic_pjc_snapshot_input_records_compact_47_level_contract(tm
         assert dataset.variables["area_m2"].shape == (7, 8)
 
 
+def test_write_synthetic_tpcore_snapshot_input_records_compact_47_level_contract(tmp_path):
+    input_path = write_synthetic_tpcore_snapshot_input(tmp_path / TPCORE_SNAPSHOT_INPUT_NAME)
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == TRANSPORT_INPUT_VERSION
+        assert dataset.dt_s == 600.0
+        assert dataset.dimensions["tracer"].size == 2
+        assert dataset.dimensions["lon"].size == 8
+        assert dataset.dimensions["lat"].size == 7
+        assert dataset.dimensions["lev"].size == 47
+        assert dataset.dimensions["ilev"].size == 48
+        assert dataset.variables["tracer_conc"].shape == (2, 47, 7, 8)
+        tracer = np.asarray(dataset.variables["tracer_conc"][:])
+        assert np.all(tracer > 0.0)
+        assert float(np.max(tracer) - np.min(tracer)) > 0.0
+
+
 def test_pjc_mass_flux_matches_tracked_geos_chem_snapshot():
     with (FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
@@ -141,6 +164,26 @@ def test_pjc_mass_flux_matches_tracked_geos_chem_snapshot():
     assert comparison.xmass_mean_abs_error_hpa < 1.0e-13
     assert comparison.ymass_max_abs_error_hpa < 1.0e-12
     assert comparison.ymass_mean_abs_error_hpa < 1.0e-13
+
+
+def test_tpcore_step_snapshot_records_geos_chem_oracle_boundary():
+    with (TPCORE_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    assert metadata["snapshot"] == TPCORE_SNAPSHOT_VERSION
+    assert metadata["shape"] == {"tracer": 2, "lev": 47, "lat": 7, "lon": 8}
+
+    comparison = compare_transport_step_output(
+        TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
+        TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME,
+    )
+
+    assert comparison.xmass_max_abs_error_hpa < 1.0e-12
+    assert comparison.xmass_mean_abs_error_hpa < 1.0e-13
+    assert comparison.ymass_max_abs_error_hpa < 1.0e-12
+    assert comparison.ymass_mean_abs_error_hpa < 1.0e-13
+    assert comparison.tracer_max_abs_change > 0.0
+    assert comparison.negative_count_after == 0
+    assert 0.0 < comparison.surface_pressure_min_hpa < comparison.surface_pressure_max_hpa
 
 
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
@@ -176,6 +219,52 @@ def test_read_transport_step_output_records_oracle_fields(tmp_path):
     assert output.xmass_hpa.shape == (4, 2, 3)
     assert output.ymass_hpa.shape == (4, 2, 3)
     assert output.surface_pressure_hpa.shape == (2, 3)
+
+
+def test_compare_transport_step_output_reports_pjc_flux_errors_and_tracer_summary(tmp_path):
+    input_path = write_synthetic_tpcore_snapshot_input(tmp_path / "transport_input.nc")
+    with netCDF4.Dataset(input_path) as input_dataset:
+        lat = np.asarray(input_dataset.variables["lat"][:])
+        hyai = np.asarray(input_dataset.variables["hyai"][:])
+        hybi = np.asarray(input_dataset.variables["hybi"][:])
+        area = np.asarray(input_dataset.variables["area_m2"][:])
+        p1 = np.asarray(input_dataset.variables["p1_hpa"][:])
+        p2 = np.asarray(input_dataset.variables["p2_hpa"][:])
+        u = np.asarray(input_dataset.variables["u_m_s"][:])
+        v = np.asarray(input_dataset.variables["v_m_s"][:])
+        tracer = np.asarray(input_dataset.variables["tracer_conc"][:])
+        dt_s = float(input_dataset.dt_s)
+    xmass, ymass = pjc_mass_flux_hpa(
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
+        dt_s=dt_s,
+    )
+    output_path = tmp_path / "transport_output.nc"
+    with netCDF4.Dataset(output_path, "w") as dataset:
+        dataset.createDimension("tracer", tracer.shape[0])
+        dataset.createDimension("lev", tracer.shape[1])
+        dataset.createDimension("lat", tracer.shape[2])
+        dataset.createDimension("lon", tracer.shape[3])
+        dataset.harness = TRANSPORT_OUTPUT_VERSION
+        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer + 1.0e-12
+        dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = xmass
+        dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = ymass
+        dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = 1000.0
+
+    comparison = compare_transport_step_output(input_path, output_path)
+
+    assert comparison.xmass_max_abs_error_hpa == 0.0
+    assert comparison.ymass_max_abs_error_hpa == 0.0
+    assert comparison.tracer_max_abs_change == pytest.approx(1.0e-12)
+    assert comparison.negative_count_after == 0
+    assert comparison.surface_pressure_min_hpa == 1000.0
+    assert comparison.surface_pressure_max_hpa == 1000.0
 
 
 def test_run_pjc_harness_missing_executable_has_clear_error(tmp_path):
