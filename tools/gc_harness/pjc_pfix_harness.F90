@@ -14,6 +14,7 @@ program pjc_pfix_harness
   use pressure_mod, only: INIT_PRESSURE, GET_AP, GET_BP
   use pjc_pfix_mod, only: DO_PJC_PFIX
   use tpcore_fvdas_mod, only: INIT_TPCORE, TPCORE_FVDAS
+  use tpcore_trace_mod, only: Tpcore_Trace_Init, Tpcore_Trace_Write
   use PhysConstants, only: Re
   implicit none
 
@@ -22,6 +23,7 @@ program pjc_pfix_harness
   type(DgnState) :: State_Diag
   character(len=1024) :: input_path
   character(len=1024) :: output_path
+  character(len=1024) :: trace_path
   integer :: argc
   integer :: ncid
   integer :: nx, ny, nz, nilev, ntracer
@@ -34,12 +36,16 @@ program pjc_pfix_harness
   real(fp), allocatable :: tracer(:,:,:,:), ps(:,:)
 
   argc = command_argument_count()
-  if (argc /= 2) then
-     write(*,*) 'usage: pjc_pfix_harness INPUT.nc OUTPUT.nc'
+  trace_path = ''
+  if (argc /= 2 .and. argc /= 3) then
+     write(*,*) 'usage: pjc_pfix_harness INPUT.nc OUTPUT.nc [TPCORE_TRACE.nc]'
      stop 2
   endif
   call get_command_argument(1, input_path)
   call get_command_argument(2, output_path)
+  if (argc == 3) then
+     call get_command_argument(3, trace_path)
+  endif
 
   call check(nf90_open(trim(input_path), nf90_nowrite, ncid), 'open input')
   call read_dimensions(ncid, nx, ny, nz, nilev, ntracer)
@@ -70,7 +76,9 @@ program pjc_pfix_harness
        State_Grid, dt_s, p1, p2, u, v, xmass, ymass )
 
   if (has_tracers) then
+     call Tpcore_Trace_Init(trim(trace_path), nx, ny, nz, ntracer, dt_s)
      call run_tpcore_step(State_Grid, State_Chm, State_Diag, dt_s, p1, p2, u, v, xmass, ymass, area, tracer, ps)
+     call Tpcore_Trace_Write()
   endif
 
   call write_output(trim(output_path), xmass, ymass, has_tracers, tracer, ps)

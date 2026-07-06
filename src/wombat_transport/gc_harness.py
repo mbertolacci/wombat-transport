@@ -20,6 +20,7 @@ from wombat_transport.transport import (
     pjc_mass_flux_hpa,
 )
 from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
+from wombat_transport.transport.tpcore import trace_tpcore_one_step
 
 
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
@@ -28,6 +29,7 @@ PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
 PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
 TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
 TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
+TPCORE_TRACE_VERSION = "tpcore-trace-v1"
 TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v1"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
 SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
@@ -36,6 +38,8 @@ TPCORE_SNAPSHOT_OUTPUT_NAME = "tpcore_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
+PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
+ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
 BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
 FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v1"
 LARGE_ORACLE_FIXTURE_IDS = (
@@ -194,6 +198,20 @@ class TransportStepOutput:
     xmass_hpa: np.ndarray
     ymass_hpa: np.ndarray
     surface_pressure_hpa: np.ndarray
+
+
+@dataclass(frozen=True)
+class TpcoreInput:
+    lat_deg: np.ndarray
+    hyai_hpa: np.ndarray
+    hybi: np.ndarray
+    area_m2: np.ndarray
+    p1_hpa: np.ndarray
+    p2_hpa: np.ndarray
+    u_m_s: np.ndarray
+    v_m_s: np.ndarray
+    tracer_conc: np.ndarray
+    dt_s: float
 
 
 @dataclass(frozen=True)
@@ -901,6 +919,85 @@ def read_transport_step_output(path: str | Path) -> TransportStepOutput:
         )
 
 
+def read_tpcore_input(path: str | Path) -> TpcoreInput:
+    with netCDF4.Dataset(path) as dataset:
+        if getattr(dataset, "harness", "") != TRANSPORT_INPUT_VERSION:
+            raise ValueError(f"{path} is not a {TRANSPORT_INPUT_VERSION} file")
+        return TpcoreInput(
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            dt_s=float(getattr(dataset, "dt_s")),
+        )
+
+
+def write_python_tpcore_trace(input_path: str | Path, output_path: str | Path) -> Path:
+    """Write Python TPCORE stage checkpoints for one transport fixture."""
+
+    fixture = read_tpcore_input(input_path)
+    state, trace = trace_tpcore_one_step(
+        tracer_conc=fixture.tracer_conc,
+        p1_hpa=fixture.p1_hpa,
+        p2_hpa=fixture.p2_hpa,
+        u_m_s=fixture.u_m_s,
+        v_m_s=fixture.v_m_s,
+        area_m2=fixture.area_m2,
+        hyai_hpa=fixture.hyai_hpa,
+        hybi=fixture.hybi,
+        lat_deg=fixture.lat_deg,
+        dt_s=fixture.dt_s,
+    )
+    setup = setup_tpcore_terms(
+        p1_hpa=fixture.p1_hpa,
+        p2_hpa=fixture.p2_hpa,
+        u_m_s=fixture.u_m_s,
+        v_m_s=fixture.v_m_s,
+        area_m2=fixture.area_m2,
+        hyai_hpa=fixture.hyai_hpa,
+        hybi=fixture.hybi,
+        lat_deg=fixture.lat_deg,
+        dt_s=fixture.dt_s,
+    )
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ntracer, nlev, nlat, nlon = trace.tracer_conc_after.shape
+    with netCDF4.Dataset(output, "w") as dataset:
+        dataset.harness = TPCORE_TRACE_VERSION
+        dataset.source_input = str(input_path)
+        dataset.dt_s = fixture.dt_s
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        dataset.createVariable("q_after_pole_average", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            trace.q_after_pole_average
+        )
+        dataset.createVariable("dq_after_init_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_init
+        dataset.createVariable("q_after_cross_terms", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            trace.q_after_cross_terms
+        )
+        dataset.createVariable("dq_after_xtp_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_xtp
+        dataset.createVariable("dq_after_ytp_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_ytp
+        dataset.createVariable("dq_after_fzppm_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_fzppm
+        dataset.createVariable("dq_after_fill_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_fill
+        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            trace.tracer_conc_after
+        )
+        dataset.createVariable("cx", "f8", ("lev", "lat", "lon"))[:] = setup.cx
+        dataset.createVariable("cy", "f8", ("lev", "lat", "lon"))[:] = setup.cy
+        dataset.createVariable("vertical_mass_flux_hpa", "f8", ("lev", "lat", "lon"))[:] = setup.vertical_mass_flux_hpa
+        dataset.createVariable("delp1_hpa", "f8", ("lev", "lat", "lon"))[:] = setup.delp1_hpa
+        dataset.createVariable("delp2_hpa", "f8", ("lev", "lat", "lon"))[:] = setup.delp2_hpa
+        dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = state.surface_pressure_hpa
+    return output
+
+
 def compare_pjc_output(input_path: str | Path, output_path: str | Path) -> PjcComparison:
     with netCDF4.Dataset(input_path) as dataset:
         lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
@@ -1033,14 +1130,190 @@ def compare_python_tpcore_output(input_path: str | Path, output_path: str | Path
     )
 
 
-def run_pjc_harness(executable: str | Path, input_path: str | Path, output_path: str | Path) -> None:
+def attribute_python_tpcore_error(input_path: str | Path, output_path: str | Path) -> str:
+    """Summarize where Python-vs-oracle final tracer error is concentrated."""
+
+    fixture = read_tpcore_input(input_path)
+    expected = read_transport_step_output(output_path)
+    actual = run_tpcore_one_step(
+        tracer_conc=fixture.tracer_conc,
+        p1_hpa=fixture.p1_hpa,
+        p2_hpa=fixture.p2_hpa,
+        u_m_s=fixture.u_m_s,
+        v_m_s=fixture.v_m_s,
+        area_m2=fixture.area_m2,
+        hyai_hpa=fixture.hyai_hpa,
+        hybi=fixture.hybi,
+        lat_deg=fixture.lat_deg,
+        dt_s=fixture.dt_s,
+    )
+    setup = setup_tpcore_terms(
+        p1_hpa=fixture.p1_hpa,
+        p2_hpa=fixture.p2_hpa,
+        u_m_s=fixture.u_m_s,
+        v_m_s=fixture.v_m_s,
+        area_m2=fixture.area_m2,
+        hyai_hpa=fixture.hyai_hpa,
+        hybi=fixture.hybi,
+        lat_deg=fixture.lat_deg,
+        dt_s=fixture.dt_s,
+    )
+    error = np.abs(actual.tracer_conc_after - expected.tracer_conc_after)
+    rows = ["section,key,max_abs,mean_abs,count,extra"]
+    rows.append(_error_row("global", "all", error))
+    rows.append(_top_cell_row(error))
+    rows.extend(_top_axis_rows("level", error, axis=1, top_n=8))
+    rows.extend(_top_axis_rows("latitude", error, axis=2, top_n=8))
+    rows.extend(_top_axis_rows("longitude", error, axis=3, top_n=8))
+    rows.extend(_bin_rows("abs_cx", error, np.abs(setup.cx), (0.0, 0.1, 0.5, 1.0, np.inf)))
+    rows.extend(_bin_rows("abs_cy", error, np.abs(setup.cy), (0.0, 0.05, 0.1, 0.5, 1.0, np.inf)))
+    rows.extend(_bin_rows("abs_wz_hpa", error, np.abs(setup.vertical_mass_flux_hpa), (0.0, 0.01, 0.1, 1.0, 10.0, np.inf)))
+    rows.extend(_bin_rows("initial_gradient", error, _tracer_gradient_magnitude(fixture.tracer_conc), (0.0, 1e-8, 1e-7, 1e-6, np.inf)))
+    return "\n".join(rows)
+
+
+def compare_tpcore_trace_files(expected_path: str | Path, actual_path: str | Path) -> str:
+    """Compare two trace NetCDF files with the same checkpoint contract."""
+
+    stage_names = (
+        "delp1_hpa",
+        "delp2_hpa",
+        "cx",
+        "cy",
+        "vertical_mass_flux_hpa",
+        "surface_pressure_hpa",
+        "q_after_pole_average",
+        "dq_after_init_hpa",
+        "q_after_cross_terms",
+        "dq_after_xtp_hpa",
+        "dq_after_ytp_hpa",
+        "dq_after_fzppm_hpa",
+        "dq_after_fill_hpa",
+        "tracer_conc_after",
+    )
+    rows = ["stage,max_abs,mean_abs,top_index"]
+    with netCDF4.Dataset(expected_path) as expected, netCDF4.Dataset(actual_path) as actual:
+        if getattr(expected, "harness", "") != TPCORE_TRACE_VERSION:
+            raise ValueError(f"{expected_path} is not a {TPCORE_TRACE_VERSION} file")
+        if getattr(actual, "harness", "") != TPCORE_TRACE_VERSION:
+            raise ValueError(f"{actual_path} is not a {TPCORE_TRACE_VERSION} file")
+        for stage in stage_names:
+            expected_values = np.asarray(expected.variables[stage][:], dtype=np.float64)
+            actual_values = np.asarray(actual.variables[stage][:], dtype=np.float64)
+            err = np.abs(actual_values - expected_values)
+            top = tuple(int(index) for index in np.unravel_index(int(np.argmax(err)), err.shape))
+            rows.append(f"{stage},{float(np.max(err)):.8e},{float(np.mean(err)):.8e},{top}")
+    return "\n".join(rows)
+
+
+def generate_large_oracle_tpcore_trace(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+    executable: str | Path = "tools/gc_harness/build/pjc_pfix_harness_trace",
+) -> Path:
+    """Run the instrumented GEOS-Chem harness and write oracle_tpcore_trace.nc."""
+
+    check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    if not check.is_available:
+        raise FileNotFoundError(format_large_oracle_fixture_check(check))
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    run_pjc_harness(executable, paths.input_path, paths.output_path, paths.directory / ORACLE_TPCORE_TRACE_NAME)
+    return paths.directory / ORACLE_TPCORE_TRACE_NAME
+
+
+def trace_compare_large_oracle_fixture(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+) -> str:
+    """Write Python trace for a large fixture and compare oracle trace if present."""
+
+    check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    if not check.is_available:
+        raise FileNotFoundError(format_large_oracle_fixture_check(check))
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    python_trace = write_python_tpcore_trace(paths.input_path, paths.directory / PYTHON_TPCORE_TRACE_NAME)
+    oracle_trace = paths.directory / ORACLE_TPCORE_TRACE_NAME
+    rows = [
+        "metric,value",
+        f"fixture_id,{fixture_id}",
+        f"python_trace,{python_trace}",
+        f"oracle_trace,{oracle_trace}",
+        f"oracle_trace_available,{oracle_trace.exists()}",
+    ]
+    if oracle_trace.exists():
+        rows.append("")
+        rows.append(compare_tpcore_trace_files(oracle_trace, python_trace))
+    else:
+        rows.append("")
+        rows.append("# final-error-attribution")
+        rows.append(attribute_python_tpcore_error(paths.input_path, paths.output_path))
+    return "\n".join(rows)
+
+
+def _error_row(section: str, key: str, error: np.ndarray, *, extra: str = "") -> str:
+    return f"{section},{key},{float(np.max(error)):.8e},{float(np.mean(error)):.8e},{error.size},{extra}"
+
+
+def _top_cell_row(error: np.ndarray) -> str:
+    top = np.unravel_index(int(np.argmax(error)), error.shape)
+    extra = f"tracer={top[0]} lev={top[1]} lat={top[2]} lon={top[3]}"
+    return _error_row("top_cell", "max", error[top], extra=extra)
+
+
+def _top_axis_rows(section: str, error: np.ndarray, *, axis: int, top_n: int) -> list[str]:
+    max_by_axis = np.max(error, axis=tuple(idx for idx in range(error.ndim) if idx != axis))
+    mean_by_axis = np.mean(error, axis=tuple(idx for idx in range(error.ndim) if idx != axis))
+    order = np.argsort(max_by_axis)[::-1][:top_n]
+    rows = []
+    for idx in order:
+        rows.append(
+            f"{section},{int(idx)},{float(max_by_axis[idx]):.8e},{float(mean_by_axis[idx]):.8e},"
+            f"{error.size // error.shape[axis]},"
+        )
+    return rows
+
+
+def _bin_rows(section: str, error: np.ndarray, values: np.ndarray, edges: tuple[float, ...]) -> list[str]:
+    rows = []
+    value_4d = values[np.newaxis, :, :, :] if values.ndim == 3 else values
+    for low, high in zip(edges[:-1], edges[1:]):
+        mask = (value_4d >= low) & (value_4d < high)
+        mask = np.broadcast_to(mask, error.shape)
+        if not np.any(mask):
+            rows.append(f"{section},[{low:.3e},{high:.3e}),nan,nan,0,")
+            continue
+        err = error[mask]
+        rows.append(f"{section},[{low:.3e},{high:.3e}),{float(np.max(err)):.8e},{float(np.mean(err)):.8e},{err.size},")
+    return rows
+
+
+def _tracer_gradient_magnitude(tracer: np.ndarray) -> np.ndarray:
+    grad = np.zeros_like(tracer, dtype=np.float64)
+    for axis in (1, 2, 3):
+        grad += np.gradient(tracer, axis=axis) ** 2
+    return np.sqrt(grad)
+
+
+def run_pjc_harness(
+    executable: str | Path,
+    input_path: str | Path,
+    output_path: str | Path,
+    trace_output_path: str | Path | None = None,
+) -> None:
     executable = Path(executable)
     if not executable.exists():
         raise FileNotFoundError(
             f"GEOS-Chem harness executable not found: {executable}. "
             "Build tools/gc_harness/pjc_pfix_harness.F90 first."
         )
-    subprocess.run([str(executable), str(input_path), str(output_path)], check=True)
+    command = [str(executable), str(input_path), str(output_path)]
+    if trace_output_path is not None:
+        command.append(str(trace_output_path))
+    subprocess.run(command, check=True)
 
 
 def _load_large_oracle_definition(path: Path) -> dict[str, object]:
@@ -1323,6 +1596,18 @@ def main(argv: list[str] | None = None) -> int:
     compare_python_tpcore_parser.add_argument("input", type=Path)
     compare_python_tpcore_parser.add_argument("output", type=Path)
 
+    trace_python_tpcore_parser = subparsers.add_parser("trace-python-tpcore")
+    trace_python_tpcore_parser.add_argument("input", type=Path)
+    trace_python_tpcore_parser.add_argument("output", type=Path)
+
+    attribute_python_tpcore_parser = subparsers.add_parser("attribute-python-tpcore-error")
+    attribute_python_tpcore_parser.add_argument("input", type=Path)
+    attribute_python_tpcore_parser.add_argument("output", type=Path)
+
+    compare_tpcore_trace_parser = subparsers.add_parser("compare-tpcore-trace")
+    compare_tpcore_trace_parser.add_argument("expected", type=Path)
+    compare_tpcore_trace_parser.add_argument("actual", type=Path)
+
     snapshot_parser = subparsers.add_parser("snapshot-pjc")
     snapshot_parser.add_argument("output_dir", type=Path)
     snapshot_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
@@ -1368,6 +1653,21 @@ def main(argv: list[str] | None = None) -> int:
     compare_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
     compare_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
 
+    trace_compare_oracle_parser = subparsers.add_parser("oracle-fixture-trace-compare")
+    trace_compare_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
+    trace_compare_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    trace_compare_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
+
+    trace_generate_oracle_parser = subparsers.add_parser("oracle-fixture-trace-generate")
+    trace_generate_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
+    trace_generate_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    trace_generate_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
+    trace_generate_oracle_parser.add_argument(
+        "--executable",
+        type=Path,
+        default=Path("tools/gc_harness/build/pjc_pfix_harness_trace"),
+    )
+
     args = parser.parse_args(argv)
     if args.command == "write-pjc-input":
         path = write_pjc_input_from_config(args.run_config, args.output, time_index=args.time_index, dt_s=args.dt_s)
@@ -1403,6 +1703,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare-python-tpcore-output":
         print(format_python_tpcore_comparison(compare_python_tpcore_output(args.input, args.output)))
+        return 0
+    if args.command == "trace-python-tpcore":
+        print(f"wrote_python_tpcore_trace: {write_python_tpcore_trace(args.input, args.output)}")
+        return 0
+    if args.command == "attribute-python-tpcore-error":
+        print(attribute_python_tpcore_error(args.input, args.output))
+        return 0
+    if args.command == "compare-tpcore-trace":
+        print(compare_tpcore_trace_files(args.expected, args.actual))
         return 0
     if args.command == "snapshot-pjc":
         output_dir = snapshot_pjc_oracle(args.output_dir, executable=args.executable, dt_s=args.dt_s)
@@ -1459,6 +1768,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "oracle-fixture-compare":
         print(compare_large_oracle_fixture(args.fixture_id, cache_dir=args.cache_dir, manifest_dir=args.manifest_dir))
+        return 0
+    if args.command == "oracle-fixture-trace-compare":
+        print(
+            trace_compare_large_oracle_fixture(
+                args.fixture_id,
+                cache_dir=args.cache_dir,
+                manifest_dir=args.manifest_dir,
+            )
+        )
+        return 0
+    if args.command == "oracle-fixture-trace-generate":
+        path = generate_large_oracle_tpcore_trace(
+            args.fixture_id,
+            cache_dir=args.cache_dir,
+            manifest_dir=args.manifest_dir,
+            executable=args.executable,
+        )
+        print(f"wrote_oracle_tpcore_trace: {path}")
         return 0
     raise AssertionError(f"unhandled command {args.command}")
 

@@ -22,7 +22,9 @@ from wombat_transport.gc_harness import (
     TRANSPORT_INPUT_VERSION,
     TRANSPORT_OUTPUT_VERSION,
     append_transport_step_tracers,
+    attribute_python_tpcore_error,
     check_large_oracle_fixture,
+    compare_tpcore_trace_files,
     compare_pjc_output,
     compare_large_oracle_fixture,
     compare_python_tpcore_output,
@@ -30,6 +32,7 @@ from wombat_transport.gc_harness import (
     format_large_oracle_fixture_check,
     large_oracle_fixture_paths,
     read_transport_step_output,
+    write_python_tpcore_trace,
     run_pjc_harness,
     sha256_file,
     write_synthetic_tpcore_branch_input,
@@ -43,6 +46,7 @@ from wombat_transport.transport.tpcore import (
     analyze_tpcore_branches,
     run_tpcore_one_step,
     setup_tpcore_terms,
+    trace_tpcore_one_step,
     validate_tpcore_branch_support,
 )
 
@@ -467,6 +471,82 @@ def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture():
         )
 
     np.testing.assert_allclose(state.tracer_conc_after, 4.0e-4, atol=1.0e-18, rtol=0.0)
+
+
+def test_python_tpcore_trace_preserves_final_output_on_low_courant_fixture():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        kwargs = {
+            "tracer_conc": np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            "p1_hpa": np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            "p2_hpa": np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            "u_m_s": np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            "v_m_s": np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            "area_m2": np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            "hyai_hpa": np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            "hybi": np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            "lat_deg": np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            "dt_s": float(dataset.dt_s),
+        }
+
+    normal = run_tpcore_one_step(**kwargs)
+    traced, trace = trace_tpcore_one_step(**kwargs)
+
+    np.testing.assert_array_equal(traced.tracer_conc_after, normal.tracer_conc_after)
+    np.testing.assert_array_equal(trace.tracer_conc_after, normal.tracer_conc_after)
+    assert trace.dq_after_xtp.shape == normal.tracer_conc_after.shape
+    assert trace.dq_after_fzppm.shape == normal.tracer_conc_after.shape
+
+
+def test_write_python_tpcore_trace_records_stage_contract(tmp_path):
+    input_path = TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME
+    trace_path = write_python_tpcore_trace(input_path, tmp_path / "python_tpcore_trace.nc")
+
+    with netCDF4.Dataset(trace_path) as dataset:
+        assert dataset.harness == "tpcore-trace-v1"
+        assert dataset.variables["q_after_pole_average"].shape == (2, 47, 7, 8)
+        assert dataset.variables["dq_after_ytp_hpa"].shape == (2, 47, 7, 8)
+        assert dataset.variables["cx"].shape == (47, 7, 8)
+        assert dataset.variables["vertical_mass_flux_hpa"].shape == (47, 7, 8)
+
+    report = compare_tpcore_trace_files(trace_path, trace_path)
+
+    assert "tracer_conc_after,0.00000000e+00" in report
+
+
+def test_attribute_python_tpcore_error_reports_error_bins(tmp_path):
+    input_path = TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME
+    with netCDF4.Dataset(input_path) as dataset:
+        state = run_tpcore_one_step(
+            tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+    output_path = tmp_path / "transport_output.nc"
+    perturbed = state.tracer_conc_after.copy()
+    perturbed[0, 3, 2, 1] += 1.0e-9
+    with netCDF4.Dataset(output_path, "w") as dataset:
+        dataset.createDimension("tracer", perturbed.shape[0])
+        dataset.createDimension("lev", perturbed.shape[1])
+        dataset.createDimension("lat", perturbed.shape[2])
+        dataset.createDimension("lon", perturbed.shape[3])
+        dataset.harness = TRANSPORT_OUTPUT_VERSION
+        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = perturbed
+        dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = state.xmass_hpa
+        dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = state.ymass_hpa
+        dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = state.surface_pressure_hpa
+
+    report = attribute_python_tpcore_error(input_path, output_path)
+
+    assert "section,key,max_abs,mean_abs,count,extra" in report
+    assert "top_cell,max,1.00000000e-09" in report
+    assert "abs_cx" in report
 
 
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):

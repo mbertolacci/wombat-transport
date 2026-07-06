@@ -89,6 +89,10 @@ python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-trace-generate base_initial_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-trace-compare base_initial_tpcore_v1
 ```
 
 When hosted artifacts are available, add URLs and SHA256 checksums to the
@@ -98,6 +102,14 @@ tracked manifest and populate the same cache layout with:
 python -m wombat_transport.gc_harness oracle-fixture-fetch base_initial_tpcore_v1
 ```
 
+`oracle-fixture-trace-generate` runs the instrumented GEOS-Chem harness and
+writes an ignored `oracle_tpcore_trace.nc` beside the large fixture payload.
+`oracle-fixture-trace-compare` writes the matching ignored Python trace named
+`python_tpcore_trace.nc` and compares the TPCORE checkpoints stage by stage. If
+the oracle trace is absent, it falls back to final-field attribution by level,
+latitude, longitude, Courant bins, vertical mass-flux bins, and initial
+tracer-gradient bins.
+
 ## Build Sketch
 
 `build_pjc_pfix_harness.sh` links against the existing `base/build` tree. The
@@ -106,7 +118,15 @@ tree moves or was produced with different compiler wrappers.
 
 ```bash
 tools/gc_harness/build_pjc_pfix_harness.sh
+
+tools/gc_harness/build_pjc_pfix_harness.sh --with-tpcore-trace
 ```
+
+The trace build generates an instrumented copy of
+`GCClassic/src/GEOS-Chem/GeosCore/tpcore_fvdas_mod.F90` under
+`tools/gc_harness/build/` and links it only into
+`tools/gc_harness/build/pjc_pfix_harness_trace`. The vendored `GCClassic/`
+source tree remains the reference input and is not patched.
 
 Then run:
 

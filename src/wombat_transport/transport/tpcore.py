@@ -39,6 +39,20 @@ class TpcoreState:
 
 
 @dataclass(frozen=True)
+class TpcoreTrace:
+    """Optional one-step tracer checkpoints in project orientation."""
+
+    q_after_pole_average: np.ndarray
+    dq_after_init: np.ndarray
+    q_after_cross_terms: np.ndarray
+    dq_after_xtp: np.ndarray
+    dq_after_ytp: np.ndarray
+    dq_after_fzppm: np.ndarray
+    dq_after_fill: np.ndarray
+    tracer_conc_after: np.ndarray
+
+
+@dataclass(frozen=True)
 class TpcoreSetup:
     xmass_hpa: np.ndarray
     ymass_hpa: np.ndarray
@@ -124,6 +138,58 @@ def run_tpcore_one_step(
         delp2_hpa=setup.delp2_hpa,
         vertical_mass_flux_hpa=setup.vertical_mass_flux_hpa,
     )
+
+
+def trace_tpcore_one_step(
+    *,
+    tracer_conc: np.ndarray,
+    p1_hpa: np.ndarray,
+    p2_hpa: np.ndarray,
+    u_m_s: np.ndarray,
+    v_m_s: np.ndarray,
+    area_m2: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+    lat_deg: np.ndarray,
+    dt_s: float,
+    fill: bool = True,
+) -> tuple[TpcoreState, TpcoreTrace]:
+    """Run TPCORE and return diagnostic checkpoints for discrepancy searches."""
+
+    setup = setup_tpcore_terms(
+        p1_hpa=p1_hpa,
+        p2_hpa=p2_hpa,
+        u_m_s=u_m_s,
+        v_m_s=v_m_s,
+        area_m2=area_m2,
+        hyai_hpa=hyai_hpa,
+        hybi=hybi,
+        lat_deg=lat_deg,
+        dt_s=dt_s,
+    )
+    validate_tpcore_branch_support(setup)
+    tracer, trace = _advect_tracers(
+        tracer_conc=np.asarray(tracer_conc, dtype=np.float64),
+        setup=setup,
+        area_m2=np.asarray(area_m2, dtype=np.float64),
+        fill=fill,
+        trace=True,
+    )
+    if fill:
+        tracer[tracer < 0.0] = 1.0e-26
+    state = TpcoreState(
+        tracer_conc_after=tracer,
+        xmass_hpa=setup.xmass_hpa,
+        ymass_hpa=setup.ymass_hpa,
+        surface_pressure_hpa=setup.surface_pressure_hpa,
+        delp1_hpa=setup.delp1_hpa,
+        delpm_hpa=setup.delpm_hpa,
+        delp2_hpa=setup.delp2_hpa,
+        vertical_mass_flux_hpa=setup.vertical_mass_flux_hpa,
+    )
+    if trace is None:
+        raise AssertionError("trace=True did not produce a TPCORE trace")
+    return state, trace
 
 
 def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
@@ -354,7 +420,8 @@ def _advect_tracers(
     setup: TpcoreSetup,
     area_m2: np.ndarray,
     fill: bool,
-) -> np.ndarray:
+    trace: bool = False,
+) -> np.ndarray | tuple[np.ndarray, TpcoreTrace | None]:
     if tracer_conc.ndim != 4:
         raise ValueError(f"tracer_conc must have shape (tracer, lev, lat, lon), found {tracer_conc.shape}")
     ntracer, nlev, nlat, nlon = tracer_conc.shape
@@ -376,16 +443,29 @@ def _advect_tracers(
     area_1d = area_m2[:, 0]
 
     out = np.empty_like(tracer_conc, dtype=np.float64)
+    q_after_pole_average = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
+    dq_after_init = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
+    q_after_cross_terms = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
+    dq_after_xtp = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
+    dq_after_ytp = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
+    dq_after_fzppm = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
+    dq_after_fill = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
     for tracer_idx in range(ntracer):
         q = tracer_conc[tracer_idx, ::-1, :, :].copy()
         dq1 = np.zeros_like(q)
         for level in range(nlev):
             _average_const_poles(q[level], delp1[level], area_1d)
+            if trace:
+                q_after_pole_average[tracer_idx, nlev - level - 1] = q[level]
             dq1[level] = q[level] * delp1[level]
+            if trace:
+                dq_after_init[tracer_idx, nlev - level - 1] = dq1[level]
             qqu, qqv = _calc_advec_cross_terms(q[level], ua[level], va[level], int(jn[level]), int(js[level]))
             adx = _xadv_dao2(qqv, ua[level], int(jn[level]), int(js[level]))
             ady = _yadv_dao2(qqu, va[level])
             q[level] = q[level] + ady + adx
+            if trace:
+                q_after_cross_terms[tracer_idx, nlev - level - 1] = q[level]
             _xtp(
                 dq1[level],
                 qqv,
@@ -395,6 +475,8 @@ def _advect_tracers(
                 int(jn[level]),
                 int(js[level]),
             )
+            if trace:
+                dq_after_xtp[tracer_idx, nlev - level - 1] = dq1[level]
             _ytp(
                 dq1[level],
                 qqu,
@@ -404,15 +486,38 @@ def _advect_tracers(
                 geofac,
                 geofac_pc,
             )
+            if trace:
+                dq_after_ytp[tracer_idx, nlev - level - 1] = dq1[level]
         _fzppm(delp1, wz, dq1, q)
+        if trace:
+            dq_after_fzppm[tracer_idx] = dq1[::-1]
         if fill:
             _qckxyz(dq1)
+        if trace:
+            dq_after_fill[tracer_idx] = dq1[::-1]
         q_after = dq1 / delp2
         q_after[:, 1, :] = q_after[:, 0, :]
         q_after[:, -2, :] = q_after[:, -1, :]
         q_after[q_after < 0.0] = 1.0e-26
         out[tracer_idx] = q_after[::-1]
-    return out
+    if not trace:
+        return out
+    return out, TpcoreTrace(
+        q_after_pole_average=_require_trace_array(q_after_pole_average),
+        dq_after_init=_require_trace_array(dq_after_init),
+        q_after_cross_terms=_require_trace_array(q_after_cross_terms),
+        dq_after_xtp=_require_trace_array(dq_after_xtp),
+        dq_after_ytp=_require_trace_array(dq_after_ytp),
+        dq_after_fzppm=_require_trace_array(dq_after_fzppm),
+        dq_after_fill=_require_trace_array(dq_after_fill),
+        tracer_conc_after=out.copy(),
+    )
+
+
+def _require_trace_array(values: np.ndarray | None) -> np.ndarray:
+    if values is None:
+        raise AssertionError("missing TPCORE trace array")
+    return values
 
 
 def _average_const_poles(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) -> None:
