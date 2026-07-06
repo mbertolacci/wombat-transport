@@ -3,10 +3,10 @@
 The first tracked oracle fixture is intentionally compact and low-Courant:
 ``tests/fixtures/tpcore_snapshot_v1`` has max ``|cx|`` around 0.0023 and max
 ``|cy|`` around 0.0008. Matching that fixture is useful one-step coverage for
-the ordinary low-Courant branches, but it does not exercise TPCORE's
-large-Courant polar/semi-Lagrangian branches. Full-grid validation must keep
-those branch limits visible instead of treating this fixture as comprehensive
-TPCORE parity.
+the ordinary low-Courant branches. Additional branch fixtures cover X full-PPM
+and expose the remaining large-Courant E-W mismatch. Full-grid validation must
+keep those branch limits visible instead of treating any compact fixture as
+comprehensive TPCORE parity.
 """
 
 from __future__ import annotations
@@ -62,6 +62,9 @@ class TpcoreBranchReport:
     has_large_cx: bool
     has_large_cy: bool
     needs_fxppm: bool
+    x_ffsl_active: bool
+    x_ffsl_endpoint_active: bool
+    x_near_pole_vanleer_active: bool
     jn: tuple[int, ...]
     js: tuple[int, ...]
     unsupported_reasons: tuple[str, ...]
@@ -137,13 +140,20 @@ def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
     has_large_cx = bool(max_abs_cx > 1.0)
     has_large_cy = bool(max_abs_cy > 1.0)
     needs_fxppm = False
+    x_ffsl_active = False
+    x_ffsl_endpoint_active = False
+    x_near_pole_vanleer_active = False
     for level in range(nlev):
         for lat_index in range(j1p, j2p + 1):
             if lat_index <= js[level] or lat_index >= jn[level]:
+                x_ffsl_active = True
+                if lat_index == j1p or lat_index == j2p:
+                    x_ffsl_endpoint_active = True
                 continue
             if lat_index == j1p or lat_index == j2p:
                 continue
             if lat_index <= j1p + jvan or lat_index >= j2p - jvan:
+                x_near_pole_vanleer_active = True
                 continue
             needs_fxppm = True
             break
@@ -151,12 +161,8 @@ def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
             break
 
     reasons: list[str] = []
-    if has_large_cx:
-        reasons.append("large-Courant E-W branch has not been validated")
     if has_large_cy:
         reasons.append("large-Courant N-S branch has not been validated")
-    if needs_fxppm:
-        reasons.append("X full-PPM Fxppm branch is not implemented")
 
     return TpcoreBranchReport(
         shape=(nlev, nlat, nlon),
@@ -165,6 +171,9 @@ def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
         has_large_cx=has_large_cx,
         has_large_cy=has_large_cy,
         needs_fxppm=needs_fxppm,
+        x_ffsl_active=x_ffsl_active,
+        x_ffsl_endpoint_active=x_ffsl_endpoint_active,
+        x_near_pole_vanleer_active=x_near_pole_vanleer_active,
         jn=tuple(int(value) for value in jn),
         js=tuple(int(value) for value in js),
         unsupported_reasons=tuple(reasons),
@@ -537,20 +546,20 @@ def _xtp(
         if j > js and j < jn:
             if j == j1p or j == j2p:
                 for i in range(nlon):
-                    iu = i - _trunc_toward_zero(cx[j, i])
+                    iu = _real_index_offset(i, cx[j, i])
                     fx[j, i] = _q_lon(qqv, j, iu)
             elif j <= j1p + jvan or j >= j2p - jvan:
                 for i in range(nlon):
-                    iu = i - _trunc_toward_zero(cx[j, i])
+                    iu = _real_index_offset(i, cx[j, i])
                     fx[j, i] = _q_lon(qqv, j, iu) + _dcx_lon(dcx, j, iu) * (_sign(1.0, cx[j, i]) - cx[j, i])
             else:
-                raise NotImplementedError("Fxppm branch is not active for the compact low-Courant fixture")
+                _fxppm_row(j, cx, dcx, fx, qqv)
             fx[j, :] *= xmass[j, :]
         else:
             for i in range(nlon):
                 ic = _trunc_toward_zero(cx[j, i])
                 isav = i - ic
-                iu = i - _trunc_toward_zero(cx[j, i])
+                iu = _real_index_offset(i, cx[j, i])
                 rc = cx[j, i] - float(ic)
                 if j == j1p or j == j2p:
                     val = rc * _q_lon(qqv, j, iu)
@@ -607,6 +616,35 @@ def _xmist(qqv: np.ndarray) -> np.ndarray:
             pmin = qqv[j, i] - min(_q_lon(qqv, j, i - 1), qqv[j, i], _q_lon(qqv, j, i + 1))
             dcx[j, i] = _sign(min(abs(tmp), pmin, pmax), tmp)
     return dcx
+
+
+def _fxppm_row(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qqv: np.ndarray) -> None:
+    nlon = qqv.shape[1]
+    r13 = 1.0 / 3.0
+    r23 = 2.0 / 3.0
+    a6 = np.zeros(nlon, dtype=np.float64)
+    al = np.zeros(nlon, dtype=np.float64)
+    ar = np.zeros(nlon, dtype=np.float64)
+    dc = np.zeros(nlon, dtype=np.float64)
+    qa = np.zeros(nlon, dtype=np.float64)
+    for i in range(nlon):
+        rval = 0.5 * (_q_lon(qqv, j, i - 1) + _q_lon(qqv, j, i)) + (
+            _dcx_lon(dcx, j, i - 1) - _dcx_lon(dcx, j, i)
+        ) * r13
+        al[i] = rval
+        ar[(i - 1) % nlon] = rval
+        dc[i] = _dcx_lon(dcx, j, i)
+        qa[i] = _q_lon(qqv, j, i)
+    a6[:] = 3.0 * (qa + qa - (al + ar))
+    _lmtppm_1d(a6, al, ar, dc, qa, 0)
+    for i in range(nlon):
+        if cx[j, i] > 0.0:
+            im1 = (i - 1) % nlon
+            fx[j, i] = ar[im1] + 0.5 * cx[j, i] * (
+                al[im1] - ar[im1] + a6[im1] * (1.0 - r23 * cx[j, i])
+            )
+        else:
+            fx[j, i] = al[i] - 0.5 * cx[j, i] * (ar[i] - al[i] + a6[i] * (1.0 + r23 * cx[j, i]))
 
 
 def _ymist(qqu: np.ndarray) -> np.ndarray:
@@ -829,6 +867,12 @@ def _q_lat(q: np.ndarray, i: int, j: int) -> float:
 
 def _trunc_toward_zero(value: float) -> int:
     return int(value)
+
+
+def _real_index_offset(index: int, offset: float) -> int:
+    """Return Python index for GEOS-Chem ``INTEGER(real_index - offset)``."""
+
+    return _trunc_toward_zero((index + 1.0) - offset) - 1
 
 
 def _nint(value: float) -> int:

@@ -9,6 +9,7 @@ import pytest
 
 from wombat_transport.gc_harness import (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
+    FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
     PJC_SNAPSHOT_VERSION,
     PJC_INPUT_VERSION,
     PJC_OUTPUT_VERSION,
@@ -31,6 +32,7 @@ from wombat_transport.gc_harness import (
     read_transport_step_output,
     run_pjc_harness,
     sha256_file,
+    write_synthetic_tpcore_branch_input,
     write_synthetic_pjc_snapshot_input,
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
@@ -46,6 +48,8 @@ from wombat_transport.transport.tpcore import (
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
+TPCORE_FXPPM_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_fxppm_low_courant_v1"
+TPCORE_LARGE_CX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_large_courant_polar_v1"
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -101,6 +105,39 @@ def test_large_base_oracle_fixture_if_cached_reports_pjc_and_tpcore_branches():
     assert "xmass_max_abs_error_hpa" in report
     assert "tpcore_shape,(47, 91, 144)" in report
     assert "tpcore_supported," in report
+
+
+def test_fullgrid_synthetic_oracle_fixture_if_cached_matches_python_tpcore():
+    check = check_large_oracle_fixture(FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID)
+    if not check.is_available:
+        pytest.skip(format_large_oracle_fixture_check(check))
+
+    paths = large_oracle_fixture_paths(FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID)
+    with netCDF4.Dataset(paths.input_path) as dataset:
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+    branch_report = analyze_tpcore_branches(setup)
+
+    assert branch_report.is_supported
+    assert branch_report.shape == (47, 91, 144)
+    assert branch_report.needs_fxppm
+    assert not branch_report.has_large_cx
+    assert not branch_report.has_large_cy
+
+    comparison = compare_python_tpcore_output(paths.input_path, paths.output_path)
+
+    assert comparison.tracer_max_abs_error < 1.0e-12
+    assert comparison.max_abs_cx < 1.0
+    assert comparison.max_abs_cy < 1.0
 
 
 def test_write_pjc_input_records_fixture_contract(tmp_path):
@@ -221,6 +258,33 @@ def test_write_synthetic_tpcore_snapshot_input_records_compact_47_level_contract
         assert float(np.max(tracer) - np.min(tracer)) > 0.0
 
 
+def test_write_synthetic_tpcore_branch_input_records_fxppm_scenario(tmp_path):
+    input_path = write_synthetic_tpcore_branch_input(tmp_path / TPCORE_SNAPSHOT_INPUT_NAME, scenario="x_fxppm_low_courant")
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == TRANSPORT_INPUT_VERSION
+        assert dataset.dimensions["lon"].size == 12
+        assert dataset.dimensions["lat"].size == 11
+        assert dataset.dimensions["lev"].size == 47
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    report = analyze_tpcore_branches(setup)
+
+    assert report.needs_fxppm
+    assert not report.has_large_cx
+    assert report.is_supported
+
+
 def test_pjc_mass_flux_matches_tracked_geos_chem_snapshot():
     with (FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
@@ -298,26 +362,35 @@ def test_tpcore_branch_report_accepts_low_courant_oracle_path():
     assert not report.needs_fxppm
 
 
-def test_tpcore_branch_preflight_rejects_unimplemented_fxppm_path():
+def test_tpcore_branch_report_identifies_fxppm_path():
     setup = _zero_tpcore_setup(nlev=4, nlat=11, nlon=8)
 
     report = analyze_tpcore_branches(setup)
 
-    assert not report.is_supported
+    assert report.is_supported
     assert report.needs_fxppm
-    with pytest.raises(NotImplementedError, match="Fxppm"):
-        validate_tpcore_branch_support(setup)
 
 
-def test_tpcore_branch_preflight_rejects_large_courant_path():
+def test_tpcore_branch_report_identifies_large_e_w_path():
     setup = _zero_tpcore_setup(nlev=4, nlat=7, nlon=8)
     setup.cx[0, 2, 0] = 1.1
 
     report = analyze_tpcore_branches(setup)
 
-    assert not report.is_supported
+    assert report.is_supported
     assert report.has_large_cx
-    with pytest.raises(NotImplementedError, match="large-Courant E-W"):
+    assert report.x_ffsl_active
+
+
+def test_tpcore_branch_preflight_rejects_large_n_s_path():
+    setup = _zero_tpcore_setup(nlev=4, nlat=7, nlon=8)
+    setup.cy[0, 2, 0] = 1.1
+
+    report = analyze_tpcore_branches(setup)
+
+    assert not report.is_supported
+    assert report.has_large_cy
+    with pytest.raises(NotImplementedError, match="large-Courant N-S"):
         validate_tpcore_branch_support(setup)
 
 
@@ -334,6 +407,46 @@ def test_python_tpcore_matches_low_courant_oracle_tracer_step():
     assert comparison.tracer_mean_abs_error < 1.0e-12
     assert comparison.max_abs_cx < 1.0
     assert comparison.max_abs_cy < 1.0
+
+
+def test_python_tpcore_matches_fxppm_low_courant_branch_fixture():
+    with (TPCORE_FXPPM_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    assert metadata["scenario"] == "x_fxppm_low_courant"
+    assert metadata["branch_report"]["needs_fxppm"]
+    assert not metadata["branch_report"]["has_large_cx"]
+
+    comparison = compare_python_tpcore_output(
+        TPCORE_FXPPM_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
+        TPCORE_FXPPM_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME,
+    )
+
+    assert comparison.xmass_max_abs_error_hpa < 1.0e-12
+    assert comparison.ymass_max_abs_error_hpa < 2.0e-14
+    assert comparison.surface_pressure_max_abs_error_hpa < 5.0e-13
+    assert comparison.tracer_max_abs_error < 1.0e-11
+    assert comparison.max_abs_cx < 1.0
+    assert comparison.max_abs_cy < 1.0
+
+
+def test_python_tpcore_matches_large_courant_branch_fixture():
+    with (TPCORE_LARGE_CX_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    assert metadata["scenario"] == "x_large_courant_polar"
+    assert metadata["branch_report"]["has_large_cx"]
+    assert not metadata["branch_report"]["needs_fxppm"]
+
+    comparison = compare_python_tpcore_output(
+        TPCORE_LARGE_CX_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
+        TPCORE_LARGE_CX_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME,
+    )
+
+    assert comparison.xmass_max_abs_error_hpa < 1.0e-12
+    assert comparison.ymass_max_abs_error_hpa < 1.0e-14
+    assert comparison.surface_pressure_max_abs_error_hpa < 5.0e-13
+    assert comparison.max_abs_cx > 1.0
+    assert comparison.max_abs_cy < 1.0
+    assert comparison.tracer_max_abs_error < 1.0e-12
 
 
 def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture():

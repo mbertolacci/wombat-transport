@@ -41,6 +41,8 @@ Validation at that checkpoint:
   - PJC mass fluxes, under `tests/fixtures/pjc_snapshot_v1/`;
   - one-step PJC plus `TPCORE_FVDAS`, under
     `tests/fixtures/tpcore_snapshot_v1/`.
+  - branch-isolating TPCORE snapshots for X full-PPM and large-Courant E-W
+    behavior, under `tests/fixtures/tpcore_x_*_v1/`.
 - Large real-run oracle fixtures now have a separate untracked cache policy
   under `oracle_data/`. Tracked manifests describe the fixture contract; NetCDF
   payloads are generated or fetched locally and verified by checksum before
@@ -79,8 +81,14 @@ Validation at that checkpoint:
   performance benchmarks are not implemented yet.
 - `oracle_data/manifests/base_initial_tpcore_v1.json` defines the first
   full-grid base initial-condition PJC+TPCORE fixture. It is useful for oracle
-  coverage and branch reporting, but current Python TPCORE is expected to
-  reject the fixture until large-Courant and full X-PPM branches are ported.
+  coverage and branch reporting. Current Python TPCORE now runs on it, but does
+  not yet achieve tracer parity; the remaining full-grid tracer max error is
+  about `1e-8` after the compact X full-PPM and large-Courant E-W branch
+  fixtures pass.
+- `oracle_data/manifests/fullgrid_synthetic_low_courant_tpcore_v1.json`
+  defines a full-grid synthetic low-Courant control fixture. It matches Python
+  TPCORE at tight tolerance, which suggests the remaining base fixture mismatch
+  is tied to real-met/restart interactions rather than full-grid geometry alone.
 - Base run diagnostics are the best short-window target because base has
   matching SpeciesConc, LevelEdge, and StateMet files through 2014-09-22.
   Residual currently has SpeciesConc and HEMCO diagnostics but no StateMet or
@@ -95,8 +103,10 @@ Validation at that checkpoint:
      checks.
    - The compact fixture now matches final surface pressure exactly and final
      tracer concentrations with max error below `1e-11`.
-   - Add a full-grid or deliberately higher-Courant oracle before claiming
-     coverage for large-Courant polar/semi-Lagrangian branches.
+   - The X full-PPM and compact large-Courant E-W branch fixtures now pass.
+     The full-grid synthetic low-Courant control fixture also passes. Use the
+     full-grid `base_initial_tpcore_v1` cache as the remaining one-step TPCORE
+     acceptance target.
    - Use the `oracle_data/` cache for full-grid and later multi-step fixtures;
      keep `tests/fixtures/` reserved for tiny microscope fixtures that can run
      in normal unit tests.
@@ -168,9 +178,12 @@ tools/gc_harness/build_pjc_pfix_harness.sh
 python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
 python -m wombat_transport.gc_harness transport-step base_wombat/run.yml --max-tracers 1
 python -m wombat_transport.gc_harness snapshot-tpcore tests/fixtures/tpcore_snapshot_v1
+python -m wombat_transport.gc_harness snapshot-tpcore-branch x_fxppm_low_courant tests/fixtures/tpcore_x_fxppm_low_courant_v1
+python -m wombat_transport.gc_harness snapshot-tpcore-branch x_large_courant_polar tests/fixtures/tpcore_x_large_courant_polar_v1
 python -m wombat_transport.gc_harness compare-transport-step-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
 python -m wombat_transport.gc_harness compare-python-tpcore-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
 python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
+python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic_low_courant_tpcore_v1
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18

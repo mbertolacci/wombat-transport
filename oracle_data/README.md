@@ -14,7 +14,12 @@ be tracked.
 oracle_data/
   manifests/
     base_initial_tpcore_v1.json
+    fullgrid_synthetic_low_courant_tpcore_v1.json
   base_initial_tpcore_v1/
+    transport_step_input.nc
+    transport_step_output.nc
+    manifest.json
+  fullgrid_synthetic_low_courant_tpcore_v1/
     transport_step_input.nc
     transport_step_output.nc
     manifest.json
@@ -32,6 +37,12 @@ Generate the first base-run fixture from local GEOS-Chem artifacts:
 python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
 ```
 
+Generate the full-grid synthetic low-Courant diagnostic fixture:
+
+```bash
+python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic_low_courant_tpcore_v1
+```
+
 Check a cached fixture:
 
 ```bash
@@ -44,10 +55,18 @@ Compare a cached fixture against the current Python ports:
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
 ```
 
+The base fixture is not currently a TPCORE tracer-parity fixture. It is expected
+to run through Python TPCORE and report the remaining full-grid tracer error
+separately from PJC and pressure metrics.
+
+The full-grid synthetic low-Courant fixture is a diagnostic control: it uses the
+same horizontal and vertical grid but smooth synthetic pressure, wind, and
+tracer fields. It should stay at tight TPCORE parity and helps separate
+full-grid geometry issues from real-met/restart interactions.
+
 Fetch support uses the same cache layout, but the tracked manifest must first be
 updated with concrete URLs and checksums:
 
 ```bash
 python -m wombat_transport.gc_harness oracle-fixture-fetch base_initial_tpcore_v1
 ```
-

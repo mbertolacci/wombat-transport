@@ -34,9 +34,14 @@ SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
 TPCORE_SNAPSHOT_INPUT_NAME = "tpcore_input.nc"
 TPCORE_SNAPSHOT_OUTPUT_NAME = "tpcore_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
+TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
 BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
-LARGE_ORACLE_FIXTURE_IDS = (BASE_INITIAL_TPCORE_FIXTURE_ID,)
+FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v1"
+LARGE_ORACLE_FIXTURE_IDS = (
+    BASE_INITIAL_TPCORE_FIXTURE_ID,
+    FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
+)
 
 GEOS_47_AP_HPA = np.array(
     [
@@ -282,6 +287,73 @@ def write_transport_step_input_from_config(
     return forcing_path
 
 
+def write_fullgrid_synthetic_tpcore_input_from_config(
+    run_config_path: str | Path,
+    output_path: str | Path,
+    *,
+    dt_s: float | None = None,
+    ntracer: int = 2,
+) -> Path:
+    """Write a full-grid smooth low-Courant TPCORE input from a grid template."""
+
+    if ntracer <= 0:
+        raise ValueError("ntracer must be positive")
+    config = load_run_config(run_config_path)
+    if dt_s is None:
+        dt_s = float(config.transport.get("dt_s", 600.0))
+    with netCDF4.Dataset(config.grid_template) as template:
+        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
+        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
+        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
+        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
+
+    nlev = hyai.size - 1
+    level = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    lat_rad = np.deg2rad(lat)
+    lon_rad = np.deg2rad(lon)
+    lat_2d = lat_rad[:, np.newaxis]
+    lon_2d = lon_rad[np.newaxis, :]
+
+    p1 = 965.0
+    p1 = p1 + 22.0 * np.cos(lat_2d) ** 2
+    p1 = p1 + 2.0 * np.sin(lon_2d) * np.cos(lat_2d)
+    p2 = p1 + 0.25 * np.cos(2.0 * lon_2d) * np.cos(lat_2d)
+
+    lat_3d = lat_rad[np.newaxis, :, np.newaxis]
+    lon_3d = lon_rad[np.newaxis, np.newaxis, :]
+    vertical_wave = np.sin((level + 1.0) / float(nlev) * np.pi)
+    u = 5.0 * vertical_wave * np.cos(lat_3d)
+    u = u * (1.0 + 0.15 * np.cos(lon_3d))
+    v = 0.35 * np.cos((level + 1.0) / float(nlev) * np.pi) * np.sin(2.0 * lon_3d)
+    v = v * np.cos(lat_3d)
+
+    path = write_pjc_input(
+        output_path,
+        lat_deg=lat,
+        lon_deg=lon,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        dt_s=dt_s,
+    )
+
+    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    lev_index = np.arange(nlev, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
+    lat_wave = np.sin(lat_rad)[np.newaxis, np.newaxis, :, np.newaxis]
+    lon_wave = np.cos(lon_rad)[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer = 4.0e-4
+    tracer = tracer + (tracer_index + 1.0) * 1.0e-7
+    tracer = tracer + 2.5e-8 * lev_index / max(float(nlev - 1), 1.0)
+    tracer = tracer + 1.5e-8 * lat_wave + 7.5e-9 * lon_wave
+    names = tuple(f"fullgrid_synthetic_{index + 1:02d}" for index in range(ntracer))
+    return append_transport_step_tracers(path, tracer, tracer_names=names)
+
+
 def write_synthetic_pjc_snapshot_input(path: str | Path, *, dt_s: float = 600.0) -> Path:
     """Write a compact deterministic 47-level PJC oracle input fixture."""
 
@@ -345,6 +417,93 @@ def write_synthetic_tpcore_snapshot_input(path: str | Path, *, dt_s: float = 600
     return append_transport_step_tracers(path, tracer, tracer_names=names)
 
 
+def write_synthetic_tpcore_branch_input(
+    path: str | Path,
+    *,
+    scenario: str,
+    dt_s: float = 600.0,
+    ntracer: int = 2,
+) -> Path:
+    """Write a compact TPCORE input that isolates one horizontal branch set."""
+
+    if scenario == "x_fxppm_low_courant":
+        return _write_synthetic_tpcore_branch_input(
+            path,
+            lat=np.linspace(-89.5, 89.5, 11, dtype=np.float64),
+            lon=np.arange(12, dtype=np.float64) * 30.0,
+            wind_scale=1.0,
+            dt_s=dt_s,
+            ntracer=ntracer,
+            tracer_prefix=scenario,
+        )
+    if scenario == "x_large_courant_polar":
+        return _write_synthetic_tpcore_branch_input(
+            path,
+            lat=np.array([-89.5, -60.0, -30.0, 0.0, 30.0, 60.0, 89.5], dtype=np.float64),
+            lon=np.arange(8, dtype=np.float64) * 45.0,
+            wind_scale=1600.0,
+            dt_s=dt_s,
+            ntracer=ntracer,
+            tracer_prefix=scenario,
+        )
+    raise ValueError(f"unknown TPCORE branch scenario {scenario!r}; expected one of {TPCORE_BRANCH_SCENARIOS}")
+
+
+def _write_synthetic_tpcore_branch_input(
+    path: str | Path,
+    *,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    wind_scale: float,
+    dt_s: float,
+    ntracer: int,
+    tracer_prefix: str,
+) -> Path:
+    if ntracer <= 0:
+        raise ValueError("ntracer must be positive")
+    area = _spherical_band_area(lat, lon.size)
+    level = np.arange(GEOS_47_AP_HPA.size - 1, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    j = np.arange(lat.size, dtype=np.float64)[np.newaxis, :, np.newaxis]
+    i = np.arange(lon.size, dtype=np.float64)[np.newaxis, np.newaxis, :]
+
+    p1 = 970.0
+    p1 = p1 + 18.0 * np.cos(np.deg2rad(lat))[:, np.newaxis]
+    p1 = p1 + 1.5 * np.sin(2.0 * np.pi * np.arange(lon.size, dtype=np.float64)[np.newaxis, :] / lon.size)
+    p2 = p1
+    p2 = p2 + 0.8 * np.cos(2.0 * np.pi * np.arange(lon.size, dtype=np.float64)[np.newaxis, :] / lon.size)
+    p2 = p2 - 0.5 * np.sin(np.deg2rad(lat))[:, np.newaxis]
+
+    u = wind_scale * 8.0 * np.sin((level + 1.0) / 47.0 * np.pi) * np.cos(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    u = u + wind_scale * 0.2 * (i - 0.5 * (lon.size - 1))
+    v = 2.0 * np.cos((level + 1.0) / 47.0 * np.pi) * np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    v = v + 0.1 * np.sin(2.0 * np.pi * i / lon.size)
+    v = v + 0.015 * (j - 0.5 * (lat.size - 1))
+
+    path = write_pjc_input(
+        path,
+        lat_deg=lat,
+        lon_deg=lon,
+        area_m2=area,
+        hyai_hpa=GEOS_47_AP_HPA,
+        hybi=GEOS_47_BP,
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        dt_s=dt_s,
+    )
+    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    lev_index = np.arange(GEOS_47_AP_HPA.size - 1, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
+    lat_wave = np.sin(np.deg2rad(lat))[np.newaxis, np.newaxis, :, np.newaxis]
+    lon_wave = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer = 4.0e-4
+    tracer = tracer + (tracer_index + 1.0) * 1.0e-7
+    tracer = tracer + 2.5e-8 * lev_index / 46.0
+    tracer = tracer + 1.0e-8 * lat_wave + 5.0e-9 * lon_wave
+    names = tuple(f"{tracer_prefix}_{index + 1:02d}" for index in range(ntracer))
+    return append_transport_step_tracers(path, tracer, tracer_names=names)
+
+
 def snapshot_pjc_oracle(
     output_dir: str | Path,
     *,
@@ -388,6 +547,59 @@ def snapshot_tpcore_oracle(
     return output_dir
 
 
+def snapshot_tpcore_branch_oracle(
+    output_dir: str | Path,
+    *,
+    scenario: str,
+    executable: str | Path,
+    dt_s: float = 600.0,
+    ntracer: int = 2,
+    repo_root: str | Path = ".",
+) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    input_path = write_synthetic_tpcore_branch_input(
+        output_dir / TPCORE_SNAPSHOT_INPUT_NAME,
+        scenario=scenario,
+        dt_s=dt_s,
+        ntracer=ntracer,
+    )
+    output_path = output_dir / TPCORE_SNAPSHOT_OUTPUT_NAME
+    run_pjc_harness(executable, input_path, output_path)
+    metadata = _tpcore_snapshot_metadata(input_path, output_path, executable=Path(executable), repo_root=Path(repo_root))
+    metadata["scenario"] = scenario
+    with netCDF4.Dataset(input_path) as dataset:
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+    report = analyze_tpcore_branches(setup)
+    metadata["branch_report"] = {
+        "shape": list(report.shape),
+        "max_abs_cx": report.max_abs_cx,
+        "max_abs_cy": report.max_abs_cy,
+        "has_large_cx": report.has_large_cx,
+        "has_large_cy": report.has_large_cy,
+        "needs_fxppm": report.needs_fxppm,
+        "x_ffsl_active": report.x_ffsl_active,
+        "x_ffsl_endpoint_active": report.x_ffsl_endpoint_active,
+        "x_near_pole_vanleer_active": report.x_near_pole_vanleer_active,
+        "is_supported": report.is_supported,
+        "unsupported_reasons": list(report.unsupported_reasons),
+    }
+    with (output_dir / SNAPSHOT_METADATA_NAME).open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return output_dir
+
+
 def large_oracle_fixture_paths(
     fixture_id: str,
     *,
@@ -422,21 +634,32 @@ def generate_large_oracle_fixture(
     dt_s: float | None = None,
     repo_root: str | Path = ".",
 ) -> Path:
-    if fixture_id != BASE_INITIAL_TPCORE_FIXTURE_ID:
+    if fixture_id not in LARGE_ORACLE_FIXTURE_IDS:
         raise ValueError(f"no generator is registered for {fixture_id!r}")
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     definition = _load_large_oracle_definition(paths.definition_path)
     source = dict(definition.get("source", {}))
     run_config_path = Path(run_config or source.get("run_config", "base_wombat/run.yml"))
     paths.directory.mkdir(parents=True, exist_ok=True)
-    write_transport_step_input_from_config(
-        run_config_path,
-        paths.input_path,
-        time_index=int(source.get("time_index", 0) if time_index is None else time_index),
-        tracer_time_index=int(source.get("tracer_time_index", 0) if tracer_time_index is None else tracer_time_index),
-        max_tracers=int(source.get("max_tracers", 1) if max_tracers is None else max_tracers),
-        dt_s=float(source["dt_s"]) if dt_s is None and "dt_s" in source else dt_s,
-    )
+    fixture_dt_s = float(source["dt_s"]) if dt_s is None and "dt_s" in source else dt_s
+    if fixture_id == BASE_INITIAL_TPCORE_FIXTURE_ID:
+        write_transport_step_input_from_config(
+            run_config_path,
+            paths.input_path,
+            time_index=int(source.get("time_index", 0) if time_index is None else time_index),
+            tracer_time_index=int(source.get("tracer_time_index", 0) if tracer_time_index is None else tracer_time_index),
+            max_tracers=int(source.get("max_tracers", 1) if max_tracers is None else max_tracers),
+            dt_s=fixture_dt_s,
+        )
+    elif fixture_id == FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID:
+        write_fullgrid_synthetic_tpcore_input_from_config(
+            run_config_path,
+            paths.input_path,
+            dt_s=fixture_dt_s,
+            ntracer=int(source.get("ntracer", 2) if max_tracers is None else max_tracers),
+        )
+    else:
+        raise AssertionError(f"unhandled fixture generator {fixture_id}")
     run_pjc_harness(executable, paths.input_path, paths.output_path)
     _write_generated_large_oracle_manifest(
         paths,
@@ -1111,6 +1334,13 @@ def main(argv: list[str] | None = None) -> int:
     tpcore_snapshot_parser.add_argument("--dt-s", type=float, default=600.0)
     tpcore_snapshot_parser.add_argument("--ntracer", type=int, default=2)
 
+    tpcore_branch_snapshot_parser = subparsers.add_parser("snapshot-tpcore-branch")
+    tpcore_branch_snapshot_parser.add_argument("scenario", choices=TPCORE_BRANCH_SCENARIOS)
+    tpcore_branch_snapshot_parser.add_argument("output_dir", type=Path)
+    tpcore_branch_snapshot_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
+    tpcore_branch_snapshot_parser.add_argument("--dt-s", type=float, default=600.0)
+    tpcore_branch_snapshot_parser.add_argument("--ntracer", type=int, default=2)
+
     generate_oracle_parser = subparsers.add_parser("oracle-fixture-generate")
     generate_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
     generate_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
@@ -1186,6 +1416,16 @@ def main(argv: list[str] | None = None) -> int:
             ntracer=args.ntracer,
         )
         print(f"wrote_tpcore_snapshot: {output_dir}")
+        return 0
+    if args.command == "snapshot-tpcore-branch":
+        output_dir = snapshot_tpcore_branch_oracle(
+            args.output_dir,
+            scenario=args.scenario,
+            executable=args.executable,
+            dt_s=args.dt_s,
+            ntracer=args.ntracer,
+        )
+        print(f"wrote_tpcore_branch_snapshot: {output_dir}")
         return 0
     if args.command == "oracle-fixture-generate":
         output_dir = generate_large_oracle_fixture(

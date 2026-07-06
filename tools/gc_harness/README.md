@@ -43,6 +43,12 @@ python -m wombat_transport.gc_harness snapshot-pjc \
 python -m wombat_transport.gc_harness snapshot-tpcore \
   tests/fixtures/tpcore_snapshot_v1
 
+python -m wombat_transport.gc_harness snapshot-tpcore-branch \
+  x_fxppm_low_courant tests/fixtures/tpcore_x_fxppm_low_courant_v1
+
+python -m wombat_transport.gc_harness snapshot-tpcore-branch \
+  x_large_courant_polar tests/fixtures/tpcore_x_large_courant_polar_v1
+
 python -m wombat_transport.gc_harness compare-transport-step-output \
   tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc \
   tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
@@ -53,6 +59,9 @@ used by unit tests. Run it deliberately when the GEOS-Chem reference version or
 the PJC fixture contract changes, then review the NetCDF/metadata diff.
 The `snapshot-tpcore` command does the same for the compact one-step
 `DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle fixture.
+The `snapshot-tpcore-branch` command creates small branch-isolating TPCORE
+snapshots. `x_fxppm_low_courant` is a passing X full-PPM fixture;
+`x_large_courant_polar` is a passing compact high-Courant E-W fixture.
 
 ## Large Oracle Fixture Cache
 
@@ -64,11 +73,18 @@ fixture definitions under `oracle_data/manifests/` are tracked.
 The first registered large fixture is `base_initial_tpcore_v1`: a full-grid
 one-tracer base-run initial-condition `DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle.
 It is generated from `base_wombat/run.yml`, the base restart, and local MERRA2
-met. It is an oracle/coverage fixture first; current Python TPCORE is expected
-to report unsupported full-grid branches until those paths are ported.
+met. It is an oracle/coverage fixture first; current Python TPCORE runs on this
+fixture but still reports a full-grid tracer mismatch.
+
+`fullgrid_synthetic_low_courant_tpcore_v1` uses the same full GEOS-Chem grid
+with smooth low-Courant synthetic pressure, winds, and tracers. It is the
+control fixture for full-grid geometry and wide X full-PPM behavior without
+real MERRA2/restart complexity.
 
 ```bash
 python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic_low_courant_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 
