@@ -22,8 +22,9 @@ When the fixture includes `tracer_conc(tracer, lev, lat, lon)`, the same
 executable runs one `DO_PJC_PFIX` plus `TPCORE_FVDAS` step and writes
 `tracer_conc_after`, `xmass_hpa`, `ymass_hpa`, and `surface_pressure_hpa`.
 The tracked TPCORE snapshot fixture records this one-step GEOS-Chem oracle
-boundary for fast unit tests. It does not mean the current Python scaffold is a
-TPCORE port; it gives the next NumPy implementation a stable target.
+boundary for fast unit tests. The production transport driver now routes
+one-step and window modes through the NumPy TPCORE port; the older scaffold
+helpers remain available for focused unit tests.
 
 ## Python Fixture Commands
 
@@ -73,8 +74,13 @@ fixture definitions under `oracle_data/manifests/` are tracked.
 The first registered large fixture is `base_initial_tpcore_v1`: a full-grid
 one-tracer base-run initial-condition `DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle.
 It is generated from `base_wombat/run.yml`, the base restart, and local MERRA2
-met. It is an oracle/coverage fixture first; current Python TPCORE runs on this
-fixture but still reports a full-grid tracer mismatch.
+met. It is a full-grid one-tracer TPCORE parity fixture.
+
+`residual_initial_tpcore_v1` is the matching full-grid 24-tracer residual
+initial-condition oracle generated from
+`residual_20140901_part001_split01_wombat/run.yml`. It exercises the residual
+species ordering and `Background_VV` initialization path used when restart
+variables are absent.
 
 `fullgrid_synthetic_low_courant_tpcore_v1` uses the same full GEOS-Chem grid
 with smooth low-Courant synthetic pressure, winds, and tracers. It is the
@@ -84,11 +90,15 @@ real MERRA2/restart complexity.
 ```bash
 python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
 
+python -m wombat_transport.gc_harness oracle-fixture-generate residual_initial_tpcore_v1
+
 python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic_low_courant_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-compare residual_initial_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-trace-generate base_initial_tpcore_v1
 

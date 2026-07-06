@@ -10,17 +10,16 @@ import numpy as np
 from wombat_transport.fields import TracerField
 from wombat_transport.transport.forcing import TransportForcing, load_transport_forcing
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
-from wombat_transport.transport.pjc import pjc_mass_flux_hpa
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
     dry_pressure_thickness_hpa,
 )
-from wombat_transport.transport.scaffold import (
-    advect_horizontal_mass_flux,
-    advect_vertical_mass_flux,
-    horizontal_mass_flux_hpa,
-    vertical_mass_flux_hpa,
+from wombat_transport.transport.tpcore import (
+    analyze_tpcore_branches,
+    run_tpcore_one_step,
+    setup_tpcore_terms,
+    validate_tpcore_branch_support,
 )
 
 @dataclass(frozen=True)
@@ -55,7 +54,7 @@ def run_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
 ) -> TransportStepResult:
-    """Run one conservative horizontal mass-flux transport scaffold step."""
+    """Run one GEOS-Chem-oriented TPCORE transport step."""
 
     with netCDF4.Dataset(template_path) as template:
         hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
@@ -65,45 +64,16 @@ def run_transport_one_step(
     surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
     delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
     dry_air_mass = dry_air_mass_from_pressure(delp, area)
-    xmass_single, ymass_single = pjc_mass_flux_hpa(
-        p1_hpa=surface_pressure_hpa,
-        p2_hpa=surface_pressure_hpa,
-        u_m_s=forcing.u_m_s[0],
-        v_m_s=forcing.v_m_s[0],
-        area_m2=area,
-        hyai_hpa=hyai,
-        hybi=hybi,
-        lat_deg=forcing.lat_deg,
-        dt_s=dt_s,
-    )
-    xmass = xmass_single[np.newaxis, ...]
-    ymass = ymass_single[np.newaxis, ...]
-    horizontal_state, horizontal_dry_air_mass = advect_horizontal_mass_flux(
+    return _run_tpcore_one_step_from_mass(
         tracer_field,
+        forcing,
         dry_air_mass,
-        xmass,
-        ymass,
         area,
-        max_courant=max_courant,
-    )
-    zmass = vertical_mass_flux_hpa(dry_air_mass, horizontal_dry_air_mass, area)
-    state, next_dry_air_mass = advect_vertical_mass_flux(
-        horizontal_state,
-        horizontal_dry_air_mass,
-        zmass,
-        area,
-        max_courant=max_courant,
-    )
-    next_delp = _dry_air_mass_to_pressure(next_dry_air_mass, area)
-    return TransportStepResult(
-        state=state,
-        dry_air_mass_kg=next_dry_air_mass,
-        delp_dry_hpa=next_delp,
-        xmass_hpa=xmass,
-        ymass_hpa=ymass,
-        zmass_hpa=zmass,
-        initial_scalar_mass=scalar_mass_by_tracer(tracer_field.data, dry_air_mass),
-        final_scalar_mass=scalar_mass_by_tracer(state.data, next_dry_air_mass),
+        hyai,
+        hybi,
+        p2_hpa=surface_pressure_hpa,
+        p1_hpa=surface_pressure_hpa,
+        dt_s=dt_s,
     )
 
 def run_transport_window(
@@ -162,6 +132,8 @@ def run_transport_window(
             forcing,
             dry_air_mass,
             area,
+            hyai,
+            hybi,
             dt_s=dt_s,
             max_courant=max_courant,
         )
@@ -209,44 +181,107 @@ def _run_transport_one_step_with_mass(
     forcing: TransportForcing,
     dry_air_mass: np.ndarray,
     area: np.ndarray,
+    hyai: np.ndarray,
+    hybi: np.ndarray,
     *,
     dt_s: float,
     max_courant: float,
 ) -> TransportStepResult:
-    delp = _dry_air_mass_to_pressure(dry_air_mass, area)
-    xmass, ymass = horizontal_mass_flux_hpa(
-        delp,
-        forcing.u_m_s,
-        forcing.v_m_s,
-        forcing.lat_deg,
+    p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
+    p2_hpa = forcing.surface_pressure_pa[0] / 100.0
+    return _run_tpcore_one_step_from_mass(
+        tracer_field,
+        forcing,
+        dry_air_mass,
+        area,
+        hyai,
+        hybi,
+        p2_hpa=p2_hpa,
+        p1_hpa=p1_hpa,
         dt_s=dt_s,
     )
-    horizontal_state, horizontal_dry_air_mass = advect_horizontal_mass_flux(
-        tracer_field,
-        dry_air_mass,
-        xmass,
-        ymass,
-        area,
-        max_courant=max_courant,
+
+
+def _run_tpcore_one_step_from_mass(
+    tracer_field: TracerField,
+    forcing: TransportForcing,
+    dry_air_mass: np.ndarray,
+    area: np.ndarray,
+    hyai: np.ndarray,
+    hybi: np.ndarray,
+    *,
+    p2_hpa: np.ndarray,
+    dt_s: float,
+    p1_hpa: np.ndarray | None = None,
+) -> TransportStepResult:
+    if tracer_field.data.shape[1] != 1:
+        raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
+    if p1_hpa is None:
+        p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
+
+    setup = setup_tpcore_terms(
+        p1_hpa=p1_hpa,
+        p2_hpa=p2_hpa,
+        u_m_s=forcing.u_m_s[0],
+        v_m_s=forcing.v_m_s[0],
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=forcing.lat_deg,
+        dt_s=dt_s,
     )
-    zmass = vertical_mass_flux_hpa(dry_air_mass, horizontal_dry_air_mass, area)
-    state, next_dry_air_mass = advect_vertical_mass_flux(
-        horizontal_state,
-        horizontal_dry_air_mass,
-        zmass,
-        area,
-        max_courant=max_courant,
+    try:
+        validate_tpcore_branch_support(setup)
+    except NotImplementedError as exc:
+        report = analyze_tpcore_branches(setup)
+        raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
+
+    tpcore = run_tpcore_one_step(
+        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        p1_hpa=p1_hpa,
+        p2_hpa=p2_hpa,
+        u_m_s=forcing.u_m_s[0],
+        v_m_s=forcing.v_m_s[0],
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=forcing.lat_deg,
+        dt_s=dt_s,
     )
-    next_delp = _dry_air_mass_to_pressure(next_dry_air_mass, area)
+    next_delp = tpcore.delp2_hpa[np.newaxis, ...]
+    next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
+    state = TracerField(
+        names=tracer_field.names,
+        data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
+        units=tracer_field.units,
+        coords=tracer_field.coords,
+    )
     return TransportStepResult(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
         delp_dry_hpa=next_delp,
-        xmass_hpa=xmass,
-        ymass_hpa=ymass,
-        zmass_hpa=zmass,
+        xmass_hpa=tpcore.xmass_hpa[np.newaxis, ...],
+        ymass_hpa=tpcore.ymass_hpa[np.newaxis, ...],
+        zmass_hpa=_tpcore_vertical_flux_edges(tpcore.vertical_mass_flux_hpa),
         initial_scalar_mass=scalar_mass_by_tracer(tracer_field.data, dry_air_mass),
         final_scalar_mass=scalar_mass_by_tracer(state.data, next_dry_air_mass),
+    )
+
+
+def _tpcore_vertical_flux_edges(vertical_flux_hpa: np.ndarray) -> np.ndarray:
+    flux = np.asarray(vertical_flux_hpa, dtype=np.float64)
+    edges = np.zeros((1, flux.shape[0] + 1, flux.shape[1], flux.shape[2]), dtype=np.float64)
+    edges[:, :-1, :, :] = flux[np.newaxis, ...]
+    return edges
+
+
+def _format_tpcore_branch_preflight_error(report) -> str:
+    reasons = " | ".join(report.unsupported_reasons) or "unknown unsupported branch"
+    return (
+        "TPCORE branch preflight failed: "
+        f"{reasons}. shape={report.shape}, max_abs_cx={report.max_abs_cx:.8e}, "
+        f"max_abs_cy={report.max_abs_cy:.8e}, has_large_cx={report.has_large_cx}, "
+        f"has_large_cy={report.has_large_cy}, needs_fxppm={report.needs_fxppm}"
     )
 
 def _load_window_forcing(

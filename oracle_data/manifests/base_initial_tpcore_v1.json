@@ -28,5 +28,5 @@
     },
     "tracer_source": "base restart SpeciesRst_CO2"
   },
-  "status": "oracle coverage fixture; current Python TPCORE runs but does not yet match full-grid tracer parity"
+  "status": "oracle parity fixture for the full-grid one-tracer base initial-condition TPCORE path"
 }

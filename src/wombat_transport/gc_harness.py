@@ -41,9 +41,11 @@ LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
 BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
+RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v1"
 FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v1"
 LARGE_ORACLE_FIXTURE_IDS = (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
+    RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
     FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
 )
 
@@ -188,6 +190,7 @@ class PythonTpcoreComparison:
     surface_pressure_mean_abs_error_hpa: float
     tracer_max_abs_error: float
     tracer_mean_abs_error: float
+    negative_count_after: int
     max_abs_cx: float
     max_abs_cy: float
 
@@ -660,7 +663,7 @@ def generate_large_oracle_fixture(
     run_config_path = Path(run_config or source.get("run_config", "base_wombat/run.yml"))
     paths.directory.mkdir(parents=True, exist_ok=True)
     fixture_dt_s = float(source["dt_s"]) if dt_s is None and "dt_s" in source else dt_s
-    if fixture_id == BASE_INITIAL_TPCORE_FIXTURE_ID:
+    if fixture_id in {BASE_INITIAL_TPCORE_FIXTURE_ID, RESIDUAL_INITIAL_TPCORE_FIXTURE_ID}:
         write_transport_step_input_from_config(
             run_config_path,
             paths.input_path,
@@ -772,8 +775,11 @@ def compare_large_oracle_fixture(
     transport = compare_transport_step_output(paths.input_path, paths.output_path)
     setup = _setup_tpcore_from_input(paths.input_path)
     branch_report = analyze_tpcore_branches(setup)
+    tracer_names = _read_transport_step_tracer_names(paths.input_path)
     rows = [
         "metric,value",
+        f"tracer_count,{len(tracer_names)}",
+        f"tracer_names,{' | '.join(tracer_names)}",
         f"xmass_max_abs_error_hpa,{transport.xmass_max_abs_error_hpa:.8e}",
         f"xmass_mean_abs_error_hpa,{transport.xmass_mean_abs_error_hpa:.8e}",
         f"ymass_max_abs_error_hpa,{transport.ymass_max_abs_error_hpa:.8e}",
@@ -798,6 +804,7 @@ def compare_large_oracle_fixture(
                 f"surface_pressure_mean_abs_error_hpa,{tpcore.surface_pressure_mean_abs_error_hpa:.8e}",
                 f"tracer_max_abs_error,{tpcore.tracer_max_abs_error:.8e}",
                 f"tracer_mean_abs_error,{tpcore.tracer_mean_abs_error:.8e}",
+                f"python_negative_count_after,{tpcore.negative_count_after}",
             ]
         )
     return "\n".join(rows)
@@ -935,6 +942,14 @@ def read_tpcore_input(path: str | Path) -> TpcoreInput:
             tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
             dt_s=float(getattr(dataset, "dt_s")),
         )
+
+
+def _read_transport_step_tracer_names(path: str | Path) -> tuple[str, ...]:
+    with netCDF4.Dataset(path) as dataset:
+        if "tracer_name" not in dataset.variables:
+            return tuple(f"tracer_{index + 1:03d}" for index in range(len(dataset.dimensions["tracer"])))
+        decoded = netCDF4.chartostring(dataset.variables["tracer_name"][:])
+        return tuple(str(value).strip() for value in decoded)
 
 
 def write_python_tpcore_trace(input_path: str | Path, output_path: str | Path) -> Path:
@@ -1125,6 +1140,7 @@ def compare_python_tpcore_output(input_path: str | Path, output_path: str | Path
         surface_pressure_mean_abs_error_hpa=float(np.mean(ps_error)),
         tracer_max_abs_error=float(np.max(tracer_error)),
         tracer_mean_abs_error=float(np.mean(tracer_error)),
+        negative_count_after=int(np.count_nonzero(actual.tracer_conc_after < 0.0)),
         max_abs_cx=float(np.max(np.abs(setup.cx))),
         max_abs_cy=float(np.max(np.abs(setup.cy))),
     )
@@ -1541,6 +1557,7 @@ def format_python_tpcore_comparison(comparison: PythonTpcoreComparison) -> str:
             f"surface_pressure_mean_abs_error_hpa,{comparison.surface_pressure_mean_abs_error_hpa:.8e}",
             f"tracer_max_abs_error,{comparison.tracer_max_abs_error:.8e}",
             f"tracer_mean_abs_error,{comparison.tracer_mean_abs_error:.8e}",
+            f"python_negative_count_after,{comparison.negative_count_after}",
             f"max_abs_cx,{comparison.max_abs_cx:.8e}",
             f"max_abs_cy,{comparison.max_abs_cy:.8e}",
         ]

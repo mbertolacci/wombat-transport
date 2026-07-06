@@ -4,7 +4,7 @@ The first tracked oracle fixture is intentionally compact and low-Courant:
 ``tests/fixtures/tpcore_snapshot_v1`` has max ``|cx|`` around 0.0023 and max
 ``|cy|`` around 0.0008. Matching that fixture is useful one-step coverage for
 the ordinary low-Courant branches. Additional branch fixtures cover X full-PPM
-and expose the remaining large-Courant E-W mismatch. Full-grid validation must
+and compact large-Courant E-W behavior. Full-grid validation must
 keep those branch limits visible instead of treating any compact fixture as
 comprehensive TPCORE parity.
 """

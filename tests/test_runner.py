@@ -222,6 +222,7 @@ def test_run_cli_base_transport_one_step_smoke():
     )
 
     assert "mode: transport-one-step" in completed.stdout
+    assert "transport_operator: tpcore" in completed.stdout
     assert "transport_steps: 1" in completed.stdout
     assert "max_transport_scalar_mass_error:" in completed.stdout
     assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
@@ -245,6 +246,7 @@ def test_run_cli_base_transport_window_smoke():
     )
 
     assert "mode: transport-window" in completed.stdout
+    assert "transport_operator: tpcore" in completed.stdout
     assert "transport_steps: 2" in completed.stdout
     assert "max_transport_scalar_mass_error:" in completed.stdout
     assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout

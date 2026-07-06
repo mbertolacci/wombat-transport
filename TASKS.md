@@ -26,10 +26,11 @@ Validation at that checkpoint:
     `XMASS`/`YMASS`;
   - a NumPy `TPCORE_FVDAS` one-step path matching the compact low-Courant
     oracle fixture, branch-isolating fixtures, the full-grid synthetic
-    low-Courant fixture, and the full-grid base initial-condition fixture for
-    pressure, mass fluxes, and final tracer concentrations;
-  - horizontal mass-flux advection scaffold;
-  - closed-boundary vertical continuity/advection scaffold;
+    low-Courant fixture, the full-grid base initial-condition fixture, and the
+    24-tracer residual initial-condition fixture for pressure, mass fluxes,
+    and final tracer concentrations;
+  - legacy horizontal and vertical advection scaffold helpers retained for
+    focused unit tests;
   - three-hour window averaging for equivalence checks against GEOS-Chem
     diagnostics;
   - pressure-thickness and pressure-edge comparison output against
@@ -51,19 +52,16 @@ Validation at that checkpoint:
 
 ## Important Caveats
 
-- The transport scaffold is still separate from the new GEOS-Chem-oriented
-  TPCORE oracle path; full-window transport is not yet routed through a
-  production TPCORE/PBL/convection sequence.
-- Horizontal and vertical tracer reconstruction is first-order upwind, not the
-  GEOS-Chem TPCORE high-order limiter path in the older scaffold.
-- The vertical flux currently redistributes mass by column continuity rather
-  than porting the full GEOS-Chem TPCORE pressure machinery in the older
-  scaffold.
+- `transport-one-step` and `transport-window` now route through the
+  GEOS-Chem-oriented NumPy TPCORE port. PBL mixing and convection are still not
+  included in the production transport sequence.
+- The older first-order horizontal and vertical scaffold remains in the package
+  for unit tests and narrow comparisons, but it is no longer used by the main
+  transport driver modes.
 - The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
-  one-step TPCORE stages. The Python `compare-python-tpcore-output` path now
-  routes through the GEOS-Chem-oriented NumPy TPCORE port; the older scaffold
-  remains for non-oracle transport commands until the full operator sequence is
-  ready.
+  one-step TPCORE stages. The Python `compare-python-tpcore-output` path and
+  main transport driver modes route through the GEOS-Chem-oriented NumPy
+  TPCORE port.
 - The TPCORE fixtures verify the shared PJC mass-flux stage and GEOS-Chem's
   one-step final tracer field on compact, branch-isolating, and full-grid
   one-step fixtures. This is evidence of one-step `TPCORE_FVDAS` parity for
@@ -77,14 +75,18 @@ Validation at that checkpoint:
 - The Python TPCORE path now preflights the active branch set and raises a
   clear `NotImplementedError` for currently unsupported large-Courant N-S
   behavior instead of continuing silently outside the validated path.
-- PBL mixing, convection, residual multi-tracer one-step TPCORE coverage, and
-  performance benchmarks are not implemented yet.
+- PBL mixing, convection, three-hourly production validation, and performance
+  benchmarks are not implemented yet.
 - `oracle_data/manifests/base_initial_tpcore_v1.json` defines the first
   full-grid base initial-condition PJC+TPCORE fixture. It is useful for oracle
   coverage and branch reporting. Current Python TPCORE matches it at
   roundoff: `tracer_max_abs_error = 3.79470760e-18`,
   `surface_pressure_max_abs_error_hpa = 6.82121026e-13`, and trace-stage
   `q_after_cross_terms = 2.76471554e-18`.
+- `oracle_data/manifests/residual_initial_tpcore_v1.json` defines the
+  full-grid 24-tracer residual initial-condition PJC+TPCORE fixture. It guards
+  residual tracer stacking/order and missing-restart `Background_VV`
+  initialization through one TPCORE step.
 - `oracle_data/manifests/fullgrid_synthetic_low_courant_tpcore_v1.json`
   defines a full-grid synthetic low-Courant control fixture. It matches Python
   TPCORE at tight tolerance, confirming that full-grid geometry is handled on

@@ -10,6 +10,7 @@ import pytest
 from wombat_transport.gc_harness import (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
     FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
+    RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
     PJC_SNAPSHOT_VERSION,
     PJC_INPUT_VERSION,
     PJC_OUTPUT_VERSION,
@@ -143,6 +144,46 @@ def test_fullgrid_synthetic_oracle_fixture_if_cached_matches_python_tpcore():
     assert comparison.tracer_max_abs_error < 1.0e-12
     assert comparison.max_abs_cx < 1.0
     assert comparison.max_abs_cy < 1.0
+
+
+def test_residual_initial_oracle_fixture_if_cached_matches_python_tpcore():
+    check = check_large_oracle_fixture(RESIDUAL_INITIAL_TPCORE_FIXTURE_ID)
+    if not check.is_available:
+        pytest.skip(format_large_oracle_fixture_check(check))
+
+    paths = large_oracle_fixture_paths(RESIDUAL_INITIAL_TPCORE_FIXTURE_ID)
+    with netCDF4.Dataset(paths.input_path) as dataset:
+        tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        names = tuple(str(value).strip() for value in netCDF4.chartostring(dataset.variables["tracer_name"][:]))
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+    branch_report = analyze_tpcore_branches(setup)
+
+    assert tracer.shape == (24, 47, 91, 144)
+    assert names[0] == "r0002p001s001"
+    assert names[-1] == "r0002p001s024"
+    assert branch_report.is_supported
+    assert branch_report.shape == (47, 91, 144)
+
+    report = compare_large_oracle_fixture(RESIDUAL_INITIAL_TPCORE_FIXTURE_ID)
+    metrics = dict(line.split(",", 1) for line in report.splitlines()[1:])
+
+    assert "tracer_count,24" in report
+    assert "r0002p001s001" in report
+    assert "r0002p001s024" in report
+    assert "python_negative_count_after,0" in report
+    assert float(metrics["tracer_max_abs_error"]) < 1.0e-16
+    assert float(metrics["max_abs_cx"]) > 0.0
+    assert float(metrics["max_abs_cy"]) > 0.0
 
 
 def test_write_pjc_input_records_fixture_contract(tmp_path):
