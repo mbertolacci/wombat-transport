@@ -55,6 +55,12 @@ Validation at that checkpoint:
   records GEOS-Chem's one-step final tracer field. It is the target for the
   next NumPy TPCORE port, not evidence that the current scaffold matches
   `TPCORE_FVDAS`.
+- The tracked compact TPCORE snapshot is a low-Courant fixture. Current
+  diagnostics report max `|cx|` about `0.0023` and max `|cy|` about `0.0008`,
+  so one-step parity on this fixture will cover the ordinary low-Courant
+  branches but will not prove the large-Courant polar/semi-Lagrangian TPCORE
+  branches. Add higher-Courant oracle coverage before claiming full TPCORE
+  parity on full-up tests.
 - PBL mixing, convection, negative-value filling, and performance benchmarks
   are not implemented yet.
 - Base run diagnostics are the best short-window target because base has
@@ -76,6 +82,8 @@ Validation at that checkpoint:
      update, pole handling, and negative fill.
    - Keep comparisons per substage; do not tune against only an aggregate
      concentration error.
+   - Use `compare-python-tpcore-output` to keep PJC flux, surface pressure,
+     tracer error, and fixture Courant limits visible as separate metrics.
 
 2. Lock down any remaining PJC differences before treating it as exact.
    - The current residual mass-flux differences are small but nonzero.
@@ -141,6 +149,7 @@ python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
 python -m wombat_transport.gc_harness transport-step base_wombat/run.yml --max-tracers 1
 python -m wombat_transport.gc_harness snapshot-tpcore tests/fixtures/tpcore_snapshot_v1
 python -m wombat_transport.gc_harness compare-transport-step-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
+python -m wombat_transport.gc_harness compare-python-tpcore-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```

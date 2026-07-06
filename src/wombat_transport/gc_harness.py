@@ -16,6 +16,7 @@ from wombat_transport.transport import (
     load_transport_forcing,
     pjc_mass_flux_hpa,
 )
+from wombat_transport.transport.tpcore import run_tpcore_one_step, setup_tpcore_terms
 
 
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
@@ -160,6 +161,20 @@ class TransportStepComparison:
     negative_count_after: int
     surface_pressure_min_hpa: float
     surface_pressure_max_hpa: float
+
+
+@dataclass(frozen=True)
+class PythonTpcoreComparison:
+    xmass_max_abs_error_hpa: float
+    xmass_mean_abs_error_hpa: float
+    ymass_max_abs_error_hpa: float
+    ymass_mean_abs_error_hpa: float
+    surface_pressure_max_abs_error_hpa: float
+    surface_pressure_mean_abs_error_hpa: float
+    tracer_max_abs_error: float
+    tracer_mean_abs_error: float
+    max_abs_cx: float
+    max_abs_cy: float
 
 
 @dataclass(frozen=True)
@@ -528,6 +543,62 @@ def compare_transport_step_output(input_path: str | Path, output_path: str | Pat
     )
 
 
+def compare_python_tpcore_output(input_path: str | Path, output_path: str | Path) -> PythonTpcoreComparison:
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != TRANSPORT_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {TRANSPORT_INPUT_VERSION} file")
+        lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
+        hyai = np.asarray(dataset.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        p1 = np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64)
+        p2 = np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64)
+        u = np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64)
+        v = np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64)
+        tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        dt_s = float(getattr(dataset, "dt_s"))
+    expected = read_transport_step_output(output_path)
+    actual = run_tpcore_one_step(
+        tracer_conc=tracer,
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
+        dt_s=dt_s,
+    )
+    setup = setup_tpcore_terms(
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        area_m2=area,
+        hyai_hpa=hyai,
+        hybi=hybi,
+        lat_deg=lat,
+        dt_s=dt_s,
+    )
+    x_error = np.abs(actual.xmass_hpa - expected.xmass_hpa)
+    y_error = np.abs(actual.ymass_hpa - expected.ymass_hpa)
+    ps_error = np.abs(actual.surface_pressure_hpa - expected.surface_pressure_hpa)
+    tracer_error = np.abs(actual.tracer_conc_after - expected.tracer_conc_after)
+    return PythonTpcoreComparison(
+        xmass_max_abs_error_hpa=float(np.max(x_error)),
+        xmass_mean_abs_error_hpa=float(np.mean(x_error)),
+        ymass_max_abs_error_hpa=float(np.max(y_error)),
+        ymass_mean_abs_error_hpa=float(np.mean(y_error)),
+        surface_pressure_max_abs_error_hpa=float(np.max(ps_error)),
+        surface_pressure_mean_abs_error_hpa=float(np.mean(ps_error)),
+        tracer_max_abs_error=float(np.max(tracer_error)),
+        tracer_mean_abs_error=float(np.mean(tracer_error)),
+        max_abs_cx=float(np.max(np.abs(setup.cx))),
+        max_abs_cy=float(np.max(np.abs(setup.cy))),
+    )
+
+
 def run_pjc_harness(executable: str | Path, input_path: str | Path, output_path: str | Path) -> None:
     executable = Path(executable)
     if not executable.exists():
@@ -661,6 +732,24 @@ def format_transport_step_comparison(comparison: TransportStepComparison) -> str
     )
 
 
+def format_python_tpcore_comparison(comparison: PythonTpcoreComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"xmass_max_abs_error_hpa,{comparison.xmass_max_abs_error_hpa:.8e}",
+            f"xmass_mean_abs_error_hpa,{comparison.xmass_mean_abs_error_hpa:.8e}",
+            f"ymass_max_abs_error_hpa,{comparison.ymass_max_abs_error_hpa:.8e}",
+            f"ymass_mean_abs_error_hpa,{comparison.ymass_mean_abs_error_hpa:.8e}",
+            f"surface_pressure_max_abs_error_hpa,{comparison.surface_pressure_max_abs_error_hpa:.8e}",
+            f"surface_pressure_mean_abs_error_hpa,{comparison.surface_pressure_mean_abs_error_hpa:.8e}",
+            f"tracer_max_abs_error,{comparison.tracer_max_abs_error:.8e}",
+            f"tracer_mean_abs_error,{comparison.tracer_mean_abs_error:.8e}",
+            f"max_abs_cx,{comparison.max_abs_cx:.8e}",
+            f"max_abs_cy,{comparison.max_abs_cy:.8e}",
+        ]
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare and compare GEOS-Chem operator harness fixtures.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -692,6 +781,10 @@ def main(argv: list[str] | None = None) -> int:
     compare_transport_parser = subparsers.add_parser("compare-transport-step-output")
     compare_transport_parser.add_argument("input", type=Path)
     compare_transport_parser.add_argument("output", type=Path)
+
+    compare_python_tpcore_parser = subparsers.add_parser("compare-python-tpcore-output")
+    compare_python_tpcore_parser.add_argument("input", type=Path)
+    compare_python_tpcore_parser.add_argument("output", type=Path)
 
     snapshot_parser = subparsers.add_parser("snapshot-pjc")
     snapshot_parser.add_argument("output_dir", type=Path)
@@ -736,6 +829,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare-transport-step-output":
         print(format_transport_step_comparison(compare_transport_step_output(args.input, args.output)))
+        return 0
+    if args.command == "compare-python-tpcore-output":
+        print(format_python_tpcore_comparison(compare_python_tpcore_output(args.input, args.output)))
         return 0
     if args.command == "snapshot-pjc":
         output_dir = snapshot_pjc_oracle(args.output_dir, executable=args.executable, dt_s=args.dt_s)

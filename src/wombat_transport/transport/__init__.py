@@ -29,6 +29,12 @@ from wombat_transport.transport.scaffold import (
     horizontal_mass_flux_hpa,
     vertical_mass_flux_hpa,
 )
+from wombat_transport.transport.tpcore import (
+    TpcoreSetup,
+    TpcoreState,
+    run_tpcore_one_step,
+    setup_tpcore_terms,
+)
 
 __all__ = [
     "MERRA2_72_AP_HPA",
@@ -38,6 +44,8 @@ __all__ = [
     "TransportForcing",
     "TransportStepResult",
     "TransportWindowResult",
+    "TpcoreSetup",
+    "TpcoreState",
     "_map_met_levels_to_47",
     "advect_horizontal_mass_flux",
     "advect_vertical_mass_flux",
@@ -50,6 +58,8 @@ __all__ = [
     "pressure_edges_hpa",
     "run_transport_one_step",
     "run_transport_window",
+    "run_tpcore_one_step",
     "scalar_mass_by_tracer",
+    "setup_tpcore_terms",
     "vertical_mass_flux_hpa",
 ]

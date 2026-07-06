@@ -21,6 +21,7 @@ from wombat_transport.gc_harness import (
     TRANSPORT_OUTPUT_VERSION,
     append_transport_step_tracers,
     compare_pjc_output,
+    compare_python_tpcore_output,
     compare_transport_step_output,
     read_transport_step_output,
     run_pjc_harness,
@@ -29,6 +30,7 @@ from wombat_transport.gc_harness import (
     write_pjc_input,
 )
 from wombat_transport.transport import pjc_mass_flux_hpa
+from wombat_transport.transport.tpcore import setup_tpcore_terms
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
@@ -184,6 +186,40 @@ def test_tpcore_step_snapshot_records_geos_chem_oracle_boundary():
     assert comparison.tracer_max_abs_change > 0.0
     assert comparison.negative_count_after == 0
     assert 0.0 < comparison.surface_pressure_min_hpa < comparison.surface_pressure_max_hpa
+
+
+def test_python_tpcore_setup_matches_oracle_pressure_on_low_courant_fixture():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+    oracle = read_transport_step_output(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME)
+
+    np.testing.assert_array_equal(setup.surface_pressure_hpa, oracle.surface_pressure_hpa)
+    assert float(np.max(np.abs(setup.cx))) < 1.0
+    assert float(np.max(np.abs(setup.cy))) < 1.0
+
+
+def test_python_tpcore_comparison_reports_tracer_kernel_gap_explicitly():
+    comparison = compare_python_tpcore_output(
+        TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
+        TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME,
+    )
+
+    assert comparison.xmass_max_abs_error_hpa < 1.0e-12
+    assert comparison.ymass_max_abs_error_hpa < 1.0e-12
+    assert comparison.surface_pressure_max_abs_error_hpa == 0.0
+    assert comparison.tracer_max_abs_error > 0.0
+    assert comparison.max_abs_cx < 1.0
+    assert comparison.max_abs_cy < 1.0
 
 
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
