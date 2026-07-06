@@ -43,6 +43,7 @@ from wombat_transport.gc_harness import (
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
+    _calc_advec_cross_terms,
     analyze_tpcore_branches,
     run_tpcore_one_step,
     setup_tpcore_terms,
@@ -364,6 +365,21 @@ def test_tpcore_branch_report_accepts_low_courant_oracle_path():
     assert not report.has_large_cx
     assert not report.has_large_cy
     assert not report.needs_fxppm
+
+
+def test_calc_advec_cross_terms_uses_geos_real_index_for_positive_fractional_offsets():
+    rows = np.arange(7, dtype=np.float64)[:, None]
+    cols = np.arange(8, dtype=np.float64)[None, :]
+    q = 100.0 * rows**2 + cols**2
+    ua = np.zeros_like(q)
+    va = np.zeros_like(q)
+    ua[3, 3] = 0.25
+    va[3, 3] = 0.25
+
+    qqu, qqv = _calc_advec_cross_terms(q, ua, va, jn=5, js=1)
+
+    assert qqu[3, 3] == pytest.approx(q[3, 3] + 0.5 * 0.25 * (q[3, 2] - q[3, 3]))
+    assert qqv[3, 3] == pytest.approx(q[3, 3] + 0.5 * 0.25 * (q[2, 3] - q[3, 3]))
 
 
 def test_tpcore_branch_report_identifies_fxppm_path():

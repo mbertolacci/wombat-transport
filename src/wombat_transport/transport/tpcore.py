@@ -587,9 +587,9 @@ def _calc_advec_cross_terms(
                     qqu[j, i] = _q_lon(q, j, iu) + ru * (_q_lon(q, j, iu) - _q_lon(q, j, iu + 1))
                 qqu[j, i] -= q[j, i]
             else:
-                iu = i - _trunc_toward_zero(ua[j, i])
+                iu = _real_index_offset(i, ua[j, i])
                 qqu[j, i] = ua[j, i] * (_q_lon(q, j, iu) - _q_lon(q, j, iu + 1))
-            jv = j - _trunc_toward_zero(va[j, i])
+            jv = _real_index_offset(j, va[j, i])
             qqv[j, i] = va[j, i] * (_q_lat(q, i, jv) - _q_lat(q, i, jv + 1))
     qqu = q + 0.5 * qqu
     qqv = q + 0.5 * qqv
