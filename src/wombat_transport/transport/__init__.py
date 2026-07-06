@@ -25,9 +25,7 @@ from wombat_transport.transport.pressure import (
 )
 from wombat_transport.transport.scaffold import (
     advect_horizontal_mass_flux,
-    advect_horizontal_upwind,
     advect_vertical_mass_flux,
-    horizontal_grid_spacing,
     horizontal_mass_flux_hpa,
     vertical_mass_flux_hpa,
 )
@@ -42,12 +40,10 @@ __all__ = [
     "TransportWindowResult",
     "_map_met_levels_to_47",
     "advect_horizontal_mass_flux",
-    "advect_horizontal_upwind",
     "advect_vertical_mass_flux",
     "dry_air_mass_from_pressure",
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
-    "horizontal_grid_spacing",
     "horizontal_mass_flux_hpa",
     "load_transport_forcing",
     "pjc_mass_flux_hpa",

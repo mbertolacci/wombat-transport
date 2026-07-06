@@ -249,5 +249,8 @@ that requirement explicit and fail with a clear message.
   notebooks for core logic.
 - Document every intentional deviation from GEOS-Chem behavior in code or
   comparison output.
+- Keep temporary scaffold code clearly labeled, and remove it once the
+  corresponding GEOS-Chem-parity operator or harness-backed replacement makes
+  it irrelevant.
 - If user changes are present in the worktree, preserve them and work around
   them rather than reverting.

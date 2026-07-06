@@ -14,7 +14,6 @@ from wombat_transport.transport import (
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
     advect_horizontal_mass_flux,
-    advect_horizontal_upwind,
     advect_vertical_mass_flux,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
@@ -112,30 +111,6 @@ def test_horizontal_mass_fluxes_are_finite_with_closed_southern_edge():
     np.testing.assert_array_equal(ymass[:, :, 0, :], 0.0)
 
 
-def test_zero_wind_transport_leaves_field_and_air_mass_unchanged():
-    config = load_run_config(BASE_CONFIG)
-    field = initialize_tracers(config.initial_restart, config.species_database)
-    forcing = _load_forcing(config)
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
-        area = np.asarray(dataset.variables["AREA"][:])
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
-    zero = np.zeros_like(forcing.u_m_s)
-
-    transported, next_air_mass = advect_horizontal_upwind(
-        field,
-        dry_air_mass,
-        zero,
-        zero,
-        forcing.lat_deg,
-        forcing.lon_deg,
-        dt_s=600.0,
-    )
-
-    np.testing.assert_array_equal(transported.data, field.data)
-    np.testing.assert_array_equal(next_air_mass, dry_air_mass)
-
-
 def test_zero_mass_flux_transport_leaves_field_and_air_mass_unchanged():
     config = load_run_config(BASE_CONFIG)
     field = initialize_tracers(config.initial_restart, config.species_database)
@@ -211,42 +186,6 @@ def test_vertical_mass_flux_transport_reaches_column_fraction_target():
     np.testing.assert_allclose(
         scalar_mass_by_tracer(transported.data, next_air_mass),
         scalar_mass_by_tracer(field.data, horizontal),
-        rtol=1e-14,
-    )
-
-
-def test_uniform_field_stays_uniform_and_conserves_mass_with_real_winds():
-    config = load_run_config(BASE_CONFIG)
-    field = initialize_tracers(config.initial_restart, config.species_database)
-    uniform = TracerField(
-        names=field.names,
-        data=np.full_like(field.data, 0.0004),
-        units=field.units,
-        coords=field.coords,
-    )
-    forcing = _load_forcing(config)
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        hyai = np.asarray(dataset.variables["hyai"][:])
-        hybi = np.asarray(dataset.variables["hybi"][:])
-        area = np.asarray(dataset.variables["AREA"][:])
-    delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
-
-    transported, next_air_mass = advect_horizontal_upwind(
-        uniform,
-        dry_air_mass,
-        forcing.u_m_s,
-        forcing.v_m_s,
-        forcing.lat_deg,
-        forcing.lon_deg,
-        dt_s=600.0,
-    )
-
-    np.testing.assert_allclose(transported.data, uniform.data, rtol=0.0, atol=1e-18)
-    np.testing.assert_allclose(np.sum(next_air_mass), np.sum(dry_air_mass), rtol=1e-14)
-    np.testing.assert_allclose(
-        scalar_mass_by_tracer(transported.data, next_air_mass),
-        scalar_mass_by_tracer(uniform.data, dry_air_mass),
         rtol=1e-14,
     )
 
