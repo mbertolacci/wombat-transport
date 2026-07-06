@@ -10,8 +10,8 @@ The intended shape is one incremental full-state harness:
 - fill more `MetState`, `ChmState`, and option fields for PBL mixing and
   convection later.
 
-Generated NetCDF inputs and outputs belong in `tools/gc_harness/work/` or
-another scratch directory and should not be committed.
+Generated NetCDF inputs and outputs belong in `tools/gc_harness/work/`,
+`oracle_data/`, or another scratch directory and should not be committed.
 
 The PJC executable is a GEOS-Chem oracle for this operator stage. The current
 Python comparison command contrasts that output with Wombat's NumPy PJC port.
@@ -53,6 +53,34 @@ used by unit tests. Run it deliberately when the GEOS-Chem reference version or
 the PJC fixture contract changes, then review the NetCDF/metadata diff.
 The `snapshot-tpcore` command does the same for the compact one-step
 `DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle fixture.
+
+## Large Oracle Fixture Cache
+
+Full-grid, restart-derived, or multi-step fixtures are intentionally separate
+from the tracked microscope snapshots. The local cache lives under
+`oracle_data/`; NetCDF payloads there are ignored by git, while lightweight
+fixture definitions under `oracle_data/manifests/` are tracked.
+
+The first registered large fixture is `base_initial_tpcore_v1`: a full-grid
+one-tracer base-run initial-condition `DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle.
+It is generated from `base_wombat/run.yml`, the base restart, and local MERRA2
+met. It is an oracle/coverage fixture first; current Python TPCORE is expected
+to report unsupported full-grid branches until those paths are ported.
+
+```bash
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
+```
+
+When hosted artifacts are available, add URLs and SHA256 checksums to the
+tracked manifest and populate the same cache layout with:
+
+```bash
+python -m wombat_transport.gc_harness oracle-fixture-fetch base_initial_tpcore_v1
+```
 
 ## Build Sketch
 

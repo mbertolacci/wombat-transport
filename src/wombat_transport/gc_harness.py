@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import urlretrieve
 
 import netCDF4
 import numpy as np
@@ -16,7 +19,7 @@ from wombat_transport.transport import (
     load_transport_forcing,
     pjc_mass_flux_hpa,
 )
-from wombat_transport.transport.tpcore import run_tpcore_one_step, setup_tpcore_terms
+from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
 
 
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
@@ -31,6 +34,9 @@ SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
 TPCORE_SNAPSHOT_INPUT_NAME = "tpcore_input.nc"
 TPCORE_SNAPSHOT_OUTPUT_NAME = "tpcore_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
+LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
+BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
+LARGE_ORACLE_FIXTURE_IDS = (BASE_INITIAL_TPCORE_FIXTURE_ID,)
 
 GEOS_47_AP_HPA = np.array(
     [
@@ -183,6 +189,29 @@ class TransportStepOutput:
     xmass_hpa: np.ndarray
     ymass_hpa: np.ndarray
     surface_pressure_hpa: np.ndarray
+
+
+@dataclass(frozen=True)
+class LargeOracleFixturePaths:
+    fixture_id: str
+    directory: Path
+    input_path: Path
+    output_path: Path
+    manifest_path: Path
+    definition_path: Path
+
+
+@dataclass(frozen=True)
+class LargeOracleFixtureCheck:
+    fixture_id: str
+    manifest_path: Path
+    missing_files: tuple[str, ...]
+    checksum_failures: tuple[str, ...]
+    unchecked_files: tuple[str, ...]
+
+    @property
+    def is_available(self) -> bool:
+        return not self.missing_files and not self.checksum_failures and not self.unchecked_files
 
 
 def write_pjc_input_from_config(
@@ -357,6 +386,188 @@ def snapshot_tpcore_oracle(
         json.dump(metadata, handle, indent=2, sort_keys=True)
         handle.write("\n")
     return output_dir
+
+
+def large_oracle_fixture_paths(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+) -> LargeOracleFixturePaths:
+    if fixture_id not in LARGE_ORACLE_FIXTURE_IDS:
+        raise ValueError(f"unknown large oracle fixture {fixture_id!r}; expected one of {LARGE_ORACLE_FIXTURE_IDS}")
+    cache = Path(cache_dir)
+    definitions = Path(manifest_dir) if manifest_dir is not None else Path("oracle_data") / "manifests"
+    directory = cache / fixture_id
+    return LargeOracleFixturePaths(
+        fixture_id=fixture_id,
+        directory=directory,
+        input_path=directory / "transport_step_input.nc",
+        output_path=directory / "transport_step_output.nc",
+        manifest_path=directory / LARGE_ORACLE_MANIFEST_NAME,
+        definition_path=definitions / f"{fixture_id}.json",
+    )
+
+
+def generate_large_oracle_fixture(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+    run_config: str | Path | None = None,
+    executable: str | Path = "tools/gc_harness/build/pjc_pfix_harness",
+    time_index: int | None = None,
+    tracer_time_index: int | None = None,
+    max_tracers: int | None = None,
+    dt_s: float | None = None,
+    repo_root: str | Path = ".",
+) -> Path:
+    if fixture_id != BASE_INITIAL_TPCORE_FIXTURE_ID:
+        raise ValueError(f"no generator is registered for {fixture_id!r}")
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    definition = _load_large_oracle_definition(paths.definition_path)
+    source = dict(definition.get("source", {}))
+    run_config_path = Path(run_config or source.get("run_config", "base_wombat/run.yml"))
+    paths.directory.mkdir(parents=True, exist_ok=True)
+    write_transport_step_input_from_config(
+        run_config_path,
+        paths.input_path,
+        time_index=int(source.get("time_index", 0) if time_index is None else time_index),
+        tracer_time_index=int(source.get("tracer_time_index", 0) if tracer_time_index is None else tracer_time_index),
+        max_tracers=int(source.get("max_tracers", 1) if max_tracers is None else max_tracers),
+        dt_s=float(source["dt_s"]) if dt_s is None and "dt_s" in source else dt_s,
+    )
+    run_pjc_harness(executable, paths.input_path, paths.output_path)
+    _write_generated_large_oracle_manifest(
+        paths,
+        definition=definition,
+        executable=Path(executable),
+        run_config=run_config_path,
+        repo_root=Path(repo_root),
+    )
+    return paths.directory
+
+
+def fetch_large_oracle_fixture(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+    overwrite: bool = False,
+) -> Path:
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    definition = _load_large_oracle_definition(paths.definition_path)
+    paths.directory.mkdir(parents=True, exist_ok=True)
+    for entry in _large_oracle_file_entries(definition):
+        url = entry.get("url")
+        if not url:
+            raise ValueError(
+                f"{paths.definition_path} does not define a download URL for {entry['name']}; "
+                "generate the fixture locally or update the manifest with hosted artifact URLs"
+            )
+        if not entry.get("sha256"):
+            raise ValueError(f"{paths.definition_path} does not define a SHA256 checksum for {entry['name']}")
+        target = paths.directory / str(entry["name"])
+        if target.exists() and not overwrite:
+            continue
+        parsed = urlparse(str(url))
+        if parsed.scheme not in {"http", "https", "file"}:
+            raise ValueError(f"unsupported URL scheme for {entry['name']}: {url}")
+        urlretrieve(str(url), target)
+    check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    if not check.is_available:
+        raise ValueError(format_large_oracle_fixture_check(check))
+    return paths.directory
+
+
+def check_large_oracle_fixture(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+) -> LargeOracleFixtureCheck:
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    manifest_path = paths.manifest_path if paths.manifest_path.exists() else paths.definition_path
+    manifest = _load_large_oracle_definition(manifest_path)
+    missing: list[str] = []
+    failures: list[str] = []
+    unchecked: list[str] = []
+    for entry in _large_oracle_file_entries(manifest):
+        filename = str(entry["name"])
+        path = paths.directory / filename
+        if not path.exists():
+            missing.append(filename)
+            continue
+        expected_size = entry.get("size_bytes")
+        if expected_size is not None and path.stat().st_size != int(expected_size):
+            failures.append(f"{filename}: size {path.stat().st_size} != {expected_size}")
+            continue
+        expected_hash = entry.get("sha256")
+        if expected_hash:
+            actual_hash = sha256_file(path)
+            if actual_hash != expected_hash:
+                failures.append(f"{filename}: sha256 {actual_hash} != {expected_hash}")
+        else:
+            unchecked.append(filename)
+    return LargeOracleFixtureCheck(
+        fixture_id=fixture_id,
+        manifest_path=manifest_path,
+        missing_files=tuple(missing),
+        checksum_failures=tuple(failures),
+        unchecked_files=tuple(unchecked),
+    )
+
+
+def compare_large_oracle_fixture(
+    fixture_id: str,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+) -> str:
+    check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    if not check.is_available:
+        raise FileNotFoundError(format_large_oracle_fixture_check(check))
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    transport = compare_transport_step_output(paths.input_path, paths.output_path)
+    setup = _setup_tpcore_from_input(paths.input_path)
+    branch_report = analyze_tpcore_branches(setup)
+    rows = [
+        "metric,value",
+        f"xmass_max_abs_error_hpa,{transport.xmass_max_abs_error_hpa:.8e}",
+        f"xmass_mean_abs_error_hpa,{transport.xmass_mean_abs_error_hpa:.8e}",
+        f"ymass_max_abs_error_hpa,{transport.ymass_max_abs_error_hpa:.8e}",
+        f"ymass_mean_abs_error_hpa,{transport.ymass_mean_abs_error_hpa:.8e}",
+        f"tracer_max_abs_change,{transport.tracer_max_abs_change:.8e}",
+        f"tracer_min_after,{transport.tracer_min_after:.8e}",
+        f"tracer_max_after,{transport.tracer_max_after:.8e}",
+        f"negative_count_after,{transport.negative_count_after}",
+        f"surface_pressure_min_hpa,{transport.surface_pressure_min_hpa:.8e}",
+        f"surface_pressure_max_hpa,{transport.surface_pressure_max_hpa:.8e}",
+        f"tpcore_shape,{branch_report.shape}",
+        f"max_abs_cx,{branch_report.max_abs_cx:.8e}",
+        f"max_abs_cy,{branch_report.max_abs_cy:.8e}",
+        f"tpcore_supported,{branch_report.is_supported}",
+        f"tpcore_unsupported_reasons,{' | '.join(branch_report.unsupported_reasons)}",
+    ]
+    if branch_report.is_supported:
+        tpcore = compare_python_tpcore_output(paths.input_path, paths.output_path)
+        rows.extend(
+            [
+                f"surface_pressure_max_abs_error_hpa,{tpcore.surface_pressure_max_abs_error_hpa:.8e}",
+                f"surface_pressure_mean_abs_error_hpa,{tpcore.surface_pressure_mean_abs_error_hpa:.8e}",
+                f"tracer_max_abs_error,{tpcore.tracer_max_abs_error:.8e}",
+                f"tracer_mean_abs_error,{tpcore.tracer_mean_abs_error:.8e}",
+            ]
+        )
+    return "\n".join(rows)
+
+
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def write_pjc_input(
@@ -609,6 +820,96 @@ def run_pjc_harness(executable: str | Path, input_path: str | Path, output_path:
     subprocess.run([str(executable), str(input_path), str(output_path)], check=True)
 
 
+def _load_large_oracle_definition(path: Path) -> dict[str, object]:
+    with path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    if "fixture_id" not in data:
+        raise ValueError(f"{path} is missing fixture_id")
+    if "files" not in data:
+        raise ValueError(f"{path} is missing files")
+    return data
+
+
+def _large_oracle_file_entries(manifest: dict[str, object]) -> tuple[dict[str, object], ...]:
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise ValueError("large oracle manifest files must be a list")
+    entries: list[dict[str, object]] = []
+    for entry in files:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            raise ValueError("large oracle manifest file entries must include name")
+        entries.append(entry)
+    return tuple(entries)
+
+
+def _write_generated_large_oracle_manifest(
+    paths: LargeOracleFixturePaths,
+    *,
+    definition: dict[str, object],
+    executable: Path,
+    run_config: Path,
+    repo_root: Path,
+) -> None:
+    setup = _setup_tpcore_from_input(paths.input_path)
+    report = analyze_tpcore_branches(setup)
+    manifest = {
+        "fixture_id": paths.fixture_id,
+        "description": definition.get("description"),
+        "definition_file": str(paths.definition_path),
+        "input_harness": TRANSPORT_INPUT_VERSION,
+        "output_harness": TRANSPORT_OUTPUT_VERSION,
+        "files": [
+            _large_oracle_file_record(paths.input_path),
+            _large_oracle_file_record(paths.output_path),
+        ],
+        "source": {
+            **dict(definition.get("source", {})),
+            "run_config": str(run_config),
+        },
+        "executable": str(executable),
+        "gcclassic_head": _git_head(repo_root / "GCClassic"),
+        "branch_report": {
+            "shape": list(report.shape),
+            "max_abs_cx": report.max_abs_cx,
+            "max_abs_cy": report.max_abs_cy,
+            "has_large_cx": report.has_large_cx,
+            "has_large_cy": report.has_large_cy,
+            "needs_fxppm": report.needs_fxppm,
+            "is_supported": report.is_supported,
+            "unsupported_reasons": list(report.unsupported_reasons),
+        },
+    }
+    with paths.manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _large_oracle_file_record(path: Path) -> dict[str, object]:
+    return {
+        "name": path.name,
+        "size_bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "url": None,
+    }
+
+
+def _setup_tpcore_from_input(input_path: str | Path):
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != TRANSPORT_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {TRANSPORT_INPUT_VERSION} file")
+        return setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(getattr(dataset, "dt_s")),
+        )
+
+
 def _spherical_band_area(lat_deg: np.ndarray, nlon: int) -> np.ndarray:
     from wombat_transport.constants import EARTH_RADIUS_M
 
@@ -750,6 +1051,19 @@ def format_python_tpcore_comparison(comparison: PythonTpcoreComparison) -> str:
     )
 
 
+def format_large_oracle_fixture_check(check: LargeOracleFixtureCheck) -> str:
+    rows = [
+        "metric,value",
+        f"fixture_id,{check.fixture_id}",
+        f"manifest,{check.manifest_path}",
+        f"available,{check.is_available}",
+        f"missing_files,{' | '.join(check.missing_files)}",
+        f"checksum_failures,{' | '.join(check.checksum_failures)}",
+        f"unchecked_files,{' | '.join(check.unchecked_files)}",
+    ]
+    return "\n".join(rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare and compare GEOS-Chem operator harness fixtures.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -796,6 +1110,33 @@ def main(argv: list[str] | None = None) -> int:
     tpcore_snapshot_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
     tpcore_snapshot_parser.add_argument("--dt-s", type=float, default=600.0)
     tpcore_snapshot_parser.add_argument("--ntracer", type=int, default=2)
+
+    generate_oracle_parser = subparsers.add_parser("oracle-fixture-generate")
+    generate_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
+    generate_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    generate_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
+    generate_oracle_parser.add_argument("--run-config", type=Path, default=None)
+    generate_oracle_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
+    generate_oracle_parser.add_argument("--time-index", type=int, default=None)
+    generate_oracle_parser.add_argument("--tracer-time-index", type=int, default=None)
+    generate_oracle_parser.add_argument("--max-tracers", type=int, default=None)
+    generate_oracle_parser.add_argument("--dt-s", type=float, default=None)
+
+    fetch_oracle_parser = subparsers.add_parser("oracle-fixture-fetch")
+    fetch_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
+    fetch_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    fetch_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
+    fetch_oracle_parser.add_argument("--overwrite", action="store_true")
+
+    check_oracle_parser = subparsers.add_parser("oracle-fixture-check")
+    check_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
+    check_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    check_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
+
+    compare_oracle_parser = subparsers.add_parser("oracle-fixture-compare")
+    compare_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
+    compare_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    compare_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
 
     args = parser.parse_args(argv)
     if args.command == "write-pjc-input":
@@ -845,6 +1186,39 @@ def main(argv: list[str] | None = None) -> int:
             ntracer=args.ntracer,
         )
         print(f"wrote_tpcore_snapshot: {output_dir}")
+        return 0
+    if args.command == "oracle-fixture-generate":
+        output_dir = generate_large_oracle_fixture(
+            args.fixture_id,
+            cache_dir=args.cache_dir,
+            manifest_dir=args.manifest_dir,
+            run_config=args.run_config,
+            executable=args.executable,
+            time_index=args.time_index,
+            tracer_time_index=args.tracer_time_index,
+            max_tracers=args.max_tracers,
+            dt_s=args.dt_s,
+        )
+        print(f"wrote_oracle_fixture: {output_dir}")
+        return 0
+    if args.command == "oracle-fixture-fetch":
+        output_dir = fetch_large_oracle_fixture(
+            args.fixture_id,
+            cache_dir=args.cache_dir,
+            manifest_dir=args.manifest_dir,
+            overwrite=args.overwrite,
+        )
+        print(f"fetched_oracle_fixture: {output_dir}")
+        return 0
+    if args.command == "oracle-fixture-check":
+        print(
+            format_large_oracle_fixture_check(
+                check_large_oracle_fixture(args.fixture_id, cache_dir=args.cache_dir, manifest_dir=args.manifest_dir)
+            )
+        )
+        return 0
+    if args.command == "oracle-fixture-compare":
+        print(compare_large_oracle_fixture(args.fixture_id, cache_dir=args.cache_dir, manifest_dir=args.manifest_dir))
         return 0
     raise AssertionError(f"unhandled command {args.command}")
 

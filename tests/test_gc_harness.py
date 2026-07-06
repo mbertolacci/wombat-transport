@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from wombat_transport.gc_harness import (
+    BASE_INITIAL_TPCORE_FIXTURE_ID,
     PJC_SNAPSHOT_VERSION,
     PJC_INPUT_VERSION,
     PJC_OUTPUT_VERSION,
@@ -20,11 +21,16 @@ from wombat_transport.gc_harness import (
     TRANSPORT_INPUT_VERSION,
     TRANSPORT_OUTPUT_VERSION,
     append_transport_step_tracers,
+    check_large_oracle_fixture,
     compare_pjc_output,
+    compare_large_oracle_fixture,
     compare_python_tpcore_output,
     compare_transport_step_output,
+    format_large_oracle_fixture_check,
+    large_oracle_fixture_paths,
     read_transport_step_output,
     run_pjc_harness,
+    sha256_file,
     write_synthetic_pjc_snapshot_input,
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
@@ -40,6 +46,61 @@ from wombat_transport.transport.tpcore import (
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
+
+
+def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
+    cache_dir = tmp_path / "oracle_data"
+    manifest_dir = cache_dir / "manifests"
+    payload_dir = cache_dir / BASE_INITIAL_TPCORE_FIXTURE_ID
+    manifest_dir.mkdir(parents=True)
+    payload_dir.mkdir()
+    input_path = payload_dir / "transport_step_input.nc"
+    output_path = payload_dir / "transport_step_output.nc"
+    input_path.write_bytes(b"input")
+    output_path.write_bytes(b"output")
+    _write_large_oracle_definition(
+        manifest_dir / f"{BASE_INITIAL_TPCORE_FIXTURE_ID}.json",
+        input_sha=sha256_file(input_path),
+        output_sha=sha256_file(output_path),
+        input_size=input_path.stat().st_size,
+        output_size=output_path.stat().st_size,
+    )
+
+    check = check_large_oracle_fixture(BASE_INITIAL_TPCORE_FIXTURE_ID, cache_dir=cache_dir, manifest_dir=manifest_dir)
+
+    assert check.is_available
+    assert check.missing_files == ()
+    assert check.checksum_failures == ()
+    assert check.unchecked_files == ()
+
+
+def test_large_oracle_fixture_check_reports_missing_payloads(tmp_path):
+    cache_dir = tmp_path / "oracle_data"
+    manifest_dir = cache_dir / "manifests"
+    manifest_dir.mkdir(parents=True)
+    _write_large_oracle_definition(manifest_dir / f"{BASE_INITIAL_TPCORE_FIXTURE_ID}.json")
+
+    check = check_large_oracle_fixture(BASE_INITIAL_TPCORE_FIXTURE_ID, cache_dir=cache_dir, manifest_dir=manifest_dir)
+
+    assert not check.is_available
+    assert check.missing_files == ("transport_step_input.nc", "transport_step_output.nc")
+    assert "available,False" in format_large_oracle_fixture_check(check)
+
+
+def test_large_base_oracle_fixture_if_cached_reports_pjc_and_tpcore_branches():
+    check = check_large_oracle_fixture(BASE_INITIAL_TPCORE_FIXTURE_ID)
+    if not check.is_available:
+        pytest.skip(format_large_oracle_fixture_check(check))
+
+    paths = large_oracle_fixture_paths(BASE_INITIAL_TPCORE_FIXTURE_ID)
+    assert paths.input_path.exists()
+    assert paths.output_path.exists()
+
+    report = compare_large_oracle_fixture(BASE_INITIAL_TPCORE_FIXTURE_ID)
+
+    assert "xmass_max_abs_error_hpa" in report
+    assert "tpcore_shape,(47, 91, 144)" in report
+    assert "tpcore_supported," in report
 
 
 def test_write_pjc_input_records_fixture_contract(tmp_path):
@@ -447,3 +508,31 @@ def _write_synthetic_pjc_input(path):
         v_m_s=v,
         dt_s=600.0,
     )
+
+
+def _write_large_oracle_definition(
+    path: Path,
+    *,
+    input_sha: str | None = None,
+    output_sha: str | None = None,
+    input_size: int | None = None,
+    output_size: int | None = None,
+) -> None:
+    payload = {
+        "fixture_id": BASE_INITIAL_TPCORE_FIXTURE_ID,
+        "files": [
+            {
+                "name": "transport_step_input.nc",
+                "sha256": input_sha,
+                "size_bytes": input_size,
+                "url": None,
+            },
+            {
+                "name": "transport_step_output.nc",
+                "sha256": output_sha,
+                "size_bytes": output_size,
+                "url": None,
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")

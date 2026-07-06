@@ -41,6 +41,10 @@ Validation at that checkpoint:
   - PJC mass fluxes, under `tests/fixtures/pjc_snapshot_v1/`;
   - one-step PJC plus `TPCORE_FVDAS`, under
     `tests/fixtures/tpcore_snapshot_v1/`.
+- Large real-run oracle fixtures now have a separate untracked cache policy
+  under `oracle_data/`. Tracked manifests describe the fixture contract; NetCDF
+  payloads are generated or fetched locally and verified by checksum before
+  optional tests use them.
 
 ## Important Caveats
 
@@ -73,6 +77,10 @@ Validation at that checkpoint:
   path.
 - PBL mixing, convection, full-grid/high-Courant TPCORE fixtures, and
   performance benchmarks are not implemented yet.
+- `oracle_data/manifests/base_initial_tpcore_v1.json` defines the first
+  full-grid base initial-condition PJC+TPCORE fixture. It is useful for oracle
+  coverage and branch reporting, but current Python TPCORE is expected to
+  reject the fixture until large-Courant and full X-PPM branches are ported.
 - Base run diagnostics are the best short-window target because base has
   matching SpeciesConc, LevelEdge, and StateMet files through 2014-09-22.
   Residual currently has SpeciesConc and HEMCO diagnostics but no StateMet or
@@ -89,6 +97,9 @@ Validation at that checkpoint:
      tracer concentrations with max error below `1e-11`.
    - Add a full-grid or deliberately higher-Courant oracle before claiming
      coverage for large-Courant polar/semi-Lagrangian branches.
+   - Use the `oracle_data/` cache for full-grid and later multi-step fixtures;
+     keep `tests/fixtures/` reserved for tiny microscope fixtures that can run
+     in normal unit tests.
    - Keep comparisons per substage; do not tune against only an aggregate
      concentration error.
    - Use `compare-python-tpcore-output` to keep PJC flux, surface pressure,
@@ -159,6 +170,9 @@ python -m wombat_transport.gc_harness transport-step base_wombat/run.yml --max-t
 python -m wombat_transport.gc_harness snapshot-tpcore tests/fixtures/tpcore_snapshot_v1
 python -m wombat_transport.gc_harness compare-transport-step-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
 python -m wombat_transport.gc_harness compare-python-tpcore-output tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
+python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
+python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```
