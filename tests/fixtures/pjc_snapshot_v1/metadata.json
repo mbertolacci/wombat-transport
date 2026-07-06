@@ -1,0 +1,15 @@
+{
+  "dt_s": 600.0,
+  "executable": "tools/gc_harness/build/pjc_pfix_harness",
+  "gcclassic_head": "603dd2b4e820df909ab3b6fc86a6b58d6eb1024c",
+  "input_file": "pjc_input.nc",
+  "input_harness": "pjc-pfix-input-v1",
+  "output_file": "pjc_output.nc",
+  "output_harness": "pjc-pfix-output-v1",
+  "shape": {
+    "lat": 7,
+    "lev": 47,
+    "lon": 8
+  },
+  "snapshot": "pjc-pfix-snapshot-v1"
+}

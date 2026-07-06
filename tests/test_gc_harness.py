@@ -1,21 +1,31 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import netCDF4
 import numpy as np
 import pytest
 
 from wombat_transport.gc_harness import (
+    PJC_SNAPSHOT_VERSION,
     PJC_INPUT_VERSION,
     PJC_OUTPUT_VERSION,
+    SNAPSHOT_INPUT_NAME,
+    SNAPSHOT_METADATA_NAME,
+    SNAPSHOT_OUTPUT_NAME,
     TRANSPORT_INPUT_VERSION,
     TRANSPORT_OUTPUT_VERSION,
     append_transport_step_tracers,
     compare_pjc_output,
     read_transport_step_output,
     run_pjc_harness,
+    write_synthetic_pjc_snapshot_input,
     write_pjc_input,
 )
 from wombat_transport.transport import pjc_mass_flux_hpa
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 
 
 def test_write_pjc_input_records_fixture_contract(tmp_path):
@@ -103,6 +113,34 @@ def test_pjc_mass_flux_preserves_contract_on_geos_like_grid():
     assert np.all(np.isfinite(xmass))
     assert np.all(np.isfinite(ymass))
     np.testing.assert_allclose(ymass, 0.0, atol=1.0e-12)
+
+
+def test_write_synthetic_pjc_snapshot_input_records_compact_47_level_contract(tmp_path):
+    input_path = write_synthetic_pjc_snapshot_input(tmp_path / SNAPSHOT_INPUT_NAME)
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == PJC_INPUT_VERSION
+        assert dataset.dt_s == 600.0
+        assert dataset.dimensions["lon"].size == 8
+        assert dataset.dimensions["lat"].size == 7
+        assert dataset.dimensions["lev"].size == 47
+        assert dataset.dimensions["ilev"].size == 48
+        assert dataset.variables["u_m_s"].shape == (47, 7, 8)
+        assert dataset.variables["area_m2"].shape == (7, 8)
+
+
+def test_pjc_mass_flux_matches_tracked_geos_chem_snapshot():
+    with (FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    assert metadata["snapshot"] == PJC_SNAPSHOT_VERSION
+    assert metadata["shape"] == {"lev": 47, "lat": 7, "lon": 8}
+
+    comparison = compare_pjc_output(FIXTURE_DIR / SNAPSHOT_INPUT_NAME, FIXTURE_DIR / SNAPSHOT_OUTPUT_NAME)
+
+    assert comparison.xmass_max_abs_error_hpa < 1.0e-12
+    assert comparison.xmass_mean_abs_error_hpa < 1.0e-13
+    assert comparison.ymass_max_abs_error_hpa < 1.0e-12
+    assert comparison.ymass_mean_abs_error_hpa < 1.0e-13
 
 
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):

@@ -14,9 +14,9 @@ Generated NetCDF inputs and outputs belong in `tools/gc_harness/work/` or
 another scratch directory and should not be committed.
 
 The PJC executable is a GEOS-Chem oracle for this operator stage. The current
-Python comparison command contrasts that output with Wombat's existing
-approximate mass-flux scaffold; it is a smoke check and diagnostic, not the
-final PJC equivalence criterion.
+Python comparison command contrasts that output with Wombat's NumPy PJC port.
+The tracked snapshot fixture keeps this parity check in the fast unit-test
+suite without requiring the GEOS-Chem executable during normal test runs.
 
 When the fixture includes `tracer_conc(tracer, lev, lat, lon)`, the same
 executable runs one `DO_PJC_PFIX` plus `TPCORE_FVDAS` step and writes
@@ -33,7 +33,14 @@ python -m wombat_transport.gc_harness compare-pjc-output \
 
 python -m wombat_transport.gc_harness transport-step \
   base_wombat/run.yml --max-tracers 1
+
+python -m wombat_transport.gc_harness snapshot-pjc \
+  tests/fixtures/pjc_snapshot_v1
 ```
+
+The `snapshot-pjc` command regenerates the small tracked PJC oracle fixture
+used by unit tests. Run it deliberately when the GEOS-Chem reference version or
+the PJC fixture contract changes, then review the NetCDF/metadata diff.
 
 ## Build Sketch
 

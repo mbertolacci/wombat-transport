@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,8 +21,120 @@ from wombat_transport.transport import (
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 PJC_INPUT_VERSION = "pjc-pfix-input-v1"
 PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
+PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
 TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
 TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
+SNAPSHOT_INPUT_NAME = "pjc_input.nc"
+SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
+SNAPSHOT_METADATA_NAME = "metadata.json"
+
+GEOS_47_AP_HPA = np.array(
+    [
+        0.0,
+        0.04804826,
+        6.593752,
+        13.1348,
+        19.61311,
+        26.09201,
+        32.57081,
+        38.98201,
+        45.33901,
+        51.69611,
+        58.05321,
+        64.36264,
+        70.62198,
+        78.83422,
+        89.09992,
+        99.36521,
+        109.1817,
+        118.9586,
+        128.6959,
+        142.91,
+        156.26,
+        169.609,
+        181.619,
+        193.097,
+        203.259,
+        212.15,
+        218.776,
+        223.898,
+        224.363,
+        216.865,
+        201.192,
+        176.93,
+        150.393,
+        127.837,
+        108.663,
+        92.36572,
+        78.51231,
+        56.38791,
+        40.17541,
+        28.36781,
+        19.7916,
+        9.292942,
+        4.076571,
+        1.65079,
+        0.6167791,
+        0.211349,
+        0.06600001,
+        0.01,
+    ],
+    dtype=np.float64,
+)
+
+GEOS_47_BP = np.array(
+    [
+        1.0,
+        0.984952,
+        0.963406,
+        0.941865,
+        0.920387,
+        0.898908,
+        0.877429,
+        0.856018,
+        0.8346609,
+        0.8133039,
+        0.7919469,
+        0.7706375,
+        0.7493782,
+        0.721166,
+        0.6858999,
+        0.6506349,
+        0.6158184,
+        0.5810415,
+        0.5463042,
+        0.4945902,
+        0.4437402,
+        0.3928911,
+        0.3433811,
+        0.2944031,
+        0.2467411,
+        0.2003501,
+        0.1562241,
+        0.1136021,
+        0.06372006,
+        0.02801004,
+        0.006960025,
+        8.175413e-09,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    dtype=np.float64,
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +219,63 @@ def write_transport_step_input_from_config(
     )
     append_transport_step_tracers(forcing_path, tracer_data, tracer_names=tracer_names)
     return forcing_path
+
+
+def write_synthetic_pjc_snapshot_input(path: str | Path, *, dt_s: float = 600.0) -> Path:
+    """Write a compact deterministic 47-level PJC oracle input fixture."""
+
+    lat = np.array([-89.5, -60.0, -30.0, 0.0, 30.0, 60.0, 89.5], dtype=np.float64)
+    lon = np.arange(8, dtype=np.float64) * 45.0
+    area = _spherical_band_area(lat, lon.size)
+    level = np.arange(GEOS_47_AP_HPA.size - 1, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    j = np.arange(lat.size, dtype=np.float64)[np.newaxis, :, np.newaxis]
+    i = np.arange(lon.size, dtype=np.float64)[np.newaxis, np.newaxis, :]
+
+    p1 = 970.0
+    p1 = p1 + 18.0 * np.cos(np.deg2rad(lat))[:, np.newaxis]
+    p1 = p1 + 1.5 * np.sin(2.0 * np.pi * np.arange(lon.size, dtype=np.float64)[np.newaxis, :] / lon.size)
+    p2 = p1
+    p2 = p2 + 0.8 * np.cos(2.0 * np.pi * np.arange(lon.size, dtype=np.float64)[np.newaxis, :] / lon.size)
+    p2 = p2 - 0.5 * np.sin(np.deg2rad(lat))[:, np.newaxis]
+
+    u = 8.0 * np.sin((level + 1.0) / 47.0 * np.pi) * np.cos(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    u = u + 0.2 * (i - 3.5)
+    v = 2.0 * np.cos((level + 1.0) / 47.0 * np.pi) * np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    v = v + 0.1 * np.sin(2.0 * np.pi * i / lon.size)
+    v = v + 0.015 * (j - 3.0)
+
+    return write_pjc_input(
+        path,
+        lat_deg=lat,
+        lon_deg=lon,
+        area_m2=area,
+        hyai_hpa=GEOS_47_AP_HPA,
+        hybi=GEOS_47_BP,
+        p1_hpa=p1,
+        p2_hpa=p2,
+        u_m_s=u,
+        v_m_s=v,
+        dt_s=dt_s,
+    )
+
+
+def snapshot_pjc_oracle(
+    output_dir: str | Path,
+    *,
+    executable: str | Path,
+    dt_s: float = 600.0,
+    repo_root: str | Path = ".",
+) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    input_path = write_synthetic_pjc_snapshot_input(output_dir / SNAPSHOT_INPUT_NAME, dt_s=dt_s)
+    output_path = output_dir / SNAPSHOT_OUTPUT_NAME
+    run_pjc_harness(executable, input_path, output_path)
+    metadata = _pjc_snapshot_metadata(input_path, output_path, executable=Path(executable), repo_root=Path(repo_root))
+    with (output_dir / SNAPSHOT_METADATA_NAME).open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return output_dir
 
 
 def write_pjc_input(
@@ -259,6 +429,57 @@ def run_pjc_harness(executable: str | Path, input_path: str | Path, output_path:
     subprocess.run([str(executable), str(input_path), str(output_path)], check=True)
 
 
+def _spherical_band_area(lat_deg: np.ndarray, nlon: int) -> np.ndarray:
+    from wombat_transport.constants import EARTH_RADIUS_M
+
+    lat = np.asarray(lat_deg, dtype=np.float64)
+    edges = np.empty(lat.size + 1, dtype=np.float64)
+    edges[0] = -90.0
+    edges[-1] = 90.0
+    edges[1:-1] = 0.5 * (lat[:-1] + lat[1:])
+    band_area = (2.0 * np.pi / float(nlon)) * (EARTH_RADIUS_M**2)
+    band_area = band_area * (np.sin(np.deg2rad(edges[1:])) - np.sin(np.deg2rad(edges[:-1])))
+    return np.broadcast_to(band_area[:, np.newaxis], (lat.size, nlon)).copy()
+
+
+def _pjc_snapshot_metadata(
+    input_path: Path,
+    output_path: Path,
+    *,
+    executable: Path,
+    repo_root: Path,
+) -> dict[str, object]:
+    with netCDF4.Dataset(input_path) as dataset:
+        nlev = len(dataset.dimensions["lev"])
+        nlat = len(dataset.dimensions["lat"])
+        nlon = len(dataset.dimensions["lon"])
+        dt_s = float(getattr(dataset, "dt_s"))
+    return {
+        "snapshot": PJC_SNAPSHOT_VERSION,
+        "input_harness": PJC_INPUT_VERSION,
+        "output_harness": PJC_OUTPUT_VERSION,
+        "input_file": input_path.name,
+        "output_file": output_path.name,
+        "shape": {"lev": nlev, "lat": nlat, "lon": nlon},
+        "dt_s": dt_s,
+        "executable": str(executable),
+        "gcclassic_head": _git_head(repo_root / "GCClassic"),
+    }
+
+
+def _git_head(path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip()
+
+
 def summarize_transport_step_output(output: TransportStepOutput) -> str:
     return "\n".join(
         [
@@ -315,6 +536,11 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument("input", type=Path)
     compare_parser.add_argument("output", type=Path)
 
+    snapshot_parser = subparsers.add_parser("snapshot-pjc")
+    snapshot_parser.add_argument("output_dir", type=Path)
+    snapshot_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/pjc_pfix_harness"))
+    snapshot_parser.add_argument("--dt-s", type=float, default=600.0)
+
     args = parser.parse_args(argv)
     if args.command == "write-pjc-input":
         path = write_pjc_input_from_config(args.run_config, args.output, time_index=args.time_index, dt_s=args.dt_s)
@@ -344,6 +570,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare-pjc-output":
         print(format_pjc_comparison(compare_pjc_output(args.input, args.output)))
+        return 0
+    if args.command == "snapshot-pjc":
+        output_dir = snapshot_pjc_oracle(args.output_dir, executable=args.executable, dt_s=args.dt_s)
+        print(f"wrote_pjc_snapshot: {output_dir}")
         return 0
     raise AssertionError(f"unhandled command {args.command}")
 
