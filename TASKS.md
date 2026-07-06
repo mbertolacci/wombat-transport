@@ -1,10 +1,10 @@
 # Wombat Transport Status
 
-Last checkpoint: `ac8aeb7 Document transport prototype status`
+Last checkpoint: `6b0bc4d Fix TPCORE cross-term real index semantics`
 
 Validation at that checkpoint:
 
-- Full test suite passed at that checkpoint: `44 passed`.
+- Full test suite passed at that checkpoint: `77 passed`.
 - Working tree was clean immediately after the commit.
 
 ## Where We Are
@@ -24,9 +24,10 @@ Validation at that checkpoint:
   - pressure-weighted MERRA2 72-to-47 level collapse;
   - a NumPy port of the GEOS-Chem PJC pressure-fixer mass-flux path for
     `XMASS`/`YMASS`;
-  - a first NumPy `TPCORE_FVDAS` one-step path matching the compact
-    low-Courant oracle fixture for pressure, mass fluxes, and final tracer
-    concentrations;
+  - a NumPy `TPCORE_FVDAS` one-step path matching the compact low-Courant
+    oracle fixture, branch-isolating fixtures, the full-grid synthetic
+    low-Courant fixture, and the full-grid base initial-condition fixture for
+    pressure, mass fluxes, and final tracer concentrations;
   - horizontal mass-flux advection scaffold;
   - closed-boundary vertical continuity/advection scaffold;
   - three-hour window averaging for equivalence checks against GEOS-Chem
@@ -63,32 +64,31 @@ Validation at that checkpoint:
   routes through the GEOS-Chem-oriented NumPy TPCORE port; the older scaffold
   remains for non-oracle transport commands until the full operator sequence is
   ready.
-- The TPCORE snapshot verifies the shared PJC mass-flux stage and GEOS-Chem's
-  one-step final tracer field on the compact fixture. It is evidence of
-  compact low-Courant one-step `TPCORE_FVDAS` parity, not evidence that the
-  full transport window matches GEOS-Chem.
+- The TPCORE fixtures verify the shared PJC mass-flux stage and GEOS-Chem's
+  one-step final tracer field on compact, branch-isolating, and full-grid
+  one-step fixtures. This is evidence of one-step `TPCORE_FVDAS` parity for
+  the currently covered paths, not evidence that the full transport window
+  matches GEOS-Chem.
 - The tracked compact TPCORE snapshot is a low-Courant fixture. Current
   diagnostics report max `|cx|` about `0.0023` and max `|cy|` about `0.0008`,
-  so one-step parity on this fixture will cover the ordinary low-Courant
-  branches but will not prove the large-Courant polar/semi-Lagrangian TPCORE
-  branches. Add higher-Courant oracle coverage before claiming full TPCORE
-  parity on full-up tests.
+  so the compact fixture covers the ordinary low-Courant branches. The
+  full-grid base fixture exercises large-Courant E-W behavior and now matches
+  the GEOS-Chem oracle at roundoff. Large-Courant N-S remains unsupported.
 - The Python TPCORE path now preflights the active branch set and raises a
-  clear `NotImplementedError` for currently unsupported large-Courant or full
-  X-PPM branches instead of continuing silently outside the validated compact
-  path.
-- PBL mixing, convection, full-grid/high-Courant TPCORE fixtures, and
+  clear `NotImplementedError` for currently unsupported large-Courant N-S
+  behavior instead of continuing silently outside the validated path.
+- PBL mixing, convection, residual multi-tracer one-step TPCORE coverage, and
   performance benchmarks are not implemented yet.
 - `oracle_data/manifests/base_initial_tpcore_v1.json` defines the first
   full-grid base initial-condition PJC+TPCORE fixture. It is useful for oracle
-  coverage and branch reporting. Current Python TPCORE now runs on it, but does
-  not yet achieve tracer parity; the remaining full-grid tracer max error is
-  about `1e-8` after the compact X full-PPM and large-Courant E-W branch
-  fixtures pass.
+  coverage and branch reporting. Current Python TPCORE matches it at
+  roundoff: `tracer_max_abs_error = 3.79470760e-18`,
+  `surface_pressure_max_abs_error_hpa = 6.82121026e-13`, and trace-stage
+  `q_after_cross_terms = 2.76471554e-18`.
 - `oracle_data/manifests/fullgrid_synthetic_low_courant_tpcore_v1.json`
   defines a full-grid synthetic low-Courant control fixture. It matches Python
-  TPCORE at tight tolerance, which suggests the remaining base fixture mismatch
-  is tied to real-met/restart interactions rather than full-grid geometry alone.
+  TPCORE at tight tolerance, confirming that full-grid geometry is handled on
+  the low-Courant path.
 - Base run diagnostics are the best short-window target because base has
   matching SpeciesConc, LevelEdge, and StateMet files through 2014-09-22.
   Residual currently has SpeciesConc and HEMCO diagnostics but no StateMet or
@@ -96,7 +96,7 @@ Validation at that checkpoint:
 
 ## Good Next Steps
 
-1. Extend TPCORE validation beyond the compact low-Courant oracle.
+1. Extend TPCORE validation beyond the one-tracer full-grid oracle.
    - Use the tracked compact fixture in `tests/fixtures/tpcore_snapshot_v1/`
      for fast iteration and `python -m wombat_transport.gc_harness
      transport-step base_wombat/run.yml --max-tracers 1` for full-grid smoke
@@ -104,9 +104,11 @@ Validation at that checkpoint:
    - The compact fixture now matches final surface pressure exactly and final
      tracer concentrations with max error below `1e-11`.
    - The X full-PPM and compact large-Courant E-W branch fixtures now pass.
-     The full-grid synthetic low-Courant control fixture also passes. Use the
-     full-grid `base_initial_tpcore_v1` cache as the remaining one-step TPCORE
-     acceptance target.
+     The full-grid synthetic low-Courant control fixture and full-grid
+     `base_initial_tpcore_v1` fixture also pass at roundoff.
+   - Add a residual multi-tracer one-step oracle fixture next, then add
+     multi-step/window fixtures once the main transport path is routed through
+     the GEOS-Chem-oriented TPCORE port.
    - Use the `oracle_data/` cache for full-grid and later multi-step fixtures;
      keep `tests/fixtures/` reserved for tiny microscope fixtures that can run
      in normal unit tests.
@@ -116,14 +118,16 @@ Validation at that checkpoint:
      tracer error, and fixture Courant limits visible as separate metrics.
 
 2. Lock down any remaining PJC differences before treating it as exact.
-   - The current residual mass-flux differences are small but nonzero.
+   - The current one-step full-grid base mass-flux differences are at
+     roundoff-level tolerance; residual-specific mass-flux behavior still needs
+     explicit coverage.
    - If needed, expose intermediate diagnostics from `pjc_pfix_mod.F90` to
      isolate whether the remaining difference is constants, pressure
      coordinate setup, or floating-point/order-of-operations.
 
 3. Extend transport-step fixtures beyond one base tracer.
-   - Run the same harness on residual tracers once the one-tracer orientation
-     and units are verified.
+   - Run the same harness on residual tracers now that the one-tracer base
+     orientation and units are verified.
    - Add larger synthetic tracer-count fixtures after the oracle comparison is
      stable enough to benchmark.
 
@@ -186,6 +190,7 @@ python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcor
 python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic_low_courant_tpcore_v1
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
+python -m wombat_transport.gc_harness oracle-fixture-trace-compare base_initial_tpcore_v1
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```
