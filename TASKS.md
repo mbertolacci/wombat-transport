@@ -3,7 +3,10 @@
 Last completed checkpoint:
 `f8764bb Wire VDIFF into transport driver`
 
-Validation for that checkpoint:
+Current working-tree checkpoint:
+Convection operator parity tranche is implemented but not committed.
+
+Validation for the last committed checkpoint:
 
 - `tools/gc_harness/build_vdiff_harness.sh` rebuilt the local GEOS-Chem VDIFF
   oracle executable after tightening negative-count output.
@@ -19,6 +22,29 @@ Validation for that checkpoint:
   - `tests/test_runner.py`: `13 passed`
   - `tests/test_io.py`: `15 passed`
 - Working tree was clean immediately after the commit.
+
+Validation for the current working-tree convection checkpoint:
+
+- `tools/gc_harness/build_convection_harness.sh` builds a local GEOS-Chem
+  convection oracle executable linked against `base/build`.
+- The new real-met sampled convection fixture uses the residual 24-tracer
+  configuration, local MERRA2 fields for `2014-09-01 00:00`, the target
+  47-level grid, six active convective columns, and one no-cloud column.
+- The tracked GEOS-Chem convection oracle snapshot matches the Python port
+  exactly for tracer field, `diag14` convective mass flux, negative counts,
+  internal substep count, and mass change:
+  - `tracer_max_abs_error = 0.00000000e+00`
+  - `diag14_max_abs_error = 0.00000000e+00`
+  - `negative_count_before/after = 0/0`
+  - `mass_change_max_abs = 0.00000000e+00`
+  - `expected_mass_change_max_abs = 0.00000000e+00`
+  - `internal_steps_expected = internal_steps_actual = 2`
+- `write-real-convection-input --mode full-grid --max-tracers 1` completed as
+  a real-met full-grid fixture writer smoke test.
+- Focused validation passed:
+  - `pytest -q tests/test_gc_harness.py -k convection`: `8 passed`
+  - `python3 -m py_compile src/wombat_transport/transport/convection.py src/wombat_transport/gc_harness.py tests/test_gc_harness.py`
+  - `git diff --check`
 
 ## Where We Are
 
@@ -44,6 +70,10 @@ Validation for that checkpoint:
     and final tracer concentrations;
   - `TPCORE_FVDAS` followed by the configured non-local VDIFF/PBL stage in
     both `transport-one-step` and `transport-window`;
+  - a NumPy port of the transport-only GEOS-Chem cloud-convection path, covered
+    by compact synthetic fixtures and a real-met sampled GEOS-Chem oracle
+    fixture, but not yet wired into production `transport-one-step` or
+    `transport-window`;
   - per-stage scalar mass reporting for `tpcore` and `vdiff`;
   - three-hour window averaging for equivalence checks against GEOS-Chem
     diagnostics;
@@ -60,7 +90,10 @@ Validation for that checkpoint:
   `TPCORE_FVDAS` tracer step when the fixture includes `tracer_conc`. A
   separate VDIFF harness path generates a local trace-enabled copy of
   `vdiff_mod.F90`, exposes `VDIFFDR`, saves `kvh`, `kvm`, `tpert`, and
-  `qpert`, and records negative tracer counts for oracle comparison.
+  `qpert`, and records negative tracer counts for oracle comparison. The
+  convection harness populates the minimum `MetState`, `ChmState`, and
+  `DgnState` fields needed by `DO_CLOUD_CONVECTION` with wet scavenging kept
+  inert for this transport-only tranche.
 - Fast tracked oracle snapshots now exist for:
   - PJC mass fluxes, under `tests/fixtures/pjc_snapshot_v1/`;
   - one-step PJC plus `TPCORE_FVDAS`, under
@@ -73,6 +106,8 @@ Validation for that checkpoint:
     `tests/fixtures/vdiff_nonzero_surface_flux_v1/`;
   - one-step non-local VDIFF negative clipping/rescaling, under
     `tests/fixtures/vdiff_negative_clipping_v1/`.
+  - one-step real-met sampled convection, under
+    `tests/fixtures/convection_real_sampled_v1/`.
 - Large real-run oracle fixtures now have a separate untracked cache policy
   under `oracle_data/`. Tracked manifests describe the fixture contract; NetCDF
   payloads are generated or fetched locally and verified by checksum before
@@ -82,7 +117,8 @@ Validation for that checkpoint:
 
 - `transport-one-step` and `transport-window` now route through the
   GEOS-Chem-oriented NumPy TPCORE port followed by the non-local VDIFF/PBL
-  path. Convection is still not included in the production transport sequence.
+  path. Convection has an operator-level port and oracle checks, but is still
+  not included in the production transport sequence.
 - The supported transport driver path is the GEOS-Chem-oriented NumPy
   TPCORE+VDIFF path.
 - The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
@@ -109,8 +145,12 @@ Validation for that checkpoint:
 - VDIFF is wired with zero constituent surface flux in the production transport
   path. Nonzero tracer surface-flux behavior is covered by compact oracle
   fixtures but not yet sourced from emissions inside production transport.
-- Convection, meaningful three-hourly production validation, and performance
-  benchmarks are not implemented yet.
+- Convection parity currently means compact synthetic fixtures plus the
+  sampled real-met 24-tracer fixture match the GEOS-Chem operator harness. It
+  does not yet mean full-grid convection oracle parity or production
+  `TPCORE -> VDIFF -> convection` sequence parity.
+- Meaningful three-hourly production validation and performance benchmarks are
+  not implemented yet.
 - Missing-operator gaps are not validation milestones. The project target is
   operator-by-operator numerical parity: isolate a GEOS-Chem operator, match it
   to roundoff or a documented floating-point tolerance, then move on.
@@ -135,7 +175,23 @@ Validation for that checkpoint:
 
 ## Good Next Steps
 
-1. Add a full-grid base TPCORE+VDIFF oracle fixture.
+1. Extend convection from sampled real-met parity to full-grid oracle coverage.
+   - Generate a full-grid real-met convection input with the existing
+     `write-real-convection-input --mode full-grid` path.
+   - Run the GEOS-Chem convection harness on at least a one-tracer full-grid
+     fixture first, then broaden to the 24-tracer residual fixture if runtime
+     and artifact size are manageable.
+   - Compare final tracer, `diag14`, negative counts, internal substeps, scalar
+     mass totals, and mass change.
+
+2. Wire convection behind an explicit production transport stage after full-grid
+   operator parity is credible.
+   - Preserve GEOS-Chem Classic ordering: `TPCORE -> mixing/VDIFF -> convection`.
+   - Keep wet deposition/scavenging disabled for this transport-only path.
+   - Add per-stage scalar mass and negative-count reporting for convection.
+
+3. Add a full-grid base TPCORE+VDIFF oracle fixture if VDIFF ambiguity blocks
+   convection integration.
    - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.
    - Compact edge cases are now stable for zero flux, nonzero flux, and
      negative clipping/rescaling.
@@ -143,20 +199,20 @@ Validation for that checkpoint:
      initial-condition `TPCORE + VDIFF` oracle comparing final tracer,
      humidity, diffusivities, negative counts, and scalar mass.
 
-2. Port and verify transport in GEOS-Chem operator order.
+4. Port and verify transport in GEOS-Chem operator order.
    - Treat GEOS-Chem as the reference semantics, not as an approximate target.
    - For each operator, add the closest practical single-step or short-window
      check before moving on.
    - Keep each new operator behind a clear stage until it has its own parity
      check or direct GEOS-Chem justification.
 
-3. Add negative-value filling where it is used outside current TPCORE coverage.
+5. Add negative-value filling where it is used outside current TPCORE coverage.
    - Match GEOS-Chem behavior before any high-order advection work depends on
      it.
    - Track negative counts/minima before and after filling in verification
      output.
 
-4. Tighten VDIFF production inputs and diagnostics.
+6. Tighten VDIFF production inputs and diagnostics.
    - Use `transport_mod.F90`, `tpcore_fvdas_mod.F90`, and `pjc_pfix_mod.F90` as
      references.
    - Compare hydrostatically derived `bxheight` against archived
@@ -164,11 +220,7 @@ Validation for that checkpoint:
    - Preserve the current TPCORE and compact VDIFF parity checks while adding
      full-grid VDIFF oracle coverage.
 
-5. Add convection.
-   - Use `convection_mod.F90` as the reference.
-   - Keep it behind a clear operator stage so it can be tested independently.
-
-6. Add production verification once the relevant operators exist.
+7. Add production verification once the relevant operators exist.
    - Walk base `SpeciesConcThreeHourly`, `LevelEdgeDiagsThreeHourly`, and
      `StateMetThreeHourly` files in chronological order.
    - Run Wombat in repeated three-hour windows only after the staged operator
@@ -176,7 +228,7 @@ Validation for that checkpoint:
    - Emit CSV-style equivalence checks for concentration, scalar mass, dry
      pressure thickness, and dry pressure edges.
 
-7. Benchmark vectorized multi-tracer scaling once the verification harness
+8. Benchmark vectorized multi-tracer scaling once the verification harness
    exists.
    - Measure 1 tracer, 24 tracers, and larger synthetic tracer counts.
    - Report operator time separately from NetCDF I/O.
@@ -202,6 +254,10 @@ tools/gc_harness/build_vdiff_harness.sh
 python -m wombat_transport.gc_harness compare-vdiff-output tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc tests/fixtures/vdiff_snapshot_v1/vdiff_output.nc
 python -m wombat_transport.gc_harness compare-vdiff-output tests/fixtures/vdiff_nonzero_surface_flux_v1/vdiff_input.nc tests/fixtures/vdiff_nonzero_surface_flux_v1/vdiff_output.nc
 python -m wombat_transport.gc_harness compare-vdiff-output tests/fixtures/vdiff_negative_clipping_v1/vdiff_input.nc tests/fixtures/vdiff_negative_clipping_v1/vdiff_output.nc
+tools/gc_harness/build_convection_harness.sh
+python -m wombat_transport.gc_harness write-real-convection-input tools/gc_harness/work/convection_real_sampled_input.nc --mode sampled-columns
+python -m wombat_transport.gc_harness write-real-convection-input tools/gc_harness/work/convection_real_fullgrid_input.nc --mode full-grid --max-tracers 1
+python -m wombat_transport.gc_harness compare-convection-output tests/fixtures/convection_real_sampled_v1/convection_input.nc tests/fixtures/convection_real_sampled_v1/convection_output.nc
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```

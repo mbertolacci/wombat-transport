@@ -7,6 +7,7 @@ from wombat_transport.transport.driver import (
     run_transport_one_step,
     run_transport_window,
 )
+from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
@@ -49,6 +50,7 @@ __all__ = [
     "MERRA2_72_TO_47_MAPPING",
     "MERRA2_FILENAME",
     "TransportForcing",
+    "ConvectionResult",
     "TransportStageMass",
     "TransportStepResult",
     "TransportWindowResult",
@@ -70,6 +72,7 @@ __all__ = [
     "pressure_edges_hpa",
     "run_transport_one_step",
     "run_transport_window",
+    "run_cloud_convection_one_step",
     "run_tpcore_one_step",
     "run_vdiffdr_one_step",
     "scalar_mass_by_tracer",

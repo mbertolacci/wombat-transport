@@ -16,9 +16,12 @@ import numpy as np
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
+    MERRA2_FILENAME,
     load_transport_forcing,
     pjc_mass_flux_hpa,
+    run_cloud_convection_one_step,
     run_vdiffdr_one_step,
+    _map_met_levels_to_47,
 )
 from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
 from wombat_transport.transport.tpcore import trace_tpcore_one_step
@@ -32,6 +35,8 @@ TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
 TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
 VDIFF_INPUT_VERSION = "vdiffdr-input-v1"
 VDIFF_OUTPUT_VERSION = "vdiffdr-output-v1"
+CONVECTION_INPUT_VERSION = "convection-input-v1"
+CONVECTION_OUTPUT_VERSION = "convection-output-v1"
 TPCORE_TRACE_VERSION = "tpcore-trace-v1"
 TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v1"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
@@ -40,9 +45,13 @@ TPCORE_SNAPSHOT_INPUT_NAME = "tpcore_input.nc"
 TPCORE_SNAPSHOT_OUTPUT_NAME = "tpcore_output.nc"
 VDIFF_SNAPSHOT_INPUT_NAME = "vdiff_input.nc"
 VDIFF_SNAPSHOT_OUTPUT_NAME = "vdiff_output.nc"
+CONVECTION_SNAPSHOT_INPUT_NAME = "convection_input.nc"
+CONVECTION_SNAPSHOT_OUTPUT_NAME = "convection_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
 VDIFF_SCENARIOS = ("zero_surface_flux", "nonzero_surface_flux", "negative_clipping")
+CONVECTION_SCENARIOS = ("no_cloud", "active_cloud", "multi_tracer")
+REAL_CONVECTION_MODES = ("sampled-columns", "full-grid")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
@@ -217,6 +226,18 @@ class VdiffOutput:
 
 
 @dataclass(frozen=True)
+class ConvectionOutput:
+    tracer_conc_after: np.ndarray
+    diag14_mass_flux: np.ndarray
+    negative_count_before: int
+    negative_count_after: int
+    initial_tracer_mass: np.ndarray
+    final_tracer_mass: np.ndarray
+    internal_steps: int
+    internal_dt_s: float
+
+
+@dataclass(frozen=True)
 class VdiffComparison:
     tracer_max_abs_error: float
     tracer_mean_abs_error: float
@@ -231,6 +252,28 @@ class VdiffComparison:
     negative_count_after_clip_expected: int
     negative_count_after_clip_actual: int
     final_mass_max_abs_error: float
+
+
+@dataclass(frozen=True)
+class ConvectionComparison:
+    tracer_max_abs_error: float
+    tracer_mean_abs_error: float
+    diag14_max_abs_error: float
+    diag14_mean_abs_error: float
+    negative_count_before_expected: int
+    negative_count_before_actual: int
+    negative_count_after_expected: int
+    negative_count_after_actual: int
+    initial_mass_max_abs_error: float
+    final_mass_max_abs_error: float
+    mass_change_max_abs: float
+    expected_mass_change_max_abs: float
+    top_error_tracer: int
+    top_error_level: int
+    top_error_lat: int
+    top_error_lon: int
+    internal_steps_expected: int
+    internal_steps_actual: int
 
 
 @dataclass(frozen=True)
@@ -547,6 +590,396 @@ def write_synthetic_vdiff_input(
         dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 0.35)
         dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = np.ones((lat.size, lon.size))
         dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = surface_flux
+    return path
+
+
+def write_synthetic_convection_input(
+    path: str | Path,
+    *,
+    dt_s: float = 600.0,
+    ntracer: int = 2,
+    scenario: str = "active_cloud",
+) -> Path:
+    """Write a compact deterministic 47-level cloud-convection oracle input."""
+
+    if scenario not in CONVECTION_SCENARIOS:
+        raise ValueError(f"unknown convection scenario {scenario!r}; expected one of {CONVECTION_SCENARIOS}")
+    if scenario == "multi_tracer":
+        ntracer = max(ntracer, 3)
+    if ntracer <= 0:
+        raise ValueError("ntracer must be positive")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lat = np.array([-30.0, 10.0], dtype=np.float64)
+    lon = np.arange(3, dtype=np.float64) * 120.0
+    nlev = GEOS_47_AP_HPA.size - 1
+    lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    lat_term = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    lon_term = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+
+    delp_profile = np.linspace(62.0, 8.0, nlev, dtype=np.float64)
+    delp_dry = np.broadcast_to(delp_profile[:, np.newaxis, np.newaxis], (nlev, lat.size, lon.size)).copy()
+    delp_dry *= 1.0 + 0.01 * lat_term + 0.005 * lon_term
+    delp = delp_dry * 1.01
+    tracer = 4.0e-4 + 2.0e-7 * tracer_index
+    tracer = tracer + 3.0e-9 * lev + 2.0e-9 * lat_term + 1.0e-9 * lon_term
+    area = _spherical_band_area(lat, lon.size)
+    bxheight = 150.0 + 3.0 * lev + np.zeros((1, lat.size, lon.size), dtype=np.float64)
+    temperature = 288.0 - 0.55 * lev + 0.8 * lat_term + 0.1 * lon_term
+    cmfmc = np.zeros((nlev, lat.size, lon.size), dtype=np.float64)
+    dtrain = np.zeros_like(cmfmc)
+    dqrcu = np.zeros_like(cmfmc)
+    reevapcn = np.zeros_like(cmfmc)
+    pficu = np.zeros_like(cmfmc)
+    pflcu = np.zeros_like(cmfmc)
+    precccon = np.zeros((lat.size, lon.size), dtype=np.float64)
+
+    if scenario in ("active_cloud", "multi_tracer"):
+        plume = np.zeros(nlev, dtype=np.float64)
+        plume[3:13] = np.linspace(0.010, 0.002, 10)
+        cmfmc[:] = plume[:, np.newaxis, np.newaxis]
+        cmfmc *= 1.0 + 0.08 * np.arange(lat.size, dtype=np.float64)[np.newaxis, :, np.newaxis]
+        cmfmc *= 1.0 + 0.03 * np.arange(lon.size, dtype=np.float64)[np.newaxis, np.newaxis, :]
+        dtrain[4:13] = 0.0015
+        dqrcu[4:13] = 1.0e-8
+        precccon[:] = 2.5
+
+    names = tuple(f"conv_{index + 1:03d}" for index in range(ntracer))
+    with netCDF4.Dataset(path, "w") as dataset:
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("lat", lat.size)
+        dataset.createDimension("lon", lon.size)
+        name_length = max(max((len(name) for name in names), default=1), 1)
+        dataset.createDimension("name_strlen", name_length)
+        dataset.harness = CONVECTION_INPUT_VERSION
+        dataset.dt_s = float(dt_s)
+        dataset.scenario = scenario
+        dataset.reconstruct_conv_precip_flux = 0
+        dataset.createVariable("lon", "f8", ("lon",))[:] = lon
+        dataset.createVariable("lat", "f8", ("lat",))[:] = lat
+        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer
+        name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
+        encoded = np.asarray([name.encode("ascii", errors="replace") for name in names], dtype=f"S{name_length}")
+        name_var[:] = netCDF4.stringtochar(encoded)
+        dataset.createVariable("cmfmc_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = cmfmc
+        dataset.createVariable("dtrain_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = dtrain
+        dataset.createVariable("dqrcu_kg_kg_s", "f8", ("lev", "lat", "lon"))[:] = dqrcu
+        dataset.createVariable("reevapcn_kg_kg_s", "f8", ("lev", "lat", "lon"))[:] = reevapcn
+        dataset.createVariable("delp_dry_hpa", "f8", ("lev", "lat", "lon"))[:] = delp_dry
+        dataset.createVariable("delp_hpa", "f8", ("lev", "lat", "lon"))[:] = delp
+        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = area
+        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = bxheight
+        dataset.createVariable("pficu_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = pficu
+        dataset.createVariable("pflcu_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = pflcu
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = temperature
+        dataset.createVariable("precccon_mm_day", "f8", ("lat", "lon"))[:] = precccon
+    return path
+
+
+def write_real_convection_input_from_config(
+    run_config_path: str | Path,
+    output_path: str | Path,
+    *,
+    mode: str = "sampled-columns",
+    time_index: int | None = None,
+    tracer_time_index: int = 0,
+    dt_s: float | None = None,
+    max_tracers: int | None = None,
+    active_columns: int = 6,
+) -> Path:
+    """Write a 47-level convection fixture from local MERRA2 and tracer config."""
+
+    if mode not in REAL_CONVECTION_MODES:
+        raise ValueError(f"unknown real convection mode {mode!r}; expected one of {REAL_CONVECTION_MODES}")
+    if active_columns <= 0:
+        raise ValueError("active_columns must be positive")
+
+    config = load_run_config(run_config_path)
+    fixture_dt_s = float(config.transport.get("dt_s", 600.0)) if dt_s is None else float(dt_s)
+    fixture_time_index = int(config.transport.get("met_time_index", 0)) if time_index is None else int(time_index)
+    start = datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT)
+    met_root = _resolve_config_value(config.root, config.transport["met_root"])
+
+    tracers = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    )
+    tracer_data = np.asarray(tracers.data[:, tracer_time_index, :, :, :], dtype=np.float64)
+    tracer_names = tracers.names
+    if max_tracers is not None:
+        tracer_data = tracer_data[:max_tracers]
+        tracer_names = tracer_names[:max_tracers]
+
+    real_met = _load_real_convection_met(
+        met_root,
+        start,
+        config.grid_template,
+        time_index=fixture_time_index,
+    )
+    if mode == "sampled-columns":
+        rows, cols = _select_real_convection_columns(real_met["cmfmc_kg_m2_s"], active_columns=active_columns)
+        packed = _pack_convection_columns(
+            tracer_data=tracer_data,
+            met=real_met,
+            rows=rows,
+            cols=cols,
+        )
+        fixture_mode = "sampled-columns"
+    else:
+        nlat, nlon = real_met["area_m2"].shape
+        rows = np.repeat(np.arange(nlat, dtype=np.int64), nlon)
+        cols = np.tile(np.arange(nlon, dtype=np.int64), nlat)
+        packed = {
+            "tracer_conc": tracer_data,
+            **real_met,
+            "source_lat_index": rows.reshape(nlat, nlon),
+            "source_lon_index": cols.reshape(nlat, nlon),
+        }
+        fixture_mode = "full-grid"
+
+    return _write_convection_input_file(
+        output_path,
+        tracer_conc=packed["tracer_conc"],
+        tracer_names=tracer_names,
+        lon=np.asarray(packed["lon"], dtype=np.float64),
+        lat=np.asarray(packed["lat"], dtype=np.float64),
+        cmfmc=np.asarray(packed["cmfmc_kg_m2_s"], dtype=np.float64),
+        dtrain=np.asarray(packed["dtrain_kg_m2_s"], dtype=np.float64),
+        dqrcu=np.asarray(packed["dqrcu_kg_kg_s"], dtype=np.float64),
+        reevapcn=np.asarray(packed["reevapcn_kg_kg_s"], dtype=np.float64),
+        delp_dry=np.asarray(packed["delp_dry_hpa"], dtype=np.float64),
+        delp=np.asarray(packed["delp_hpa"], dtype=np.float64),
+        area=np.asarray(packed["area_m2"], dtype=np.float64),
+        bxheight=np.asarray(packed["bxheight_m"], dtype=np.float64),
+        pficu=np.asarray(packed["pficu_kg_m2_s"], dtype=np.float64),
+        pflcu=np.asarray(packed["pflcu_kg_m2_s"], dtype=np.float64),
+        temperature=np.asarray(packed["temperature_k"], dtype=np.float64),
+        precccon=np.asarray(packed["precccon_mm_day"], dtype=np.float64),
+        dt_s=fixture_dt_s,
+        scenario=f"real-{fixture_mode}",
+        source_lat_index=np.asarray(packed["source_lat_index"], dtype=np.int32),
+        source_lon_index=np.asarray(packed["source_lon_index"], dtype=np.int32),
+        source_run_config=str(Path(run_config_path)),
+        source_timestamp=start.strftime("%Y-%m-%d %H:%M"),
+        source_time_index=fixture_time_index,
+        vertical_mapping="native_72_to_47_center_and_73_to_48_edge",
+    )
+
+
+def _load_real_convection_met(
+    met_root: str | Path,
+    timestamp: datetime,
+    template_path: str | Path,
+    *,
+    time_index: int,
+) -> dict[str, np.ndarray]:
+    met_root = Path(met_root)
+    day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
+    date = timestamp.strftime("%Y%m%d")
+    a1_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A1")
+    a3dyn_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3dyn")
+    a3mstc_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstC")
+    a3mste_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstE")
+    i3_path = day_dir / MERRA2_FILENAME.format(date=date, collection="I3")
+    a1_time_index = int(time_index) * 3
+
+    with (
+        netCDF4.Dataset(a1_path) as a1,
+        netCDF4.Dataset(a3dyn_path) as a3dyn,
+        netCDF4.Dataset(a3mstc_path) as a3mstc,
+        netCDF4.Dataset(a3mste_path) as a3mste,
+        netCDF4.Dataset(i3_path) as i3,
+        netCDF4.Dataset(template_path) as template,
+    ):
+        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
+        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
+        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
+        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
+        ps = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
+        center = {
+            "dtrain_kg_m2_s": _map_met_levels_to_47(_read_met_3d_time_slice(a3dyn, "DTRAIN", time_index))[0],
+            "dqrcu_kg_kg_s": _map_met_levels_to_47(_read_met_3d_time_slice(a3mstc, "DQRCU", time_index))[0],
+            "reevapcn_kg_kg_s": _map_met_levels_to_47(_read_met_3d_time_slice(a3mstc, "REEVAPCN", time_index))[0],
+            "temperature_k": _map_met_levels_to_47(_read_met_3d_time_slice(i3, "T", time_index))[0],
+        }
+        cmfmc_edges = _map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][time_index], dtype=np.float64))
+        pficu_edges = _map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][time_index], dtype=np.float64))
+        pflcu_edges = _map_met_edges_to_48(np.asarray(a3mste.variables["PFLCU"][time_index], dtype=np.float64))
+        delp = np.abs(
+            (hyai[:-1, np.newaxis, np.newaxis] + hybi[:-1, np.newaxis, np.newaxis] * ps[0] / 100.0)
+            - (hyai[1:, np.newaxis, np.newaxis] + hybi[1:, np.newaxis, np.newaxis] * ps[0] / 100.0)
+        )
+        temperature = center["temperature_k"]
+        pedge = GEOS_47_AP_HPA[:, np.newaxis, np.newaxis] + GEOS_47_BP[:, np.newaxis, np.newaxis] * ps[0] / 100.0
+        bxheight = _hydrostatic_box_height_from_temperature(pedge, temperature)
+        precccon = np.asarray(a1.variables["PRECCON"][a1_time_index], dtype=np.float64) * 86400.0
+
+    return {
+        "lat": lat,
+        "lon": lon,
+        "area_m2": area,
+        "cmfmc_kg_m2_s": cmfmc_edges[1:],
+        "pficu_kg_m2_s": pficu_edges[1:],
+        "pflcu_kg_m2_s": pflcu_edges[1:],
+        "delp_dry_hpa": delp,
+        "delp_hpa": delp.copy(),
+        "bxheight_m": bxheight,
+        "precccon_mm_day": precccon,
+        **center,
+    }
+
+
+def _map_met_edges_to_48(data: np.ndarray) -> np.ndarray:
+    edges = np.asarray(data, dtype=np.float64)
+    if edges.ndim != 3:
+        raise ValueError(f"edge field must be 3-D (edge, lat, lon), found {edges.shape}")
+    if edges.shape[0] == GEOS_47_AP_HPA.size:
+        return edges
+    if edges.shape[0] != 73:
+        raise ValueError(f"cannot map {edges.shape[0]} met edges to 48 target edges")
+    target_indices = np.array(
+        list(range(37)) + [38, 40, 42, 44, 48, 52, 56, 60, 64, 68, 72],
+        dtype=np.int64,
+    )
+    return edges[target_indices]
+
+
+def _read_met_3d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index: int) -> np.ndarray:
+    return np.asarray(dataset.variables[variable_name][time_index : time_index + 1], dtype=np.float64)
+
+
+def _hydrostatic_box_height_from_temperature(pedge_hpa: np.ndarray, temperature_k: np.ndarray) -> np.ndarray:
+    return (287.0 / 9.80665) * temperature_k * np.log(pedge_hpa[:-1] / pedge_hpa[1:])
+
+
+def _select_real_convection_columns(cmfmc_upper: np.ndarray, *, active_columns: int) -> tuple[np.ndarray, np.ndarray]:
+    column_max = np.max(np.abs(cmfmc_upper), axis=0)
+    flat_order = np.argsort(column_max.ravel())[::-1]
+    active = flat_order[:active_columns]
+    zero_candidates = np.flatnonzero(column_max.ravel() == 0.0)
+    if zero_candidates.size:
+        chosen = np.concatenate([active, zero_candidates[:1]])
+    else:
+        chosen = np.concatenate([active, flat_order[-1:]])
+    rows, cols = np.unravel_index(chosen, column_max.shape)
+    return rows.astype(np.int64), cols.astype(np.int64)
+
+
+def _pack_convection_columns(
+    *,
+    tracer_data: np.ndarray,
+    met: dict[str, np.ndarray],
+    rows: np.ndarray,
+    cols: np.ndarray,
+) -> dict[str, np.ndarray]:
+    ncol = rows.size
+    packed: dict[str, np.ndarray] = {
+        "lat": met["lat"][rows],
+        "lon": np.array([0.0], dtype=np.float64),
+        "source_lat_index": rows[:, np.newaxis].astype(np.int32),
+        "source_lon_index": cols[:, np.newaxis].astype(np.int32),
+        "tracer_conc": tracer_data[:, :, rows, cols][:, :, :, np.newaxis],
+    }
+    for name in (
+        "cmfmc_kg_m2_s",
+        "dtrain_kg_m2_s",
+        "dqrcu_kg_kg_s",
+        "reevapcn_kg_kg_s",
+        "delp_dry_hpa",
+        "delp_hpa",
+        "bxheight_m",
+        "pficu_kg_m2_s",
+        "pflcu_kg_m2_s",
+        "temperature_k",
+    ):
+        packed[name] = met[name][:, rows, cols][:, :, np.newaxis]
+    for name in ("area_m2", "precccon_mm_day"):
+        packed[name] = met[name][rows, cols][:, np.newaxis]
+    if packed["area_m2"].shape != (ncol, 1):
+        raise AssertionError("packed column area has unexpected shape")
+    return packed
+
+
+def _write_convection_input_file(
+    path: str | Path,
+    *,
+    tracer_conc: np.ndarray,
+    tracer_names: tuple[str, ...],
+    lon: np.ndarray,
+    lat: np.ndarray,
+    cmfmc: np.ndarray,
+    dtrain: np.ndarray,
+    dqrcu: np.ndarray,
+    reevapcn: np.ndarray,
+    delp_dry: np.ndarray,
+    delp: np.ndarray,
+    area: np.ndarray,
+    bxheight: np.ndarray,
+    pficu: np.ndarray,
+    pflcu: np.ndarray,
+    temperature: np.ndarray,
+    precccon: np.ndarray,
+    dt_s: float,
+    scenario: str,
+    source_lat_index: np.ndarray | None = None,
+    source_lon_index: np.ndarray | None = None,
+    source_run_config: str | None = None,
+    source_timestamp: str | None = None,
+    source_time_index: int | None = None,
+    vertical_mapping: str | None = None,
+) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tracers = np.asarray(tracer_conc, dtype=np.float64)
+    ntracer, nlev, nlat, nlon = tracers.shape
+    if len(tracer_names) != ntracer:
+        raise ValueError("tracer_names length must match tracer_conc first dimension")
+    with netCDF4.Dataset(path, "w") as dataset:
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        name_length = max(max((len(name) for name in tracer_names), default=1), 1)
+        dataset.createDimension("name_strlen", name_length)
+        dataset.harness = CONVECTION_INPUT_VERSION
+        dataset.dt_s = float(dt_s)
+        dataset.scenario = scenario
+        dataset.reconstruct_conv_precip_flux = 0
+        if source_run_config is not None:
+            dataset.source_run_config = source_run_config
+        if source_timestamp is not None:
+            dataset.source_timestamp = source_timestamp
+        if source_time_index is not None:
+            dataset.source_time_index = int(source_time_index)
+        if vertical_mapping is not None:
+            dataset.vertical_mapping = vertical_mapping
+        dataset.createVariable("lon", "f8", ("lon",))[:] = lon
+        dataset.createVariable("lat", "f8", ("lat",))[:] = lat
+        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracers
+        name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
+        encoded = np.asarray([name.encode("ascii", errors="replace") for name in tracer_names], dtype=f"S{name_length}")
+        name_var[:] = netCDF4.stringtochar(encoded)
+        dataset.createVariable("cmfmc_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = cmfmc
+        dataset.createVariable("dtrain_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = dtrain
+        dataset.createVariable("dqrcu_kg_kg_s", "f8", ("lev", "lat", "lon"))[:] = dqrcu
+        dataset.createVariable("reevapcn_kg_kg_s", "f8", ("lev", "lat", "lon"))[:] = reevapcn
+        dataset.createVariable("delp_dry_hpa", "f8", ("lev", "lat", "lon"))[:] = delp_dry
+        dataset.createVariable("delp_hpa", "f8", ("lev", "lat", "lon"))[:] = delp
+        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = area
+        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = bxheight
+        dataset.createVariable("pficu_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = pficu
+        dataset.createVariable("pflcu_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = pflcu
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = temperature
+        dataset.createVariable("precccon_mm_day", "f8", ("lat", "lon"))[:] = precccon
+        if source_lat_index is not None:
+            dataset.createVariable("source_lat_index", "i4", ("lat", "lon"))[:] = source_lat_index
+        if source_lon_index is not None:
+            dataset.createVariable("source_lon_index", "i4", ("lat", "lon"))[:] = source_lon_index
     return path
 
 
@@ -1139,6 +1572,105 @@ def compare_vdiff_output(
         negative_count_after_clip_expected=expected.negative_count_after_clip,
         negative_count_after_clip_actual=actual.negative_count_after_clip,
         final_mass_max_abs_error=float(np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))),
+    )
+
+
+def read_convection_output(path: str | Path) -> ConvectionOutput:
+    with netCDF4.Dataset(path) as dataset:
+        if getattr(dataset, "harness", "") != CONVECTION_OUTPUT_VERSION:
+            raise ValueError(f"{path} is not a {CONVECTION_OUTPUT_VERSION} file")
+        return ConvectionOutput(
+            tracer_conc_after=np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64),
+            diag14_mass_flux=np.asarray(dataset.variables["diag14_mass_flux"][:], dtype=np.float64),
+            negative_count_before=int(getattr(dataset, "negative_count_before")),
+            negative_count_after=int(getattr(dataset, "negative_count_after")),
+            initial_tracer_mass=np.asarray(dataset.variables["initial_tracer_mass"][:], dtype=np.float64),
+            final_tracer_mass=np.asarray(dataset.variables["final_tracer_mass"][:], dtype=np.float64),
+            internal_steps=int(getattr(dataset, "internal_steps")),
+            internal_dt_s=float(getattr(dataset, "internal_dt_s")),
+        )
+
+
+def write_python_convection_output(input_path: str | Path, output_path: str | Path) -> Path:
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != CONVECTION_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {CONVECTION_INPUT_VERSION} file")
+        result = run_cloud_convection_one_step(
+            tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            cmfmc_kg_m2_s=np.asarray(dataset.variables["cmfmc_kg_m2_s"][:], dtype=np.float64),
+            dtrain_kg_m2_s=np.asarray(dataset.variables["dtrain_kg_m2_s"][:], dtype=np.float64),
+            dqrcu_kg_kg_s=np.asarray(dataset.variables["dqrcu_kg_kg_s"][:], dtype=np.float64),
+            reevapcn_kg_kg_s=np.asarray(dataset.variables["reevapcn_kg_kg_s"][:], dtype=np.float64),
+            delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
+            delp_hpa=np.asarray(dataset.variables["delp_hpa"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            pficu_kg_m2_s=np.asarray(dataset.variables["pficu_kg_m2_s"][:], dtype=np.float64),
+            pflcu_kg_m2_s=np.asarray(dataset.variables["pflcu_kg_m2_s"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            precccon_mm_day=np.asarray(dataset.variables["precccon_mm_day"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+            reconstruct_conv_precip_flux=bool(getattr(dataset, "reconstruct_conv_precip_flux", 0)),
+        )
+    return write_convection_output(output_path, result)
+
+
+def write_convection_output(path: str | Path, result) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(path, "w") as dataset:
+        ntracer, nlev, nlat, nlon = result.tracer_conc.shape
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        dataset.harness = CONVECTION_OUTPUT_VERSION
+        dataset.negative_count_before = int(result.negative_count_before)
+        dataset.negative_count_after = int(result.negative_count_after)
+        dataset.internal_steps = int(result.internal_steps)
+        dataset.internal_dt_s = float(result.internal_dt_s)
+        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = result.tracer_conc
+        dataset.createVariable("diag14_mass_flux", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            result.diag14_mass_flux
+        )
+        dataset.createVariable("initial_tracer_mass", "f8", ("tracer",))[:] = result.initial_tracer_mass
+        dataset.createVariable("final_tracer_mass", "f8", ("tracer",))[:] = result.final_tracer_mass
+    return path
+
+
+def compare_convection_output(
+    input_path: str | Path,
+    expected_output_path: str | Path,
+    *,
+    python_output_path: str | Path | None = None,
+) -> ConvectionComparison:
+    output_path = Path(expected_output_path)
+    python_path = Path(python_output_path) if python_output_path is not None else output_path.with_name(f"python_{output_path.name}")
+    write_python_convection_output(input_path, python_path)
+    expected = read_convection_output(output_path)
+    actual = read_convection_output(python_path)
+    tracer_error = np.abs(actual.tracer_conc_after - expected.tracer_conc_after)
+    diag14_error = np.abs(actual.diag14_mass_flux - expected.diag14_mass_flux)
+    top_error_index = np.unravel_index(int(np.argmax(tracer_error)), tracer_error.shape)
+    return ConvectionComparison(
+        tracer_max_abs_error=float(np.max(tracer_error)),
+        tracer_mean_abs_error=float(np.mean(tracer_error)),
+        diag14_max_abs_error=float(np.max(diag14_error)),
+        diag14_mean_abs_error=float(np.mean(diag14_error)),
+        negative_count_before_expected=expected.negative_count_before,
+        negative_count_before_actual=actual.negative_count_before,
+        negative_count_after_expected=expected.negative_count_after,
+        negative_count_after_actual=actual.negative_count_after,
+        initial_mass_max_abs_error=float(np.max(np.abs(actual.initial_tracer_mass - expected.initial_tracer_mass))),
+        final_mass_max_abs_error=float(np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))),
+        mass_change_max_abs=float(np.max(np.abs(actual.final_tracer_mass - actual.initial_tracer_mass))),
+        expected_mass_change_max_abs=float(np.max(np.abs(expected.final_tracer_mass - expected.initial_tracer_mass))),
+        top_error_tracer=int(top_error_index[0]),
+        top_error_level=int(top_error_index[1]),
+        top_error_lat=int(top_error_index[2]),
+        top_error_lon=int(top_error_index[3]),
+        internal_steps_expected=expected.internal_steps,
+        internal_steps_actual=actual.internal_steps,
     )
 
 
@@ -1764,6 +2296,29 @@ def format_vdiff_comparison(comparison: VdiffComparison) -> str:
     )
 
 
+def format_convection_comparison(comparison: ConvectionComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"tracer_max_abs_error,{comparison.tracer_max_abs_error:.8e}",
+            f"tracer_mean_abs_error,{comparison.tracer_mean_abs_error:.8e}",
+            f"diag14_max_abs_error,{comparison.diag14_max_abs_error:.8e}",
+            f"diag14_mean_abs_error,{comparison.diag14_mean_abs_error:.8e}",
+            f"negative_count_before_expected,{comparison.negative_count_before_expected}",
+            f"negative_count_before_actual,{comparison.negative_count_before_actual}",
+            f"negative_count_after_expected,{comparison.negative_count_after_expected}",
+            f"negative_count_after_actual,{comparison.negative_count_after_actual}",
+            f"initial_mass_max_abs_error,{comparison.initial_mass_max_abs_error:.8e}",
+            f"final_mass_max_abs_error,{comparison.final_mass_max_abs_error:.8e}",
+            f"mass_change_max_abs,{comparison.mass_change_max_abs:.8e}",
+            f"expected_mass_change_max_abs,{comparison.expected_mass_change_max_abs:.8e}",
+            f"top_error_index,{comparison.top_error_tracer}:{comparison.top_error_level}:{comparison.top_error_lat}:{comparison.top_error_lon}",
+            f"internal_steps_expected,{comparison.internal_steps_expected}",
+            f"internal_steps_actual,{comparison.internal_steps_actual}",
+        ]
+    )
+
+
 def format_transport_step_comparison(comparison: TransportStepComparison) -> str:
     return "\n".join(
         [
@@ -1859,6 +2414,30 @@ def main(argv: list[str] | None = None) -> int:
     compare_vdiff_parser = subparsers.add_parser("compare-vdiff-output")
     compare_vdiff_parser.add_argument("input", type=Path)
     compare_vdiff_parser.add_argument("output", type=Path)
+
+    write_convection_parser = subparsers.add_parser("write-synthetic-convection-input")
+    write_convection_parser.add_argument("output", type=Path)
+    write_convection_parser.add_argument("--dt-s", type=float, default=600.0)
+    write_convection_parser.add_argument("--ntracer", type=int, default=2)
+    write_convection_parser.add_argument("--scenario", choices=CONVECTION_SCENARIOS, default="active_cloud")
+
+    write_real_convection_parser = subparsers.add_parser("write-real-convection-input")
+    write_real_convection_parser.add_argument("output", type=Path)
+    write_real_convection_parser.add_argument("--run-config", type=Path, default=Path("residual_20140901_part001_split01_wombat/run.yml"))
+    write_real_convection_parser.add_argument("--mode", choices=REAL_CONVECTION_MODES, default="sampled-columns")
+    write_real_convection_parser.add_argument("--time-index", type=int, default=None)
+    write_real_convection_parser.add_argument("--tracer-time-index", type=int, default=0)
+    write_real_convection_parser.add_argument("--dt-s", type=float, default=None)
+    write_real_convection_parser.add_argument("--max-tracers", type=int, default=None)
+    write_real_convection_parser.add_argument("--active-columns", type=int, default=6)
+
+    python_convection_parser = subparsers.add_parser("python-convection-output")
+    python_convection_parser.add_argument("input", type=Path)
+    python_convection_parser.add_argument("output", type=Path)
+
+    compare_convection_parser = subparsers.add_parser("compare-convection-output")
+    compare_convection_parser.add_argument("input", type=Path)
+    compare_convection_parser.add_argument("output", type=Path)
 
     compare_python_tpcore_parser = subparsers.add_parser("compare-python-tpcore-output")
     compare_python_tpcore_parser.add_argument("input", type=Path)
@@ -1979,6 +2558,35 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare-vdiff-output":
         print(format_vdiff_comparison(compare_vdiff_output(args.input, args.output)))
+        return 0
+    if args.command == "write-synthetic-convection-input":
+        path = write_synthetic_convection_input(
+            args.output,
+            dt_s=args.dt_s,
+            ntracer=args.ntracer,
+            scenario=args.scenario,
+        )
+        print(f"wrote_convection_input: {path}")
+        return 0
+    if args.command == "write-real-convection-input":
+        path = write_real_convection_input_from_config(
+            args.run_config,
+            args.output,
+            mode=args.mode,
+            time_index=args.time_index,
+            tracer_time_index=args.tracer_time_index,
+            dt_s=args.dt_s,
+            max_tracers=args.max_tracers,
+            active_columns=args.active_columns,
+        )
+        print(f"wrote_convection_input: {path}")
+        return 0
+    if args.command == "python-convection-output":
+        path = write_python_convection_output(args.input, args.output)
+        print(f"wrote_convection_output: {path}")
+        return 0
+    if args.command == "compare-convection-output":
+        print(format_convection_comparison(compare_convection_output(args.input, args.output)))
         return 0
     if args.command == "compare-python-tpcore-output":
         print(format_python_tpcore_comparison(compare_python_tpcore_output(args.input, args.output)))

@@ -22,6 +22,8 @@ from wombat_transport.gc_harness import (
     TPCORE_SNAPSHOT_VERSION,
     TRANSPORT_INPUT_VERSION,
     TRANSPORT_OUTPUT_VERSION,
+    CONVECTION_INPUT_VERSION,
+    CONVECTION_OUTPUT_VERSION,
     VDIFF_INPUT_VERSION,
     VDIFF_OUTPUT_VERSION,
     append_transport_step_tracers,
@@ -32,15 +34,21 @@ from wombat_transport.gc_harness import (
     compare_large_oracle_fixture,
     compare_python_tpcore_output,
     compare_transport_step_output,
+    compare_convection_output,
     compare_vdiff_output,
+    format_convection_comparison,
     format_large_oracle_fixture_check,
     format_vdiff_comparison,
+    read_convection_output,
     large_oracle_fixture_paths,
     read_vdiff_output,
     read_transport_step_output,
+    write_python_convection_output,
     write_python_tpcore_trace,
     write_python_vdiff_output,
     run_pjc_harness,
+    write_synthetic_convection_input,
+    write_real_convection_input_from_config,
     sha256_file,
     write_synthetic_tpcore_branch_input,
     write_synthetic_vdiff_input,
@@ -48,6 +56,7 @@ from wombat_transport.gc_harness import (
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
 )
+from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -66,6 +75,7 @@ TPCORE_LARGE_CX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_lar
 VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v1"
 VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v1"
 VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v1"
+CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v1"
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -261,6 +271,165 @@ def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):
     assert comparison.specific_humidity_max_abs_error == 0.0
     assert comparison.kvh_max_abs_error == 0.0
     assert "tracer_max_abs_error,0.00000000e+00" in format_vdiff_comparison(comparison)
+
+
+def test_write_synthetic_convection_input_records_fixture_contract(tmp_path):
+    input_path = write_synthetic_convection_input(tmp_path / "convection_input.nc")
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == CONVECTION_INPUT_VERSION
+        assert dataset.scenario == "active_cloud"
+        assert dataset.dt_s == 600.0
+        assert dataset.dimensions["lev"].size == 47
+        assert dataset.dimensions["lat"].size == 2
+        assert dataset.dimensions["lon"].size == 3
+        assert dataset.dimensions["tracer"].size == 2
+        assert dataset.variables["tracer_conc"].shape == (2, 47, 2, 3)
+        assert dataset.variables["cmfmc_kg_m2_s"].shape == (47, 2, 3)
+        assert dataset.variables["precccon_mm_day"].shape == (2, 3)
+        names = tuple(str(value).strip() for value in netCDF4.chartostring(dataset.variables["tracer_name"][:]))
+        assert names == ("conv_001", "conv_002")
+
+
+def test_python_convection_output_roundtrips_through_comparison_contract(tmp_path):
+    input_path = write_synthetic_convection_input(tmp_path / "convection_input.nc")
+    output_path = write_python_convection_output(input_path, tmp_path / "convection_output.nc")
+
+    output = read_convection_output(output_path)
+    with netCDF4.Dataset(output_path) as dataset:
+        assert dataset.harness == CONVECTION_OUTPUT_VERSION
+    assert output.tracer_conc_after.shape == (2, 47, 2, 3)
+    assert output.diag14_mass_flux.shape == (2, 47, 2, 3)
+    assert output.internal_steps == 2
+    assert output.internal_dt_s == 300.0
+    assert output.negative_count_after == 0
+
+    comparison = compare_convection_output(input_path, output_path)
+    assert comparison.tracer_max_abs_error == 0.0
+    assert comparison.diag14_max_abs_error == 0.0
+    assert "tracer_max_abs_error,0.00000000e+00" in format_convection_comparison(comparison)
+
+
+def test_convection_no_cloud_leaves_tracer_unchanged(tmp_path):
+    input_path = write_synthetic_convection_input(tmp_path / "convection_input.nc", scenario="no_cloud")
+
+    with netCDF4.Dataset(input_path) as dataset:
+        tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        result = run_cloud_convection_one_step(
+            tracer_conc=tracer,
+            cmfmc_kg_m2_s=np.asarray(dataset.variables["cmfmc_kg_m2_s"][:], dtype=np.float64),
+            dtrain_kg_m2_s=np.asarray(dataset.variables["dtrain_kg_m2_s"][:], dtype=np.float64),
+            dqrcu_kg_kg_s=np.asarray(dataset.variables["dqrcu_kg_kg_s"][:], dtype=np.float64),
+            reevapcn_kg_kg_s=np.asarray(dataset.variables["reevapcn_kg_kg_s"][:], dtype=np.float64),
+            delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
+            delp_hpa=np.asarray(dataset.variables["delp_hpa"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            pficu_kg_m2_s=np.asarray(dataset.variables["pficu_kg_m2_s"][:], dtype=np.float64),
+            pflcu_kg_m2_s=np.asarray(dataset.variables["pflcu_kg_m2_s"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            precccon_mm_day=np.asarray(dataset.variables["precccon_mm_day"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    np.testing.assert_array_equal(result.tracer_conc, tracer)
+    np.testing.assert_array_equal(result.initial_tracer_mass, result.final_tracer_mass)
+
+
+def test_convection_active_cloud_changes_tracer_and_conserves_mass(tmp_path):
+    input_path = write_synthetic_convection_input(tmp_path / "convection_input.nc", scenario="active_cloud")
+    output_path = write_python_convection_output(input_path, tmp_path / "convection_output.nc")
+    output = read_convection_output(output_path)
+
+    with netCDF4.Dataset(input_path) as dataset:
+        before = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+
+    assert float(np.max(np.abs(output.tracer_conc_after - before))) > 0.0
+    np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=0.0, atol=1.0e-7)
+
+
+def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_path):
+    input_path = write_synthetic_convection_input(
+        tmp_path / "convection_input.nc",
+        scenario="multi_tracer",
+        ntracer=3,
+    )
+    output_path = write_python_convection_output(input_path, tmp_path / "convection_output.nc")
+    output = read_convection_output(output_path)
+
+    with netCDF4.Dataset(input_path) as dataset:
+        names = tuple(str(value).strip() for value in netCDF4.chartostring(dataset.variables["tracer_name"][:]))
+        before = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        bmass = np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64) * G0_100
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+
+    assert names == ("conv_001", "conv_002", "conv_003")
+    assert output.tracer_conc_after.shape[0] == 3
+    assert not np.array_equal(output.tracer_conc_after[0], output.tracer_conc_after[1])
+    expected_initial_mass = np.sum(before * bmass[np.newaxis, :, :, :] * area[np.newaxis, np.newaxis, :, :], axis=(1, 2, 3))
+    np.testing.assert_allclose(output.initial_tracer_mass, expected_initial_mass)
+
+
+def test_write_real_convection_input_records_sampled_47_level_contract(tmp_path):
+    _require_real_convection_inputs()
+    input_path = write_real_convection_input_from_config(
+        Path("residual_20140901_part001_split01_wombat/run.yml"),
+        tmp_path / "convection_input.nc",
+        mode="sampled-columns",
+    )
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == CONVECTION_INPUT_VERSION
+        assert dataset.scenario == "real-sampled-columns"
+        assert dataset.vertical_mapping == "native_72_to_47_center_and_73_to_48_edge"
+        assert dataset.dimensions["tracer"].size == 24
+        assert dataset.dimensions["lev"].size == 47
+        assert dataset.dimensions["lon"].size == 1
+        assert dataset.variables["cmfmc_kg_m2_s"].shape[0] == 47
+        assert np.max(np.asarray(dataset.variables["cmfmc_kg_m2_s"][:])) > 0.0
+        column_activity = np.max(np.abs(np.asarray(dataset.variables["cmfmc_kg_m2_s"][:])), axis=0)
+        assert np.count_nonzero(column_activity == 0.0) >= 1
+        assert dataset.variables["source_lat_index"].shape == (dataset.dimensions["lat"].size, 1)
+        names = tuple(str(value).strip() for value in netCDF4.chartostring(dataset.variables["tracer_name"][:]))
+        assert names[0] == "r0002p001s001"
+        assert names[-1] == "r0002p001s024"
+
+
+def test_python_real_convection_sampled_output_has_finite_mass(tmp_path):
+    _require_real_convection_inputs()
+    input_path = write_real_convection_input_from_config(
+        Path("residual_20140901_part001_split01_wombat/run.yml"),
+        tmp_path / "convection_input.nc",
+        mode="sampled-columns",
+        max_tracers=3,
+    )
+    output_path = write_python_convection_output(input_path, tmp_path / "convection_output.nc")
+    output = read_convection_output(output_path)
+
+    assert output.tracer_conc_after.shape[0] == 3
+    assert np.all(np.isfinite(output.tracer_conc_after))
+    assert output.negative_count_after == 0
+    np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=0.0, atol=1.0e-6)
+
+
+def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path):
+    with (CONVECTION_REAL_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    assert metadata["snapshot"] == "convection-real-sampled-v1"
+    assert metadata["shape"] == {"tracer": 24, "lev": 47, "lat": 7, "lon": 1}
+
+    comparison = compare_convection_output(
+        CONVECTION_REAL_FIXTURE_DIR / "convection_input.nc",
+        CONVECTION_REAL_FIXTURE_DIR / "convection_output.nc",
+        python_output_path=tmp_path / "python_convection_output.nc",
+    )
+
+    assert comparison.tracer_max_abs_error == 0.0
+    assert comparison.diag14_max_abs_error == 0.0
+    assert comparison.negative_count_before_actual == comparison.negative_count_before_expected
+    assert comparison.negative_count_after_actual == comparison.negative_count_after_expected
+    assert comparison.mass_change_max_abs == 0.0
+    assert comparison.expected_mass_change_max_abs == 0.0
 
 
 def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
@@ -874,6 +1043,20 @@ def _write_synthetic_pjc_input(path):
         v_m_s=v,
         dt_s=600.0,
     )
+
+
+def _require_real_convection_inputs() -> None:
+    required = (
+        Path("residual_20140901_part001_split01_wombat/run.yml"),
+        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A1.2x25.nc4"),
+        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3dyn.2x25.nc4"),
+        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstC.2x25.nc4"),
+        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstE.2x25.nc4"),
+        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.I3.2x25.nc4"),
+    )
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        pytest.skip(f"real convection fixture inputs are not available: {', '.join(missing)}")
 
 
 def _write_large_oracle_definition(

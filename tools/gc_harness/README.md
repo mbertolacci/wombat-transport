@@ -67,6 +67,26 @@ python -m wombat_transport.gc_harness write-synthetic-vdiff-input \
 python -m wombat_transport.gc_harness compare-vdiff-output \
   tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc \
   tests/fixtures/vdiff_snapshot_v1/vdiff_output.nc
+
+python -m wombat_transport.gc_harness write-synthetic-convection-input \
+  tools/gc_harness/work/convection_input.nc \
+  --scenario active_cloud
+
+python -m wombat_transport.gc_harness write-real-convection-input \
+  tools/gc_harness/work/convection_real_sampled_input.nc \
+  --mode sampled-columns
+
+python -m wombat_transport.gc_harness write-real-convection-input \
+  tools/gc_harness/work/convection_real_fullgrid_input.nc \
+  --mode full-grid --max-tracers 1
+
+python -m wombat_transport.gc_harness python-convection-output \
+  tools/gc_harness/work/convection_input.nc \
+  tools/gc_harness/work/python_convection_output.nc
+
+python -m wombat_transport.gc_harness compare-convection-output \
+  tools/gc_harness/work/convection_input.nc \
+  tools/gc_harness/work/convection_output.nc
 ```
 
 The `snapshot-pjc` command regenerates the small tracked PJC oracle fixture
@@ -80,6 +100,12 @@ snapshots. `x_fxppm_low_courant` is a passing X full-PPM fixture;
 The tracked VDIFF snapshot fixtures isolate the configured non-local
 `VDIFFDR -> vdiff/pbldif/qvdiff` path for zero constituent surface flux,
 nonzero constituent surface flux, and negative tracer clipping/rescaling.
+The tracked convection real-met sampled fixture uses local 2014-09-01 MERRA2
+fields from the residual 24-tracer configuration, maps native 72 center levels
+and 73 edge levels onto the target 47/48 GEOS-Chem levels, and selects six
+active convective columns plus one no-cloud column. It is intentionally small
+enough for the fast unit-test suite while preserving the target 47-level
+vertical contract and real field values.
 
 ## Large Oracle Fixture Cache
 
@@ -149,6 +175,8 @@ tools/gc_harness/build_pjc_pfix_harness.sh
 tools/gc_harness/build_pjc_pfix_harness.sh --with-tpcore-trace
 
 tools/gc_harness/build_vdiff_harness.sh
+
+tools/gc_harness/build_convection_harness.sh
 ```
 
 The trace build generates an instrumented copy of
@@ -167,6 +195,10 @@ python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
 tools/gc_harness/build/vdiff_harness \
   tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc \
   tests/fixtures/vdiff_snapshot_v1/vdiff_output.nc
+
+tools/gc_harness/build/convection_harness \
+  tools/gc_harness/work/convection_input.nc \
+  tools/gc_harness/work/convection_output.nc
 ```
 
 Current smoke result on `base_wombat/run.yml` after building against
@@ -192,4 +224,26 @@ ymass_min_hpa,-5.25986229e+00
 ymass_max_hpa,5.10715920e+00
 surface_pressure_min_hpa,5.44398164e+02
 surface_pressure_max_hpa,1.03315703e+03
+```
+
+Current real-met sampled convection snapshot result against the GEOS-Chem
+convection harness:
+
+```text
+metric,value
+tracer_max_abs_error,0.00000000e+00
+tracer_mean_abs_error,0.00000000e+00
+diag14_max_abs_error,0.00000000e+00
+diag14_mean_abs_error,0.00000000e+00
+negative_count_before_expected,0
+negative_count_before_actual,0
+negative_count_after_expected,0
+negative_count_after_actual,0
+initial_mass_max_abs_error,1.22070312e-03
+final_mass_max_abs_error,1.22070312e-03
+mass_change_max_abs,0.00000000e+00
+expected_mass_change_max_abs,0.00000000e+00
+top_error_index,0:0:0:0
+internal_steps_expected,2
+internal_steps_actual,2
 ```
