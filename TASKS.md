@@ -1,21 +1,24 @@
 # Wombat Transport Status
 
-Last completed checkpoint before the VDIFF tranche:
-`5862431 Add PBL groundwork`
+Last completed checkpoint:
+`f8764bb Wire VDIFF into transport driver`
 
-Validation at that checkpoint:
+Validation for that checkpoint:
 
-- Full test suite passed at that checkpoint: `73 passed`.
-- Working tree was clean immediately after the commit.
-
-Current VDIFF tranche validation before commit:
-
-- `tools/gc_harness/build_vdiff_harness.sh` built the local GEOS-Chem VDIFF
-  oracle executable.
-- Compact VDIFF oracle comparison matched Python at roundoff for tracer,
+- `tools/gc_harness/build_vdiff_harness.sh` rebuilt the local GEOS-Chem VDIFF
+  oracle executable after tightening negative-count output.
+- Compact VDIFF oracle comparisons match Python at roundoff for tracer,
   humidity, `kvh`, `kvm`, PBL height, perturbations, negative counts, and
-  zero-surface-flux mass conservation.
-- Full test suite passed: `78 passed`.
+  mass for:
+  - zero constituent surface flux;
+  - nonzero constituent surface flux;
+  - negative tracer clipping and long-lived mass rescaling.
+- Focused validation passed:
+  - `tests/test_gc_harness.py`: `39 passed`
+  - `tests/test_transport.py`: `11 passed`
+  - `tests/test_runner.py`: `13 passed`
+  - `tests/test_io.py`: `15 passed`
+- Working tree was clean immediately after the commit.
 
 ## Where We Are
 
@@ -39,29 +42,37 @@ Current VDIFF tranche validation before commit:
     low-Courant fixture, the full-grid base initial-condition fixture, and the
     24-tracer residual initial-condition fixture for pressure, mass fluxes,
     and final tracer concentrations;
+  - `TPCORE_FVDAS` followed by the configured non-local VDIFF/PBL stage in
+    both `transport-one-step` and `transport-window`;
+  - per-stage scalar mass reporting for `tpcore` and `vdiff`;
   - three-hour window averaging for equivalence checks against GEOS-Chem
     diagnostics;
   - pressure-thickness and pressure-edge comparison output against
     `Met_PEDGEDRY` when LevelEdge diagnostics are available.
 - PBL work now includes a direct Python port of GEOS-Chem
   `Compute_Pbl_Height` bookkeeping, the compact mass-weighted full-PBL mixer
-  core from `TurbDay`, and a first isolated Python port of the configured
-  non-local `VDIFFDR -> vdiff/pbldif/qvdiff` path with zero constituent
-  surface flux.
+  core from `TurbDay`, and the configured non-local
+  `VDIFFDR -> vdiff/pbldif/qvdiff` path. The production driver now runs that
+  VDIFF path after TPCORE with zero constituent surface flux.
 - A GEOS-Chem-backed operator harness exists under `tools/gc_harness/`. It
   writes NetCDF fixtures from a Wombat run config, calls `DO_PJC_PFIX` through
   a small Fortran executable linked against `base/build`, and can also run one
   `TPCORE_FVDAS` tracer step when the fixture includes `tracer_conc`. A
   separate VDIFF harness path generates a local trace-enabled copy of
-  `vdiff_mod.F90`, exposes `VDIFFDR`, and saves `kvh`, `kvm`, `tpert`, and
-  `qpert` for oracle comparison.
+  `vdiff_mod.F90`, exposes `VDIFFDR`, saves `kvh`, `kvm`, `tpert`, and
+  `qpert`, and records negative tracer counts for oracle comparison.
 - Fast tracked oracle snapshots now exist for:
   - PJC mass fluxes, under `tests/fixtures/pjc_snapshot_v1/`;
   - one-step PJC plus `TPCORE_FVDAS`, under
     `tests/fixtures/tpcore_snapshot_v1/`.
   - branch-isolating TPCORE snapshots for X full-PPM and large-Courant E-W
     behavior, under `tests/fixtures/tpcore_x_*_v1/`.
-  - one-step non-local VDIFF, under `tests/fixtures/vdiff_snapshot_v1/`.
+  - one-step non-local VDIFF zero-flux, under
+    `tests/fixtures/vdiff_snapshot_v1/`;
+  - one-step non-local VDIFF nonzero constituent surface flux, under
+    `tests/fixtures/vdiff_nonzero_surface_flux_v1/`;
+  - one-step non-local VDIFF negative clipping/rescaling, under
+    `tests/fixtures/vdiff_negative_clipping_v1/`.
 - Large real-run oracle fixtures now have a separate untracked cache policy
   under `oracle_data/`. Tracked manifests describe the fixture contract; NetCDF
   payloads are generated or fetched locally and verified by checksum before
@@ -70,10 +81,10 @@ Current VDIFF tranche validation before commit:
 ## Important Caveats
 
 - `transport-one-step` and `transport-window` now route through the
-  GEOS-Chem-oriented NumPy TPCORE port. PBL mixing and convection are still not
-  included in the production transport sequence.
-- The supported transport driver path is the GEOS-Chem-oriented NumPy TPCORE
-  port.
+  GEOS-Chem-oriented NumPy TPCORE port followed by the non-local VDIFF/PBL
+  path. Convection is still not included in the production transport sequence.
+- The supported transport driver path is the GEOS-Chem-oriented NumPy
+  TPCORE+VDIFF path.
 - The harness is now an isolated GEOS-Chem oracle for the pressure-fixer and
   one-step TPCORE stages. The Python `compare-python-tpcore-output` path and
   main transport driver modes route through the GEOS-Chem-oriented NumPy
@@ -91,9 +102,15 @@ Current VDIFF tranche validation before commit:
 - The Python TPCORE path now preflights the active branch set and raises a
   clear `NotImplementedError` for currently unsupported large-Courant N-S
   behavior instead of continuing silently outside the validated path.
-- PBL mixing is still isolated from production transport. Convection,
-  three-hourly production validation, and performance benchmarks are not
-  implemented yet.
+- Production VDIFF currently derives grid-box height hydrostatically from
+  post-TPCORE dry pressure edges and virtual temperature because
+  `TransportForcing` does not yet carry archived `Met_BXHEIGHT`. Base StateMet
+  diagnostics remain the reference target for tightening this input path.
+- VDIFF is wired with zero constituent surface flux in the production transport
+  path. Nonzero tracer surface-flux behavior is covered by compact oracle
+  fixtures but not yet sourced from emissions inside production transport.
+- Convection, meaningful three-hourly production validation, and performance
+  benchmarks are not implemented yet.
 - Missing-operator gaps are not validation milestones. The project target is
   operator-by-operator numerical parity: isolate a GEOS-Chem operator, match it
   to roundoff or a documented floating-point tolerance, then move on.
@@ -118,15 +135,13 @@ Current VDIFF tranche validation before commit:
 
 ## Good Next Steps
 
-1. Harden and expand non-local VDIFF coverage.
+1. Add a full-grid base TPCORE+VDIFF oracle fixture.
    - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.
-   - The first compact VDIFF oracle matches Python at roundoff for tracer,
-     humidity, `kvh`, `kvm`, PBL height, perturbations, negative counts, and
-     zero-surface-flux mass conservation.
-   - Add nonzero constituent surface-flux and negative-clipping oracle cases
-     before wiring VDIFF into `transport-one-step` or `transport-window`.
-   - Add an optional full-grid base VDIFF oracle only after compact edge cases
-     are stable.
+   - Compact edge cases are now stable for zero flux, nonzero flux, and
+     negative clipping/rescaling.
+   - The next VDIFF parity target is at least one full-grid base
+     initial-condition `TPCORE + VDIFF` oracle comparing final tracer,
+     humidity, diffusivities, negative counts, and scalar mass.
 
 2. Port and verify transport in GEOS-Chem operator order.
    - Treat GEOS-Chem as the reference semantics, not as an approximate target.
@@ -141,11 +156,13 @@ Current VDIFF tranche validation before commit:
    - Track negative counts/minima before and after filling in verification
      output.
 
-4. Extend the main transport path beyond TPCORE.
+4. Tighten VDIFF production inputs and diagnostics.
    - Use `transport_mod.F90`, `tpcore_fvdas_mod.F90`, and `pjc_pfix_mod.F90` as
      references.
-   - Preserve the current TPCORE parity checks while adding the next
-     GEOS-Chem operator stages.
+   - Compare hydrostatically derived `bxheight` against archived
+     `Met_BXHEIGHT` from the base StateMet diagnostics.
+   - Preserve the current TPCORE and compact VDIFF parity checks while adding
+     full-grid VDIFF oracle coverage.
 
 5. Add convection.
    - Use `convection_mod.F90` as the reference.
@@ -181,6 +198,10 @@ python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
 python -m wombat_transport.gc_harness oracle-fixture-trace-compare base_initial_tpcore_v1
+tools/gc_harness/build_vdiff_harness.sh
+python -m wombat_transport.gc_harness compare-vdiff-output tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc tests/fixtures/vdiff_snapshot_v1/vdiff_output.nc
+python -m wombat_transport.gc_harness compare-vdiff-output tests/fixtures/vdiff_nonzero_surface_flux_v1/vdiff_input.nc tests/fixtures/vdiff_nonzero_surface_flux_v1/vdiff_output.nc
+python -m wombat_transport.gc_harness compare-vdiff-output tests/fixtures/vdiff_negative_clipping_v1/vdiff_input.nc tests/fixtures/vdiff_negative_clipping_v1/vdiff_output.nc
 python -m wombat_transport.run base_wombat/run.yml --mode transport-window --max-steps 18
 python -m wombat_transport.run residual_20140901_part001_split01_wombat/run.yml --mode transport-one-step
 ```
