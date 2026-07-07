@@ -614,29 +614,45 @@ def _calc_advec_cross_terms_batch(
     j1p, j2p = _polar_cap_bounds(nlat)
     qqu = np.zeros_like(q)
     qqv = np.zeros_like(q)
+    lon_index = np.arange(nlon, dtype=np.int64)
     for j in range(j1p, j2p + 1):
-        for i in range(nlon):
-            if j <= js or j >= jn:
-                iu0 = _trunc_toward_zero(ua[j, i])
-                ru = ua[j, i] - float(iu0)
-                iu = i - iu0
-                if ua[j, i] >= 0.0:
-                    qqu[:, j, i] = _q_lon_batch(q, j, iu) + ru * (
-                        _q_lon_batch(q, j, iu - 1) - _q_lon_batch(q, j, iu)
-                    )
-                else:
-                    qqu[:, j, i] = _q_lon_batch(q, j, iu) + ru * (
-                        _q_lon_batch(q, j, iu) - _q_lon_batch(q, j, iu + 1)
-                    )
-                qqu[:, j, i] -= q[:, j, i]
-            else:
-                iu = _real_index_offset(i, ua[j, i])
-                qqu[:, j, i] = ua[j, i] * (_q_lon_batch(q, j, iu) - _q_lon_batch(q, j, iu + 1))
-            jv = _real_index_offset(j, va[j, i])
-            qqv[:, j, i] = va[j, i] * (_q_lat_batch(q, i, jv) - _q_lat_batch(q, i, jv + 1))
+        if j <= js or j >= jn:
+            iu0 = ua[j, :].astype(np.int64)
+            ru = ua[j, :] - iu0
+            iu = lon_index - iu0
+            q_i = _take_lon_row(q[:, j, :], iu)
+            q_im1 = _take_lon_row(q[:, j, :], iu - 1)
+            q_ip1 = _take_lon_row(q[:, j, :], iu + 1)
+            pos = ua[j, :] >= 0.0
+            qqu[:, j, :] = np.where(
+                pos[np.newaxis, :],
+                q_i + ru[np.newaxis, :] * (q_im1 - q_i),
+                q_i + ru[np.newaxis, :] * (q_i - q_ip1),
+            )
+            qqu[:, j, :] -= q[:, j, :]
+        else:
+            iu = ((lon_index + 1.0) - ua[j, :]).astype(np.int64) - 1
+            qqu[:, j, :] = ua[j, :][np.newaxis, :] * (
+                _take_lon_row(q[:, j, :], iu) - _take_lon_row(q[:, j, :], iu + 1)
+            )
+        jv = ((j + 1.0) - va[j, :]).astype(np.int64) - 1
+        qqv[:, j, :] = va[j, :][np.newaxis, :] * (_take_lat_columns(q, jv) - _take_lat_columns(q, jv + 1))
     qqu = q + 0.5 * qqu
     qqv = q + 0.5 * qqv
     return qqu, qqv
+
+
+def _take_lon_row(row: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    return np.take(row, indices % row.shape[1], axis=1)
+
+
+def _take_lat_columns(values: np.ndarray, lat_indices: np.ndarray) -> np.ndarray:
+    out = np.zeros((values.shape[0], values.shape[2]), dtype=values.dtype)
+    valid = (lat_indices >= 0) & (lat_indices < values.shape[1])
+    if np.any(valid):
+        lon_index = np.nonzero(valid)[0]
+        out[:, valid] = values[:, lat_indices[valid], lon_index]
+    return out
 
 
 def _xadv_dao2(qqv: np.ndarray, ua: np.ndarray, jn: int, js: int) -> np.ndarray:
@@ -663,17 +679,18 @@ def _xadv_dao2_batch(qqv: np.ndarray, ua: np.ndarray, jn: int, js: int) -> np.nd
     _ntracer, nlat, nlon = qqv.shape
     j1p, j2p = _polar_cap_bounds(nlat)
     adx = np.zeros_like(qqv)
+    lon_index = np.arange(nlon, dtype=np.int64)
     for j in range(j1p, j2p + 1):
-        for i in range(nlon):
-            iu0 = _nint(ua[j, i])
-            ru = float(iu0) - ua[j, i]
-            iu = i - iu0
-            a1 = 0.5 * (_q_lon_batch(qqv, j, iu + 1) + _q_lon_batch(qqv, j, iu - 1)) - _q_lon_batch(
-                qqv, j, iu
-            )
-            b1 = 0.5 * (_q_lon_batch(qqv, j, iu + 1) - _q_lon_batch(qqv, j, iu - 1))
-            c1 = _q_lon_batch(qqv, j, iu) - qqv[:, j, i]
-            adx[:, j, i] = ru * (a1 * ru + b1) + c1
+        iu0 = np.rint(ua[j, :]).astype(np.int64)
+        ru = iu0 - ua[j, :]
+        iu = lon_index - iu0
+        q_i = _take_lon_row(qqv[:, j, :], iu)
+        q_ip1 = _take_lon_row(qqv[:, j, :], iu + 1)
+        q_im1 = _take_lon_row(qqv[:, j, :], iu - 1)
+        a1 = 0.5 * (q_ip1 + q_im1) - q_i
+        b1 = 0.5 * (q_ip1 - q_im1)
+        c1 = q_i - qqv[:, j, :]
+        adx[:, j, :] = ru[np.newaxis, :] * (a1 * ru[np.newaxis, :] + b1) + c1
     adx[:, 0, :] = 0.0
     adx[:, 1, :] = 0.0
     adx[:, -2, :] = 0.0
@@ -703,16 +720,16 @@ def _yadv_dao2_batch(qqu: np.ndarray, va: np.ndarray) -> np.ndarray:
     j1p, j2p = _polar_cap_bounds(nlat)
     ady = np.zeros_like(qqu)
     for j in range(j1p - 1, j2p + 2):
-        for i in range(nlon):
-            jv0 = _nint(va[j, i])
-            rv = float(jv0) - va[j, i]
-            jv = j - jv0
-            a1 = 0.5 * (_q_lat_batch(qqu, i, jv + 1) + _q_lat_batch(qqu, i, jv - 1)) - _q_lat_batch(
-                qqu, i, jv
-            )
-            b1 = 0.5 * (_q_lat_batch(qqu, i, jv + 1) - _q_lat_batch(qqu, i, jv - 1))
-            c1 = _q_lat_batch(qqu, i, jv) - qqu[:, j, i]
-            ady[:, j, i] = rv * (a1 * rv + b1) + c1
+        jv0 = np.rint(va[j, :]).astype(np.int64)
+        rv = jv0 - va[j, :]
+        jv = j - jv0
+        q_j = _take_lat_columns(qqu, jv)
+        q_jp1 = _take_lat_columns(qqu, jv + 1)
+        q_jm1 = _take_lat_columns(qqu, jv - 1)
+        a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+        b1 = 0.5 * (q_jp1 - q_jm1)
+        c1 = q_j - qqu[:, j, :]
+        ady[:, j, :] = rv[np.newaxis, :] * (a1 * rv[np.newaxis, :] + b1) + c1
     _do_y_pole_sum_batch(ady)
     return ady
 
