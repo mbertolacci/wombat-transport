@@ -7,7 +7,13 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import (
+    TracerField,
+    canonical_time_slice,
+    public_tracer4_to_transport,
+    transport_tracer_to_canonical,
+    transport_tracer_to_public4,
+)
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import TransportForcing, load_transport_forcing
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
@@ -314,7 +320,7 @@ def _run_tpcore_one_step_from_mass(
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
 ) -> TransportStepResult:
-    if tracer_field.data.shape[1] != 1:
+    if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
     if p1_hpa is None:
         p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
@@ -337,7 +343,7 @@ def _run_tpcore_one_step_from_mass(
         raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
     tpcore = run_tpcore_one_step(
-        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        tracer_conc=transport_tracer_to_public4(canonical_time_slice(tracer_field.data)),
         p1_hpa=p1_hpa,
         p2_hpa=p2_hpa,
         u_m_s=forcing.u_m_s[0],
@@ -350,14 +356,15 @@ def _run_tpcore_one_step_from_mass(
     )
     next_delp = tpcore.delp2_hpa[np.newaxis, ...]
     next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
+    tpcore_top = public_tracer4_to_transport(tpcore.tracer_conc_after)
     tpcore_state = TracerField(
         names=tracer_field.names,
-        data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(tpcore_top),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
-    initial_scalar_mass = scalar_mass_by_tracer(tracer_field.data, dry_air_mass)
-    tpcore_scalar_mass = scalar_mass_by_tracer(tpcore_state.data, next_dry_air_mass)
+    initial_scalar_mass = scalar_mass_by_tracer(tracer_field.data, dry_air_mass[:, ::-1, :, :])
+    tpcore_scalar_mass = scalar_mass_by_tracer(tpcore_state.data, next_dry_air_mass[:, ::-1, :, :])
     vdiff_input = _build_vdiff_input_after_tpcore(
         tpcore_state,
         forcing,
@@ -370,11 +377,11 @@ def _run_tpcore_one_step_from_mass(
     vdiff = _run_vdiff_input(vdiff_input)
     state = TracerField(
         names=tracer_field.names,
-        data=vdiff.tracer_conc[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(vdiff.tracer_conc)),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
-    vdiff_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
+    vdiff_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass[:, ::-1, :, :])
     convection_input = _build_convection_input_after_vdiff(
         state,
         forcing,
@@ -386,11 +393,11 @@ def _run_tpcore_one_step_from_mass(
     convection = _run_convection_input(convection_input)
     state = TracerField(
         names=tracer_field.names,
-        data=convection.tracer_conc[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(convection.tracer_conc)),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
-    convection_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
+    convection_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass[:, ::-1, :, :])
     return TransportStepResult(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
@@ -425,7 +432,7 @@ def _trace_tpcore_one_step_from_mass(
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
 ) -> TransportStepDiagnostics:
-    if tracer_field.data.shape[1] != 1:
+    if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
     if p1_hpa is None:
         p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
@@ -448,7 +455,7 @@ def _trace_tpcore_one_step_from_mass(
         raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
     tpcore = run_tpcore_one_step(
-        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        tracer_conc=transport_tracer_to_public4(canonical_time_slice(tracer_field.data)),
         p1_hpa=p1_hpa,
         p2_hpa=p2_hpa,
         u_m_s=forcing.u_m_s[0],
@@ -461,14 +468,15 @@ def _trace_tpcore_one_step_from_mass(
     )
     next_delp = tpcore.delp2_hpa[np.newaxis, ...]
     next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
+    tpcore_top = public_tracer4_to_transport(tpcore.tracer_conc_after)
     tpcore_state = TracerField(
         names=tracer_field.names,
-        data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(tpcore_top),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
-    initial_scalar_mass = scalar_mass_by_tracer(tracer_field.data, dry_air_mass)
-    tpcore_scalar_mass = scalar_mass_by_tracer(tpcore_state.data, next_dry_air_mass)
+    initial_scalar_mass = scalar_mass_by_tracer(tracer_field.data, dry_air_mass[:, ::-1, :, :])
+    tpcore_scalar_mass = scalar_mass_by_tracer(tpcore_state.data, next_dry_air_mass[:, ::-1, :, :])
     vdiff_input = _build_vdiff_input_after_tpcore(
         tpcore_state,
         forcing,
@@ -481,11 +489,11 @@ def _trace_tpcore_one_step_from_mass(
     vdiff = _run_vdiff_input(vdiff_input)
     state = TracerField(
         names=tracer_field.names,
-        data=vdiff.tracer_conc[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(vdiff.tracer_conc)),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
-    vdiff_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
+    vdiff_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass[:, ::-1, :, :])
     convection_input = _build_convection_input_after_vdiff(
         state,
         forcing,
@@ -497,11 +505,11 @@ def _trace_tpcore_one_step_from_mass(
     convection = _run_convection_input(convection_input)
     state = TracerField(
         names=tracer_field.names,
-        data=convection.tracer_conc[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(convection.tracer_conc)),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
-    convection_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
+    convection_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass[:, ::-1, :, :])
     result = TransportStepResult(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
@@ -572,7 +580,7 @@ def _build_vdiff_input_after_tpcore(
     virtual_temperature = temperature * (1.0 + ZVIR * sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     return VdiffInputState(
-        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        tracer_conc=transport_tracer_to_public4(canonical_time_slice(tracer_field.data)),
         u_m_s=np.asarray(forcing.u_m_s[0], dtype=np.float64),
         v_m_s=np.asarray(forcing.v_m_s[0], dtype=np.float64),
         temperature_k=temperature,
@@ -589,7 +597,7 @@ def _build_vdiff_input_after_tpcore(
         area_m2=area,
         dt_s=dt_s,
         surface_flux_kg_m2_s=np.zeros(
-            (tracer_field.data.shape[0], tracer_field.data.shape[3], tracer_field.data.shape[4]),
+            (len(tracer_field.names), tracer_field.data.shape[2], tracer_field.data.shape[3]),
             dtype=np.float64,
         ),
     )
@@ -654,7 +662,7 @@ def _build_convection_input_after_vdiff(
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     delp = np.asarray(delp_dry_hpa[0], dtype=np.float64)
     return ConvectionInputState(
-        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        tracer_conc=transport_tracer_to_public4(canonical_time_slice(tracer_field.data)),
         cmfmc_kg_m2_s=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64),
         dtrain_kg_m2_s=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64),
         dqrcu_kg_kg_s=np.asarray(forcing.convective_precip_prod_kg_kg_s[0], dtype=np.float64),

@@ -6,6 +6,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.fields import canonical_time_slice, transport_tracer_to_public4
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -251,7 +252,7 @@ def test_transport_one_step_conserves_residual_scalar_mass():
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     field = TracerField(
         names=field.names[:1],
-        data=field.data[:1],
+        data=field.data[..., :1],
         units=field.units[:1],
         coords=field.coords,
     )
@@ -271,7 +272,7 @@ def test_trace_transport_one_step_captures_operator_handoffs():
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     field = TracerField(
         names=field.names[:1],
-        data=field.data[:1],
+        data=field.data[..., :1],
         units=field.units[:1],
         coords=field.coords,
     )
@@ -282,8 +283,9 @@ def test_trace_transport_one_step_captures_operator_handoffs():
     assert trace.tpcore_state.tracer_conc_after.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert trace.vdiff_input.tracer_conc.shape == trace.tpcore_state.tracer_conc_after.shape
     assert trace.vdiff_output.tracer_conc.shape == trace.convection_input.tracer_conc.shape
-    assert trace.convection_output.tracer_conc.shape == trace.result.state.data[:, 0, :, :, :].shape
-    np.testing.assert_allclose(trace.result.state.data[:, 0, :, :, :], trace.convection_output.tracer_conc)
+    public_result = transport_tracer_to_public4(canonical_time_slice(trace.result.state.data))
+    assert trace.convection_output.tracer_conc.shape == public_result.shape
+    np.testing.assert_allclose(public_result, trace.convection_output.tracer_conc)
 
 
 def test_transport_window_accumulates_average_state_and_conserves_mass():

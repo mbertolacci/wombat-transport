@@ -13,7 +13,13 @@ from urllib.request import urlretrieve
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import (
+    TracerField,
+    canonical_time_slice,
+    public_tracer4_to_transport,
+    transport_tracer_to_canonical,
+    transport_tracer_to_public4,
+)
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -421,7 +427,7 @@ def write_transport_step_input_from_config(
         config.species_database,
         template_path=config.grid_template,
     )
-    tracer_data = np.asarray(tracers.data[:, tracer_time_index, :, :, :], dtype=np.float64)
+    tracer_data = transport_tracer_to_public4(canonical_time_slice(tracers.data, tracer_time_index))
     tracer_names = tracers.names
     if max_tracers is not None:
         tracer_data = tracer_data[:max_tracers]
@@ -756,7 +762,7 @@ def write_real_convection_input_from_config(
         config.species_database,
         template_path=config.grid_template,
     )
-    tracer_data = np.asarray(tracers.data[:, tracer_time_index, :, :, :], dtype=np.float64)
+    tracer_data = transport_tracer_to_public4(canonical_time_slice(tracers.data, tracer_time_index))
     tracer_names = tracers.names
     if max_tracers is not None:
         tracer_data = tracer_data[:max_tracers]
@@ -1505,7 +1511,7 @@ def _write_chain_vdiff_input(
     dry_mass = dry_air_mass_from_pressure(delp, area)[0]
     tpcore_state = TracerField(
         names=tracer_names,
-        data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(tpcore.tracer_conc_after)),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -1586,7 +1592,7 @@ def _write_chain_convection_input(
     delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
     vdiff_state = TracerField(
         names=tracer_names,
-        data=vdiff.tracer_conc_after[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(vdiff.tracer_conc_after)),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -1863,7 +1869,7 @@ def compare_transport_chain_oracle_fixture(
     )
     field = TracerField(
         names=tracer_names,
-        data=tracer0[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(tracer0)),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -1885,7 +1891,7 @@ def compare_transport_chain_oracle_fixture(
     common_oracle_vdiff_mass = _tracer_mass_common_basis(expected_vdiff_tracer, final_dry_mass)
     common_oracle_convection_mass = _tracer_mass_common_basis(expected_tracer, final_dry_mass)
     common_actual_convection_mass = result.final_scalar_mass
-    actual_tracer = result.state.data[:, 0, :, :, :]
+    actual_tracer = transport_tracer_to_public4(canonical_time_slice(result.state.data))
     error = np.abs(actual_tracer - expected_tracer)
     return TransportChainComparison(
         tracer_max_abs_error=float(np.max(error)),
@@ -1976,7 +1982,7 @@ def compare_transport_chain_handoffs(
             rows,
             "final_chain_output",
             "tracer_conc_after",
-            diagnostics.result.state.data[:, 0, :, :, :],
+            transport_tracer_to_public4(canonical_time_slice(diagnostics.result.state.data)),
             np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64),
         )
         _append_array_error_row(
@@ -2005,7 +2011,7 @@ def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
     )
     field = TracerField(
         names=tracer_names,
-        data=tracer0[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(public_tracer4_to_transport(tracer0)),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )

@@ -49,7 +49,7 @@ def test_emissions_replay_processes_prefix_and_accumulates_mass():
 
     assert len(result.discovered_files) == 119
     assert len(result.processed_files) == 2
-    assert result.state.shape == (24, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert result.state.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
 
     expected = np.zeros(24)
     for diagnostic in result.processed_files:
@@ -200,7 +200,7 @@ def test_run_cli_base_init_only_smoke():
     )
 
     assert "mode: init-only" in completed.stdout
-    assert "state_shape: (1, 1, 47, 91, 144)" in completed.stdout
+    assert "state_shape: (1, 47, 91, 144, 1)" in completed.stdout
     assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
 
 
@@ -280,4 +280,4 @@ def test_run_cli_writes_restart_like_output(tmp_path):
     assert f"wrote_output: {output_path}" in completed.stdout
     loaded = load_restart(output_path, load_species_database("base/species_database.yml"))
     assert loaded.names == ("CO2",)
-    assert loaded.shape == (1, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert loaded.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)

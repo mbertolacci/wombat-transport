@@ -106,8 +106,8 @@ def has_invalid_emissions(emissions: TracerField) -> bool:
 
 def emitted_mass_by_tracer_for_step(emissions: TracerField, dt_s: float) -> np.ndarray:
     area = emissions.coords["AREA"]
-    area_5d = area[np.newaxis, np.newaxis, np.newaxis, :, :]
-    return np.sum(emissions.data * float(dt_s) * area_5d, axis=(1, 2, 3, 4))
+    area_5d = area[np.newaxis, np.newaxis, :, :, np.newaxis]
+    return np.sum(emissions.data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
 
 
 def _resolve_config_path(root: Path, value: str) -> Path:

@@ -23,18 +23,26 @@ def emission_increment_vv(
 
     emissions = np.asarray(emis_kg_m2_s, dtype=np.float64)
     dry_air = dry_air_mass_per_area(delp_dry_hpa)
-    if emissions.ndim == dry_air.ndim + 1:
-        dry_air = dry_air[np.newaxis, ...]
+    if dry_air.ndim == 4:
+        dry_air = dry_air[:, ::-1, :, :]
+    elif dry_air.ndim == 3:
+        dry_air = dry_air[::-1][np.newaxis, ...]
+    else:
+        raise ValueError(f"delp_dry_hpa must be 3-D or 4-D, found shape {dry_air.shape}")
 
-    if emissions.shape[0] != len(species):
+    if emissions.ndim != 5:
+        raise ValueError(f"emissions must be 5-D canonical tracer data, found shape {emissions.shape}")
+    if emissions.shape[-1] != len(species):
         raise ValueError(
-            f"emissions first dimension has {emissions.shape[0]} tracers, "
+            f"emissions last dimension has {emissions.shape[-1]} tracers, "
             f"but {len(species)} species were supplied"
         )
+    if dry_air.shape != emissions.shape[:-1]:
+        raise ValueError(f"dry pressure shape {dry_air.shape} does not match emissions grid {emissions.shape[:-1]}")
 
-    kgkg_dry = emissions * float(dt_s) / dry_air
+    kgkg_dry = emissions * float(dt_s) / dry_air[..., np.newaxis]
     mw = np.asarray([item.molecular_weight_g for item in species], dtype=np.float64)
-    return kgkg_dry * (AIRMW_G_PER_MOL / mw[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis])
+    return kgkg_dry * (AIRMW_G_PER_MOL / mw[np.newaxis, np.newaxis, np.newaxis, np.newaxis, :])
 
 
 def apply_emissions(
