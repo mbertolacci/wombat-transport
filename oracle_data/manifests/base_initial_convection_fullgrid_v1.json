@@ -1,0 +1,32 @@
+{
+  "fixture_id": "base_initial_convection_fullgrid_v1",
+  "description": "Full-grid one-tracer base-run convection oracle initialized from GEOS-Chem TPCORE plus VDIFF output.",
+  "files": [
+    {
+      "name": "convection_input.nc",
+      "sha256": null,
+      "size_bytes": null,
+      "url": null
+    },
+    {
+      "name": "convection_output.nc",
+      "sha256": null,
+      "size_bytes": null,
+      "url": null
+    }
+  ],
+  "source": {
+    "run_config": "base_wombat/run.yml",
+    "time_index": 0,
+    "tracer_time_index": 0,
+    "max_tracers": 1,
+    "dt_s": 600.0,
+    "grid": {
+      "lev": 47,
+      "lat": 91,
+      "lon": 144
+    },
+    "tracer_source": "GEOS-Chem VDIFF output after base-run TPCORE"
+  },
+  "status": "diagnostic oracle fixture for full-grid convection after TPCORE and VDIFF"
+}

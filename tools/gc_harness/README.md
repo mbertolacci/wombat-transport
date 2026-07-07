@@ -136,6 +136,11 @@ GEOS-Chem TPCORE, VDIFF, and convection harness executables in sequence. The
 large NetCDF payloads are ignored under `oracle_data/`; the tracked manifest
 records the fixture contract.
 
+`base_initial_vdiff_after_tpcore_v1` and
+`base_initial_convection_fullgrid_v1` isolate the full-grid VDIFF and
+convection stages that feed that chain. They are diagnostic fixtures: generate
+and compare them to locate parity gaps, not to claim full-chain parity.
+
 ```bash
 python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_tpcore_v1
 
@@ -145,11 +150,19 @@ python -m wombat_transport.gc_harness oracle-fixture-generate fullgrid_synthetic
 
 python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_transport_chain_v1
 
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_vdiff_after_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_convection_fullgrid_v1
+
 python -m wombat_transport.gc_harness oracle-fixture-check base_initial_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_transport_chain_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_vdiff_after_tpcore_v1
+
+python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_convection_fullgrid_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-compare residual_initial_tpcore_v1
 
@@ -277,3 +290,49 @@ convection_stage_mass_change_max_abs,0.00000000e+00
 This chained fixture is an integration diagnostic, not a parity claim. The
 remaining final-field and VDIFF-stage mass deltas should be investigated before
 using the chained transport sequence for SpeciesConc parity claims.
+
+Current full-grid one-tracer VDIFF-after-TPCORE diagnostic fixture result:
+
+```text
+metric,value
+tracer_max_abs_error,3.79470760e-19
+tracer_mean_abs_error,5.80743375e-20
+specific_humidity_max_abs_error,5.20417043e-18
+kvh_max_abs_error,2.13162821e-14
+kvm_max_abs_error,1.42108547e-14
+pbl_top_max_abs_error_m,0.00000000e+00
+tpert_max_abs_error,5.55111512e-17
+qpert_max_abs_error,5.42101086e-20
+negative_count_before_clip_expected,0
+negative_count_before_clip_actual,0
+negative_count_after_clip_expected,0
+negative_count_after_clip_actual,0
+final_mass_max_abs_error,2.37500000e+01
+```
+
+Current full-grid one-tracer convection-after-VDIFF diagnostic fixture result:
+
+```text
+metric,value
+tracer_max_abs_error,2.16840434e-19
+tracer_mean_abs_error,2.91960438e-22
+diag14_max_abs_error,6.80984158e-11
+diag14_mean_abs_error,2.16569461e-15
+negative_count_before_expected,0
+negative_count_before_actual,0
+negative_count_after_expected,0
+negative_count_after_actual,0
+initial_mass_max_abs_error,2.35000000e+01
+final_mass_max_abs_error,1.85000000e+01
+mass_change_max_abs,2.50000000e-01
+expected_mass_change_max_abs,4.75000000e+00
+top_error_index,0:0:17:2
+internal_steps_expected,2
+internal_steps_actual,2
+```
+
+These full-grid single-operator fixtures match final tracer fields at roundoff.
+The remaining nonzero mass diagnostics are therefore likely accounting or
+fixture-summary differences, and the earlier chained final-field mismatch
+should be investigated as an input-construction or production-driver coupling
+difference rather than as a standalone VDIFF or convection kernel mismatch.

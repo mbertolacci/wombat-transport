@@ -66,11 +66,15 @@ BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
 RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v1"
 FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v1"
 BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID = "base_initial_transport_chain_v1"
+BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID = "base_initial_vdiff_after_tpcore_v1"
+BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID = "base_initial_convection_fullgrid_v1"
 LARGE_ORACLE_FIXTURE_IDS = (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
     RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
     FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
     BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+    BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+    BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
 )
 
 GEOS_47_AP_HPA = np.array(
@@ -1185,10 +1189,7 @@ def large_oracle_fixture_paths(
     cache = Path(cache_dir)
     definitions = Path(manifest_dir) if manifest_dir is not None else Path("oracle_data") / "manifests"
     directory = cache / fixture_id
-    input_name = "transport_chain_input.nc" if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID else "transport_step_input.nc"
-    output_name = (
-        "transport_chain_output.nc" if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID else "transport_step_output.nc"
-    )
+    input_name, output_name = _large_oracle_payload_names(fixture_id)
     return LargeOracleFixturePaths(
         fixture_id=fixture_id,
         directory=directory,
@@ -1197,6 +1198,16 @@ def large_oracle_fixture_paths(
         manifest_path=directory / LARGE_ORACLE_MANIFEST_NAME,
         definition_path=definitions / f"{fixture_id}.json",
     )
+
+
+def _large_oracle_payload_names(fixture_id: str) -> tuple[str, str]:
+    if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        return "transport_chain_input.nc", "transport_chain_output.nc"
+    if fixture_id == BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID:
+        return "vdiff_input.nc", "vdiff_output.nc"
+    if fixture_id == BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID:
+        return "convection_input.nc", "convection_output.nc"
+    return "transport_step_input.nc", "transport_step_output.nc"
 
 
 def generate_large_oracle_fixture(
@@ -1238,6 +1249,33 @@ def generate_large_oracle_fixture(
         )
     elif fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
         return generate_transport_chain_oracle_fixture(
+            paths,
+            definition=definition,
+            run_config=run_config_path,
+            tpcore_executable=Path(executable),
+            vdiff_executable=Path("tools/gc_harness/build/vdiff_harness"),
+            convection_executable=Path("tools/gc_harness/build/convection_harness"),
+            time_index=int(source.get("time_index", 0) if time_index is None else time_index),
+            tracer_time_index=int(source.get("tracer_time_index", 0) if tracer_time_index is None else tracer_time_index),
+            max_tracers=int(source.get("max_tracers", 1) if max_tracers is None else max_tracers),
+            dt_s=fixture_dt_s,
+            repo_root=Path(repo_root),
+        )
+    elif fixture_id == BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID:
+        return generate_vdiff_after_tpcore_oracle_fixture(
+            paths,
+            definition=definition,
+            run_config=run_config_path,
+            tpcore_executable=Path(executable),
+            vdiff_executable=Path("tools/gc_harness/build/vdiff_harness"),
+            time_index=int(source.get("time_index", 0) if time_index is None else time_index),
+            tracer_time_index=int(source.get("tracer_time_index", 0) if tracer_time_index is None else tracer_time_index),
+            max_tracers=int(source.get("max_tracers", 1) if max_tracers is None else max_tracers),
+            dt_s=fixture_dt_s,
+            repo_root=Path(repo_root),
+        )
+    elif fixture_id == BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID:
+        return generate_convection_fullgrid_oracle_fixture(
             paths,
             definition=definition,
             run_config=run_config_path,
@@ -1313,6 +1351,105 @@ def generate_transport_chain_oracle_fixture(
         vdiff_executable=vdiff_executable,
         convection_executable=convection_executable,
         repo_root=repo_root,
+    )
+    return paths.directory
+
+
+def generate_vdiff_after_tpcore_oracle_fixture(
+    paths: LargeOracleFixturePaths,
+    *,
+    definition: dict[str, object],
+    run_config: Path,
+    tpcore_executable: Path,
+    vdiff_executable: Path,
+    time_index: int,
+    tracer_time_index: int,
+    max_tracers: int,
+    dt_s: float | None,
+    repo_root: Path,
+) -> Path:
+    paths.directory.mkdir(parents=True, exist_ok=True)
+    tpcore_input = paths.directory / "transport_step_input.nc"
+    tpcore_output = paths.directory / "tpcore_output.nc"
+    write_transport_step_input_from_config(
+        run_config,
+        tpcore_input,
+        time_index=time_index,
+        tracer_time_index=tracer_time_index,
+        max_tracers=max_tracers,
+        dt_s=dt_s,
+    )
+    run_pjc_harness(tpcore_executable, tpcore_input, tpcore_output)
+    _write_chain_vdiff_input(run_config, tpcore_input, tpcore_output, paths.input_path, time_index=time_index)
+    run_operator_harness(vdiff_executable, paths.input_path, paths.output_path)
+    _write_generated_operator_oracle_manifest(
+        paths,
+        definition=definition,
+        run_config=run_config,
+        input_harness=VDIFF_INPUT_VERSION,
+        output_harness=VDIFF_OUTPUT_VERSION,
+        executables={
+            "tpcore": str(tpcore_executable),
+            "vdiff": str(vdiff_executable),
+        },
+        repo_root=repo_root,
+        tpcore_input_path=tpcore_input,
+    )
+    return paths.directory
+
+
+def generate_convection_fullgrid_oracle_fixture(
+    paths: LargeOracleFixturePaths,
+    *,
+    definition: dict[str, object],
+    run_config: Path,
+    tpcore_executable: Path,
+    vdiff_executable: Path,
+    convection_executable: Path,
+    time_index: int,
+    tracer_time_index: int,
+    max_tracers: int,
+    dt_s: float | None,
+    repo_root: Path,
+) -> Path:
+    paths.directory.mkdir(parents=True, exist_ok=True)
+    tpcore_input = paths.directory / "transport_step_input.nc"
+    tpcore_output = paths.directory / "tpcore_output.nc"
+    vdiff_input = paths.directory / "vdiff_input.nc"
+    vdiff_output = paths.directory / "vdiff_output.nc"
+    write_transport_step_input_from_config(
+        run_config,
+        tpcore_input,
+        time_index=time_index,
+        tracer_time_index=tracer_time_index,
+        max_tracers=max_tracers,
+        dt_s=dt_s,
+    )
+    run_pjc_harness(tpcore_executable, tpcore_input, tpcore_output)
+    _write_chain_vdiff_input(run_config, tpcore_input, tpcore_output, vdiff_input, time_index=time_index)
+    run_operator_harness(vdiff_executable, vdiff_input, vdiff_output)
+    _write_chain_convection_input(
+        run_config,
+        tpcore_input,
+        tpcore_output,
+        vdiff_output,
+        paths.input_path,
+        time_index=time_index,
+    )
+    run_operator_harness(convection_executable, paths.input_path, paths.output_path)
+    _write_generated_operator_oracle_manifest(
+        paths,
+        definition=definition,
+        run_config=run_config,
+        input_harness=CONVECTION_INPUT_VERSION,
+        output_harness=CONVECTION_OUTPUT_VERSION,
+        executables={
+            "tpcore": str(tpcore_executable),
+            "vdiff": str(vdiff_executable),
+            "convection": str(convection_executable),
+        },
+        repo_root=repo_root,
+        tpcore_input_path=tpcore_input,
     )
     return paths.directory
 
@@ -1590,6 +1727,12 @@ def compare_large_oracle_fixture(
         return format_transport_chain_comparison(
             compare_transport_chain_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
         )
+    if fixture_id == BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID:
+        paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+        return format_vdiff_comparison(compare_vdiff_output(paths.input_path, paths.output_path))
+    if fixture_id == BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID:
+        paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+        return format_convection_comparison(compare_convection_output(paths.input_path, paths.output_path))
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     transport = compare_transport_step_output(paths.input_path, paths.output_path)
     setup = _setup_tpcore_from_input(paths.input_path)
@@ -2305,8 +2448,12 @@ def generate_large_oracle_tpcore_trace(
 ) -> Path:
     """Run the instrumented GEOS-Chem harness and write oracle_tpcore_trace.nc."""
 
-    if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
-        raise ValueError("TPCORE trace generation is not defined for transport-chain oracle fixtures")
+    if fixture_id in {
+        BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+        BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+    }:
+        raise ValueError("TPCORE trace generation is not defined for this oracle fixture")
     check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     if not check.is_available:
         raise FileNotFoundError(format_large_oracle_fixture_check(check))
@@ -2323,8 +2470,12 @@ def trace_compare_large_oracle_fixture(
 ) -> str:
     """Write Python trace for a large fixture and compare oracle trace if present."""
 
-    if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
-        raise ValueError("TPCORE trace comparison is not defined for transport-chain oracle fixtures")
+    if fixture_id in {
+        BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+        BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+    }:
+        raise ValueError("TPCORE trace comparison is not defined for this oracle fixture")
     check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     if not check.is_available:
         raise FileNotFoundError(format_large_oracle_fixture_check(check))
@@ -2512,6 +2663,51 @@ def _write_generated_transport_chain_manifest(
             "vdiff": str(vdiff_executable),
             "convection": str(convection_executable),
         },
+        "gcclassic_head": _git_head(repo_root / "GCClassic"),
+        "branch_report": {
+            "shape": list(report.shape),
+            "max_abs_cx": report.max_abs_cx,
+            "max_abs_cy": report.max_abs_cy,
+            "has_large_cx": report.has_large_cx,
+            "has_large_cy": report.has_large_cy,
+            "needs_fxppm": report.needs_fxppm,
+            "is_supported": report.is_supported,
+            "unsupported_reasons": list(report.unsupported_reasons),
+        },
+    }
+    with paths.manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _write_generated_operator_oracle_manifest(
+    paths: LargeOracleFixturePaths,
+    *,
+    definition: dict[str, object],
+    run_config: Path,
+    input_harness: str,
+    output_harness: str,
+    executables: dict[str, str],
+    repo_root: Path,
+    tpcore_input_path: Path,
+) -> None:
+    setup = _setup_tpcore_from_input(tpcore_input_path)
+    report = analyze_tpcore_branches(setup)
+    manifest = {
+        "fixture_id": paths.fixture_id,
+        "description": definition.get("description"),
+        "definition_file": str(paths.definition_path),
+        "input_harness": input_harness,
+        "output_harness": output_harness,
+        "files": [
+            _large_oracle_file_record(paths.input_path),
+            _large_oracle_file_record(paths.output_path),
+        ],
+        "source": {
+            **dict(definition.get("source", {})),
+            "run_config": str(run_config),
+        },
+        "executables": executables,
         "gcclassic_head": _git_head(repo_root / "GCClassic"),
         "branch_report": {
             "shape": list(report.shape),

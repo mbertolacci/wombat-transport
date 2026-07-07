@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from wombat_transport.gc_harness import (
+    BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
     BASE_INITIAL_TPCORE_FIXTURE_ID,
+    BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
     FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
     RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
     PJC_SNAPSHOT_VERSION,
@@ -117,6 +119,38 @@ def test_large_oracle_fixture_check_reports_missing_payloads(tmp_path):
     assert "available,False" in format_large_oracle_fixture_check(check)
 
 
+def test_fullgrid_operator_oracle_fixture_checks_report_operator_payload_names(tmp_path):
+    cache_dir = tmp_path / "oracle_data"
+    manifest_dir = cache_dir / "manifests"
+    manifest_dir.mkdir(parents=True)
+    _write_large_oracle_definition(
+        manifest_dir / f"{BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID}.json",
+        fixture_id=BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        input_name="vdiff_input.nc",
+        output_name="vdiff_output.nc",
+    )
+    _write_large_oracle_definition(
+        manifest_dir / f"{BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID}.json",
+        fixture_id=BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+        input_name="convection_input.nc",
+        output_name="convection_output.nc",
+    )
+
+    vdiff_check = check_large_oracle_fixture(
+        BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        cache_dir=cache_dir,
+        manifest_dir=manifest_dir,
+    )
+    convection_check = check_large_oracle_fixture(
+        BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+        cache_dir=cache_dir,
+        manifest_dir=manifest_dir,
+    )
+
+    assert vdiff_check.missing_files == ("vdiff_input.nc", "vdiff_output.nc")
+    assert convection_check.missing_files == ("convection_input.nc", "convection_output.nc")
+
+
 def test_large_base_oracle_fixture_if_cached_reports_pjc_and_tpcore_branches():
     check = check_large_oracle_fixture(BASE_INITIAL_TPCORE_FIXTURE_ID)
     if not check.is_available:
@@ -164,6 +198,36 @@ def test_fullgrid_synthetic_oracle_fixture_if_cached_matches_python_tpcore():
     assert comparison.tracer_max_abs_error < 1.0e-12
     assert comparison.max_abs_cx < 1.0
     assert comparison.max_abs_cy < 1.0
+
+
+def test_fullgrid_vdiff_after_tpcore_oracle_fixture_if_cached_reports_vdiff_metrics():
+    check = check_large_oracle_fixture(BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID)
+    if not check.is_available:
+        pytest.skip(format_large_oracle_fixture_check(check))
+
+    report = compare_large_oracle_fixture(BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID)
+    metrics = dict(line.split(",", 1) for line in report.splitlines()[1:])
+
+    assert "specific_humidity_max_abs_error" in metrics
+    assert "kvh_max_abs_error" in metrics
+    assert "final_mass_max_abs_error" in metrics
+    assert float(metrics["tracer_max_abs_error"]) < 1.0e-15
+    assert int(metrics["negative_count_after_clip_actual"]) == 0
+
+
+def test_fullgrid_convection_oracle_fixture_if_cached_reports_convection_metrics():
+    check = check_large_oracle_fixture(BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID)
+    if not check.is_available:
+        pytest.skip(format_large_oracle_fixture_check(check))
+
+    report = compare_large_oracle_fixture(BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID)
+    metrics = dict(line.split(",", 1) for line in report.splitlines()[1:])
+
+    assert "diag14_max_abs_error" in metrics
+    assert "internal_steps_actual" in metrics
+    assert "final_mass_max_abs_error" in metrics
+    assert float(metrics["tracer_max_abs_error"]) < 1.0e-15
+    assert int(metrics["negative_count_after_actual"]) == 0
 
 
 def test_residual_initial_oracle_fixture_if_cached_matches_python_tpcore():
@@ -1062,22 +1126,25 @@ def _require_real_convection_inputs() -> None:
 def _write_large_oracle_definition(
     path: Path,
     *,
+    fixture_id: str = BASE_INITIAL_TPCORE_FIXTURE_ID,
+    input_name: str = "transport_step_input.nc",
+    output_name: str = "transport_step_output.nc",
     input_sha: str | None = None,
     output_sha: str | None = None,
     input_size: int | None = None,
     output_size: int | None = None,
 ) -> None:
     payload = {
-        "fixture_id": BASE_INITIAL_TPCORE_FIXTURE_ID,
+        "fixture_id": fixture_id,
         "files": [
             {
-                "name": "transport_step_input.nc",
+                "name": input_name,
                 "sha256": input_sha,
                 "size_bytes": input_size,
                 "url": None,
             },
             {
-                "name": "transport_step_output.nc",
+                "name": output_name,
                 "sha256": output_sha,
                 "size_bytes": output_size,
                 "url": None,
