@@ -1362,6 +1362,9 @@ def _lmtppm_last_axis(
 ) -> None:
     if lmt != 0:
         raise NotImplementedError("Only the full monotonic PPM limiter is needed for the current TPCORE path")
+    if qa.ndim == 2:
+        _lmtppm_2d_batch_columns(a6, al, ar, dc, qa)
+        return
     for idx in range(qa.shape[-1]):
         a6_col = a6[..., idx]
         al_col = al[..., idx]
@@ -1381,6 +1384,29 @@ def _lmtppm_last_axis(
         high_mask = a6da > da2
         a6_col[high_mask] = 3.0 * (ar_col[high_mask] - qa_col[high_mask])
         al_col[high_mask] = ar_col[high_mask] - a6_col[high_mask]
+
+
+def _lmtppm_2d_batch_columns(
+    a6: np.ndarray,
+    al: np.ndarray,
+    ar: np.ndarray,
+    dc: np.ndarray,
+    qa: np.ndarray,
+) -> None:
+    zero_mask = dc == 0.0
+    a6[zero_mask] = 0.0
+    al[zero_mask] = qa[zero_mask]
+    ar[zero_mask] = qa[zero_mask]
+
+    da1 = ar - al
+    da2 = da1 * da1
+    a6da = a6 * da1
+    low_mask = a6da < -da2
+    a6[low_mask] = 3.0 * (al[low_mask] - qa[low_mask])
+    ar[low_mask] = al[low_mask] - a6[low_mask]
+    high_mask = a6da > da2
+    a6[high_mask] = 3.0 * (ar[high_mask] - qa[high_mask])
+    al[high_mask] = ar[high_mask] - a6[high_mask]
 
 
 def _q_lon(q: np.ndarray, j: int, i: int) -> float:
