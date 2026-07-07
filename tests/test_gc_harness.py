@@ -273,6 +273,10 @@ def test_transport_chain_handoff_report_if_cached_locates_stage_interfaces():
     assert ("vdiff_to_convection_input", "cmfmc_kg_m2_s") in rows
     assert ("convection_output", "tracer_conc_after") in rows
     assert ("final_chain_output", "tracer_conc_after") in rows
+    assert rows[("tpcore_to_vdiff_input", "virtual_temperature_k")][0] < 1.0e-15
+    assert rows[("tpcore_to_vdiff_input", "bxheight_m")][0] < 1.0e-10
+    assert rows[("vdiff_output", "tracer_conc_after")][0] < 1.0e-15
+    assert rows[("final_chain_output", "tracer_conc_after")][0] < 1.0e-15
 
 
 def test_residual_initial_oracle_fixture_if_cached_matches_python_tpcore():

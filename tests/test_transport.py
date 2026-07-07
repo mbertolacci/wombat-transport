@@ -24,6 +24,7 @@ from wombat_transport.transport import (
     trace_transport_one_step,
     _map_met_levels_to_47,
 )
+from wombat_transport.transport.pbl import ZVIR
 
 BASE_CONFIG = "base_wombat/run.yml"
 RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
@@ -319,7 +320,7 @@ def _synthetic_vdiff_fixture():
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = 289.0 - 0.45 * lev + 1.5 * lat + 0.2 * lon
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
-    tv = temperature * (1.0 + 0.61 * sphu)
+    tv = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, nlat, nlon), 125.0, dtype=np.float64)
     dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
     dry_mass = dry_mass * np.ones((nlev, nlat, nlon), dtype=np.float64)

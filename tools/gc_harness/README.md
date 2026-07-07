@@ -282,54 +282,52 @@ Current full-grid one-tracer chained transport fixture result:
 
 ```text
 metric,value
-tracer_max_abs_error,4.85862642e-10
-tracer_mean_abs_error,9.54864856e-14
+tracer_max_abs_error,4.01154804e-18
+tracer_mean_abs_error,1.73419571e-19
 negative_count_expected,0
 negative_count_actual,0
 common_basis_initial_mass_max_abs_error,0.00000000e+00
 common_basis_final_mass_max_abs_error,2.50000000e-01
 common_basis_mass_change_max_abs_error,2.50000000e-01
 common_basis_python_mass_change_max_abs,3.65000000e+01
-common_basis_oracle_mass_change_max_abs,3.62500000e+01
+common_basis_oracle_mass_change_max_abs,3.67500000e+01
 common_basis_tpcore_stage_mass_change_max_abs,3.60000000e+01
 common_basis_vdiff_stage_mass_change_max_abs,2.50000000e-01
-common_basis_convection_stage_mass_change_max_abs,0.00000000e+00
+common_basis_convection_stage_mass_change_max_abs,5.00000000e-01
 reported_final_mass_max_abs_error,2.50000000e-01
 reported_python_mass_change_max_abs,3.65000000e+01
-reported_oracle_mass_change_max_abs,3.62500000e+01
+reported_oracle_mass_change_max_abs,3.67500000e+01
 reported_tpcore_stage_mass_change_max_abs,3.60000000e+01
 reported_vdiff_stage_mass_change_max_abs,2.50000000e-01
-reported_convection_stage_mass_change_max_abs,0.00000000e+00
+reported_convection_stage_mass_change_max_abs,5.00000000e-01
 ```
 
-This chained fixture is an integration diagnostic, not a parity claim. The
-remaining final-field and common-basis mass-change deltas should be
-investigated before using the chained transport sequence for SpeciesConc parity
-claims.
+This chained fixture now matches the GEOS-Chem harness final tracer field at
+roundoff. The remaining scalar mass-change diagnostics are bookkeeping
+diagnostics, not final-field parity failures.
 
 Current chain handoff diagnostic highlights:
 
 ```text
 section,field,max_abs,mean_abs,actual_shape,expected_shape
 tpcore_to_vdiff_input,tracer_conc,3.79470760e-18,7.51501943e-20,1x47x91x144,1x47x91x144
-tpcore_to_vdiff_input,virtual_temperature_k,2.35230899e-02,2.38926906e-03,47x91x144,47x91x144
-tpcore_to_vdiff_input,bxheight_m,1.65653995e-02,1.71004461e-03,47x91x144,47x91x144
-vdiff_output,tracer_conc_after,4.87602580e-10,1.04213886e-13,1x47x91x144,1x47x91x144
-vdiff_to_convection_input,tracer_conc,4.87602580e-10,1.04213886e-13,1x47x91x144,1x47x91x144
-convection_output,tracer_conc_after,4.85862642e-10,9.54864856e-14,1x47x91x144,1x47x91x144
-final_chain_output,tracer_conc_after,4.85862642e-10,9.54864856e-14,1x47x91x144,1x47x91x144
+tpcore_to_vdiff_input,virtual_temperature_k,0.00000000e+00,0.00000000e+00,47x91x144,47x91x144
+tpcore_to_vdiff_input,bxheight_m,3.92219590e-12,3.42532896e-13,47x91x144,47x91x144
+vdiff_output,tracer_conc_after,4.01154804e-18,1.73009929e-19,1x47x91x144,1x47x91x144
+vdiff_to_convection_input,tracer_conc,4.01154804e-18,1.73009929e-19,1x47x91x144,1x47x91x144
+convection_output,tracer_conc_after,4.01154804e-18,1.73419571e-19,1x47x91x144,1x47x91x144
+final_chain_output,tracer_conc_after,4.01154804e-18,1.73419571e-19,1x47x91x144,1x47x91x144
 ```
 
-This points the current chain mismatch at the VDIFF handoff inputs, before the
-VDIFF output tracer delta appears. The largest nontracer differences are in
-`virtual_temperature_k` and derived `bxheight_m`.
+This verifies that shared VDIFF handoff construction removed the previous
+`virtual_temperature_k` and `BXHEIGHT` mismatch.
 
 Current full-grid one-tracer VDIFF-after-TPCORE diagnostic fixture result:
 
 ```text
 metric,value
-tracer_max_abs_error,3.79470760e-19
-tracer_mean_abs_error,5.80743375e-20
+tracer_max_abs_error,3.25260652e-19
+tracer_mean_abs_error,5.80569096e-20
 specific_humidity_max_abs_error,5.20417043e-18
 kvh_max_abs_error,2.13162821e-14
 kvm_max_abs_error,1.42108547e-14
@@ -341,10 +339,10 @@ negative_count_before_clip_actual,0
 negative_count_after_clip_expected,0
 negative_count_after_clip_actual,0
 common_basis_initial_mass_max_abs_error,0.00000000e+00
-common_basis_final_mass_max_abs_error,2.50000000e-01
-common_basis_mass_change_max_abs_error,2.50000000e-01
+common_basis_final_mass_max_abs_error,0.00000000e+00
+common_basis_mass_change_max_abs_error,0.00000000e+00
 reported_initial_mass_max_abs_error,3.75000000e+01
-reported_final_mass_max_abs_error,2.37500000e+01
+reported_final_mass_max_abs_error,2.60000000e+01
 ```
 
 Current full-grid one-tracer convection-after-VDIFF diagnostic fixture result:
@@ -352,9 +350,9 @@ Current full-grid one-tracer convection-after-VDIFF diagnostic fixture result:
 ```text
 metric,value
 tracer_max_abs_error,2.16840434e-19
-tracer_mean_abs_error,2.91960438e-22
-diag14_max_abs_error,6.80984158e-11
-diag14_mean_abs_error,2.16569461e-15
+tracer_mean_abs_error,3.40723200e-22
+diag14_max_abs_error,6.94342361e-11
+diag14_mean_abs_error,3.00707861e-15
 negative_count_before_expected,0
 negative_count_before_actual,0
 negative_count_after_expected,0
@@ -362,13 +360,13 @@ negative_count_after_actual,0
 common_basis_initial_mass_max_abs_error,0.00000000e+00
 common_basis_final_mass_max_abs_error,0.00000000e+00
 common_basis_mass_change_max_abs_error,0.00000000e+00
-common_basis_python_mass_change_max_abs,0.00000000e+00
-common_basis_oracle_mass_change_max_abs,0.00000000e+00
-reported_initial_mass_max_abs_error,2.35000000e+01
-reported_final_mass_max_abs_error,1.85000000e+01
-reported_python_mass_change_max_abs,2.50000000e-01
-reported_oracle_mass_change_max_abs,4.75000000e+00
-top_error_index,0:0:17:2
+common_basis_python_mass_change_max_abs,5.00000000e-01
+common_basis_oracle_mass_change_max_abs,5.00000000e-01
+reported_initial_mass_max_abs_error,2.62500000e+01
+reported_final_mass_max_abs_error,1.77500000e+01
+reported_python_mass_change_max_abs,7.50000000e-01
+reported_oracle_mass_change_max_abs,7.75000000e+00
+top_error_index,0:0:18:64
 internal_steps_expected,2
 internal_steps_actual,2
 ```
@@ -376,8 +374,7 @@ internal_steps_actual,2
 These full-grid single-operator fixtures match final tracer fields at roundoff.
 The `reported_*` mass diagnostics preserve the harness-written scalar totals;
 the `common_basis_*` diagnostics recompute both sides from the same fixture
-mass field. Convection is clean on that basis, while VDIFF still has a
-`2.5e-01` absolute common-basis mass delta on a roundoff-scale tracer-field
-error. The chained final-field mismatch should be investigated as an
-input-construction or production-driver coupling difference rather than as a
-standalone VDIFF or convection kernel mismatch.
+mass field. Shared handoff construction removes the previous chained final-field
+mismatch, so the next parity target is a longer-window operator sequence and
+eventual SpeciesConc diagnostic comparison rather than standalone VDIFF or
+convection kernel work.

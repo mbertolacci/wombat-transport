@@ -27,9 +27,12 @@ from wombat_transport.transport import (
     run_vdiffdr_one_step,
     _map_met_levels_to_47,
 )
+from wombat_transport.transport.driver import _build_convection_input_after_vdiff
+from wombat_transport.transport.driver import _build_vdiff_input_after_tpcore
 from wombat_transport.transport.driver import run_transport_one_step
 from wombat_transport.transport.driver import trace_transport_one_step
 from wombat_transport.transport.forcing import _map_met_edges_to_48
+from wombat_transport.transport.pbl import ZVIR
 from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
 from wombat_transport.transport.tpcore import trace_tpcore_one_step
 
@@ -592,7 +595,7 @@ def write_synthetic_vdiff_input(
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = 289.0 - 0.45 * lev + 1.5 * lat_term + 0.2 * lon_term
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat_term) * np.ones((1, 1, lon.size))
-    tv = temperature * (1.0 + 0.61 * sphu)
+    tv = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, lat.size, lon.size), 125.0, dtype=np.float64)
     dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
     u = (4.0 + 0.05 * lev + 0.2 * lon_term) * np.ones((1, lat.size, 1), dtype=np.float64)
@@ -846,11 +849,13 @@ def _load_real_convection_met(
         hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
         hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
         ps = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
+        sphu = _map_met_levels_to_47(_read_met_3d_time_slice(i3, "QV", time_index))[0]
         center = {
             "dtrain_kg_m2_s": _map_met_levels_to_47(_read_met_3d_time_slice(a3dyn, "DTRAIN", time_index))[0],
             "dqrcu_kg_kg_s": _map_met_levels_to_47(_read_met_3d_time_slice(a3mstc, "DQRCU", time_index))[0],
             "reevapcn_kg_kg_s": _map_met_levels_to_47(_read_met_3d_time_slice(a3mstc, "REEVAPCN", time_index))[0],
             "temperature_k": _map_met_levels_to_47(_read_met_3d_time_slice(i3, "T", time_index))[0],
+            "specific_humidity_kg_kg": sphu,
         }
         cmfmc_edges = _map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][time_index], dtype=np.float64))
         pficu_edges = _map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][time_index], dtype=np.float64))
@@ -861,7 +866,7 @@ def _load_real_convection_met(
         )
         temperature = center["temperature_k"]
         pedge = GEOS_47_AP_HPA[:, np.newaxis, np.newaxis] + GEOS_47_BP[:, np.newaxis, np.newaxis] * ps[0] / 100.0
-        bxheight = _hydrostatic_box_height_from_temperature(pedge, temperature)
+        bxheight = _hydrostatic_box_height_from_temperature(pedge, temperature * (1.0 + ZVIR * sphu))
         precccon = np.asarray(a1.variables["PRECCON"][a1_time_index], dtype=np.float64) * 86400.0
 
     return {
@@ -1494,49 +1499,60 @@ def _write_chain_vdiff_input(
         hyai = np.asarray(source.variables["hyai"][:], dtype=np.float64)
         hybi = np.asarray(source.variables["hybi"][:], dtype=np.float64)
         dt_s = float(source.dt_s)
+        tracer_names = _read_transport_step_tracer_names(chain_input_path)
     tpcore = read_transport_step_output(tpcore_output_path)
     delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
-    pedge = dry_pressure_edges_from_thickness_hpa(delp, top_edge_hpa=float(hyai[-1]))[0]
-    pmid = 0.5 * (pedge[:-1] + pedge[1:])
-    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
-    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
-    virtual_temperature = temperature * (1.0 + 0.61 * sphu)
-    bxheight = _hydrostatic_box_height_from_temperature(pedge, virtual_temperature)
     dry_mass = dry_air_mass_from_pressure(delp, area)[0]
+    tpcore_state = TracerField(
+        names=tracer_names,
+        data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
+        units=tuple("mol mol-1 dry" for _ in tracer_names),
+        coords={},
+    )
+    vdiff_input = _build_vdiff_input_after_tpcore(
+        tpcore_state,
+        forcing,
+        dry_mass[np.newaxis, :, :, :],
+        delp,
+        area,
+        top_edge_hpa=float(hyai[-1]),
+        dt_s=dt_s,
+    )
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    ntracer = tpcore.tracer_conc_after.shape[0]
+    ntracer = vdiff_input.tracer_conc.shape[0]
     with netCDF4.Dataset(output, "w") as dataset:
         dataset.createDimension("tracer", ntracer)
-        dataset.createDimension("lev", tpcore.tracer_conc_after.shape[1])
-        dataset.createDimension("ilev", tpcore.tracer_conc_after.shape[1] + 1)
+        dataset.createDimension("lev", vdiff_input.tracer_conc.shape[1])
+        dataset.createDimension("ilev", vdiff_input.tracer_conc.shape[1] + 1)
         dataset.createDimension("lat", lat.size)
         dataset.createDimension("lon", lon.size)
         dataset.harness = VDIFF_INPUT_VERSION
         dataset.dt_s = dt_s
         dataset.createVariable("lon", "f8", ("lon",))[:] = lon
         dataset.createVariable("lat", "f8", ("lat",))[:] = lat
-        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
-            tpcore.tracer_conc_after
+        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = vdiff_input.tracer_conc
+        dataset.createVariable("u_m_s", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.u_m_s
+        dataset.createVariable("v_m_s", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.v_m_s
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.temperature_k
+        dataset.createVariable("specific_humidity_kg_kg", "f8", ("lev", "lat", "lon"))[:] = (
+            vdiff_input.specific_humidity_kg_kg
         )
-        dataset.createVariable("u_m_s", "f8", ("lev", "lat", "lon"))[:] = forcing.u_m_s[0]
-        dataset.createVariable("v_m_s", "f8", ("lev", "lat", "lon"))[:] = forcing.v_m_s[0]
-        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = temperature
-        dataset.createVariable("specific_humidity_kg_kg", "f8", ("lev", "lat", "lon"))[:] = sphu
-        dataset.createVariable("pmid_hpa", "f8", ("lev", "lat", "lon"))[:] = pmid
-        dataset.createVariable("pedge_hpa", "f8", ("ilev", "lat", "lon"))[:] = pedge
-        dataset.createVariable("virtual_temperature_k", "f8", ("lev", "lat", "lon"))[:] = virtual_temperature
-        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = bxheight
-        dataset.createVariable("dry_air_mass_kg", "f8", ("lev", "lat", "lon"))[:] = dry_mass
-        dataset.createVariable("pbl_top_m", "f8", ("lat", "lon"))[:] = forcing.pbl_height_m[0]
-        dataset.createVariable("hflux_w_m2", "f8", ("lat", "lon"))[:] = forcing.sensible_heat_flux_w_m2[0]
-        dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = forcing.latent_heat_flux_w_m2[0]
-        dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = forcing.friction_velocity_m_s[0]
-        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = area
-        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = np.zeros(
-            (ntracer, lat.size, lon.size),
-            dtype=np.float64,
+        dataset.createVariable("pmid_hpa", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.pmid_hpa
+        dataset.createVariable("pedge_hpa", "f8", ("ilev", "lat", "lon"))[:] = vdiff_input.pedge_hpa
+        dataset.createVariable("virtual_temperature_k", "f8", ("lev", "lat", "lon"))[:] = (
+            vdiff_input.virtual_temperature_k
+        )
+        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.bxheight_m
+        dataset.createVariable("dry_air_mass_kg", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.dry_air_mass_kg
+        dataset.createVariable("pbl_top_m", "f8", ("lat", "lon"))[:] = vdiff_input.pbl_top_m
+        dataset.createVariable("hflux_w_m2", "f8", ("lat", "lon"))[:] = vdiff_input.hflux_w_m2
+        dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = vdiff_input.eflux_w_m2
+        dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = vdiff_input.ustar_m_s
+        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = vdiff_input.area_m2
+        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = (
+            vdiff_input.surface_flux_kg_m2_s
         )
     return output
 
@@ -1568,29 +1584,39 @@ def _write_chain_convection_input(
     tpcore = read_transport_step_output(tpcore_output_path)
     vdiff = read_vdiff_output(vdiff_output_path)
     delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
-    pedge = dry_pressure_edges_from_thickness_hpa(delp, top_edge_hpa=float(hyai[-1]))[0]
-    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
-    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
-    bxheight = _hydrostatic_box_height_from_temperature(pedge, temperature * (1.0 + 0.61 * sphu))
+    vdiff_state = TracerField(
+        names=tracer_names,
+        data=vdiff.tracer_conc_after[:, np.newaxis, :, :, :],
+        units=tuple("mol mol-1 dry" for _ in tracer_names),
+        coords={},
+    )
+    convection_input = _build_convection_input_after_vdiff(
+        vdiff_state,
+        forcing,
+        delp,
+        area,
+        top_edge_hpa=float(hyai[-1]),
+        dt_s=dt_s,
+    )
     return _write_convection_input_file(
         output_path,
-        tracer_conc=vdiff.tracer_conc_after,
+        tracer_conc=convection_input.tracer_conc,
         tracer_names=tracer_names,
         lon=lon,
         lat=lat,
-        cmfmc=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64),
-        dtrain=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64),
-        dqrcu=np.asarray(forcing.convective_precip_prod_kg_kg_s[0], dtype=np.float64),
-        reevapcn=np.asarray(forcing.convective_precip_reevap_kg_kg_s[0], dtype=np.float64),
-        delp_dry=delp[0],
-        delp=delp[0].copy(),
-        area=area,
-        bxheight=bxheight,
-        pficu=np.asarray(forcing.convective_ice_flux_kg_m2_s[0], dtype=np.float64),
-        pflcu=np.asarray(forcing.convective_liquid_flux_kg_m2_s[0], dtype=np.float64),
-        temperature=temperature,
-        precccon=np.asarray(forcing.convective_precip_mm_day[0], dtype=np.float64),
-        dt_s=dt_s,
+        cmfmc=convection_input.cmfmc_kg_m2_s,
+        dtrain=convection_input.dtrain_kg_m2_s,
+        dqrcu=convection_input.dqrcu_kg_kg_s,
+        reevapcn=convection_input.reevapcn_kg_kg_s,
+        delp_dry=convection_input.delp_dry_hpa,
+        delp=convection_input.delp_hpa,
+        area=convection_input.area_m2,
+        bxheight=convection_input.bxheight_m,
+        pficu=convection_input.pficu_kg_m2_s,
+        pflcu=convection_input.pflcu_kg_m2_s,
+        temperature=convection_input.temperature_k,
+        precccon=convection_input.precccon_mm_day,
+        dt_s=convection_input.dt_s,
         scenario="transport-chain-full-grid",
         source_run_config=str(run_config_path),
         source_timestamp=config.transport["start"],
