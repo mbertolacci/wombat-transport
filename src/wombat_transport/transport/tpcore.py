@@ -424,7 +424,7 @@ def _advect_tracers(
 ) -> np.ndarray | tuple[np.ndarray, TpcoreTrace | None]:
     if tracer_conc.ndim != 4:
         raise ValueError(f"tracer_conc must have shape (tracer, lev, lat, lon), found {tracer_conc.shape}")
-    ntracer, nlev, nlat, nlon = tracer_conc.shape
+    _ntracer, nlev, nlat, nlon = tracer_conc.shape
     if setup.delp1_hpa.shape != (nlev, nlat, nlon):
         raise ValueError("TPCORE setup shape does not match tracer_conc")
 
@@ -442,7 +442,8 @@ def _advect_tracers(
     jn, js = _set_jn_js(cx)
     area_1d = area_m2[:, 0]
 
-    out = np.empty_like(tracer_conc, dtype=np.float64)
+    q = tracer_conc[:, ::-1, :, :].copy()
+    dq1 = np.zeros_like(q)
     q_after_pole_average = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
     dq_after_init = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
     q_after_cross_terms = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
@@ -450,56 +451,53 @@ def _advect_tracers(
     dq_after_ytp = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
     dq_after_fzppm = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
     dq_after_fill = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
-    for tracer_idx in range(ntracer):
-        q = tracer_conc[tracer_idx, ::-1, :, :].copy()
-        dq1 = np.zeros_like(q)
-        for level in range(nlev):
-            _average_const_poles(q[level], delp1[level], area_1d)
-            if trace:
-                q_after_pole_average[tracer_idx, nlev - level - 1] = q[level]
-            dq1[level] = q[level] * delp1[level]
-            if trace:
-                dq_after_init[tracer_idx, nlev - level - 1] = dq1[level]
-            qqu, qqv = _calc_advec_cross_terms(q[level], ua[level], va[level], int(jn[level]), int(js[level]))
-            adx = _xadv_dao2(qqv, ua[level], int(jn[level]), int(js[level]))
-            ady = _yadv_dao2(qqu, va[level])
-            q[level] = q[level] + ady + adx
-            if trace:
-                q_after_cross_terms[tracer_idx, nlev - level - 1] = q[level]
-            _xtp(
-                dq1[level],
-                qqv,
-                pu[level],
-                cx[level],
-                xmass[level],
-                int(jn[level]),
-                int(js[level]),
-            )
-            if trace:
-                dq_after_xtp[tracer_idx, nlev - level - 1] = dq1[level]
-            _ytp(
-                dq1[level],
-                qqu,
-                qqv,
-                cy[level],
-                ymass[level],
-                geofac,
-                geofac_pc,
-            )
-            if trace:
-                dq_after_ytp[tracer_idx, nlev - level - 1] = dq1[level]
-        _fzppm(delp1, wz, dq1, q)
+    for level in range(nlev):
+        _average_const_poles_batch(q[:, level], delp1[level], area_1d)
         if trace:
-            dq_after_fzppm[tracer_idx] = dq1[::-1]
-        if fill:
-            _qckxyz(dq1)
+            q_after_pole_average[:, nlev - level - 1] = q[:, level]
+        dq1[:, level] = q[:, level] * delp1[level][np.newaxis, :, :]
         if trace:
-            dq_after_fill[tracer_idx] = dq1[::-1]
-        q_after = dq1 / delp2
-        q_after[:, 1, :] = q_after[:, 0, :]
-        q_after[:, -2, :] = q_after[:, -1, :]
-        q_after[q_after < 0.0] = 1.0e-26
-        out[tracer_idx] = q_after[::-1]
+            dq_after_init[:, nlev - level - 1] = dq1[:, level]
+        qqu, qqv = _calc_advec_cross_terms_batch(q[:, level], ua[level], va[level], int(jn[level]), int(js[level]))
+        adx = _xadv_dao2_batch(qqv, ua[level], int(jn[level]), int(js[level]))
+        ady = _yadv_dao2_batch(qqu, va[level])
+        q[:, level] = q[:, level] + ady + adx
+        if trace:
+            q_after_cross_terms[:, nlev - level - 1] = q[:, level]
+        _xtp_batch(
+            dq1[:, level],
+            qqv,
+            pu[level],
+            cx[level],
+            xmass[level],
+            int(jn[level]),
+            int(js[level]),
+        )
+        if trace:
+            dq_after_xtp[:, nlev - level - 1] = dq1[:, level]
+        _ytp_batch(
+            dq1[:, level],
+            qqu,
+            qqv,
+            cy[level],
+            ymass[level],
+            geofac,
+            geofac_pc,
+        )
+        if trace:
+            dq_after_ytp[:, nlev - level - 1] = dq1[:, level]
+    _fzppm_batch(delp1, wz, dq1, q)
+    if trace:
+        dq_after_fzppm[:] = dq1[:, ::-1]
+    if fill:
+        _qckxyz_batch(dq1)
+    if trace:
+        dq_after_fill[:] = dq1[:, ::-1]
+    q_after = dq1 / delp2[np.newaxis, :, :, :]
+    q_after[:, :, 1, :] = q_after[:, :, 0, :]
+    q_after[:, :, -2, :] = q_after[:, :, -1, :]
+    q_after[q_after < 0.0] = 1.0e-26
+    out = q_after[:, ::-1].copy()
     if not trace:
         return out
     return out, TpcoreTrace(
@@ -525,6 +523,15 @@ def _average_const_poles(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) 
     north_weight = delp1[-2:] * area_1d[-2:, np.newaxis]
     q[:2, :] = np.sum(q[:2, :] * south_weight) / np.sum(south_weight)
     q[-2:, :] = np.sum(q[-2:, :] * north_weight) / np.sum(north_weight)
+
+
+def _average_const_poles_batch(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) -> None:
+    south_weight = delp1[:2] * area_1d[:2, np.newaxis]
+    north_weight = delp1[-2:] * area_1d[-2:, np.newaxis]
+    south = np.sum(q[:, :2, :] * south_weight[np.newaxis, :, :], axis=(1, 2)) / np.sum(south_weight)
+    north = np.sum(q[:, -2:, :] * north_weight[np.newaxis, :, :], axis=(1, 2)) / np.sum(north_weight)
+    q[:, :2, :] = south[:, np.newaxis, np.newaxis]
+    q[:, -2:, :] = north[:, np.newaxis, np.newaxis]
 
 
 def _set_cross_terms(cx: np.ndarray, cy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -596,6 +603,58 @@ def _calc_advec_cross_terms(
     return qqu, qqv
 
 
+def _calc_advec_cross_terms_batch(
+    q: np.ndarray,
+    ua: np.ndarray,
+    va: np.ndarray,
+    jn: int,
+    js: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    _ntracer, nlat, nlon = q.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    qqu = np.zeros_like(q)
+    qqv = np.zeros_like(q)
+    lon_index = np.arange(nlon, dtype=np.int64)
+    for j in range(j1p, j2p + 1):
+        if j <= js or j >= jn:
+            iu0 = ua[j, :].astype(np.int64)
+            ru = ua[j, :] - iu0
+            iu = lon_index - iu0
+            q_i = _take_lon_row(q[:, j, :], iu)
+            q_im1 = _take_lon_row(q[:, j, :], iu - 1)
+            q_ip1 = _take_lon_row(q[:, j, :], iu + 1)
+            pos = ua[j, :] >= 0.0
+            qqu[:, j, :] = np.where(
+                pos[np.newaxis, :],
+                q_i + ru[np.newaxis, :] * (q_im1 - q_i),
+                q_i + ru[np.newaxis, :] * (q_i - q_ip1),
+            )
+            qqu[:, j, :] -= q[:, j, :]
+        else:
+            iu = ((lon_index + 1.0) - ua[j, :]).astype(np.int64) - 1
+            qqu[:, j, :] = ua[j, :][np.newaxis, :] * (
+                _take_lon_row(q[:, j, :], iu) - _take_lon_row(q[:, j, :], iu + 1)
+            )
+        jv = ((j + 1.0) - va[j, :]).astype(np.int64) - 1
+        qqv[:, j, :] = va[j, :][np.newaxis, :] * (_take_lat_columns(q, jv) - _take_lat_columns(q, jv + 1))
+    qqu = q + 0.5 * qqu
+    qqv = q + 0.5 * qqv
+    return qqu, qqv
+
+
+def _take_lon_row(row: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    return np.take(row, indices % row.shape[1], axis=1)
+
+
+def _take_lat_columns(values: np.ndarray, lat_indices: np.ndarray) -> np.ndarray:
+    out = np.zeros((values.shape[0], values.shape[2]), dtype=values.dtype)
+    valid = (lat_indices >= 0) & (lat_indices < values.shape[1])
+    if np.any(valid):
+        lon_index = np.nonzero(valid)[0]
+        out[:, valid] = values[:, lat_indices[valid], lon_index]
+    return out
+
+
 def _xadv_dao2(qqv: np.ndarray, ua: np.ndarray, jn: int, js: int) -> np.ndarray:
     nlat, nlon = qqv.shape
     j1p, j2p = _polar_cap_bounds(nlat)
@@ -616,6 +675,29 @@ def _xadv_dao2(qqv: np.ndarray, ua: np.ndarray, jn: int, js: int) -> np.ndarray:
     return adx
 
 
+def _xadv_dao2_batch(qqv: np.ndarray, ua: np.ndarray, jn: int, js: int) -> np.ndarray:
+    _ntracer, nlat, nlon = qqv.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    adx = np.zeros_like(qqv)
+    lon_index = np.arange(nlon, dtype=np.int64)
+    for j in range(j1p, j2p + 1):
+        iu0 = np.rint(ua[j, :]).astype(np.int64)
+        ru = iu0 - ua[j, :]
+        iu = lon_index - iu0
+        q_i = _take_lon_row(qqv[:, j, :], iu)
+        q_ip1 = _take_lon_row(qqv[:, j, :], iu + 1)
+        q_im1 = _take_lon_row(qqv[:, j, :], iu - 1)
+        a1 = 0.5 * (q_ip1 + q_im1) - q_i
+        b1 = 0.5 * (q_ip1 - q_im1)
+        c1 = q_i - qqv[:, j, :]
+        adx[:, j, :] = ru[np.newaxis, :] * (a1 * ru[np.newaxis, :] + b1) + c1
+    adx[:, 0, :] = 0.0
+    adx[:, 1, :] = 0.0
+    adx[:, -2, :] = 0.0
+    adx[:, -1, :] = 0.0
+    return adx
+
+
 def _yadv_dao2(qqu: np.ndarray, va: np.ndarray) -> np.ndarray:
     nlat, nlon = qqu.shape
     j1p, j2p = _polar_cap_bounds(nlat)
@@ -630,6 +712,25 @@ def _yadv_dao2(qqu: np.ndarray, va: np.ndarray) -> np.ndarray:
             c1 = _q_lat(qqu, i, jv) - qqu[j, i]
             ady[j, i] = rv * (a1 * rv + b1) + c1
     _do_y_pole_sum(ady)
+    return ady
+
+
+def _yadv_dao2_batch(qqu: np.ndarray, va: np.ndarray) -> np.ndarray:
+    _ntracer, nlat, nlon = qqu.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    ady = np.zeros_like(qqu)
+    for j in range(j1p - 1, j2p + 2):
+        jv0 = np.rint(va[j, :]).astype(np.int64)
+        rv = jv0 - va[j, :]
+        jv = j - jv0
+        q_j = _take_lat_columns(qqu, jv)
+        q_jp1 = _take_lat_columns(qqu, jv + 1)
+        q_jm1 = _take_lat_columns(qqu, jv - 1)
+        a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+        b1 = 0.5 * (q_jp1 - q_jm1)
+        c1 = q_j - qqu[:, j, :]
+        ady[:, j, :] = rv[np.newaxis, :] * (a1 * rv[np.newaxis, :] + b1) + c1
+    _do_y_pole_sum_batch(ady)
     return ady
 
 
@@ -682,6 +783,56 @@ def _xtp(
         dq1[j, -1] += fx[j, -1] - fx[j, 0]
 
 
+def _xtp_batch(
+    dq1: np.ndarray,
+    qqv: np.ndarray,
+    pu: np.ndarray,
+    cx: np.ndarray,
+    xmass: np.ndarray,
+    jn: int,
+    js: int,
+) -> None:
+    ntracer, nlat, nlon = dq1.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    dcx = _xmist_batch(qqv)
+    fx = np.empty((ntracer, nlon), dtype=np.float64)
+    jvan = max(1, nlat // 18)
+    for j in range(j1p, j2p + 1):
+        if j > js and j < jn:
+            if j == j1p or j == j2p:
+                for i in range(nlon):
+                    iu = _real_index_offset(i, cx[j, i])
+                    fx[:, i] = _q_lon_batch(qqv, j, iu)
+            elif j <= j1p + jvan or j >= j2p - jvan:
+                for i in range(nlon):
+                    iu = _real_index_offset(i, cx[j, i])
+                    fx[:, i] = _q_lon_batch(qqv, j, iu) + _dcx_lon_batch(dcx, j, iu) * (
+                        _sign(1.0, cx[j, i]) - cx[j, i]
+                    )
+            else:
+                _fxppm_row_batch(j, cx, dcx, fx, qqv)
+            fx *= xmass[j, :][np.newaxis, :]
+        else:
+            for i in range(nlon):
+                ic = _trunc_toward_zero(cx[j, i])
+                isav = i - ic
+                iu = _real_index_offset(i, cx[j, i])
+                rc = cx[j, i] - float(ic)
+                if j == j1p or j == j2p:
+                    val = rc * _q_lon_batch(qqv, j, iu)
+                else:
+                    val = rc * (_q_lon_batch(qqv, j, iu) + _dcx_lon_batch(dcx, j, iu) * (_sign(1.0, rc) - rc))
+                if cx[j, i] > 1.0:
+                    for ix in range(isav, i):
+                        val += _q_lon_batch(qqv, j, ix)
+                elif cx[j, i] < -1.0:
+                    for ix in range(i, isav):
+                        val -= _q_lon_batch(qqv, j, ix)
+                fx[:, i] = pu[j, i] * val
+        dq1[:, j, :-1] += fx[:, :-1] - fx[:, 1:]
+        dq1[:, j, -1] += fx[:, -1] - fx[:, 0]
+
+
 def _ytp(
     dq1: np.ndarray,
     qqu: np.ndarray,
@@ -709,6 +860,33 @@ def _ytp(
     dq1[-2, :] = dq_np
 
 
+def _ytp_batch(
+    dq1: np.ndarray,
+    qqu: np.ndarray,
+    qqv: np.ndarray,
+    cy: np.ndarray,
+    ymass: np.ndarray,
+    geofac: np.ndarray,
+    geofac_pc: float,
+) -> None:
+    _ntracer, nlat, nlon = dq1.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    dcy = _ymist_batch(qqu)
+    _fyppm_batch(cy, dcy, qqu, qqv)
+    qqv[:, j1p, :] *= ymass[j1p, :][np.newaxis, :]
+    for j in range(j1p, j2p + 1):
+        qqv[:, j + 1, :] *= ymass[j + 1, :][np.newaxis, :]
+        dq1[:, j, :] += (qqv[:, j, :] - qqv[:, j + 1, :]) * geofac[j]
+    sumsp = np.sum(qqv[:, j1p, :], axis=1)
+    sumnp = np.sum(qqv[:, j2p + 1, :], axis=1)
+    dq_sp = dq1[:, 0, 0] - sumsp / float(nlon) * geofac_pc
+    dq_np = dq1[:, -1, 0] + sumnp / float(nlon) * geofac_pc
+    dq1[:, 0, :] = dq_sp[:, np.newaxis]
+    dq1[:, -1, :] = dq_np[:, np.newaxis]
+    dq1[:, 1, :] = dq_sp[:, np.newaxis]
+    dq1[:, -2, :] = dq_np[:, np.newaxis]
+
+
 def _xmist(qqv: np.ndarray) -> np.ndarray:
     nlat, nlon = qqv.shape
     j1p, j2p = _polar_cap_bounds(nlat)
@@ -720,6 +898,46 @@ def _xmist(qqv: np.ndarray) -> np.ndarray:
             pmax = max(_q_lon(qqv, j, i - 1), qqv[j, i], _q_lon(qqv, j, i + 1)) - qqv[j, i]
             pmin = qqv[j, i] - min(_q_lon(qqv, j, i - 1), qqv[j, i], _q_lon(qqv, j, i + 1))
             dcx[j, i] = _sign(min(abs(tmp), pmin, pmax), tmp)
+    return dcx
+
+
+def _xmist_batch(qqv: np.ndarray) -> np.ndarray:
+    ntracer, nlat, nlon = qqv.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    dcx = np.zeros_like(qqv)
+    r24 = 1.0 / 24.0
+    left1 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    right1 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    left2 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    right2 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    tmp = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    pmax = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    pmin = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    for j in range(j1p + 1, j2p):
+        row = qqv[:, j, :]
+        left1[:, 0] = row[:, -1]
+        left1[:, 1:] = row[:, :-1]
+        right1[:, :-1] = row[:, 1:]
+        right1[:, -1] = row[:, 0]
+        left2[:, :2] = row[:, -2:]
+        left2[:, 2:] = row[:, :-2]
+        right2[:, :-2] = row[:, 2:]
+        right2[:, -2:] = row[:, :2]
+
+        tmp[:] = right1
+        tmp -= left1
+        tmp *= 8.0
+        tmp += left2
+        tmp -= right2
+        tmp *= r24
+
+        np.maximum(left1, row, out=pmax)
+        np.maximum(pmax, right1, out=pmax)
+        pmax -= row
+        np.minimum(left1, row, out=pmin)
+        np.minimum(pmin, right1, out=pmin)
+        np.subtract(row, pmin, out=pmin)
+        _signed_minimum_abs(tmp, pmax, pmin, dcx[:, j, :])
     return dcx
 
 
@@ -752,6 +970,33 @@ def _fxppm_row(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qqv: np.
             fx[j, i] = al[i] - 0.5 * cx[j, i] * (ar[i] - al[i] + a6[i] * (1.0 + r23 * cx[j, i]))
 
 
+def _fxppm_row_batch(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qqv: np.ndarray) -> None:
+    _ntracer, _nlat, nlon = qqv.shape
+    r13 = 1.0 / 3.0
+    r23 = 2.0 / 3.0
+    qa = qqv[:, j, :]
+    dc = dcx[:, j, :]
+    al = 0.5 * (np.roll(qa, 1, axis=1) + qa) + (np.roll(dc, 1, axis=1) - dc) * r13
+    ar = np.roll(al, -1, axis=1)
+    a6 = 3.0 * (qa + qa - (al + ar))
+    _lmtppm_last_axis(a6, al, ar, dc, qa, 0)
+    c = cx[j, :]
+    pos = c > 0.0
+    if np.any(pos):
+        pos_i = np.nonzero(pos)[0]
+        im1 = (pos_i - 1) % nlon
+        cp = c[pos][np.newaxis, :]
+        fx[:, pos] = ar[:, im1] + 0.5 * cp * (
+            al[:, im1] - ar[:, im1] + a6[:, im1] * (1.0 - r23 * cp)
+        )
+    neg = ~pos
+    if np.any(neg):
+        cn = c[neg][np.newaxis, :]
+        fx[:, neg] = al[:, neg] - 0.5 * cn * (
+            ar[:, neg] - al[:, neg] + a6[:, neg] * (1.0 + r23 * cn)
+        )
+
+
 def _ymist(qqu: np.ndarray) -> np.ndarray:
     nlat, nlon = qqu.shape
     dcy = np.zeros_like(qqu)
@@ -765,6 +1010,38 @@ def _ymist(qqu: np.ndarray) -> np.ndarray:
             dcy[out_j, i] = _sign(min(abs(tmp), pmin, pmax), tmp)
     dcy[0, :] = 0.0
     dcy[-1, :] = 0.0
+    return dcy
+
+
+def _ymist_batch(qqu: np.ndarray) -> np.ndarray:
+    ntracer, nlat, nlon = qqu.shape
+    dcy = np.zeros_like(qqu)
+    r24 = 1.0 / 24.0
+    zero = np.zeros((ntracer, nlon), dtype=qqu.dtype)
+    tmp = np.empty((ntracer, nlon), dtype=qqu.dtype)
+    pmax = np.empty((ntracer, nlon), dtype=qqu.dtype)
+    pmin = np.empty((ntracer, nlon), dtype=qqu.dtype)
+    for j in range(1, nlat - 1):
+        qjm2 = zero if j < 2 else qqu[:, j - 2, :]
+        qjm1 = qqu[:, j - 1, :]
+        qj = qqu[:, j, :]
+        qjp1 = qqu[:, j + 1, :]
+        qjp2 = zero if j + 2 >= nlat else qqu[:, j + 2, :]
+
+        tmp[:] = qjp1
+        tmp -= qjm1
+        tmp *= 8.0
+        tmp += qjm2
+        tmp -= qjp2
+        tmp *= r24
+
+        np.maximum(qjm1, qj, out=pmax)
+        np.maximum(pmax, qjp1, out=pmax)
+        pmax -= qj
+        np.minimum(qjm1, qj, out=pmin)
+        np.minimum(pmin, qjp1, out=pmin)
+        np.subtract(qj, pmin, out=pmin)
+        _signed_minimum_abs(tmp, pmax, pmin, dcy[:, j, :])
     return dcy
 
 
@@ -798,6 +1075,44 @@ def _fyppm(cy: np.ndarray, dcy: np.ndarray, qqu: np.ndarray, qqv: np.ndarray) ->
                 qqv[j, i] = al[j, i] - 0.5 * cy[j, i] * (
                     ar[j, i] - al[j, i] + a6[j, i] * (1.0 + r23 * cy[j, i])
                 )
+
+
+def _fyppm_batch(cy: np.ndarray, dcy: np.ndarray, qqu: np.ndarray, qqv: np.ndarray) -> None:
+    _ntracer, nlat, nlon = qqu.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    r13 = 1.0 / 3.0
+    r23 = 2.0 / 3.0
+    a6 = np.empty_like(qqu)
+    al = np.empty_like(qqu)
+    ar = np.empty_like(qqu)
+    al[:, 1:, :] = qqu[:, :-1, :]
+    al[:, 1:, :] += qqu[:, 1:, :]
+    al[:, 1:, :] *= 0.5
+    al[:, 1:, :] += (dcy[:, :-1, :] - dcy[:, 1:, :]) * r13
+    ar[:, :-1, :] = al[:, 1:, :]
+    half = nlon // 2
+    al[:, 0, :half] = al[:, 1, half:]
+    al[:, 0, half:] = al[:, 1, :half]
+    ar[:, -1, :half] = ar[:, -2, half:]
+    ar[:, -1, half:] = ar[:, -2, :half]
+    a6[:, 1:-1, :] = 3.0 * (qqu[:, 1:-1, :] + qqu[:, 1:-1, :] - (al[:, 1:-1, :] + ar[:, 1:-1, :]))
+    for j in range(1, nlat - 1):
+        _lmtppm_last_axis(a6[:, j, :], al[:, j, :], ar[:, j, :], dcy[:, j, :], qqu[:, j, :], 0)
+    for j in range(j1p, j2p + 2):
+        jm1 = j - 1
+        c = cy[j, :]
+        pos = c > 0.0
+        if np.any(pos):
+            cp = c[pos][np.newaxis, :]
+            qqv[:, j, pos] = ar[:, jm1, pos] + 0.5 * cp * (
+                al[:, jm1, pos] - ar[:, jm1, pos] + a6[:, jm1, pos] * (1.0 - r23 * cp)
+            )
+        neg = ~pos
+        if np.any(neg):
+            cn = c[neg][np.newaxis, :]
+            qqv[:, j, neg] = al[:, j, neg] - 0.5 * cn * (
+                ar[:, j, neg] - al[:, j, neg] + a6[:, j, neg] * (1.0 + r23 * cn)
+            )
 
 
 def _fzppm(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
@@ -888,6 +1203,129 @@ def _fzppm(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) ->
             dq1[k, j, :] += flux[k, :] - flux[k + 1, :]
 
 
+def _fzppm_batch(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
+    ntracer, nlev, nlat, nlon = q.shape
+    r13 = 1.0 / 3.0
+    r23 = 2.0 / 3.0
+
+    dpi = np.empty((ntracer, nlev, nlon), dtype=np.float64)
+    dc = np.empty((ntracer, nlev, nlon), dtype=np.float64)
+    al = np.empty((ntracer, nlev, nlon), dtype=np.float64)
+    ar = np.empty((ntracer, nlev, nlon), dtype=np.float64)
+    a6 = np.empty((ntracer, nlev, nlon), dtype=np.float64)
+    dca = np.empty((ntracer, nlev, nlon), dtype=np.float64)
+    tmp = np.empty((ntracer, nlon), dtype=np.float64)
+    qmin = np.empty((ntracer, nlon), dtype=np.float64)
+    qmax = np.empty((ntracer, nlon), dtype=np.float64)
+    prev_flux = np.empty((ntracer, nlon), dtype=np.float64)
+    flux = np.empty((ntracer, nlon), dtype=np.float64)
+
+    for j in range(nlat):
+        if j in (1, nlat - 2):
+            continue
+        dlp = delp1[:, j, :]
+        qq = q[:, :, j, :]
+        wza = wz[:, j, :]
+
+        dpi[:, :-1, :] = qq[:, 1:, :] - qq[:, :-1, :]
+        dpi[:, -1, :] = 0.0
+        dc.fill(0.0)
+
+        for k in range(1, nlev - 1):
+            c0 = dlp[k] / (dlp[k - 1] + dlp[k] + dlp[k + 1])
+            c1 = (dlp[k - 1] + 0.5 * dlp[k]) / (dlp[k + 1] + dlp[k])
+            c2 = (dlp[k + 1] + 0.5 * dlp[k]) / (dlp[k - 1] + dlp[k])
+            tmp[:] = dpi[:, k, :] * c1[np.newaxis, :]
+            tmp += dpi[:, k - 1, :] * c2[np.newaxis, :]
+            tmp *= c0[np.newaxis, :]
+
+            np.maximum(qq[:, k - 1, :], qq[:, k, :], out=qmax)
+            np.maximum(qmax, qq[:, k + 1, :], out=qmax)
+            qmax -= qq[:, k, :]
+            np.minimum(qq[:, k - 1, :], qq[:, k, :], out=qmin)
+            np.minimum(qmin, qq[:, k + 1, :], out=qmin)
+            np.subtract(qq[:, k, :], qmin, out=qmin)
+            _signed_minimum_abs(tmp, qmax, qmin, dc[:, k, :])
+        dca[:] = dc
+        fac1 = dpi[:, 1, :] - dpi[:, 0, :] * (dlp[1, :] + dlp[2, :]) / (dlp[0, :] + dlp[1, :])
+        fac2 = (dlp[1, :] + dlp[2, :]) * (dlp[0, :] + dlp[1, :] + dlp[2, :])
+        aa = 3.0 * fac1 / fac2
+        bb = 2.0 * dpi[:, 0, :] / (dlp[0, :] + dlp[1, :]) - r23 * aa * (2.0 * dlp[0, :] + dlp[1, :])
+        al[:, 0, :] = qq[:, 0, :] - dlp[0, :] * (r13 * aa * dlp[0, :] + 0.5 * bb)
+        al[:, 1, :] = dlp[0, :] * (aa * dlp[0, :] + bb) + al[:, 0, :]
+        mask = qq[:, 0, :] * al[:, 0, :] <= 0.0
+        dca[:, 0, :] = qq[:, 0, :] - al[:, 0, :]
+        al[:, 0, :][mask] = 0.0
+        dca[:, 0, :][mask] = 0.0
+        fac1b = dpi[:, -2, :] * (dlp[-1, :] * dlp[-1, :]) / (
+            (dlp[-1, :] + dlp[-2, :]) * (2.0 * dlp[-1, :] + dlp[-2, :])
+        )
+        ar[:, -1, :] = qq[:, -1, :] + fac1b
+        al[:, -1, :] = qq[:, -1, :] - (fac1b + fac1b)
+        ar[:, -1, :][qq[:, -1, :] * ar[:, -1, :] <= 0.0] = 0.0
+        dca[:, -1, :] = ar[:, -1, :] - qq[:, -1, :]
+        for k in range(2, nlev - 1):
+            c1 = dpi[:, k - 1, :] * dlp[k - 1, :] / (dlp[k - 1, :] + dlp[k, :])
+            c2 = 2.0 / (dlp[k - 2, :] + dlp[k - 1, :] + dlp[k, :] + dlp[k + 1, :])
+            a1 = (dlp[k - 2, :] + dlp[k - 1, :]) / (2.0 * dlp[k - 1, :] + dlp[k, :])
+            a2 = (dlp[k, :] + dlp[k + 1, :]) / (2.0 * dlp[k, :] + dlp[k - 1, :])
+            al[:, k, :] = qq[:, k - 1, :] + c1 + c2 * (
+                dlp[k, :] * (c1 * (a1 - a2) + a2 * dca[:, k - 1, :])
+                - dlp[k - 1, :] * a1 * dca[:, k, :]
+            )
+        ar[:, :-1, :] = al[:, 1:, :]
+        for k in (0, 1, nlev - 2, nlev - 1):
+            a6[:, k, :] = 3.0 * (qq[:, k, :] + qq[:, k, :] - (al[:, k, :] + ar[:, k, :]))
+            _lmtppm_last_axis(a6[:, k, :], al[:, k, :], ar[:, k, :], dca[:, k, :], qq[:, k, :], 0)
+        for k in range(1, nlev - 1):
+            dca[:, k, :] = dpi[:, k, :] - dpi[:, k - 1, :]
+        for k in range(2, nlev - 2):
+            tmp[:] = qq[:, k, :] + 2.0 * dpi[:, k - 1, :]
+            qmin[:] = qq[:, k, :]
+            np.minimum(qmin, tmp, out=qmin)
+            qmax[:] = qq[:, k, :]
+            np.maximum(qmax, tmp, out=qmax)
+            tmp[:] = qq[:, k, :] + 1.5 * dca[:, k - 1, :] + 0.5 * dpi[:, k - 1, :]
+            np.minimum(qmin, tmp, out=qmin)
+            np.maximum(qmax, tmp, out=qmax)
+            np.maximum(ar[:, k, :], qmin, out=tmp)
+            np.minimum(tmp, qmax, out=ar[:, k, :])
+
+            tmp[:] = qq[:, k, :] - 2.0 * dpi[:, k, :]
+            qmin[:] = qq[:, k, :]
+            np.minimum(qmin, tmp, out=qmin)
+            qmax[:] = qq[:, k, :]
+            np.maximum(qmax, tmp, out=qmax)
+            tmp[:] = qq[:, k, :] + 1.5 * dca[:, k + 1, :] - 0.5 * dpi[:, k, :]
+            np.minimum(qmin, tmp, out=qmin)
+            np.maximum(qmax, tmp, out=qmax)
+            np.maximum(al[:, k, :], qmin, out=tmp)
+            np.minimum(tmp, qmax, out=al[:, k, :])
+            a6[:, k, :] = 3.0 * (qq[:, k, :] + qq[:, k, :] - (ar[:, k, :] + al[:, k, :]))
+        prev_flux.fill(0.0)
+        for k in range(nlev - 1):
+            pos = wza[k, :] > 0.0
+            if np.any(pos):
+                cm = (wza[k, pos] / dlp[k, pos])[np.newaxis, :]
+                val = ar[:, k, pos] + 0.5 * cm * (
+                    al[:, k, pos] - ar[:, k, pos] + a6[:, k, pos] * (1.0 - r23 * cm)
+                )
+                flux[:, pos] = wza[k, pos][np.newaxis, :] * val
+            neg = ~pos
+            if np.any(neg):
+                cp = (wza[k, neg] / dlp[k + 1, neg])[np.newaxis, :]
+                val = al[:, k + 1, neg] + 0.5 * cp * (
+                    al[:, k + 1, neg] - ar[:, k + 1, neg] - a6[:, k + 1, neg] * (1.0 + r23 * cp)
+                )
+                flux[:, neg] = wza[k, neg][np.newaxis, :] * val
+            if k == 0:
+                dq1[:, 0, j, :] -= flux
+            else:
+                dq1[:, k, j, :] += prev_flux - flux
+            prev_flux[:] = flux
+        dq1[:, -1, j, :] += prev_flux
+
+
 def _qckxyz(dq1: np.ndarray) -> None:
     _nlev, nlat, _nlon = dq1.shape
     j1p, j2p = _polar_cap_bounds(nlat)
@@ -913,6 +1351,37 @@ def _qckxyz(dq1: np.ndarray) -> None:
                 dq1[-1, j, i] = 0.0
 
 
+def _qckxyz_batch(dq1: np.ndarray) -> None:
+    _ntracer, nlev, nlat, nlon = dq1.shape
+    j1p, j2p = _polar_cap_bounds(nlat)
+    for j in range(j1p, j2p + 1):
+        for i in range(nlon):
+            if not np.any(dq1[:, :, j, i] < 0.0):
+                continue
+            mask = dq1[:, 0, j, i] < 0.0
+            if np.any(mask):
+                dq1[mask, 1, j, i] += dq1[mask, 0, j, i]
+                dq1[mask, 0, j, i] = 0.0
+            for k in range(1, nlev - 1):
+                mask = dq1[:, k, j, i] < 0.0
+                if not np.any(mask):
+                    continue
+                qup = dq1[mask, k - 1, j, i]
+                qly = -dq1[mask, k, j, i]
+                dup = np.minimum(qly, qup)
+                dq1[mask, k - 1, j, i] = qup - dup
+                dq1[mask, k, j, i] = dup - qly
+                dq1[mask, k + 1, j, i] += dq1[mask, k, j, i]
+                dq1[mask, k, j, i] = 0.0
+            mask = dq1[:, -1, j, i] < 0.0
+            if np.any(mask):
+                qup = dq1[mask, -2, j, i]
+                qly = -dq1[mask, -1, j, i]
+                dup = np.minimum(qly, qup)
+                dq1[mask, -2, j, i] = qup - dup
+                dq1[mask, -1, j, i] = 0.0
+
+
 def _do_y_pole_sum(ady: np.ndarray) -> None:
     south = float(np.mean(ady[1, :]))
     north = float(np.mean(ady[-2, :]))
@@ -920,6 +1389,15 @@ def _do_y_pole_sum(ady: np.ndarray) -> None:
     ady[1, :] = south
     ady[-2, :] = north
     ady[-1, :] = north
+
+
+def _do_y_pole_sum_batch(ady: np.ndarray) -> None:
+    south = np.mean(ady[:, 1, :], axis=1)
+    north = np.mean(ady[:, -2, :], axis=1)
+    ady[:, 0, :] = south[:, np.newaxis]
+    ady[:, 1, :] = south[:, np.newaxis]
+    ady[:, -2, :] = north[:, np.newaxis]
+    ady[:, -1, :] = north[:, np.newaxis]
 
 
 def _lmtppm_2d(
@@ -954,6 +1432,63 @@ def _lmtppm_1d(a6: np.ndarray, al: np.ndarray, ar: np.ndarray, dc: np.ndarray, q
                 al[idx] = ar[idx] - a6[idx]
 
 
+def _lmtppm_last_axis(
+    a6: np.ndarray,
+    al: np.ndarray,
+    ar: np.ndarray,
+    dc: np.ndarray,
+    qa: np.ndarray,
+    lmt: int,
+) -> None:
+    if lmt != 0:
+        raise NotImplementedError("Only the full monotonic PPM limiter is needed for the current TPCORE path")
+    if qa.ndim == 2:
+        _lmtppm_2d_batch_columns(a6, al, ar, dc, qa)
+        return
+    for idx in range(qa.shape[-1]):
+        a6_col = a6[..., idx]
+        al_col = al[..., idx]
+        ar_col = ar[..., idx]
+        qa_col = qa[..., idx]
+        zero_mask = dc[..., idx] == 0.0
+        a6_col[zero_mask] = 0.0
+        al_col[zero_mask] = qa_col[zero_mask]
+        ar_col[zero_mask] = qa_col[zero_mask]
+
+        da1 = ar_col - al_col
+        da2 = da1 * da1
+        a6da = a6_col * da1
+        low_mask = a6da < -da2
+        a6_col[low_mask] = 3.0 * (al_col[low_mask] - qa_col[low_mask])
+        ar_col[low_mask] = al_col[low_mask] - a6_col[low_mask]
+        high_mask = a6da > da2
+        a6_col[high_mask] = 3.0 * (ar_col[high_mask] - qa_col[high_mask])
+        al_col[high_mask] = ar_col[high_mask] - a6_col[high_mask]
+
+
+def _lmtppm_2d_batch_columns(
+    a6: np.ndarray,
+    al: np.ndarray,
+    ar: np.ndarray,
+    dc: np.ndarray,
+    qa: np.ndarray,
+) -> None:
+    zero_mask = dc == 0.0
+    a6[zero_mask] = 0.0
+    al[zero_mask] = qa[zero_mask]
+    ar[zero_mask] = qa[zero_mask]
+
+    da1 = ar - al
+    da2 = da1 * da1
+    a6da = a6 * da1
+    low_mask = a6da < -da2
+    a6[low_mask] = 3.0 * (al[low_mask] - qa[low_mask])
+    ar[low_mask] = al[low_mask] - a6[low_mask]
+    high_mask = a6da > da2
+    a6[high_mask] = 3.0 * (ar[high_mask] - qa[high_mask])
+    al[high_mask] = ar[high_mask] - a6[high_mask]
+
+
 def _q_lon(q: np.ndarray, j: int, i: int) -> float:
     if j < 0 or j >= q.shape[0]:
         return 0.0
@@ -964,10 +1499,26 @@ def _dcx_lon(dcx: np.ndarray, j: int, i: int) -> float:
     return float(dcx[j, i % dcx.shape[1]])
 
 
+def _q_lon_batch(q: np.ndarray, j: int, i: int) -> np.ndarray:
+    if j < 0 or j >= q.shape[1]:
+        return np.zeros(q.shape[0], dtype=q.dtype)
+    return q[:, j, i % q.shape[2]]
+
+
+def _dcx_lon_batch(dcx: np.ndarray, j: int, i: int) -> np.ndarray:
+    return dcx[:, j, i % dcx.shape[2]]
+
+
 def _q_lat(q: np.ndarray, i: int, j: int) -> float:
     if j < 0 or j >= q.shape[0]:
         return 0.0
     return float(q[j, i])
+
+
+def _q_lat_batch(q: np.ndarray, i: int, j: int) -> np.ndarray:
+    if j < 0 or j >= q.shape[1]:
+        return np.zeros(q.shape[0], dtype=q.dtype)
+    return q[:, j, i]
 
 
 def _trunc_toward_zero(value: float) -> int:
@@ -986,3 +1537,14 @@ def _nint(value: float) -> int:
 
 def _sign(magnitude: float, sign_source: float) -> float:
     return abs(magnitude) if sign_source >= 0.0 else -abs(magnitude)
+
+
+def _signed_minimum_abs(tmp: np.ndarray, bound1: np.ndarray, bound2: np.ndarray, out: np.ndarray) -> None:
+    np.abs(tmp, out=out)
+    np.minimum(out, bound1, out=out)
+    np.minimum(out, bound2, out=out)
+    np.negative(out, out=out, where=tmp < 0.0)
+
+
+def _sign_array(magnitude: np.ndarray, sign_source: np.ndarray) -> np.ndarray:
+    return np.where(sign_source >= 0.0, np.abs(magnitude), -np.abs(magnitude))
