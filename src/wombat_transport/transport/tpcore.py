@@ -829,9 +829,8 @@ def _xtp_batch(
                     for ix in range(i, isav):
                         val -= _q_lon_batch(qqv, j, ix)
                 fx[:, j, i] = pu[j, i] * val
-    for j in range(j1p, j2p + 1):
-        dq1[:, j, :-1] += fx[:, j, :-1] - fx[:, j, 1:]
-        dq1[:, j, -1] += fx[:, j, -1] - fx[:, j, 0]
+    dq1[:, j1p : j2p + 1, :-1] += fx[:, j1p : j2p + 1, :-1] - fx[:, j1p : j2p + 1, 1:]
+    dq1[:, j1p : j2p + 1, -1] += fx[:, j1p : j2p + 1, -1] - fx[:, j1p : j2p + 1, 0]
 
 
 def _ytp(
@@ -956,16 +955,21 @@ def _fxppm_row_batch(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qq
     ar = np.roll(al, -1, axis=1)
     a6 = 3.0 * (qa + qa - (al + ar))
     _lmtppm_last_axis(a6, al, ar, dc, qa, 0)
-    for i in range(nlon):
-        if cx[j, i] > 0.0:
-            im1 = (i - 1) % nlon
-            fx[:, j, i] = ar[:, im1] + 0.5 * cx[j, i] * (
-                al[:, im1] - ar[:, im1] + a6[:, im1] * (1.0 - r23 * cx[j, i])
-            )
-        else:
-            fx[:, j, i] = al[:, i] - 0.5 * cx[j, i] * (
-                ar[:, i] - al[:, i] + a6[:, i] * (1.0 + r23 * cx[j, i])
-            )
+    c = cx[j, :]
+    pos = c > 0.0
+    if np.any(pos):
+        pos_i = np.nonzero(pos)[0]
+        im1 = (pos_i - 1) % nlon
+        cp = c[pos][np.newaxis, :]
+        fx[:, j, pos] = ar[:, im1] + 0.5 * cp * (
+            al[:, im1] - ar[:, im1] + a6[:, im1] * (1.0 - r23 * cp)
+        )
+    neg = ~pos
+    if np.any(neg):
+        cn = c[neg][np.newaxis, :]
+        fx[:, j, neg] = al[:, neg] - 0.5 * cn * (
+            ar[:, neg] - al[:, neg] + a6[:, neg] * (1.0 + r23 * cn)
+        )
 
 
 def _ymist(qqu: np.ndarray) -> np.ndarray:
@@ -1282,11 +1286,16 @@ def _qckxyz_batch(dq1: np.ndarray) -> None:
     j1p, j2p = _polar_cap_bounds(nlat)
     for j in range(j1p, j2p + 1):
         for i in range(nlon):
+            if not np.any(dq1[:, :, j, i] < 0.0):
+                continue
             mask = dq1[:, 0, j, i] < 0.0
-            dq1[mask, 1, j, i] += dq1[mask, 0, j, i]
-            dq1[mask, 0, j, i] = 0.0
+            if np.any(mask):
+                dq1[mask, 1, j, i] += dq1[mask, 0, j, i]
+                dq1[mask, 0, j, i] = 0.0
             for k in range(1, nlev - 1):
                 mask = dq1[:, k, j, i] < 0.0
+                if not np.any(mask):
+                    continue
                 qup = dq1[mask, k - 1, j, i]
                 qly = -dq1[mask, k, j, i]
                 dup = np.minimum(qly, qup)
@@ -1295,11 +1304,12 @@ def _qckxyz_batch(dq1: np.ndarray) -> None:
                 dq1[mask, k + 1, j, i] += dq1[mask, k, j, i]
                 dq1[mask, k, j, i] = 0.0
             mask = dq1[:, -1, j, i] < 0.0
-            qup = dq1[mask, -2, j, i]
-            qly = -dq1[mask, -1, j, i]
-            dup = np.minimum(qly, qup)
-            dq1[mask, -2, j, i] = qup - dup
-            dq1[mask, -1, j, i] = 0.0
+            if np.any(mask):
+                qup = dq1[mask, -2, j, i]
+                qly = -dq1[mask, -1, j, i]
+                dup = np.minimum(qly, qup)
+                dq1[mask, -2, j, i] = qup - dup
+                dq1[mask, -1, j, i] = 0.0
 
 
 def _do_y_pole_sum(ady: np.ndarray) -> None:
