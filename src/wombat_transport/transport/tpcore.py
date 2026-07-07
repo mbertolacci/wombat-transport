@@ -792,26 +792,26 @@ def _xtp_batch(
     jn: int,
     js: int,
 ) -> None:
-    _ntracer, nlat, nlon = dq1.shape
+    ntracer, nlat, nlon = dq1.shape
     j1p, j2p = _polar_cap_bounds(nlat)
     dcx = _xmist_batch(qqv)
-    fx = np.zeros_like(dq1)
+    fx = np.empty((ntracer, nlon), dtype=np.float64)
     jvan = max(1, nlat // 18)
     for j in range(j1p, j2p + 1):
         if j > js and j < jn:
             if j == j1p or j == j2p:
                 for i in range(nlon):
                     iu = _real_index_offset(i, cx[j, i])
-                    fx[:, j, i] = _q_lon_batch(qqv, j, iu)
+                    fx[:, i] = _q_lon_batch(qqv, j, iu)
             elif j <= j1p + jvan or j >= j2p - jvan:
                 for i in range(nlon):
                     iu = _real_index_offset(i, cx[j, i])
-                    fx[:, j, i] = _q_lon_batch(qqv, j, iu) + _dcx_lon_batch(dcx, j, iu) * (
+                    fx[:, i] = _q_lon_batch(qqv, j, iu) + _dcx_lon_batch(dcx, j, iu) * (
                         _sign(1.0, cx[j, i]) - cx[j, i]
                     )
             else:
                 _fxppm_row_batch(j, cx, dcx, fx, qqv)
-            fx[:, j, :] *= xmass[j, :][np.newaxis, :]
+            fx *= xmass[j, :][np.newaxis, :]
         else:
             for i in range(nlon):
                 ic = _trunc_toward_zero(cx[j, i])
@@ -828,9 +828,9 @@ def _xtp_batch(
                 elif cx[j, i] < -1.0:
                     for ix in range(i, isav):
                         val -= _q_lon_batch(qqv, j, ix)
-                fx[:, j, i] = pu[j, i] * val
-    dq1[:, j1p : j2p + 1, :-1] += fx[:, j1p : j2p + 1, :-1] - fx[:, j1p : j2p + 1, 1:]
-    dq1[:, j1p : j2p + 1, -1] += fx[:, j1p : j2p + 1, -1] - fx[:, j1p : j2p + 1, 0]
+                fx[:, i] = pu[j, i] * val
+        dq1[:, j, :-1] += fx[:, :-1] - fx[:, 1:]
+        dq1[:, j, -1] += fx[:, -1] - fx[:, 0]
 
 
 def _ytp(
@@ -873,9 +873,9 @@ def _ytp_batch(
     j1p, j2p = _polar_cap_bounds(nlat)
     dcy = _ymist_batch(qqu)
     _fyppm_batch(cy, dcy, qqu, qqv)
-    for j in range(j1p, j2p + 2):
-        qqv[:, j, :] *= ymass[j, :][np.newaxis, :]
+    qqv[:, j1p, :] *= ymass[j1p, :][np.newaxis, :]
     for j in range(j1p, j2p + 1):
+        qqv[:, j + 1, :] *= ymass[j + 1, :][np.newaxis, :]
         dq1[:, j, :] += (qqv[:, j, :] - qqv[:, j + 1, :]) * geofac[j]
     sumsp = np.sum(qqv[:, j1p, :], axis=1)
     sumnp = np.sum(qqv[:, j2p + 1, :], axis=1)
@@ -902,17 +902,42 @@ def _xmist(qqv: np.ndarray) -> np.ndarray:
 
 
 def _xmist_batch(qqv: np.ndarray) -> np.ndarray:
-    _ntracer, nlat, _nlon = qqv.shape
+    ntracer, nlat, nlon = qqv.shape
     j1p, j2p = _polar_cap_bounds(nlat)
     dcx = np.zeros_like(qqv)
     r24 = 1.0 / 24.0
-    row = qqv[:, j1p + 1 : j2p, :]
-    left1 = np.roll(row, 1, axis=2)
-    right1 = np.roll(row, -1, axis=2)
-    tmp = (8.0 * (right1 - left1) + np.roll(row, 2, axis=2) - np.roll(row, -2, axis=2)) * r24
-    pmax = np.maximum.reduce([left1, row, right1]) - row
-    pmin = row - np.minimum.reduce([left1, row, right1])
-    dcx[:, j1p + 1 : j2p, :] = _sign_array(np.minimum.reduce([np.abs(tmp), pmin, pmax]), tmp)
+    left1 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    right1 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    left2 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    right2 = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    tmp = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    pmax = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    pmin = np.empty((ntracer, nlon), dtype=qqv.dtype)
+    for j in range(j1p + 1, j2p):
+        row = qqv[:, j, :]
+        left1[:, 0] = row[:, -1]
+        left1[:, 1:] = row[:, :-1]
+        right1[:, :-1] = row[:, 1:]
+        right1[:, -1] = row[:, 0]
+        left2[:, :2] = row[:, -2:]
+        left2[:, 2:] = row[:, :-2]
+        right2[:, :-2] = row[:, 2:]
+        right2[:, -2:] = row[:, :2]
+
+        tmp[:] = right1
+        tmp -= left1
+        tmp *= 8.0
+        tmp += left2
+        tmp -= right2
+        tmp *= r24
+
+        np.maximum(left1, row, out=pmax)
+        np.maximum(pmax, right1, out=pmax)
+        pmax -= row
+        np.minimum(left1, row, out=pmin)
+        np.minimum(pmin, right1, out=pmin)
+        np.subtract(row, pmin, out=pmin)
+        _signed_minimum_abs(tmp, pmax, pmin, dcx[:, j, :])
     return dcx
 
 
@@ -961,13 +986,13 @@ def _fxppm_row_batch(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qq
         pos_i = np.nonzero(pos)[0]
         im1 = (pos_i - 1) % nlon
         cp = c[pos][np.newaxis, :]
-        fx[:, j, pos] = ar[:, im1] + 0.5 * cp * (
+        fx[:, pos] = ar[:, im1] + 0.5 * cp * (
             al[:, im1] - ar[:, im1] + a6[:, im1] * (1.0 - r23 * cp)
         )
     neg = ~pos
     if np.any(neg):
         cn = c[neg][np.newaxis, :]
-        fx[:, j, neg] = al[:, neg] - 0.5 * cn * (
+        fx[:, neg] = al[:, neg] - 0.5 * cn * (
             ar[:, neg] - al[:, neg] + a6[:, neg] * (1.0 + r23 * cn)
         )
 
@@ -989,22 +1014,34 @@ def _ymist(qqu: np.ndarray) -> np.ndarray:
 
 
 def _ymist_batch(qqu: np.ndarray) -> np.ndarray:
-    _ntracer, nlat, nlon = qqu.shape
+    ntracer, nlat, nlon = qqu.shape
     dcy = np.zeros_like(qqu)
     r24 = 1.0 / 24.0
-    padded = np.zeros((_ntracer, nlat + 4, nlon), dtype=qqu.dtype)
-    padded[:, 2 : nlat + 2, :] = qqu
-    qjm2 = padded[:, 0:nlat, :]
-    qjm1 = padded[:, 1 : nlat + 1, :]
-    qj = padded[:, 2 : nlat + 2, :]
-    qjp1 = padded[:, 3 : nlat + 3, :]
-    qjp2 = padded[:, 4 : nlat + 4, :]
-    tmp = (8.0 * (qjp1 - qjm1) + qjm2 - qjp2) * r24
-    pmax = np.maximum.reduce([qjm1, qj, qjp1]) - qj
-    pmin = qj - np.minimum.reduce([qjm1, qj, qjp1])
-    dcy[:] = _sign_array(np.minimum.reduce([np.abs(tmp), pmin, pmax]), tmp)
-    dcy[:, 0, :] = 0.0
-    dcy[:, -1, :] = 0.0
+    zero = np.zeros((ntracer, nlon), dtype=qqu.dtype)
+    tmp = np.empty((ntracer, nlon), dtype=qqu.dtype)
+    pmax = np.empty((ntracer, nlon), dtype=qqu.dtype)
+    pmin = np.empty((ntracer, nlon), dtype=qqu.dtype)
+    for j in range(1, nlat - 1):
+        qjm2 = zero if j < 2 else qqu[:, j - 2, :]
+        qjm1 = qqu[:, j - 1, :]
+        qj = qqu[:, j, :]
+        qjp1 = qqu[:, j + 1, :]
+        qjp2 = zero if j + 2 >= nlat else qqu[:, j + 2, :]
+
+        tmp[:] = qjp1
+        tmp -= qjm1
+        tmp *= 8.0
+        tmp += qjm2
+        tmp -= qjp2
+        tmp *= r24
+
+        np.maximum(qjm1, qj, out=pmax)
+        np.maximum(pmax, qjp1, out=pmax)
+        pmax -= qj
+        np.minimum(qjm1, qj, out=pmin)
+        np.minimum(pmin, qjp1, out=pmin)
+        np.subtract(qj, pmin, out=pmin)
+        _signed_minimum_abs(tmp, pmax, pmin, dcy[:, j, :])
     return dcy
 
 
@@ -1045,10 +1082,13 @@ def _fyppm_batch(cy: np.ndarray, dcy: np.ndarray, qqu: np.ndarray, qqv: np.ndarr
     j1p, j2p = _polar_cap_bounds(nlat)
     r13 = 1.0 / 3.0
     r23 = 2.0 / 3.0
-    a6 = np.zeros_like(qqu)
-    al = np.zeros_like(qqu)
-    ar = np.zeros_like(qqu)
-    al[:, 1:, :] = 0.5 * (qqu[:, :-1, :] + qqu[:, 1:, :]) + (dcy[:, :-1, :] - dcy[:, 1:, :]) * r13
+    a6 = np.empty_like(qqu)
+    al = np.empty_like(qqu)
+    ar = np.empty_like(qqu)
+    al[:, 1:, :] = qqu[:, :-1, :]
+    al[:, 1:, :] += qqu[:, 1:, :]
+    al[:, 1:, :] *= 0.5
+    al[:, 1:, :] += (dcy[:, :-1, :] - dcy[:, 1:, :]) * r13
     ar[:, :-1, :] = al[:, 1:, :]
     half = nlon // 2
     al[:, 0, :half] = al[:, 1, half:]
