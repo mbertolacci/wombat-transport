@@ -8,6 +8,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.transport.convection import run_cloud_convection_one_step
 from wombat_transport.transport.forcing import TransportForcing, load_transport_forcing
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import RD_J_PER_KG_K, ZVIR, G0_M_PER_S2, run_vdiffdr_one_step
@@ -68,7 +69,7 @@ def run_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
 ) -> TransportStepResult:
-    """Run one GEOS-Chem-oriented TPCORE + VDIFF transport step."""
+    """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
     with netCDF4.Dataset(template_path) as template:
         hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
@@ -290,6 +291,21 @@ def _run_tpcore_one_step_from_mass(
         coords=tracer_field.coords,
     )
     vdiff_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
+    convection = _run_convection_after_vdiff(
+        state,
+        forcing,
+        next_delp,
+        area,
+        top_edge_hpa=float(hyai[-1]),
+        dt_s=dt_s,
+    )
+    state = TracerField(
+        names=tracer_field.names,
+        data=convection.tracer_conc[:, np.newaxis, :, :, :],
+        units=tracer_field.units,
+        coords=tracer_field.coords,
+    )
+    convection_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
     return TransportStepResult(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
@@ -298,11 +314,16 @@ def _run_tpcore_one_step_from_mass(
         ymass_hpa=tpcore.ymass_hpa[np.newaxis, ...],
         zmass_hpa=_tpcore_vertical_flux_edges(tpcore.vertical_mass_flux_hpa),
         initial_scalar_mass=initial_scalar_mass,
-        final_scalar_mass=vdiff_scalar_mass,
-        transport_operators=("tpcore", "vdiff"),
+        final_scalar_mass=convection_scalar_mass,
+        transport_operators=("tpcore", "vdiff", "convection"),
         stage_masses=(
             TransportStageMass("tpcore", initial_scalar_mass=initial_scalar_mass, final_scalar_mass=tpcore_scalar_mass),
             TransportStageMass("vdiff", initial_scalar_mass=tpcore_scalar_mass, final_scalar_mass=vdiff_scalar_mass),
+            TransportStageMass(
+                "convection",
+                initial_scalar_mass=vdiff_scalar_mass,
+                final_scalar_mass=convection_scalar_mass,
+            ),
         ),
     )
 
@@ -344,6 +365,39 @@ def _run_vdiff_after_tpcore(
             (tracer_field.data.shape[0], tracer_field.data.shape[3], tracer_field.data.shape[4]),
             dtype=np.float64,
         ),
+    )
+
+
+def _run_convection_after_vdiff(
+    tracer_field: TracerField,
+    forcing: TransportForcing,
+    delp_dry_hpa: np.ndarray,
+    area: np.ndarray,
+    *,
+    top_edge_hpa: float,
+    dt_s: float,
+):
+    pedge = dry_pressure_edges_from_thickness_hpa(delp_dry_hpa, top_edge_hpa=top_edge_hpa)[0]
+    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
+    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+    virtual_temperature = temperature * (1.0 + ZVIR * sphu)
+    bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
+    delp = np.asarray(delp_dry_hpa[0], dtype=np.float64)
+    return run_cloud_convection_one_step(
+        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        cmfmc_kg_m2_s=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64),
+        dtrain_kg_m2_s=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64),
+        dqrcu_kg_kg_s=np.asarray(forcing.convective_precip_prod_kg_kg_s[0], dtype=np.float64),
+        reevapcn_kg_kg_s=np.asarray(forcing.convective_precip_reevap_kg_kg_s[0], dtype=np.float64),
+        delp_dry_hpa=delp,
+        delp_hpa=delp.copy(),
+        area_m2=area,
+        bxheight_m=bxheight,
+        pficu_kg_m2_s=np.asarray(forcing.convective_ice_flux_kg_m2_s[0], dtype=np.float64),
+        pflcu_kg_m2_s=np.asarray(forcing.convective_liquid_flux_kg_m2_s[0], dtype=np.float64),
+        temperature_k=temperature,
+        precccon_mm_day=np.asarray(forcing.convective_precip_mm_day[0], dtype=np.float64),
+        dt_s=dt_s,
     )
 
 

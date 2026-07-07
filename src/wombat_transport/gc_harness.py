@@ -13,16 +13,22 @@ from urllib.request import urlretrieve
 import netCDF4
 import numpy as np
 
+from wombat_transport.fields import TracerField
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
     MERRA2_FILENAME,
+    dry_air_mass_from_pressure,
+    dry_pressure_edges_from_thickness_hpa,
+    dry_pressure_thickness_hpa,
     load_transport_forcing,
     pjc_mass_flux_hpa,
     run_cloud_convection_one_step,
     run_vdiffdr_one_step,
     _map_met_levels_to_47,
 )
+from wombat_transport.transport.driver import run_transport_one_step
+from wombat_transport.transport.forcing import _map_met_edges_to_48
 from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
 from wombat_transport.transport.tpcore import trace_tpcore_one_step
 
@@ -33,6 +39,7 @@ PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
 PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
 TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
 TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
+TRANSPORT_CHAIN_OUTPUT_VERSION = "transport-chain-output-v1"
 VDIFF_INPUT_VERSION = "vdiffdr-input-v1"
 VDIFF_OUTPUT_VERSION = "vdiffdr-output-v1"
 CONVECTION_INPUT_VERSION = "convection-input-v1"
@@ -58,10 +65,12 @@ ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
 BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
 RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v1"
 FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v1"
+BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID = "base_initial_transport_chain_v1"
 LARGE_ORACLE_FIXTURE_IDS = (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
     RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
     FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
+    BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
 )
 
 GEOS_47_AP_HPA = np.array(
@@ -193,6 +202,20 @@ class TransportStepComparison:
     negative_count_after: int
     surface_pressure_min_hpa: float
     surface_pressure_max_hpa: float
+
+
+@dataclass(frozen=True)
+class TransportChainComparison:
+    tracer_max_abs_error: float
+    tracer_mean_abs_error: float
+    negative_count_expected: int
+    negative_count_actual: int
+    final_mass_max_abs_error: float
+    python_mass_change_max_abs: float
+    oracle_mass_change_max_abs: float
+    tpcore_stage_mass_change_max_abs: float
+    vdiff_stage_mass_change_max_abs: float
+    convection_stage_mass_change_max_abs: float
 
 
 @dataclass(frozen=True)
@@ -834,21 +857,6 @@ def _load_real_convection_met(
     }
 
 
-def _map_met_edges_to_48(data: np.ndarray) -> np.ndarray:
-    edges = np.asarray(data, dtype=np.float64)
-    if edges.ndim != 3:
-        raise ValueError(f"edge field must be 3-D (edge, lat, lon), found {edges.shape}")
-    if edges.shape[0] == GEOS_47_AP_HPA.size:
-        return edges
-    if edges.shape[0] != 73:
-        raise ValueError(f"cannot map {edges.shape[0]} met edges to 48 target edges")
-    target_indices = np.array(
-        list(range(37)) + [38, 40, 42, 44, 48, 52, 56, 60, 64, 68, 72],
-        dtype=np.int64,
-    )
-    return edges[target_indices]
-
-
 def _read_met_3d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index: int) -> np.ndarray:
     return np.asarray(dataset.variables[variable_name][time_index : time_index + 1], dtype=np.float64)
 
@@ -1177,11 +1185,15 @@ def large_oracle_fixture_paths(
     cache = Path(cache_dir)
     definitions = Path(manifest_dir) if manifest_dir is not None else Path("oracle_data") / "manifests"
     directory = cache / fixture_id
+    input_name = "transport_chain_input.nc" if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID else "transport_step_input.nc"
+    output_name = (
+        "transport_chain_output.nc" if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID else "transport_step_output.nc"
+    )
     return LargeOracleFixturePaths(
         fixture_id=fixture_id,
         directory=directory,
-        input_path=directory / "transport_step_input.nc",
-        output_path=directory / "transport_step_output.nc",
+        input_path=directory / input_name,
+        output_path=directory / output_name,
         manifest_path=directory / LARGE_ORACLE_MANIFEST_NAME,
         definition_path=definitions / f"{fixture_id}.json",
     )
@@ -1224,6 +1236,20 @@ def generate_large_oracle_fixture(
             dt_s=fixture_dt_s,
             ntracer=int(source.get("ntracer", 2) if max_tracers is None else max_tracers),
         )
+    elif fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        return generate_transport_chain_oracle_fixture(
+            paths,
+            definition=definition,
+            run_config=run_config_path,
+            tpcore_executable=Path(executable),
+            vdiff_executable=Path("tools/gc_harness/build/vdiff_harness"),
+            convection_executable=Path("tools/gc_harness/build/convection_harness"),
+            time_index=int(source.get("time_index", 0) if time_index is None else time_index),
+            tracer_time_index=int(source.get("tracer_time_index", 0) if tracer_time_index is None else tracer_time_index),
+            max_tracers=int(source.get("max_tracers", 1) if max_tracers is None else max_tracers),
+            dt_s=fixture_dt_s,
+            repo_root=Path(repo_root),
+        )
     else:
         raise AssertionError(f"unhandled fixture generator {fixture_id}")
     run_pjc_harness(executable, paths.input_path, paths.output_path)
@@ -1235,6 +1261,250 @@ def generate_large_oracle_fixture(
         repo_root=Path(repo_root),
     )
     return paths.directory
+
+
+def generate_transport_chain_oracle_fixture(
+    paths: LargeOracleFixturePaths,
+    *,
+    definition: dict[str, object],
+    run_config: Path,
+    tpcore_executable: Path,
+    vdiff_executable: Path,
+    convection_executable: Path,
+    time_index: int,
+    tracer_time_index: int,
+    max_tracers: int,
+    dt_s: float | None,
+    repo_root: Path,
+) -> Path:
+    paths.directory.mkdir(parents=True, exist_ok=True)
+    tpcore_output = paths.directory / "tpcore_output.nc"
+    vdiff_input = paths.directory / "vdiff_input.nc"
+    vdiff_output = paths.directory / "vdiff_output.nc"
+    convection_input = paths.directory / "convection_input.nc"
+    convection_output = paths.directory / "convection_output.nc"
+
+    write_transport_step_input_from_config(
+        run_config,
+        paths.input_path,
+        time_index=time_index,
+        tracer_time_index=tracer_time_index,
+        max_tracers=max_tracers,
+        dt_s=dt_s,
+    )
+    run_pjc_harness(tpcore_executable, paths.input_path, tpcore_output)
+    _write_chain_vdiff_input(run_config, paths.input_path, tpcore_output, vdiff_input, time_index=time_index)
+    run_operator_harness(vdiff_executable, vdiff_input, vdiff_output)
+    _write_chain_convection_input(
+        run_config,
+        paths.input_path,
+        tpcore_output,
+        vdiff_output,
+        convection_input,
+        time_index=time_index,
+    )
+    run_operator_harness(convection_executable, convection_input, convection_output)
+    _write_transport_chain_output(paths.output_path, paths.input_path, tpcore_output, vdiff_output, convection_output)
+    _write_generated_transport_chain_manifest(
+        paths,
+        definition=definition,
+        run_config=run_config,
+        tpcore_executable=tpcore_executable,
+        vdiff_executable=vdiff_executable,
+        convection_executable=convection_executable,
+        repo_root=repo_root,
+    )
+    return paths.directory
+
+
+def _write_chain_vdiff_input(
+    run_config_path: Path,
+    chain_input_path: Path,
+    tpcore_output_path: Path,
+    output_path: Path,
+    *,
+    time_index: int,
+) -> Path:
+    config = load_run_config(run_config_path)
+    forcing = load_transport_forcing(
+        _resolve_config_value(config.root, config.transport["met_root"]),
+        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        config.grid_template,
+        time_index=time_index,
+    )
+    with netCDF4.Dataset(chain_input_path) as source:
+        lat = np.asarray(source.variables["lat"][:], dtype=np.float64)
+        lon = np.asarray(source.variables["lon"][:], dtype=np.float64)
+        area = np.asarray(source.variables["area_m2"][:], dtype=np.float64)
+        hyai = np.asarray(source.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(source.variables["hybi"][:], dtype=np.float64)
+        dt_s = float(source.dt_s)
+    tpcore = read_transport_step_output(tpcore_output_path)
+    delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
+    pedge = dry_pressure_edges_from_thickness_hpa(delp, top_edge_hpa=float(hyai[-1]))[0]
+    pmid = 0.5 * (pedge[:-1] + pedge[1:])
+    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
+    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+    virtual_temperature = temperature * (1.0 + 0.61 * sphu)
+    bxheight = _hydrostatic_box_height_from_temperature(pedge, virtual_temperature)
+    dry_mass = dry_air_mass_from_pressure(delp, area)[0]
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ntracer = tpcore.tracer_conc_after.shape[0]
+    with netCDF4.Dataset(output, "w") as dataset:
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", tpcore.tracer_conc_after.shape[1])
+        dataset.createDimension("ilev", tpcore.tracer_conc_after.shape[1] + 1)
+        dataset.createDimension("lat", lat.size)
+        dataset.createDimension("lon", lon.size)
+        dataset.harness = VDIFF_INPUT_VERSION
+        dataset.dt_s = dt_s
+        dataset.createVariable("lon", "f8", ("lon",))[:] = lon
+        dataset.createVariable("lat", "f8", ("lat",))[:] = lat
+        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            tpcore.tracer_conc_after
+        )
+        dataset.createVariable("u_m_s", "f8", ("lev", "lat", "lon"))[:] = forcing.u_m_s[0]
+        dataset.createVariable("v_m_s", "f8", ("lev", "lat", "lon"))[:] = forcing.v_m_s[0]
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = temperature
+        dataset.createVariable("specific_humidity_kg_kg", "f8", ("lev", "lat", "lon"))[:] = sphu
+        dataset.createVariable("pmid_hpa", "f8", ("lev", "lat", "lon"))[:] = pmid
+        dataset.createVariable("pedge_hpa", "f8", ("ilev", "lat", "lon"))[:] = pedge
+        dataset.createVariable("virtual_temperature_k", "f8", ("lev", "lat", "lon"))[:] = virtual_temperature
+        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = bxheight
+        dataset.createVariable("dry_air_mass_kg", "f8", ("lev", "lat", "lon"))[:] = dry_mass
+        dataset.createVariable("pbl_top_m", "f8", ("lat", "lon"))[:] = forcing.pbl_height_m[0]
+        dataset.createVariable("hflux_w_m2", "f8", ("lat", "lon"))[:] = forcing.sensible_heat_flux_w_m2[0]
+        dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = forcing.latent_heat_flux_w_m2[0]
+        dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = forcing.friction_velocity_m_s[0]
+        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = area
+        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = np.zeros(
+            (ntracer, lat.size, lon.size),
+            dtype=np.float64,
+        )
+    return output
+
+
+def _write_chain_convection_input(
+    run_config_path: Path,
+    chain_input_path: Path,
+    tpcore_output_path: Path,
+    vdiff_output_path: Path,
+    output_path: Path,
+    *,
+    time_index: int,
+) -> Path:
+    config = load_run_config(run_config_path)
+    forcing = load_transport_forcing(
+        _resolve_config_value(config.root, config.transport["met_root"]),
+        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        config.grid_template,
+        time_index=time_index,
+    )
+    with netCDF4.Dataset(chain_input_path) as source:
+        lat = np.asarray(source.variables["lat"][:], dtype=np.float64)
+        lon = np.asarray(source.variables["lon"][:], dtype=np.float64)
+        area = np.asarray(source.variables["area_m2"][:], dtype=np.float64)
+        hyai = np.asarray(source.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(source.variables["hybi"][:], dtype=np.float64)
+        dt_s = float(source.dt_s)
+        tracer_names = _read_transport_step_tracer_names(chain_input_path)
+    tpcore = read_transport_step_output(tpcore_output_path)
+    vdiff = read_vdiff_output(vdiff_output_path)
+    delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
+    pedge = dry_pressure_edges_from_thickness_hpa(delp, top_edge_hpa=float(hyai[-1]))[0]
+    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
+    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+    bxheight = _hydrostatic_box_height_from_temperature(pedge, temperature * (1.0 + 0.61 * sphu))
+    return _write_convection_input_file(
+        output_path,
+        tracer_conc=vdiff.tracer_conc_after,
+        tracer_names=tracer_names,
+        lon=lon,
+        lat=lat,
+        cmfmc=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64),
+        dtrain=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64),
+        dqrcu=np.asarray(forcing.convective_precip_prod_kg_kg_s[0], dtype=np.float64),
+        reevapcn=np.asarray(forcing.convective_precip_reevap_kg_kg_s[0], dtype=np.float64),
+        delp_dry=delp[0],
+        delp=delp[0].copy(),
+        area=area,
+        bxheight=bxheight,
+        pficu=np.asarray(forcing.convective_ice_flux_kg_m2_s[0], dtype=np.float64),
+        pflcu=np.asarray(forcing.convective_liquid_flux_kg_m2_s[0], dtype=np.float64),
+        temperature=temperature,
+        precccon=np.asarray(forcing.convective_precip_mm_day[0], dtype=np.float64),
+        dt_s=dt_s,
+        scenario="transport-chain-full-grid",
+        source_run_config=str(run_config_path),
+        source_timestamp=config.transport["start"],
+        source_time_index=time_index,
+        vertical_mapping="native_72_to_47_center_and_73_to_48_edge",
+    )
+
+
+def _write_transport_chain_output(
+    output_path: Path,
+    chain_input_path: Path,
+    tpcore_output_path: Path,
+    vdiff_output_path: Path,
+    convection_output_path: Path,
+) -> Path:
+    with netCDF4.Dataset(chain_input_path) as source:
+        tracer0 = np.asarray(source.variables["tracer_conc"][:], dtype=np.float64)
+        area = np.asarray(source.variables["area_m2"][:], dtype=np.float64)
+        hyai = np.asarray(source.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(source.variables["hybi"][:], dtype=np.float64)
+        p1 = np.asarray(source.variables["p1_hpa"][:], dtype=np.float64)
+    tpcore = read_transport_step_output(tpcore_output_path)
+    vdiff = read_vdiff_output(vdiff_output_path)
+    convection = read_convection_output(convection_output_path)
+    initial_delp = dry_pressure_thickness_hpa(p1[np.newaxis, :, :] * 100.0, hyai, hybi)
+    final_delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
+    initial_mass = dry_air_mass_from_pressure(initial_delp, area)
+    final_mass = dry_air_mass_from_pressure(final_delp, area)
+    initial_tracer_mass = _tracer_mass_for_chain(tracer0, initial_mass)
+    tpcore_tracer_mass = _tracer_mass_for_chain(tpcore.tracer_conc_after, final_mass)
+    vdiff_tracer_mass = _tracer_mass_for_chain(vdiff.tracer_conc_after, final_mass)
+    convection_tracer_mass = _tracer_mass_for_chain(convection.tracer_conc_after, final_mass)
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ntracer, nlev, nlat, nlon = convection.tracer_conc_after.shape
+    with netCDF4.Dataset(output, "w") as dataset:
+        dataset.harness = TRANSPORT_CHAIN_OUTPUT_VERSION
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        dataset.negative_count_after_tpcore = int(np.count_nonzero(tpcore.tracer_conc_after < 0.0))
+        dataset.negative_count_after_vdiff = int(vdiff.negative_count_after_clip)
+        dataset.negative_count_after_convection = int(convection.negative_count_after)
+        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            convection.tracer_conc_after
+        )
+        dataset.createVariable("tpcore_tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            tpcore.tracer_conc_after
+        )
+        dataset.createVariable("vdiff_tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            vdiff.tracer_conc_after
+        )
+        dataset.createVariable("initial_tracer_mass", "f8", ("tracer",))[:] = initial_tracer_mass
+        dataset.createVariable("tpcore_tracer_mass", "f8", ("tracer",))[:] = tpcore_tracer_mass
+        dataset.createVariable("vdiff_tracer_mass", "f8", ("tracer",))[:] = vdiff_tracer_mass
+        dataset.createVariable("convection_tracer_mass", "f8", ("tracer",))[:] = convection_tracer_mass
+        dataset.createVariable("diag14_mass_flux", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+            convection.diag14_mass_flux
+        )
+    return output
+
+
+def _tracer_mass_for_chain(tracer: np.ndarray, dry_air_mass: np.ndarray) -> np.ndarray:
+    return np.sum(
+        np.asarray(tracer, dtype=np.float64) * np.asarray(dry_air_mass, dtype=np.float64),
+        axis=(1, 2, 3),
+    )
 
 
 def fetch_large_oracle_fixture(
@@ -1316,6 +1586,10 @@ def compare_large_oracle_fixture(
     check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     if not check.is_available:
         raise FileNotFoundError(format_large_oracle_fixture_check(check))
+    if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        return format_transport_chain_comparison(
+            compare_transport_chain_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+        )
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     transport = compare_transport_step_output(paths.input_path, paths.output_path)
     setup = _setup_tpcore_from_input(paths.input_path)
@@ -1353,6 +1627,58 @@ def compare_large_oracle_fixture(
             ]
         )
     return "\n".join(rows)
+
+
+def compare_transport_chain_oracle_fixture(
+    fixture_id: str = BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+) -> TransportChainComparison:
+    if fixture_id != BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        raise ValueError(f"{fixture_id!r} is not a transport-chain oracle fixture")
+    paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    definition = _load_large_oracle_definition(paths.manifest_path if paths.manifest_path.exists() else paths.definition_path)
+    source = dict(definition.get("source", {}))
+    config = load_run_config(source.get("run_config", "base_wombat/run.yml"))
+    tracer_names = _read_transport_step_tracer_names(paths.input_path)
+    with netCDF4.Dataset(paths.input_path) as dataset:
+        tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        dt_s = float(dataset.dt_s)
+    forcing = load_transport_forcing(
+        _resolve_config_value(config.root, config.transport["met_root"]),
+        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        config.grid_template,
+        time_index=int(source.get("time_index", 0)),
+    )
+    field = TracerField(
+        names=tracer_names,
+        data=tracer0[:, np.newaxis, :, :, :],
+        units=tuple("mol mol-1 dry" for _ in tracer_names),
+        coords={},
+    )
+    result = run_transport_one_step(field, forcing, config.grid_template, dt_s=dt_s)
+    with netCDF4.Dataset(paths.output_path) as dataset:
+        expected_tracer = np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64)
+        initial_mass = np.asarray(dataset.variables["initial_tracer_mass"][:], dtype=np.float64)
+        tpcore_mass = np.asarray(dataset.variables["tpcore_tracer_mass"][:], dtype=np.float64)
+        vdiff_mass = np.asarray(dataset.variables["vdiff_tracer_mass"][:], dtype=np.float64)
+        convection_mass = np.asarray(dataset.variables["convection_tracer_mass"][:], dtype=np.float64)
+        negative_count = int(getattr(dataset, "negative_count_after_convection"))
+    actual_tracer = result.state.data[:, 0, :, :, :]
+    error = np.abs(actual_tracer - expected_tracer)
+    return TransportChainComparison(
+        tracer_max_abs_error=float(np.max(error)),
+        tracer_mean_abs_error=float(np.mean(error)),
+        negative_count_expected=negative_count,
+        negative_count_actual=int(np.count_nonzero(actual_tracer < 0.0)),
+        final_mass_max_abs_error=float(np.max(np.abs(result.final_scalar_mass - convection_mass))),
+        python_mass_change_max_abs=float(np.max(np.abs(result.final_scalar_mass - result.initial_scalar_mass))),
+        oracle_mass_change_max_abs=float(np.max(np.abs(convection_mass - initial_mass))),
+        tpcore_stage_mass_change_max_abs=float(np.max(np.abs(tpcore_mass - initial_mass))),
+        vdiff_stage_mass_change_max_abs=float(np.max(np.abs(vdiff_mass - tpcore_mass))),
+        convection_stage_mass_change_max_abs=float(np.max(np.abs(convection_mass - vdiff_mass))),
+    )
 
 
 def sha256_file(path: str | Path) -> str:
@@ -1979,6 +2305,8 @@ def generate_large_oracle_tpcore_trace(
 ) -> Path:
     """Run the instrumented GEOS-Chem harness and write oracle_tpcore_trace.nc."""
 
+    if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        raise ValueError("TPCORE trace generation is not defined for transport-chain oracle fixtures")
     check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     if not check.is_available:
         raise FileNotFoundError(format_large_oracle_fixture_check(check))
@@ -1995,6 +2323,8 @@ def trace_compare_large_oracle_fixture(
 ) -> str:
     """Write Python trace for a large fixture and compare oracle trace if present."""
 
+    if fixture_id == BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        raise ValueError("TPCORE trace comparison is not defined for transport-chain oracle fixtures")
     check = check_large_oracle_fixture(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     if not check.is_available:
         raise FileNotFoundError(format_large_oracle_fixture_check(check))
@@ -2080,6 +2410,13 @@ def run_pjc_harness(
     subprocess.run(command, check=True)
 
 
+def run_operator_harness(executable: str | Path, input_path: str | Path, output_path: str | Path) -> None:
+    executable = Path(executable)
+    if not executable.exists():
+        raise FileNotFoundError(f"GEOS-Chem harness executable not found: {executable}")
+    subprocess.run([str(executable), str(input_path), str(output_path)], check=True)
+
+
 def _load_large_oracle_definition(path: Path) -> dict[str, object]:
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
@@ -2127,6 +2464,54 @@ def _write_generated_large_oracle_manifest(
             "run_config": str(run_config),
         },
         "executable": str(executable),
+        "gcclassic_head": _git_head(repo_root / "GCClassic"),
+        "branch_report": {
+            "shape": list(report.shape),
+            "max_abs_cx": report.max_abs_cx,
+            "max_abs_cy": report.max_abs_cy,
+            "has_large_cx": report.has_large_cx,
+            "has_large_cy": report.has_large_cy,
+            "needs_fxppm": report.needs_fxppm,
+            "is_supported": report.is_supported,
+            "unsupported_reasons": list(report.unsupported_reasons),
+        },
+    }
+    with paths.manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _write_generated_transport_chain_manifest(
+    paths: LargeOracleFixturePaths,
+    *,
+    definition: dict[str, object],
+    run_config: Path,
+    tpcore_executable: Path,
+    vdiff_executable: Path,
+    convection_executable: Path,
+    repo_root: Path,
+) -> None:
+    setup = _setup_tpcore_from_input(paths.input_path)
+    report = analyze_tpcore_branches(setup)
+    manifest = {
+        "fixture_id": paths.fixture_id,
+        "description": definition.get("description"),
+        "definition_file": str(paths.definition_path),
+        "input_harness": TRANSPORT_INPUT_VERSION,
+        "output_harness": TRANSPORT_CHAIN_OUTPUT_VERSION,
+        "files": [
+            _large_oracle_file_record(paths.input_path),
+            _large_oracle_file_record(paths.output_path),
+        ],
+        "source": {
+            **dict(definition.get("source", {})),
+            "run_config": str(run_config),
+        },
+        "executables": {
+            "tpcore": str(tpcore_executable),
+            "vdiff": str(vdiff_executable),
+            "convection": str(convection_executable),
+        },
         "gcclassic_head": _git_head(repo_root / "GCClassic"),
         "branch_report": {
             "shape": list(report.shape),
@@ -2333,6 +2718,24 @@ def format_transport_step_comparison(comparison: TransportStepComparison) -> str
             f"negative_count_after,{comparison.negative_count_after}",
             f"surface_pressure_min_hpa,{comparison.surface_pressure_min_hpa:.8e}",
             f"surface_pressure_max_hpa,{comparison.surface_pressure_max_hpa:.8e}",
+        ]
+    )
+
+
+def format_transport_chain_comparison(comparison: TransportChainComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"tracer_max_abs_error,{comparison.tracer_max_abs_error:.8e}",
+            f"tracer_mean_abs_error,{comparison.tracer_mean_abs_error:.8e}",
+            f"negative_count_expected,{comparison.negative_count_expected}",
+            f"negative_count_actual,{comparison.negative_count_actual}",
+            f"final_mass_max_abs_error,{comparison.final_mass_max_abs_error:.8e}",
+            f"python_mass_change_max_abs,{comparison.python_mass_change_max_abs:.8e}",
+            f"oracle_mass_change_max_abs,{comparison.oracle_mass_change_max_abs:.8e}",
+            f"tpcore_stage_mass_change_max_abs,{comparison.tpcore_stage_mass_change_max_abs:.8e}",
+            f"vdiff_stage_mass_change_max_abs,{comparison.vdiff_stage_mass_change_max_abs:.8e}",
+            f"convection_stage_mass_change_max_abs,{comparison.convection_stage_mass_change_max_abs:.8e}",
         ]
     )
 

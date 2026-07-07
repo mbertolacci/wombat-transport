@@ -5,6 +5,7 @@ from datetime import datetime
 import netCDF4
 import numpy as np
 
+from wombat_transport.fields import TracerField
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -216,11 +217,17 @@ def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
 def test_transport_one_step_conserves_residual_scalar_mass():
     config = load_run_config(RESIDUAL_CONFIG)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
+    field = TracerField(
+        names=field.names[:1],
+        data=field.data[:1],
+        units=field.units[:1],
+        coords=field.coords,
+    )
     result = run_transport_one_step(field, _load_forcing(config), config.grid_template, dt_s=600.0)
 
     assert result.state.shape == field.shape
-    assert result.transport_operators == ("tpcore", "vdiff")
-    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff")
+    assert result.transport_operators == ("tpcore", "vdiff", "convection")
+    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff", "convection")
     assert result.delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert np.all(np.isfinite(result.state.data))
@@ -240,13 +247,29 @@ def test_transport_window_accumulates_average_state_and_conserves_mass():
     )
 
     assert result.steps == 2
-    assert result.transport_operators == ("tpcore", "vdiff")
-    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff")
+    assert result.transport_operators == ("tpcore", "vdiff", "convection")
+    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff", "convection")
     assert result.state.shape == field.shape
     assert result.average_state.shape == field.shape
     assert result.average_delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert np.all(np.isfinite(result.average_state.data))
     np.testing.assert_allclose(result.final_scalar_mass, result.initial_scalar_mass, rtol=1e-13)
+
+
+def test_transport_forcing_loads_convection_fields_on_target_grid():
+    config = load_run_config(BASE_CONFIG)
+    forcing = _load_forcing(config)
+
+    center_shape = (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    horizontal_shape = (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.convective_mass_flux_kg_m2_s.shape == center_shape
+    assert forcing.convective_detrainment_kg_m2_s.shape == center_shape
+    assert forcing.convective_precip_prod_kg_kg_s.shape == center_shape
+    assert forcing.convective_precip_reevap_kg_kg_s.shape == center_shape
+    assert forcing.convective_ice_flux_kg_m2_s.shape == center_shape
+    assert forcing.convective_liquid_flux_kg_m2_s.shape == center_shape
+    assert forcing.convective_precip_mm_day.shape == horizontal_shape
+    assert np.max(np.abs(forcing.convective_mass_flux_kg_m2_s)) > 0.0
 
 
 def _load_forcing(config):

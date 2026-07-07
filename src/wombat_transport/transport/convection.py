@@ -99,6 +99,10 @@ def run_cloud_convection_one_step(
 
     for lat_index in range(nlat):
         for lon_index in range(nlon):
+            if not np.any(np.abs(cmfmc[:, lat_index, lon_index]) > _TINYNUM) and not np.any(
+                np.abs(dtrain[:, lat_index, lon_index]) > _TINYNUM
+            ):
+                continue
             dqrcu, reevapcn = _convective_precip_rates(
                 dqrcu_met[:, lat_index, lon_index],
                 reevapcn_met[:, lat_index, lon_index],

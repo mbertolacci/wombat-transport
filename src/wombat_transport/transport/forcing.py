@@ -120,11 +120,20 @@ class TransportForcing:
     sensible_heat_flux_w_m2: np.ndarray
     latent_heat_flux_w_m2: np.ndarray
     friction_velocity_m_s: np.ndarray
+    convective_mass_flux_kg_m2_s: np.ndarray
+    convective_detrainment_kg_m2_s: np.ndarray
+    convective_precip_prod_kg_kg_s: np.ndarray
+    convective_precip_reevap_kg_kg_s: np.ndarray
+    convective_ice_flux_kg_m2_s: np.ndarray
+    convective_liquid_flux_kg_m2_s: np.ndarray
+    convective_precip_mm_day: np.ndarray
     lat_deg: np.ndarray
     lon_deg: np.ndarray
     vertical_mapping: str
     a1_path: Path
     a3dyn_path: Path
+    a3mstc_path: Path
+    a3mste_path: Path
     i3_path: Path
 
 def load_transport_forcing(
@@ -141,11 +150,16 @@ def load_transport_forcing(
     date = timestamp.strftime("%Y%m%d")
     a1_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A1")
     a3dyn_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3dyn")
+    a3mstc_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstC")
+    a3mste_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstE")
     i3_path = day_dir / MERRA2_FILENAME.format(date=date, collection="I3")
+    a1_convection_time_index = int(time_index) * 3
 
     with (
         netCDF4.Dataset(a1_path) as a1,
         netCDF4.Dataset(a3dyn_path) as a3dyn,
+        netCDF4.Dataset(a3mstc_path) as a3mstc,
+        netCDF4.Dataset(a3mste_path) as a3mste,
         netCDF4.Dataset(i3_path) as i3,
         netCDF4.Dataset(template_path) as template,
     ):
@@ -161,6 +175,16 @@ def load_transport_forcing(
         hflux = _read_2d_time_slice(a1, "HFLUX", time_index)
         eflux = _read_2d_time_slice(a1, "EFLUX", time_index)
         ustar = _read_2d_time_slice(a1, "USTAR", time_index)
+        dtrain = _read_3d_time_slice(a3dyn, "DTRAIN", time_index)
+        dqrcu = _read_3d_time_slice(a3mstc, "DQRCU", time_index)
+        reevapcn = _read_3d_time_slice(a3mstc, "REEVAPCN", time_index)
+        cmfmc = _map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][time_index], dtype=np.float64))
+        pficu = _map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][time_index], dtype=np.float64))
+        pflcu = _map_met_edges_to_48(np.asarray(a3mste.variables["PFLCU"][time_index], dtype=np.float64))
+        precccon = np.asarray(
+            a1.variables["PRECCON"][a1_convection_time_index : a1_convection_time_index + 1],
+            dtype=np.float64,
+        )
 
     return TransportForcing(
         u_m_s=_map_met_levels_to_47(u),
@@ -173,11 +197,20 @@ def load_transport_forcing(
         sensible_heat_flux_w_m2=hflux,
         latent_heat_flux_w_m2=eflux,
         friction_velocity_m_s=ustar,
+        convective_mass_flux_kg_m2_s=cmfmc[np.newaxis, 1:, :, :],
+        convective_detrainment_kg_m2_s=_map_met_levels_to_47(dtrain),
+        convective_precip_prod_kg_kg_s=_map_met_levels_to_47(dqrcu),
+        convective_precip_reevap_kg_kg_s=_map_met_levels_to_47(reevapcn),
+        convective_ice_flux_kg_m2_s=pficu[np.newaxis, 1:, :, :],
+        convective_liquid_flux_kg_m2_s=pflcu[np.newaxis, 1:, :, :],
+        convective_precip_mm_day=precccon * 86400.0,
         lat_deg=lat,
         lon_deg=lon,
         vertical_mapping=MERRA2_72_TO_47_MAPPING,
         a1_path=a1_path.resolve(),
         a3dyn_path=a3dyn_path.resolve(),
+        a3mstc_path=a3mstc_path.resolve(),
+        a3mste_path=a3mste_path.resolve(),
         i3_path=i3_path.resolve(),
     )
 
@@ -201,3 +234,18 @@ def _map_met_levels_to_47(data: np.ndarray) -> np.ndarray:
             ) / np.sum(weights)
         return mapped
     raise ValueError(f"cannot map {data.shape[1]} met levels to {FIXED_GRID['lev']}")
+
+
+def _map_met_edges_to_48(data: np.ndarray) -> np.ndarray:
+    edges = np.asarray(data, dtype=np.float64)
+    if edges.ndim != 3:
+        raise ValueError(f"edge field must be 3-D (edge, lat, lon), found {edges.shape}")
+    if edges.shape[0] == FIXED_GRID["lev"] + 1:
+        return edges
+    if edges.shape[0] != 73:
+        raise ValueError(f"cannot map {edges.shape[0]} met edges to {FIXED_GRID['lev'] + 1} target edges")
+    target_indices = np.array(
+        list(range(37)) + [38, 40, 42, 44, 48, 52, 56, 60, 64, 68, 72],
+        dtype=np.int64,
+    )
+    return edges[target_indices]
