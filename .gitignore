@@ -13,7 +13,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 tools/gc_harness/work/
-scratch/output/
 oracle_data/*/
 oracle_data/*.nc
 oracle_data/*.nc4
