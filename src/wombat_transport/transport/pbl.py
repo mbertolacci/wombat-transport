@@ -59,6 +59,30 @@ class VdiffDrResult:
     final_tracer_mass: np.ndarray
 
 
+def _tracer_public_to_vdiff_working(tracer_conc: np.ndarray) -> np.ndarray:
+    """Return VDIFF working layout ``(lev_top, lat, lon, tracer)``."""
+
+    return np.ascontiguousarray(np.transpose(tracer_conc[:, ::-1, :, :], (1, 2, 3, 0)))
+
+
+def _tracer_vdiff_working_to_public(tracer_conc: np.ndarray) -> np.ndarray:
+    """Return public layout ``(tracer, lev_bottom, lat, lon)`` from VDIFF working layout."""
+
+    return np.ascontiguousarray(np.transpose(tracer_conc[::-1], (3, 0, 1, 2)))
+
+
+def _surface_flux_public_to_vdiff_working(surface_flux_kg_m2_s: np.ndarray) -> np.ndarray:
+    """Return VDIFF working surface-flux layout ``(lat, lon, tracer)``."""
+
+    return np.ascontiguousarray(np.moveaxis(surface_flux_kg_m2_s, 0, -1))
+
+
+def _tracer_working_mass(tracer_conc: np.ndarray, dry_air_mass_top: np.ndarray) -> np.ndarray:
+    """Return total tracer mass from VDIFF working layout."""
+
+    return np.sum(tracer_conc * dry_air_mass_top[:, :, :, np.newaxis], axis=(0, 1, 2))
+
+
 def compute_pbl_height(
     *,
     pbl_height_m: np.ndarray,
@@ -304,7 +328,9 @@ def run_vdiffdr_one_step(
     if nlev > 1:
         ml2[1:nlev] = 900.0
 
-    tracer_after = np.empty_like(tracer)
+    tracer_top = _tracer_public_to_vdiff_working(tracer)
+    surface_flux_working = _surface_flux_public_to_vdiff_working(surface_flux)
+    tracer_after_top = np.empty_like(tracer_top)
     sphu_after_top = sphu_top.copy()
     kvh_top = np.zeros((nlev + 1, nlat, nlon), dtype=np.float64)
     kvm_top = np.zeros_like(kvh_top)
@@ -312,11 +338,11 @@ def run_vdiffdr_one_step(
     qpert = np.zeros((nlat, nlon), dtype=np.float64)
     negative_before = 0
 
-    initial_mass = np.sum(tracer * dry_mass[np.newaxis, :, :, :], axis=(1, 2, 3))
+    initial_mass = _tracer_working_mass(tracer_top, dry_mass_top)
 
     for lat_index in range(nlat):
         column = _run_vdiff_latitude(
-            tracer_top=tracer[:, ::-1, lat_index, :].transpose(2, 1, 0),
+            tracer_top=tracer_top[:, lat_index, :, :].transpose(1, 0, 2),
             u_top=u_top[:, lat_index, :].T,
             v_top=v_top[:, lat_index, :].T,
             temperature_top=temperature_top[:, lat_index, :].T,
@@ -331,7 +357,7 @@ def run_vdiffdr_one_step(
             pblh_m=pblh[lat_index, :],
             hflux_w_m2=hflux[lat_index, :],
             water_flux_kg_m2_s=eflux[lat_index, :] / LATVAP_J_PER_KG,
-            surface_flux_kg_m2_s=surface_flux[:, lat_index, :].T,
+            surface_flux_kg_m2_s=surface_flux_working[lat_index],
             ustar_m_s=ustar[lat_index, :],
             area_m2=area[lat_index, :],
             dt_s=float(dt_s),
@@ -339,7 +365,7 @@ def run_vdiffdr_one_step(
             npbl=npbl,
             ml2=ml2,
         )
-        tracer_after[:, :, lat_index, :] = column.tracer_top.transpose(2, 1, 0)[:, ::-1, :]
+        tracer_after_top[:, lat_index, :, :] = column.tracer_top.transpose(1, 0, 2)
         sphu_after_top[:, lat_index, :] = column.sphu_top.T
         kvh_top[:, lat_index, :] = column.kvh_top.T
         kvm_top[:, lat_index, :] = column.kvm_top.T
@@ -350,8 +376,9 @@ def run_vdiffdr_one_step(
     sphu_after = sphu_after_top[::-1]
     kvh = kvh_top[::-1]
     kvm = kvm_top[::-1]
+    tracer_after = _tracer_vdiff_working_to_public(tracer_after_top)
     negative_after = int(np.count_nonzero(tracer_after < 0.0))
-    final_mass = np.sum(tracer_after * dry_mass[np.newaxis, :, :, :], axis=(1, 2, 3))
+    final_mass = _tracer_working_mass(tracer_after_top, dry_mass_top)
 
     return VdiffDrResult(
         tracer_conc=tracer_after,

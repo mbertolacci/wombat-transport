@@ -24,7 +24,12 @@ from wombat_transport.transport import (
     trace_transport_one_step,
     _map_met_levels_to_47,
 )
-from wombat_transport.transport.pbl import ZVIR
+from wombat_transport.transport.pbl import (
+    ZVIR,
+    _surface_flux_public_to_vdiff_working,
+    _tracer_public_to_vdiff_working,
+    _tracer_vdiff_working_to_public,
+)
 
 BASE_CONFIG = "base_wombat/run.yml"
 RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
@@ -199,9 +204,34 @@ def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux()
     assert result.qpert_kg_kg.shape == (nlat, nlon)
     assert result.negative_count_after_clip == 0
     assert np.all(np.isfinite(result.tracer_conc))
+    assert result.tracer_conc.flags.c_contiguous
     assert np.all(result.kvh_m2_s >= 0.0)
     assert np.max(result.kvh_m2_s) > 0.0
     np.testing.assert_allclose(result.final_tracer_mass, result.initial_tracer_mass, rtol=2.0e-14)
+
+
+def test_vdiff_tracer_working_layout_roundtrips_public_order():
+    tracer = np.arange(2 * 3 * 4 * 5, dtype=np.float64).reshape(2, 3, 4, 5)
+
+    working = _tracer_public_to_vdiff_working(tracer)
+    roundtrip = _tracer_vdiff_working_to_public(working)
+
+    assert working.shape == (3, 4, 5, 2)
+    assert working.flags.c_contiguous
+    assert working[0, 0, 0, 0] == tracer[0, 2, 0, 0]
+    assert working[2, 3, 4, 1] == tracer[1, 0, 3, 4]
+    assert roundtrip.flags.c_contiguous
+    np.testing.assert_array_equal(roundtrip, tracer)
+
+
+def test_vdiff_surface_flux_working_layout_keeps_tracer_fast():
+    surface_flux = np.arange(3 * 4 * 5, dtype=np.float64).reshape(3, 4, 5)
+
+    working = _surface_flux_public_to_vdiff_working(surface_flux)
+
+    assert working.shape == (4, 5, 3)
+    assert working.flags.c_contiguous
+    np.testing.assert_array_equal(working[2, 4, :], surface_flux[:, 2, 4])
 
 
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
