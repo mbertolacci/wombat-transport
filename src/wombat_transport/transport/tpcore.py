@@ -1165,20 +1165,17 @@ def _fzppm_batch(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarr
     r23 = 2.0 / 3.0
     dpi = np.zeros_like(q)
     dc = np.zeros_like(q)
-    for k in range(nlev - 1):
-        dpi[:, k] = q[:, k + 1] - q[:, k]
+    dpi[:, :-1] = q[:, 1:] - q[:, :-1]
     for k in range(1, nlev - 1):
-        for j in range(nlat):
-            for i in range(nlon):
-                c0 = delp1[k, j, i] / (delp1[k - 1, j, i] + delp1[k, j, i] + delp1[k + 1, j, i])
-                c1 = (delp1[k - 1, j, i] + 0.5 * delp1[k, j, i]) / (delp1[k + 1, j, i] + delp1[k, j, i])
-                c2 = (delp1[k + 1, j, i] + 0.5 * delp1[k, j, i]) / (delp1[k - 1, j, i] + delp1[k, j, i])
-                tmp = c0 * (c1 * dpi[:, k, j, i] + c2 * dpi[:, k - 1, j, i])
-                qmax = np.maximum.reduce([q[:, k - 1, j, i], q[:, k, j, i], q[:, k + 1, j, i]]) - q[:, k, j, i]
-                qmin = q[:, k, j, i] - np.minimum.reduce(
-                    [q[:, k - 1, j, i], q[:, k, j, i], q[:, k + 1, j, i]]
-                )
-                dc[:, k, j, i] = _sign_array(np.minimum.reduce([np.abs(tmp), qmax, qmin]), tmp)
+        c0 = delp1[k] / (delp1[k - 1] + delp1[k] + delp1[k + 1])
+        c1 = (delp1[k - 1] + 0.5 * delp1[k]) / (delp1[k + 1] + delp1[k])
+        c2 = (delp1[k + 1] + 0.5 * delp1[k]) / (delp1[k - 1] + delp1[k])
+        tmp = c0[np.newaxis, :, :] * (
+            c1[np.newaxis, :, :] * dpi[:, k] + c2[np.newaxis, :, :] * dpi[:, k - 1]
+        )
+        qmax = np.maximum.reduce([q[:, k - 1], q[:, k], q[:, k + 1]]) - q[:, k]
+        qmin = q[:, k] - np.minimum.reduce([q[:, k - 1], q[:, k], q[:, k + 1]])
+        dc[:, k] = _sign_array(np.minimum.reduce([np.abs(tmp), qmax, qmin]), tmp)
     for j in range(nlat):
         if j in (1, nlat - 2):
             continue
@@ -1196,14 +1193,15 @@ def _fzppm_batch(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarr
         al[:, 0, :] = qq[:, 0, :] - dlp[0, :] * (r13 * aa * dlp[0, :] + 0.5 * bb)
         al[:, 1, :] = dlp[0, :] * (aa * dlp[0, :] + bb) + al[:, 0, :]
         mask = qq[:, 0, :] * al[:, 0, :] <= 0.0
-        al[:, 0, :] = np.where(mask, 0.0, al[:, 0, :])
-        dca[:, 0, :] = np.where(mask, 0.0, qq[:, 0, :] - al[:, 0, :])
+        dca[:, 0, :] = qq[:, 0, :] - al[:, 0, :]
+        al[:, 0, :][mask] = 0.0
+        dca[:, 0, :][mask] = 0.0
         fac1b = dpi[:, -2, j, :] * (dlp[-1, :] * dlp[-1, :]) / (
             (dlp[-1, :] + dlp[-2, :]) * (2.0 * dlp[-1, :] + dlp[-2, :])
         )
         ar[:, -1, :] = qq[:, -1, :] + fac1b
         al[:, -1, :] = qq[:, -1, :] - (fac1b + fac1b)
-        ar[:, -1, :] = np.where(qq[:, -1, :] * ar[:, -1, :] <= 0.0, 0.0, ar[:, -1, :])
+        ar[:, -1, :][qq[:, -1, :] * ar[:, -1, :] <= 0.0] = 0.0
         dca[:, -1, :] = ar[:, -1, :] - qq[:, -1, :]
         for k in range(2, nlev - 1):
             c1 = dpi[:, k - 1, j, :] * dlp[k - 1, :] / (dlp[k - 1, :] + dlp[k, :])
@@ -1234,16 +1232,20 @@ def _fzppm_batch(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarr
             a6[:, k, :] = 3.0 * (qq[:, k, :] + qq[:, k, :] - (ar[:, k, :] + al[:, k, :]))
         flux = np.zeros((_ntracer, nlev, nlon), dtype=np.float64)
         for k in range(nlev - 1):
-            for i in range(nlon):
-                if wza[k, i] > 0.0:
-                    cm = wza[k, i] / dlp[k, i]
-                    val = ar[:, k, i] + 0.5 * cm * (al[:, k, i] - ar[:, k, i] + a6[:, k, i] * (1.0 - r23 * cm))
-                else:
-                    cp = wza[k, i] / dlp[k + 1, i]
-                    val = al[:, k + 1, i] + 0.5 * cp * (
-                        al[:, k + 1, i] - ar[:, k + 1, i] - a6[:, k + 1, i] * (1.0 + r23 * cp)
-                    )
-                flux[:, k + 1, i] = wza[k, i] * val
+            pos = wza[k, :] > 0.0
+            if np.any(pos):
+                cm = (wza[k, pos] / dlp[k, pos])[np.newaxis, :]
+                val = ar[:, k, pos] + 0.5 * cm * (
+                    al[:, k, pos] - ar[:, k, pos] + a6[:, k, pos] * (1.0 - r23 * cm)
+                )
+                flux[:, k + 1, pos] = wza[k, pos][np.newaxis, :] * val
+            neg = ~pos
+            if np.any(neg):
+                cp = (wza[k, neg] / dlp[k + 1, neg])[np.newaxis, :]
+                val = al[:, k + 1, neg] + 0.5 * cp * (
+                    al[:, k + 1, neg] - ar[:, k + 1, neg] - a6[:, k + 1, neg] * (1.0 + r23 * cp)
+                )
+                flux[:, k + 1, neg] = wza[k, neg][np.newaxis, :] * val
         dq1[:, 0, j, :] -= flux[:, 1, :]
         dq1[:, -1, j, :] += flux[:, -1, :]
         for k in range(1, nlev - 1):
