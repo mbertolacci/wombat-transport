@@ -119,9 +119,12 @@ def main(argv: list[str] | None = None) -> int:
         scalar_mass_error = transport_result.final_scalar_mass - transport_result.initial_scalar_mass
         transport_steps = getattr(transport_result, "steps", 1)
         transport_dt_s = getattr(transport_result, "dt_s", float(config.transport.get("dt_s", 600.0)))
-        print("transport_operator: tpcore")
+        print(f"transport_operators: {','.join(transport_result.transport_operators)}")
         print(f"transport_steps: {transport_steps}")
         print(f"transport_dt_s: {transport_dt_s:.8e}")
+        for stage in transport_result.stage_masses:
+            stage_error = stage.final_scalar_mass - stage.initial_scalar_mass
+            print(f"{stage.operator}_max_scalar_mass_error: {np.max(np.abs(stage_error)):.8e}")
         print(f"max_transport_scalar_mass_error: {np.max(np.abs(scalar_mass_error)):.8e}")
 
     comparison_path = config.comparison.get("species_conc_sample")

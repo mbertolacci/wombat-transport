@@ -42,6 +42,7 @@ VDIFF_SNAPSHOT_INPUT_NAME = "vdiff_input.nc"
 VDIFF_SNAPSHOT_OUTPUT_NAME = "vdiff_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
+VDIFF_SCENARIOS = ("zero_surface_flux", "nonzero_surface_flux", "negative_clipping")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
@@ -475,11 +476,19 @@ def write_synthetic_tpcore_snapshot_input(path: str | Path, *, dt_s: float = 600
     return append_transport_step_tracers(path, tracer, tracer_names=names)
 
 
-def write_synthetic_vdiff_input(path: str | Path, *, dt_s: float = 600.0, ntracer: int = 2) -> Path:
+def write_synthetic_vdiff_input(
+    path: str | Path,
+    *,
+    dt_s: float = 600.0,
+    ntracer: int = 2,
+    scenario: str = "zero_surface_flux",
+) -> Path:
     """Write a compact deterministic 47-level VDIFFDR oracle input."""
 
     if ntracer <= 0:
         raise ValueError("ntracer must be positive")
+    if scenario not in VDIFF_SCENARIOS:
+        raise ValueError(f"unknown VDIFF scenario {scenario!r}; expected one of {VDIFF_SCENARIOS}")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lat = np.array([-45.0, 0.0, 45.0], dtype=np.float64)
@@ -501,6 +510,15 @@ def write_synthetic_vdiff_input(path: str | Path, *, dt_s: float = 600.0, ntrace
     u = (4.0 + 0.05 * lev + 0.2 * lon_term) * np.ones((1, lat.size, 1), dtype=np.float64)
     v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat_term) * np.ones((1, 1, lon.size))
     tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev + 2.0e-9 * lat_term + 1.0e-9 * lon_term
+    surface_flux = np.zeros((ntracer, lat.size, lon.size), dtype=np.float64)
+    if scenario == "nonzero_surface_flux":
+        tracer_scale = np.arange(1, ntracer + 1, dtype=np.float64)[:, np.newaxis, np.newaxis]
+        lat_scale = 1.0 + 0.15 * np.arange(lat.size, dtype=np.float64)[np.newaxis, :, np.newaxis]
+        lon_scale = 1.0 + 0.05 * np.arange(lon.size, dtype=np.float64)[np.newaxis, np.newaxis, :]
+        surface_flux = 1.0e-12 * tracer_scale * lat_scale * lon_scale
+    elif scenario == "negative_clipping":
+        tracer[0, 0, 1, 2] = -1.0e-3
+        tracer[min(1, ntracer - 1), 1, 2, 3] = -5.0e-4
 
     with netCDF4.Dataset(path, "w") as dataset:
         dataset.createDimension("tracer", ntracer)
@@ -510,6 +528,7 @@ def write_synthetic_vdiff_input(path: str | Path, *, dt_s: float = 600.0, ntrace
         dataset.createDimension("lon", lon.size)
         dataset.harness = VDIFF_INPUT_VERSION
         dataset.dt_s = float(dt_s)
+        dataset.scenario = scenario
         dataset.createVariable("lon", "f8", ("lon",))[:] = lon
         dataset.createVariable("lat", "f8", ("lat",))[:] = lat
         dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer
@@ -527,7 +546,7 @@ def write_synthetic_vdiff_input(path: str | Path, *, dt_s: float = 600.0, ntrace
         dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 90.0)
         dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 0.35)
         dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = np.ones((lat.size, lon.size))
-        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = 0.0
+        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = surface_flux
     return path
 
 
@@ -1831,6 +1850,7 @@ def main(argv: list[str] | None = None) -> int:
     write_vdiff_parser.add_argument("output", type=Path)
     write_vdiff_parser.add_argument("--dt-s", type=float, default=600.0)
     write_vdiff_parser.add_argument("--ntracer", type=int, default=2)
+    write_vdiff_parser.add_argument("--scenario", choices=VDIFF_SCENARIOS, default="zero_surface_flux")
 
     python_vdiff_parser = subparsers.add_parser("python-vdiff-output")
     python_vdiff_parser.add_argument("input", type=Path)
@@ -1950,7 +1970,7 @@ def main(argv: list[str] | None = None) -> int:
         print(format_transport_step_comparison(compare_transport_step_output(args.input, args.output)))
         return 0
     if args.command == "write-synthetic-vdiff-input":
-        path = write_synthetic_vdiff_input(args.output, dt_s=args.dt_s, ntracer=args.ntracer)
+        path = write_synthetic_vdiff_input(args.output, dt_s=args.dt_s, ntracer=args.ntracer, scenario=args.scenario)
         print(f"wrote_vdiff_input: {path}")
         return 0
     if args.command == "python-vdiff-output":

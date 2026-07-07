@@ -27,6 +27,7 @@ from wombat_transport.species import Species, load_species_database
 from wombat_transport.transport import (
     PblHeightState,
     TransportForcing,
+    TransportStageMass,
     TransportStepResult,
     TransportWindowResult,
     VdiffDrResult,
@@ -51,6 +52,7 @@ __all__ = [
     "Species",
     "TracerField",
     "TransportForcing",
+    "TransportStageMass",
     "TransportStepResult",
     "TransportWindowResult",
     "VdiffDrResult",

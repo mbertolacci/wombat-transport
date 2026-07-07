@@ -10,9 +10,11 @@ import numpy as np
 from wombat_transport.fields import TracerField
 from wombat_transport.transport.forcing import TransportForcing, load_transport_forcing
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
+from wombat_transport.transport.pbl import RD_J_PER_KG_K, ZVIR, G0_M_PER_S2, run_vdiffdr_one_step
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
+    dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_hpa,
 )
 from wombat_transport.transport.tpcore import (
@@ -21,6 +23,14 @@ from wombat_transport.transport.tpcore import (
     setup_tpcore_terms,
     validate_tpcore_branch_support,
 )
+
+
+@dataclass(frozen=True)
+class TransportStageMass:
+    operator: str
+    initial_scalar_mass: np.ndarray
+    final_scalar_mass: np.ndarray
+
 
 @dataclass(frozen=True)
 class TransportStepResult:
@@ -32,6 +42,8 @@ class TransportStepResult:
     zmass_hpa: np.ndarray
     initial_scalar_mass: np.ndarray
     final_scalar_mass: np.ndarray
+    transport_operators: tuple[str, ...]
+    stage_masses: tuple[TransportStageMass, ...]
 
 @dataclass(frozen=True)
 class TransportWindowResult:
@@ -45,6 +57,8 @@ class TransportWindowResult:
     final_scalar_mass: np.ndarray
     steps: int
     dt_s: float
+    transport_operators: tuple[str, ...]
+    stage_masses: tuple[TransportStageMass, ...]
 
 def run_transport_one_step(
     tracer_field: TracerField,
@@ -54,7 +68,7 @@ def run_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
 ) -> TransportStepResult:
-    """Run one GEOS-Chem-oriented TPCORE transport step."""
+    """Run one GEOS-Chem-oriented TPCORE + VDIFF transport step."""
 
     with netCDF4.Dataset(template_path) as template:
         hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
@@ -174,6 +188,8 @@ def run_transport_window(
         final_scalar_mass=final_scalar_mass,
         steps=steps,
         dt_s=dt_s,
+        transport_operators=step_result.transport_operators,
+        stage_masses=step_result.stage_masses,
     )
 
 def _run_transport_one_step_with_mass(
@@ -250,12 +266,30 @@ def _run_tpcore_one_step_from_mass(
     )
     next_delp = tpcore.delp2_hpa[np.newaxis, ...]
     next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
-    state = TracerField(
+    tpcore_state = TracerField(
         names=tracer_field.names,
         data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
+    initial_scalar_mass = scalar_mass_by_tracer(tracer_field.data, dry_air_mass)
+    tpcore_scalar_mass = scalar_mass_by_tracer(tpcore_state.data, next_dry_air_mass)
+    vdiff = _run_vdiff_after_tpcore(
+        tpcore_state,
+        forcing,
+        next_dry_air_mass,
+        next_delp,
+        area,
+        top_edge_hpa=float(hyai[-1]),
+        dt_s=dt_s,
+    )
+    state = TracerField(
+        names=tracer_field.names,
+        data=vdiff.tracer_conc[:, np.newaxis, :, :, :],
+        units=tracer_field.units,
+        coords=tracer_field.coords,
+    )
+    vdiff_scalar_mass = scalar_mass_by_tracer(state.data, next_dry_air_mass)
     return TransportStepResult(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
@@ -263,9 +297,60 @@ def _run_tpcore_one_step_from_mass(
         xmass_hpa=tpcore.xmass_hpa[np.newaxis, ...],
         ymass_hpa=tpcore.ymass_hpa[np.newaxis, ...],
         zmass_hpa=_tpcore_vertical_flux_edges(tpcore.vertical_mass_flux_hpa),
-        initial_scalar_mass=scalar_mass_by_tracer(tracer_field.data, dry_air_mass),
-        final_scalar_mass=scalar_mass_by_tracer(state.data, next_dry_air_mass),
+        initial_scalar_mass=initial_scalar_mass,
+        final_scalar_mass=vdiff_scalar_mass,
+        transport_operators=("tpcore", "vdiff"),
+        stage_masses=(
+            TransportStageMass("tpcore", initial_scalar_mass=initial_scalar_mass, final_scalar_mass=tpcore_scalar_mass),
+            TransportStageMass("vdiff", initial_scalar_mass=tpcore_scalar_mass, final_scalar_mass=vdiff_scalar_mass),
+        ),
     )
+
+
+def _run_vdiff_after_tpcore(
+    tracer_field: TracerField,
+    forcing: TransportForcing,
+    dry_air_mass: np.ndarray,
+    delp_dry_hpa: np.ndarray,
+    area: np.ndarray,
+    *,
+    top_edge_hpa: float,
+    dt_s: float,
+):
+    pedge = dry_pressure_edges_from_thickness_hpa(delp_dry_hpa, top_edge_hpa=top_edge_hpa)[0]
+    pmid = 0.5 * (pedge[:-1] + pedge[1:])
+    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
+    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+    virtual_temperature = temperature * (1.0 + ZVIR * sphu)
+    bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
+    return run_vdiffdr_one_step(
+        tracer_conc=np.asarray(tracer_field.data[:, 0, :, :, :], dtype=np.float64),
+        u_m_s=np.asarray(forcing.u_m_s[0], dtype=np.float64),
+        v_m_s=np.asarray(forcing.v_m_s[0], dtype=np.float64),
+        temperature_k=temperature,
+        specific_humidity_kg_kg=sphu,
+        pmid_hpa=pmid,
+        pedge_hpa=pedge,
+        virtual_temperature_k=virtual_temperature,
+        bxheight_m=bxheight,
+        dry_air_mass_kg=np.asarray(dry_air_mass[0], dtype=np.float64),
+        pbl_top_m=np.asarray(forcing.pbl_height_m[0], dtype=np.float64),
+        hflux_w_m2=np.asarray(forcing.sensible_heat_flux_w_m2[0], dtype=np.float64),
+        eflux_w_m2=np.asarray(forcing.latent_heat_flux_w_m2[0], dtype=np.float64),
+        ustar_m_s=np.asarray(forcing.friction_velocity_m_s[0], dtype=np.float64),
+        area_m2=area,
+        dt_s=dt_s,
+        surface_flux_kg_m2_s=np.zeros(
+            (tracer_field.data.shape[0], tracer_field.data.shape[3], tracer_field.data.shape[4]),
+            dtype=np.float64,
+        ),
+    )
+
+
+def _hydrostatic_box_height_m(pedge_hpa: np.ndarray, virtual_temperature_k: np.ndarray) -> np.ndarray:
+    pedge = np.asarray(pedge_hpa, dtype=np.float64)
+    tv = np.asarray(virtual_temperature_k, dtype=np.float64)
+    return (RD_J_PER_KG_K / G0_M_PER_S2) * tv * np.log(pedge[:-1] / pedge[1:])
 
 
 def _tpcore_vertical_flux_edges(vertical_flux_hpa: np.ndarray) -> np.ndarray:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from wombat_transport.transport.driver import (
+    TransportStageMass,
     TransportStepResult,
     TransportWindowResult,
     run_transport_one_step,
@@ -48,6 +49,7 @@ __all__ = [
     "MERRA2_72_TO_47_MAPPING",
     "MERRA2_FILENAME",
     "TransportForcing",
+    "TransportStageMass",
     "TransportStepResult",
     "TransportWindowResult",
     "PblHeightState",

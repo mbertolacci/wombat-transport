@@ -64,6 +64,8 @@ TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
 TPCORE_FXPPM_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_fxppm_low_courant_v1"
 TPCORE_LARGE_CX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_large_courant_polar_v1"
 VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v1"
+VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v1"
+VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v1"
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -213,6 +215,7 @@ def test_write_synthetic_vdiff_input_records_fixture_contract(tmp_path):
 
     with netCDF4.Dataset(input_path) as dataset:
         assert dataset.harness == VDIFF_INPUT_VERSION
+        assert dataset.scenario == "zero_surface_flux"
         assert dataset.dt_s == 600.0
         assert dataset.dimensions["lev"].size == 47
         assert dataset.dimensions["ilev"].size == 48
@@ -221,6 +224,25 @@ def test_write_synthetic_vdiff_input_records_fixture_contract(tmp_path):
         assert dataset.dimensions["tracer"].size == 2
         assert dataset.variables["tracer_conc"].shape == (2, 47, 3, 4)
         assert dataset.variables["surface_flux_kg_m2_s"].shape == (2, 3, 4)
+
+
+def test_write_synthetic_vdiff_input_can_exercise_nonzero_surface_flux(tmp_path):
+    input_path = write_synthetic_vdiff_input(tmp_path / "vdiff_input.nc", scenario="nonzero_surface_flux")
+
+    with netCDF4.Dataset(input_path) as dataset:
+        surface_flux = np.asarray(dataset.variables["surface_flux_kg_m2_s"][:])
+        assert dataset.scenario == "nonzero_surface_flux"
+        assert np.count_nonzero(surface_flux) == surface_flux.size
+        assert np.all(surface_flux > 0.0)
+
+
+def test_write_synthetic_vdiff_input_can_exercise_negative_clipping(tmp_path):
+    input_path = write_synthetic_vdiff_input(tmp_path / "vdiff_input.nc", scenario="negative_clipping")
+
+    with netCDF4.Dataset(input_path) as dataset:
+        tracer = np.asarray(dataset.variables["tracer_conc"][:])
+        assert dataset.scenario == "negative_clipping"
+        assert np.count_nonzero(tracer < 0.0) == 2
 
 
 def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):
@@ -257,6 +279,40 @@ def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
     assert comparison.qpert_max_abs_error == 0.0
     assert comparison.negative_count_before_clip_actual == comparison.negative_count_before_clip_expected
     assert comparison.negative_count_after_clip_actual == comparison.negative_count_after_clip_expected
+    assert comparison.final_mass_max_abs_error < 1.0e-12
+
+
+def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_path):
+    comparison = compare_vdiff_output(
+        VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_input.nc",
+        VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_output.nc",
+        python_output_path=tmp_path / "python_vdiff_output.nc",
+    )
+
+    assert comparison.tracer_max_abs_error < 1.0e-15
+    assert comparison.specific_humidity_max_abs_error < 1.0e-15
+    assert comparison.kvh_max_abs_error == 0.0
+    assert comparison.kvm_max_abs_error == 0.0
+    assert comparison.negative_count_before_clip_actual == 0
+    assert comparison.negative_count_after_clip_actual == 0
+    assert comparison.final_mass_max_abs_error < 1.0e-12
+
+
+def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path):
+    comparison = compare_vdiff_output(
+        VDIFF_NEGATIVE_FIXTURE_DIR / "vdiff_input.nc",
+        VDIFF_NEGATIVE_FIXTURE_DIR / "vdiff_output.nc",
+        python_output_path=tmp_path / "python_vdiff_output.nc",
+    )
+
+    assert comparison.tracer_max_abs_error < 1.0e-15
+    assert comparison.specific_humidity_max_abs_error < 1.0e-15
+    assert comparison.kvh_max_abs_error == 0.0
+    assert comparison.kvm_max_abs_error == 0.0
+    assert comparison.negative_count_before_clip_expected == 2
+    assert comparison.negative_count_before_clip_actual == 2
+    assert comparison.negative_count_after_clip_expected == 0
+    assert comparison.negative_count_after_clip_actual == 0
     assert comparison.final_mass_max_abs_error < 1.0e-12
 
 

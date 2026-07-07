@@ -1,0 +1,20 @@
+{
+  "fixture": "vdiff_negative_clipping_v1",
+  "input": {
+    "name": "vdiff_input.nc",
+    "sha256": "7284a21ea89ed1b2cf2c6b3b47b386a883b806c872d8eaabdc9fa34d124ce10b",
+    "size_bytes": 70509,
+    "version": "vdiffdr-input-v1"
+  },
+  "output": {
+    "name": "vdiff_output.nc",
+    "sha256": "c35173ec9d061e2f01183b65490701e93d88c53f988abfcbb9623d2f8ab146c7",
+    "size_bytes": 23764,
+    "version": "vdiffdr-output-v1"
+  },
+  "source": {
+    "build_command": "tools/gc_harness/build_vdiff_harness.sh",
+    "input_command": "python -m wombat_transport.gc_harness write-synthetic-vdiff-input tests/fixtures/vdiff_negative_clipping_v1/vdiff_input.nc --scenario negative_clipping",
+    "oracle_command": "tools/gc_harness/build/vdiff_harness tests/fixtures/vdiff_negative_clipping_v1/vdiff_input.nc tests/fixtures/vdiff_negative_clipping_v1/vdiff_output.nc"
+  }
+}

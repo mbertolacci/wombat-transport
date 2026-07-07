@@ -188,7 +188,7 @@ contains
     call check(nf90_def_dim(ncid, 'ilev', size(kvh,3), ilev_dim), 'def ilev')
     call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
     call check(nf90_put_att(ncid, nf90_global, 'harness', 'vdiffdr-output-v1'), 'put harness')
-    call check(nf90_put_att(ncid, nf90_global, 'negative_count_before_clip', 0), 'put neg before')
+    call check(nf90_put_att(ncid, nf90_global, 'negative_count_before_clip', count(tracer0 < 0.0_fp)), 'put neg before')
     call check(nf90_put_att(ncid, nf90_global, 'negative_count_after_clip', count(tracer < 0.0_fp)), 'put neg after')
     call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, &
          (/ lon_dim, lat_dim, lev_dim, tracer_dim /), tracer_id), 'def tracer')

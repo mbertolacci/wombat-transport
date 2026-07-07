@@ -219,6 +219,8 @@ def test_transport_one_step_conserves_residual_scalar_mass():
     result = run_transport_one_step(field, _load_forcing(config), config.grid_template, dt_s=600.0)
 
     assert result.state.shape == field.shape
+    assert result.transport_operators == ("tpcore", "vdiff")
+    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff")
     assert result.delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert np.all(np.isfinite(result.state.data))
@@ -238,6 +240,8 @@ def test_transport_window_accumulates_average_state_and_conserves_mass():
     )
 
     assert result.steps == 2
+    assert result.transport_operators == ("tpcore", "vdiff")
+    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff")
     assert result.state.shape == field.shape
     assert result.average_state.shape == field.shape
     assert result.average_delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
