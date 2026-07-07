@@ -886,24 +886,17 @@ def _xmist(qqv: np.ndarray) -> np.ndarray:
 
 
 def _xmist_batch(qqv: np.ndarray) -> np.ndarray:
-    _ntracer, nlat, nlon = qqv.shape
+    _ntracer, nlat, _nlon = qqv.shape
     j1p, j2p = _polar_cap_bounds(nlat)
     dcx = np.zeros_like(qqv)
     r24 = 1.0 / 24.0
-    for j in range(j1p + 1, j2p):
-        for i in range(nlon):
-            tmp = (
-                8.0 * (_q_lon_batch(qqv, j, i + 1) - _q_lon_batch(qqv, j, i - 1))
-                + _q_lon_batch(qqv, j, i - 2)
-                - _q_lon_batch(qqv, j, i + 2)
-            ) * r24
-            pmax = np.maximum.reduce([_q_lon_batch(qqv, j, i - 1), qqv[:, j, i], _q_lon_batch(qqv, j, i + 1)]) - qqv[
-                :, j, i
-            ]
-            pmin = qqv[:, j, i] - np.minimum.reduce(
-                [_q_lon_batch(qqv, j, i - 1), qqv[:, j, i], _q_lon_batch(qqv, j, i + 1)]
-            )
-            dcx[:, j, i] = _sign_array(np.minimum.reduce([np.abs(tmp), pmin, pmax]), tmp)
+    row = qqv[:, j1p + 1 : j2p, :]
+    left1 = np.roll(row, 1, axis=2)
+    right1 = np.roll(row, -1, axis=2)
+    tmp = (8.0 * (right1 - left1) + np.roll(row, 2, axis=2) - np.roll(row, -2, axis=2)) * r24
+    pmax = np.maximum.reduce([left1, row, right1]) - row
+    pmin = row - np.minimum.reduce([left1, row, right1])
+    dcx[:, j1p + 1 : j2p, :] = _sign_array(np.minimum.reduce([np.abs(tmp), pmin, pmax]), tmp)
     return dcx
 
 
@@ -978,21 +971,17 @@ def _ymist_batch(qqu: np.ndarray) -> np.ndarray:
     _ntracer, nlat, nlon = qqu.shape
     dcy = np.zeros_like(qqu)
     r24 = 1.0 / 24.0
-    for j in range(-2, nlat - 2):
-        out_j = j + 2
-        for i in range(nlon):
-            tmp = (
-                8.0 * (_q_lat_batch(qqu, i, j + 3) - _q_lat_batch(qqu, i, j + 1))
-                + _q_lat_batch(qqu, i, j)
-                - _q_lat_batch(qqu, i, j + 4)
-            ) * r24
-            pmax = np.maximum.reduce(
-                [_q_lat_batch(qqu, i, j + 1), _q_lat_batch(qqu, i, j + 2), _q_lat_batch(qqu, i, j + 3)]
-            ) - _q_lat_batch(qqu, i, j + 2)
-            pmin = _q_lat_batch(qqu, i, j + 2) - np.minimum.reduce(
-                [_q_lat_batch(qqu, i, j + 1), _q_lat_batch(qqu, i, j + 2), _q_lat_batch(qqu, i, j + 3)]
-            )
-            dcy[:, out_j, i] = _sign_array(np.minimum.reduce([np.abs(tmp), pmin, pmax]), tmp)
+    padded = np.zeros((_ntracer, nlat + 4, nlon), dtype=qqu.dtype)
+    padded[:, 2 : nlat + 2, :] = qqu
+    qjm2 = padded[:, 0:nlat, :]
+    qjm1 = padded[:, 1 : nlat + 1, :]
+    qj = padded[:, 2 : nlat + 2, :]
+    qjp1 = padded[:, 3 : nlat + 3, :]
+    qjp2 = padded[:, 4 : nlat + 4, :]
+    tmp = (8.0 * (qjp1 - qjm1) + qjm2 - qjp2) * r24
+    pmax = np.maximum.reduce([qjm1, qj, qjp1]) - qj
+    pmin = qj - np.minimum.reduce([qjm1, qj, qjp1])
+    dcy[:] = _sign_array(np.minimum.reduce([np.abs(tmp), pmin, pmax]), tmp)
     dcy[:, 0, :] = 0.0
     dcy[:, -1, :] = 0.0
     return dcy
@@ -1038,29 +1027,31 @@ def _fyppm_batch(cy: np.ndarray, dcy: np.ndarray, qqu: np.ndarray, qqv: np.ndarr
     a6 = np.zeros_like(qqu)
     al = np.zeros_like(qqu)
     ar = np.zeros_like(qqu)
-    for j in range(1, nlat):
-        al[:, j, :] = 0.5 * (qqu[:, j - 1, :] + qqu[:, j, :]) + (dcy[:, j - 1, :] - dcy[:, j, :]) * r13
-        ar[:, j - 1, :] = al[:, j, :]
+    al[:, 1:, :] = 0.5 * (qqu[:, :-1, :] + qqu[:, 1:, :]) + (dcy[:, :-1, :] - dcy[:, 1:, :]) * r13
+    ar[:, :-1, :] = al[:, 1:, :]
     half = nlon // 2
     al[:, 0, :half] = al[:, 1, half:]
     al[:, 0, half:] = al[:, 1, :half]
     ar[:, -1, :half] = ar[:, -2, half:]
     ar[:, -1, half:] = ar[:, -2, :half]
-    for j in range(1, nlat - 1):
-        a6[:, j, :] = 3.0 * (qqu[:, j, :] + qqu[:, j, :] - (al[:, j, :] + ar[:, j, :]))
+    a6[:, 1:-1, :] = 3.0 * (qqu[:, 1:-1, :] + qqu[:, 1:-1, :] - (al[:, 1:-1, :] + ar[:, 1:-1, :]))
     for j in range(1, nlat - 1):
         _lmtppm_last_axis(a6[:, j, :], al[:, j, :], ar[:, j, :], dcy[:, j, :], qqu[:, j, :], 0)
     for j in range(j1p, j2p + 2):
         jm1 = j - 1
-        for i in range(nlon):
-            if cy[j, i] > 0.0:
-                qqv[:, j, i] = ar[:, jm1, i] + 0.5 * cy[j, i] * (
-                    al[:, jm1, i] - ar[:, jm1, i] + a6[:, jm1, i] * (1.0 - r23 * cy[j, i])
-                )
-            else:
-                qqv[:, j, i] = al[:, j, i] - 0.5 * cy[j, i] * (
-                    ar[:, j, i] - al[:, j, i] + a6[:, j, i] * (1.0 + r23 * cy[j, i])
-                )
+        c = cy[j, :]
+        pos = c > 0.0
+        if np.any(pos):
+            cp = c[pos][np.newaxis, :]
+            qqv[:, j, pos] = ar[:, jm1, pos] + 0.5 * cp * (
+                al[:, jm1, pos] - ar[:, jm1, pos] + a6[:, jm1, pos] * (1.0 - r23 * cp)
+            )
+        neg = ~pos
+        if np.any(neg):
+            cn = c[neg][np.newaxis, :]
+            qqv[:, j, neg] = al[:, j, neg] - 0.5 * cn * (
+                ar[:, j, neg] - al[:, j, neg] + a6[:, j, neg] * (1.0 + r23 * cn)
+            )
 
 
 def _fzppm(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
