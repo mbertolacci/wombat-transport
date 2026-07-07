@@ -937,23 +937,14 @@ def _fxppm_row(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qqv: np.
 
 
 def _fxppm_row_batch(j: int, cx: np.ndarray, dcx: np.ndarray, fx: np.ndarray, qqv: np.ndarray) -> None:
-    ntracer, _nlat, nlon = qqv.shape
+    _ntracer, _nlat, nlon = qqv.shape
     r13 = 1.0 / 3.0
     r23 = 2.0 / 3.0
-    a6 = np.zeros((ntracer, nlon), dtype=np.float64)
-    al = np.zeros((ntracer, nlon), dtype=np.float64)
-    ar = np.zeros((ntracer, nlon), dtype=np.float64)
-    dc = np.zeros((ntracer, nlon), dtype=np.float64)
-    qa = np.zeros((ntracer, nlon), dtype=np.float64)
-    for i in range(nlon):
-        rval = 0.5 * (_q_lon_batch(qqv, j, i - 1) + _q_lon_batch(qqv, j, i)) + (
-            _dcx_lon_batch(dcx, j, i - 1) - _dcx_lon_batch(dcx, j, i)
-        ) * r13
-        al[:, i] = rval
-        ar[:, (i - 1) % nlon] = rval
-        dc[:, i] = _dcx_lon_batch(dcx, j, i)
-        qa[:, i] = _q_lon_batch(qqv, j, i)
-    a6[:] = 3.0 * (qa + qa - (al + ar))
+    qa = qqv[:, j, :]
+    dc = dcx[:, j, :]
+    al = 0.5 * (np.roll(qa, 1, axis=1) + qa) + (np.roll(dc, 1, axis=1) - dc) * r13
+    ar = np.roll(al, -1, axis=1)
+    a6 = 3.0 * (qa + qa - (al + ar))
     _lmtppm_last_axis(a6, al, ar, dc, qa, 0)
     for i in range(nlon):
         if cx[j, i] > 0.0:
@@ -1362,20 +1353,24 @@ def _lmtppm_last_axis(
     if lmt != 0:
         raise NotImplementedError("Only the full monotonic PPM limiter is needed for the current TPCORE path")
     for idx in range(qa.shape[-1]):
+        a6_col = a6[..., idx]
+        al_col = al[..., idx]
+        ar_col = ar[..., idx]
+        qa_col = qa[..., idx]
         zero_mask = dc[..., idx] == 0.0
-        a6[..., idx] = np.where(zero_mask, 0.0, a6[..., idx])
-        al[..., idx] = np.where(zero_mask, qa[..., idx], al[..., idx])
-        ar[..., idx] = np.where(zero_mask, qa[..., idx], ar[..., idx])
+        a6_col[zero_mask] = 0.0
+        al_col[zero_mask] = qa_col[zero_mask]
+        ar_col[zero_mask] = qa_col[zero_mask]
 
-        da1 = ar[..., idx] - al[..., idx]
+        da1 = ar_col - al_col
         da2 = da1 * da1
-        a6da = a6[..., idx] * da1
-        low_mask = (~zero_mask) & (a6da < -da2)
-        a6[..., idx] = np.where(low_mask, 3.0 * (al[..., idx] - qa[..., idx]), a6[..., idx])
-        ar[..., idx] = np.where(low_mask, al[..., idx] - a6[..., idx], ar[..., idx])
-        high_mask = (~zero_mask) & (~low_mask) & (a6da > da2)
-        a6[..., idx] = np.where(high_mask, 3.0 * (ar[..., idx] - qa[..., idx]), a6[..., idx])
-        al[..., idx] = np.where(high_mask, ar[..., idx] - a6[..., idx], al[..., idx])
+        a6da = a6_col * da1
+        low_mask = a6da < -da2
+        a6_col[low_mask] = 3.0 * (al_col[low_mask] - qa_col[low_mask])
+        ar_col[low_mask] = al_col[low_mask] - a6_col[low_mask]
+        high_mask = a6da > da2
+        a6_col[high_mask] = 3.0 * (ar_col[high_mask] - qa_col[high_mask])
+        al_col[high_mask] = ar_col[high_mask] - a6_col[high_mask]
 
 
 def _q_lon(q: np.ndarray, j: int, i: int) -> float:
