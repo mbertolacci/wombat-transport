@@ -250,7 +250,7 @@ that requirement explicit and fail with a clear message.
 
 ## Repository Hygiene
 
-- Keep generated NetCDF outputs, benchmark artifacts, and scratch files out of
+- Keep generated NetCDF outputs, benchmark artifacts, and temporary files out of
   tracked source unless the user asks to commit a specific fixture.
 - Prefer small, inspectable Python modules and command-line scripts over hidden
   notebooks for core logic.

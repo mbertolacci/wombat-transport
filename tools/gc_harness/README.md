@@ -11,7 +11,7 @@ The intended shape is one incremental full-state harness:
   convection later.
 
 Generated NetCDF inputs and outputs belong in `tools/gc_harness/work/`,
-`oracle_data/`, or another scratch directory and should not be committed.
+`oracle_data/`, or another temporary directory and should not be committed.
 
 The PJC executable is a GEOS-Chem oracle for this operator stage. The current
 Python comparison command contrasts that output with Wombat's NumPy PJC port.
