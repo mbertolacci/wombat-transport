@@ -1,11 +1,21 @@
 # Wombat Transport Status
 
-Last checkpoint: `db33b02 Remove legacy transport scaffold`
+Last completed checkpoint before the VDIFF tranche:
+`5862431 Add PBL groundwork`
 
 Validation at that checkpoint:
 
-- Full test suite passed at that checkpoint: `71 passed`.
+- Full test suite passed at that checkpoint: `73 passed`.
 - Working tree was clean immediately after the commit.
+
+Current VDIFF tranche validation before commit:
+
+- `tools/gc_harness/build_vdiff_harness.sh` built the local GEOS-Chem VDIFF
+  oracle executable.
+- Compact VDIFF oracle comparison matched Python at roundoff for tracer,
+  humidity, `kvh`, `kvm`, PBL height, perturbations, negative counts, and
+  zero-surface-flux mass conservation.
+- Full test suite passed: `78 passed`.
 
 ## Where We Are
 
@@ -33,20 +43,25 @@ Validation at that checkpoint:
     diagnostics;
   - pressure-thickness and pressure-edge comparison output against
     `Met_PEDGEDRY` when LevelEdge diagnostics are available.
-- PBL work has started with a direct Python port of GEOS-Chem
-  `Compute_Pbl_Height` bookkeeping plus the compact mass-weighted full-PBL
-  mixer core from `TurbDay`. The configured production path still needs
-  non-local VDIFF before PBL can be coupled into transport.
+- PBL work now includes a direct Python port of GEOS-Chem
+  `Compute_Pbl_Height` bookkeeping, the compact mass-weighted full-PBL mixer
+  core from `TurbDay`, and a first isolated Python port of the configured
+  non-local `VDIFFDR -> vdiff/pbldif/qvdiff` path with zero constituent
+  surface flux.
 - A GEOS-Chem-backed operator harness exists under `tools/gc_harness/`. It
   writes NetCDF fixtures from a Wombat run config, calls `DO_PJC_PFIX` through
   a small Fortran executable linked against `base/build`, and can also run one
-  `TPCORE_FVDAS` tracer step when the fixture includes `tracer_conc`.
+  `TPCORE_FVDAS` tracer step when the fixture includes `tracer_conc`. A
+  separate VDIFF harness path generates a local trace-enabled copy of
+  `vdiff_mod.F90`, exposes `VDIFFDR`, and saves `kvh`, `kvm`, `tpert`, and
+  `qpert` for oracle comparison.
 - Fast tracked oracle snapshots now exist for:
   - PJC mass fluxes, under `tests/fixtures/pjc_snapshot_v1/`;
   - one-step PJC plus `TPCORE_FVDAS`, under
     `tests/fixtures/tpcore_snapshot_v1/`.
   - branch-isolating TPCORE snapshots for X full-PPM and large-Courant E-W
     behavior, under `tests/fixtures/tpcore_x_*_v1/`.
+  - one-step non-local VDIFF, under `tests/fixtures/vdiff_snapshot_v1/`.
 - Large real-run oracle fixtures now have a separate untracked cache policy
   under `oracle_data/`. Tracked manifests describe the fixture contract; NetCDF
   payloads are generated or fetched locally and verified by checksum before
@@ -76,8 +91,9 @@ Validation at that checkpoint:
 - The Python TPCORE path now preflights the active branch set and raises a
   clear `NotImplementedError` for currently unsupported large-Courant N-S
   behavior instead of continuing silently outside the validated path.
-- PBL mixing, convection, three-hourly production validation, and performance
-  benchmarks are not implemented yet.
+- PBL mixing is still isolated from production transport. Convection,
+  three-hourly production validation, and performance benchmarks are not
+  implemented yet.
 - Missing-operator gaps are not validation milestones. The project target is
   operator-by-operator numerical parity: isolate a GEOS-Chem operator, match it
   to roundoff or a documented floating-point tolerance, then move on.
@@ -102,16 +118,15 @@ Validation at that checkpoint:
 
 ## Good Next Steps
 
-1. Continue PBL mixing with non-local VDIFF.
+1. Harden and expand non-local VDIFF coverage.
    - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.
-   - Treat `Do_Vdiff -> VDIFFDR -> vdiff/pbldif/qvdiff` as the configured
-     non-local PBL target.
-   - Extend the GEOS-Chem harness with only the `MetState`, `ChmState`,
-     `DgnState`, and `Input_Opt` fields proven necessary by source tracing.
-   - Keep zero surface fluxes and no dry deposition for the first oracle so
-     turbulent mixing is isolated from emissions and deposition sequencing.
-   - Verify PBL as its own operator stage before coupling it into
-     `transport-one-step` or `transport-window`.
+   - The first compact VDIFF oracle matches Python at roundoff for tracer,
+     humidity, `kvh`, `kvm`, PBL height, perturbations, negative counts, and
+     zero-surface-flux mass conservation.
+   - Add nonzero constituent surface-flux and negative-clipping oracle cases
+     before wiring VDIFF into `transport-one-step` or `transport-window`.
+   - Add an optional full-grid base VDIFF oracle only after compact edge cases
+     are stable.
 
 2. Port and verify transport in GEOS-Chem operator order.
    - Treat GEOS-Chem as the reference semantics, not as an approximate target.

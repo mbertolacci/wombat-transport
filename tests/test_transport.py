@@ -17,6 +17,7 @@ from wombat_transport.transport import (
     dry_pressure_thickness_hpa,
     load_transport_forcing,
     mix_full_pbl,
+    run_vdiffdr_one_step,
     run_transport_one_step,
     run_transport_window,
     _map_met_levels_to_47,
@@ -37,7 +38,12 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert forcing.specific_humidity_kg_kg.shape == expected_shape
     assert forcing.temperature_k.shape == expected_shape
     assert forcing.surface_pressure_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.pbl_height_m.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.sensible_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.latent_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.friction_velocity_m_s.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.vertical_mapping == MERRA2_72_TO_47_MAPPING
+    assert forcing.a1_path.exists()
     assert forcing.a3dyn_path.exists()
     assert forcing.i3_path.exists()
     assert np.all(np.isfinite(forcing.u_m_s))
@@ -175,6 +181,38 @@ def test_mix_full_pbl_mass_weights_full_and_fractional_levels():
     np.testing.assert_allclose(after_column_mass, before_column_mass)
 
 
+def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux():
+    fixture = _synthetic_vdiff_fixture()
+
+    result = run_vdiffdr_one_step(**fixture)
+
+    tracer = fixture["tracer_conc"]
+    nlev, nlat, nlon = fixture["u_m_s"].shape
+    assert result.tracer_conc.shape == tracer.shape
+    assert result.specific_humidity_kg_kg.shape == (nlev, nlat, nlon)
+    assert result.kvh_m2_s.shape == (nlev + 1, nlat, nlon)
+    assert result.kvm_m2_s.shape == (nlev + 1, nlat, nlon)
+    assert result.tpert_k.shape == (nlat, nlon)
+    assert result.qpert_kg_kg.shape == (nlat, nlon)
+    assert result.negative_count_after_clip == 0
+    assert np.all(np.isfinite(result.tracer_conc))
+    assert np.all(result.kvh_m2_s >= 0.0)
+    assert np.max(result.kvh_m2_s) > 0.0
+    np.testing.assert_allclose(result.final_tracer_mass, result.initial_tracer_mass, rtol=2.0e-14)
+
+
+def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
+    fixture = _synthetic_vdiff_fixture()
+    fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]
+
+    try:
+        run_vdiffdr_one_step(**fixture)
+    except ValueError as exc:
+        assert "pedge_hpa shape" in str(exc)
+    else:
+        raise AssertionError("run_vdiffdr_one_step accepted a malformed edge grid")
+
+
 def test_transport_one_step_conserves_residual_scalar_mass():
     config = load_run_config(RESIDUAL_CONFIG)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
@@ -216,3 +254,46 @@ def _load_forcing(config):
         config.grid_template,
         time_index=int(config.transport["met_time_index"]),
     )
+
+
+def _synthetic_vdiff_fixture():
+    nlev = 47
+    nlat = 3
+    nlon = 4
+    ntracer = 2
+    lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    lat = np.linspace(-1.0, 1.0, nlat, dtype=np.float64)[np.newaxis, :, np.newaxis]
+    lon = np.linspace(0.0, 1.0, nlon, dtype=np.float64)[np.newaxis, np.newaxis, :]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+
+    pedge_profile = np.linspace(1000.0, 50.0, nlev + 1, dtype=np.float64)
+    pedge = np.broadcast_to(pedge_profile[:, np.newaxis, np.newaxis], (nlev + 1, nlat, nlon)).copy()
+    pmid = 0.5 * (pedge[:-1] + pedge[1:])
+    temperature = 289.0 - 0.45 * lev + 1.5 * lat + 0.2 * lon
+    sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
+    tv = temperature * (1.0 + 0.61 * sphu)
+    bxheight = np.full((nlev, nlat, nlon), 125.0, dtype=np.float64)
+    dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
+    dry_mass = dry_mass * np.ones((nlev, nlat, nlon), dtype=np.float64)
+    u = (4.0 + 0.05 * lev + 0.2 * lon) * np.ones((1, nlat, 1), dtype=np.float64)
+    v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
+    tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev + 2.0e-9 * lat + 1.0e-9 * lon
+
+    return {
+        "tracer_conc": tracer,
+        "u_m_s": u,
+        "v_m_s": v,
+        "temperature_k": temperature,
+        "specific_humidity_kg_kg": sphu,
+        "pmid_hpa": pmid,
+        "pedge_hpa": pedge,
+        "virtual_temperature_k": tv,
+        "bxheight_m": bxheight,
+        "dry_air_mass_kg": dry_mass,
+        "pbl_top_m": np.full((nlat, nlon), 950.0, dtype=np.float64),
+        "hflux_w_m2": np.full((nlat, nlon), 65.0, dtype=np.float64),
+        "eflux_w_m2": np.full((nlat, nlon), 90.0, dtype=np.float64),
+        "ustar_m_s": np.full((nlat, nlon), 0.35, dtype=np.float64),
+        "area_m2": np.ones((nlat, nlon), dtype=np.float64),
+        "dt_s": 600.0,
+    }

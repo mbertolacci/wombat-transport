@@ -16,7 +16,13 @@ from wombat_transport.transport.forcing import (
     load_transport_forcing,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
-from wombat_transport.transport.pbl import PblHeightState, compute_pbl_height, mix_full_pbl
+from wombat_transport.transport.pbl import (
+    PblHeightState,
+    VdiffDrResult,
+    compute_pbl_height,
+    mix_full_pbl,
+    run_vdiffdr_one_step,
+)
 from wombat_transport.transport.pjc import pjc_mass_flux_hpa
 from wombat_transport.transport.pressure import (
     dry_air_mass_from_pressure,
@@ -45,6 +51,7 @@ __all__ = [
     "TransportStepResult",
     "TransportWindowResult",
     "PblHeightState",
+    "VdiffDrResult",
     "TpcoreBranchReport",
     "TpcoreSetup",
     "TpcoreState",
@@ -62,6 +69,7 @@ __all__ = [
     "run_transport_one_step",
     "run_transport_window",
     "run_tpcore_one_step",
+    "run_vdiffdr_one_step",
     "scalar_mass_by_tracer",
     "setup_tpcore_terms",
     "trace_tpcore_one_step",

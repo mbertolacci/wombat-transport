@@ -52,6 +52,13 @@ python -m wombat_transport.gc_harness snapshot-tpcore-branch \
 python -m wombat_transport.gc_harness compare-transport-step-output \
   tests/fixtures/tpcore_snapshot_v1/tpcore_input.nc \
   tests/fixtures/tpcore_snapshot_v1/tpcore_output.nc
+
+python -m wombat_transport.gc_harness write-synthetic-vdiff-input \
+  tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc
+
+python -m wombat_transport.gc_harness compare-vdiff-output \
+  tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc \
+  tests/fixtures/vdiff_snapshot_v1/vdiff_output.nc
 ```
 
 The `snapshot-pjc` command regenerates the small tracked PJC oracle fixture
@@ -62,6 +69,8 @@ The `snapshot-tpcore` command does the same for the compact one-step
 The `snapshot-tpcore-branch` command creates small branch-isolating TPCORE
 snapshots. `x_fxppm_low_courant` is a passing X full-PPM fixture;
 `x_large_courant_polar` is a passing compact high-Courant E-W fixture.
+The tracked VDIFF snapshot fixture isolates the configured non-local
+`VDIFFDR -> vdiff/pbldif/qvdiff` path with zero constituent surface flux.
 
 ## Large Oracle Fixture Cache
 
@@ -129,6 +138,8 @@ tree moves or was produced with different compiler wrappers.
 tools/gc_harness/build_pjc_pfix_harness.sh
 
 tools/gc_harness/build_pjc_pfix_harness.sh --with-tpcore-trace
+
+tools/gc_harness/build_vdiff_harness.sh
 ```
 
 The trace build generates an instrumented copy of
@@ -136,11 +147,17 @@ The trace build generates an instrumented copy of
 `tools/gc_harness/build/` and links it only into
 `tools/gc_harness/build/pjc_pfix_harness_trace`. The vendored `GCClassic/`
 source tree remains the reference input and is not patched.
+The VDIFF build similarly generates a local copy of `vdiff_mod.F90` with
+`VDIFFDR` exposed and a trace hook for `kvh`, `kvm`, `tpert`, and `qpert`.
 
 Then run:
 
 ```bash
 python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
+
+tools/gc_harness/build/vdiff_harness \
+  tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc \
+  tests/fixtures/vdiff_snapshot_v1/vdiff_output.nc
 ```
 
 Current smoke result on `base_wombat/run.yml` after building against

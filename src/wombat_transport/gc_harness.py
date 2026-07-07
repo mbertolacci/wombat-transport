@@ -18,6 +18,7 @@ from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
     load_transport_forcing,
     pjc_mass_flux_hpa,
+    run_vdiffdr_one_step,
 )
 from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
 from wombat_transport.transport.tpcore import trace_tpcore_one_step
@@ -29,12 +30,16 @@ PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
 PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
 TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
 TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
+VDIFF_INPUT_VERSION = "vdiffdr-input-v1"
+VDIFF_OUTPUT_VERSION = "vdiffdr-output-v1"
 TPCORE_TRACE_VERSION = "tpcore-trace-v1"
 TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v1"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
 SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
 TPCORE_SNAPSHOT_INPUT_NAME = "tpcore_input.nc"
 TPCORE_SNAPSHOT_OUTPUT_NAME = "tpcore_output.nc"
+VDIFF_SNAPSHOT_INPUT_NAME = "vdiff_input.nc"
+VDIFF_SNAPSHOT_OUTPUT_NAME = "vdiff_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
@@ -193,6 +198,38 @@ class PythonTpcoreComparison:
     negative_count_after: int
     max_abs_cx: float
     max_abs_cy: float
+
+
+@dataclass(frozen=True)
+class VdiffOutput:
+    tracer_conc_after: np.ndarray
+    specific_humidity_after: np.ndarray
+    kvh_m2_s: np.ndarray
+    kvm_m2_s: np.ndarray
+    pbl_top_m: np.ndarray
+    tpert_k: np.ndarray
+    qpert_kg_kg: np.ndarray
+    negative_count_before_clip: int
+    negative_count_after_clip: int
+    initial_tracer_mass: np.ndarray
+    final_tracer_mass: np.ndarray
+
+
+@dataclass(frozen=True)
+class VdiffComparison:
+    tracer_max_abs_error: float
+    tracer_mean_abs_error: float
+    specific_humidity_max_abs_error: float
+    kvh_max_abs_error: float
+    kvm_max_abs_error: float
+    pbl_top_max_abs_error_m: float
+    tpert_max_abs_error: float
+    qpert_max_abs_error: float
+    negative_count_before_clip_expected: int
+    negative_count_before_clip_actual: int
+    negative_count_after_clip_expected: int
+    negative_count_after_clip_actual: int
+    final_mass_max_abs_error: float
 
 
 @dataclass(frozen=True)
@@ -436,6 +473,62 @@ def write_synthetic_tpcore_snapshot_input(path: str | Path, *, dt_s: float = 600
     tracer = tracer + 1.0e-8 * lat_wave + 5.0e-9 * lon_wave
     names = tuple(f"synthetic_{index + 1:02d}" for index in range(ntracer))
     return append_transport_step_tracers(path, tracer, tracer_names=names)
+
+
+def write_synthetic_vdiff_input(path: str | Path, *, dt_s: float = 600.0, ntracer: int = 2) -> Path:
+    """Write a compact deterministic 47-level VDIFFDR oracle input."""
+
+    if ntracer <= 0:
+        raise ValueError("ntracer must be positive")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lat = np.array([-45.0, 0.0, 45.0], dtype=np.float64)
+    lon = np.arange(4, dtype=np.float64) * 90.0
+    nlev = GEOS_47_AP_HPA.size - 1
+    lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    lat_term = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    lon_term = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+
+    pedge_profile = np.linspace(1000.0, 50.0, nlev + 1, dtype=np.float64)
+    pedge = np.broadcast_to(pedge_profile[:, np.newaxis, np.newaxis], (nlev + 1, lat.size, lon.size)).copy()
+    pmid = 0.5 * (pedge[:-1] + pedge[1:])
+    temperature = 289.0 - 0.45 * lev + 1.5 * lat_term + 0.2 * lon_term
+    sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat_term) * np.ones((1, 1, lon.size))
+    tv = temperature * (1.0 + 0.61 * sphu)
+    bxheight = np.full((nlev, lat.size, lon.size), 125.0, dtype=np.float64)
+    dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
+    u = (4.0 + 0.05 * lev + 0.2 * lon_term) * np.ones((1, lat.size, 1), dtype=np.float64)
+    v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat_term) * np.ones((1, 1, lon.size))
+    tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev + 2.0e-9 * lat_term + 1.0e-9 * lon_term
+
+    with netCDF4.Dataset(path, "w") as dataset:
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("ilev", nlev + 1)
+        dataset.createDimension("lat", lat.size)
+        dataset.createDimension("lon", lon.size)
+        dataset.harness = VDIFF_INPUT_VERSION
+        dataset.dt_s = float(dt_s)
+        dataset.createVariable("lon", "f8", ("lon",))[:] = lon
+        dataset.createVariable("lat", "f8", ("lat",))[:] = lat
+        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer
+        dataset.createVariable("u_m_s", "f8", ("lev", "lat", "lon"))[:] = u
+        dataset.createVariable("v_m_s", "f8", ("lev", "lat", "lon"))[:] = v
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = temperature
+        dataset.createVariable("specific_humidity_kg_kg", "f8", ("lev", "lat", "lon"))[:] = sphu
+        dataset.createVariable("pmid_hpa", "f8", ("lev", "lat", "lon"))[:] = pmid
+        dataset.createVariable("pedge_hpa", "f8", ("ilev", "lat", "lon"))[:] = pedge
+        dataset.createVariable("virtual_temperature_k", "f8", ("lev", "lat", "lon"))[:] = tv
+        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = bxheight
+        dataset.createVariable("dry_air_mass_kg", "f8", ("lev", "lat", "lon"))[:] = dry_mass
+        dataset.createVariable("pbl_top_m", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 950.0)
+        dataset.createVariable("hflux_w_m2", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 65.0)
+        dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 90.0)
+        dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 0.35)
+        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = np.ones((lat.size, lon.size))
+        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = 0.0
+    return path
 
 
 def write_synthetic_tpcore_branch_input(
@@ -924,6 +1017,110 @@ def read_transport_step_output(path: str | Path) -> TransportStepOutput:
             ymass_hpa=np.asarray(dataset.variables["ymass_hpa"][:], dtype=np.float64),
             surface_pressure_hpa=np.asarray(dataset.variables["surface_pressure_hpa"][:], dtype=np.float64),
         )
+
+
+def read_vdiff_output(path: str | Path) -> VdiffOutput:
+    with netCDF4.Dataset(path) as dataset:
+        if getattr(dataset, "harness", "") != VDIFF_OUTPUT_VERSION:
+            raise ValueError(f"{path} is not a {VDIFF_OUTPUT_VERSION} file")
+        return VdiffOutput(
+            tracer_conc_after=np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64),
+            specific_humidity_after=np.asarray(dataset.variables["specific_humidity_after"][:], dtype=np.float64),
+            kvh_m2_s=np.asarray(dataset.variables["kvh_m2_s"][:], dtype=np.float64),
+            kvm_m2_s=np.asarray(dataset.variables["kvm_m2_s"][:], dtype=np.float64),
+            pbl_top_m=np.asarray(dataset.variables["pbl_top_m"][:], dtype=np.float64),
+            tpert_k=np.asarray(dataset.variables["tpert_k"][:], dtype=np.float64),
+            qpert_kg_kg=np.asarray(dataset.variables["qpert_kg_kg"][:], dtype=np.float64),
+            negative_count_before_clip=int(getattr(dataset, "negative_count_before_clip")),
+            negative_count_after_clip=int(getattr(dataset, "negative_count_after_clip")),
+            initial_tracer_mass=np.asarray(dataset.variables["initial_tracer_mass"][:], dtype=np.float64),
+            final_tracer_mass=np.asarray(dataset.variables["final_tracer_mass"][:], dtype=np.float64),
+        )
+
+
+def write_python_vdiff_output(input_path: str | Path, output_path: str | Path) -> Path:
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != VDIFF_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {VDIFF_INPUT_VERSION} file")
+        result = run_vdiffdr_one_step(
+            tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            specific_humidity_kg_kg=np.asarray(dataset.variables["specific_humidity_kg_kg"][:], dtype=np.float64),
+            pmid_hpa=np.asarray(dataset.variables["pmid_hpa"][:], dtype=np.float64),
+            pedge_hpa=np.asarray(dataset.variables["pedge_hpa"][:], dtype=np.float64),
+            virtual_temperature_k=np.asarray(dataset.variables["virtual_temperature_k"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            dry_air_mass_kg=np.asarray(dataset.variables["dry_air_mass_kg"][:], dtype=np.float64),
+            pbl_top_m=np.asarray(dataset.variables["pbl_top_m"][:], dtype=np.float64),
+            hflux_w_m2=np.asarray(dataset.variables["hflux_w_m2"][:], dtype=np.float64),
+            eflux_w_m2=np.asarray(dataset.variables["eflux_w_m2"][:], dtype=np.float64),
+            ustar_m_s=np.asarray(dataset.variables["ustar_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+            surface_flux_kg_m2_s=np.asarray(dataset.variables["surface_flux_kg_m2_s"][:], dtype=np.float64),
+        )
+    return write_vdiff_output(output_path, result)
+
+
+def write_vdiff_output(path: str | Path, result) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(path, "w") as dataset:
+        ntracer, nlev, nlat, nlon = result.tracer_conc.shape
+        dataset.createDimension("tracer", ntracer)
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("ilev", nlev + 1)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        dataset.harness = VDIFF_OUTPUT_VERSION
+        dataset.negative_count_before_clip = int(result.negative_count_before_clip)
+        dataset.negative_count_after_clip = int(result.negative_count_after_clip)
+        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = result.tracer_conc
+        dataset.createVariable("specific_humidity_after", "f8", ("lev", "lat", "lon"))[:] = (
+            result.specific_humidity_kg_kg
+        )
+        dataset.createVariable("kvh_m2_s", "f8", ("ilev", "lat", "lon"))[:] = result.kvh_m2_s
+        dataset.createVariable("kvm_m2_s", "f8", ("ilev", "lat", "lon"))[:] = result.kvm_m2_s
+        dataset.createVariable("pbl_top_m", "f8", ("lat", "lon"))[:] = result.pbl_top_m
+        dataset.createVariable("tpert_k", "f8", ("lat", "lon"))[:] = result.tpert_k
+        dataset.createVariable("qpert_kg_kg", "f8", ("lat", "lon"))[:] = result.qpert_kg_kg
+        dataset.createVariable("initial_tracer_mass", "f8", ("tracer",))[:] = result.initial_tracer_mass
+        dataset.createVariable("final_tracer_mass", "f8", ("tracer",))[:] = result.final_tracer_mass
+    return path
+
+
+def compare_vdiff_output(
+    input_path: str | Path,
+    expected_output_path: str | Path,
+    *,
+    python_output_path: str | Path | None = None,
+) -> VdiffComparison:
+    output_path = Path(expected_output_path)
+    python_path = Path(python_output_path) if python_output_path is not None else output_path.with_name(f"python_{output_path.name}")
+    write_python_vdiff_output(input_path, python_path)
+    expected = read_vdiff_output(output_path)
+    actual = read_vdiff_output(python_path)
+    tracer_error = np.abs(actual.tracer_conc_after - expected.tracer_conc_after)
+    sphu_error = np.abs(actual.specific_humidity_after - expected.specific_humidity_after)
+    kvh_error = np.abs(actual.kvh_m2_s - expected.kvh_m2_s)
+    kvm_error = np.abs(actual.kvm_m2_s - expected.kvm_m2_s)
+    return VdiffComparison(
+        tracer_max_abs_error=float(np.max(tracer_error)),
+        tracer_mean_abs_error=float(np.mean(tracer_error)),
+        specific_humidity_max_abs_error=float(np.max(sphu_error)),
+        kvh_max_abs_error=float(np.max(kvh_error)),
+        kvm_max_abs_error=float(np.max(kvm_error)),
+        pbl_top_max_abs_error_m=float(np.max(np.abs(actual.pbl_top_m - expected.pbl_top_m))),
+        tpert_max_abs_error=float(np.max(np.abs(actual.tpert_k - expected.tpert_k))),
+        qpert_max_abs_error=float(np.max(np.abs(actual.qpert_kg_kg - expected.qpert_kg_kg))),
+        negative_count_before_clip_expected=expected.negative_count_before_clip,
+        negative_count_before_clip_actual=actual.negative_count_before_clip,
+        negative_count_after_clip_expected=expected.negative_count_after_clip,
+        negative_count_after_clip_actual=actual.negative_count_after_clip,
+        final_mass_max_abs_error=float(np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))),
+    )
 
 
 def read_tpcore_input(path: str | Path) -> TpcoreInput:
@@ -1527,6 +1724,27 @@ def format_pjc_comparison(comparison: PjcComparison) -> str:
     )
 
 
+def format_vdiff_comparison(comparison: VdiffComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"tracer_max_abs_error,{comparison.tracer_max_abs_error:.8e}",
+            f"tracer_mean_abs_error,{comparison.tracer_mean_abs_error:.8e}",
+            f"specific_humidity_max_abs_error,{comparison.specific_humidity_max_abs_error:.8e}",
+            f"kvh_max_abs_error,{comparison.kvh_max_abs_error:.8e}",
+            f"kvm_max_abs_error,{comparison.kvm_max_abs_error:.8e}",
+            f"pbl_top_max_abs_error_m,{comparison.pbl_top_max_abs_error_m:.8e}",
+            f"tpert_max_abs_error,{comparison.tpert_max_abs_error:.8e}",
+            f"qpert_max_abs_error,{comparison.qpert_max_abs_error:.8e}",
+            f"negative_count_before_clip_expected,{comparison.negative_count_before_clip_expected}",
+            f"negative_count_before_clip_actual,{comparison.negative_count_before_clip_actual}",
+            f"negative_count_after_clip_expected,{comparison.negative_count_after_clip_expected}",
+            f"negative_count_after_clip_actual,{comparison.negative_count_after_clip_actual}",
+            f"final_mass_max_abs_error,{comparison.final_mass_max_abs_error:.8e}",
+        ]
+    )
+
+
 def format_transport_step_comparison(comparison: TransportStepComparison) -> str:
     return "\n".join(
         [
@@ -1608,6 +1826,19 @@ def main(argv: list[str] | None = None) -> int:
     compare_transport_parser = subparsers.add_parser("compare-transport-step-output")
     compare_transport_parser.add_argument("input", type=Path)
     compare_transport_parser.add_argument("output", type=Path)
+
+    write_vdiff_parser = subparsers.add_parser("write-synthetic-vdiff-input")
+    write_vdiff_parser.add_argument("output", type=Path)
+    write_vdiff_parser.add_argument("--dt-s", type=float, default=600.0)
+    write_vdiff_parser.add_argument("--ntracer", type=int, default=2)
+
+    python_vdiff_parser = subparsers.add_parser("python-vdiff-output")
+    python_vdiff_parser.add_argument("input", type=Path)
+    python_vdiff_parser.add_argument("output", type=Path)
+
+    compare_vdiff_parser = subparsers.add_parser("compare-vdiff-output")
+    compare_vdiff_parser.add_argument("input", type=Path)
+    compare_vdiff_parser.add_argument("output", type=Path)
 
     compare_python_tpcore_parser = subparsers.add_parser("compare-python-tpcore-output")
     compare_python_tpcore_parser.add_argument("input", type=Path)
@@ -1717,6 +1948,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare-transport-step-output":
         print(format_transport_step_comparison(compare_transport_step_output(args.input, args.output)))
+        return 0
+    if args.command == "write-synthetic-vdiff-input":
+        path = write_synthetic_vdiff_input(args.output, dt_s=args.dt_s, ntracer=args.ntracer)
+        print(f"wrote_vdiff_input: {path}")
+        return 0
+    if args.command == "python-vdiff-output":
+        path = write_python_vdiff_output(args.input, args.output)
+        print(f"wrote_vdiff_output: {path}")
+        return 0
+    if args.command == "compare-vdiff-output":
+        print(format_vdiff_comparison(compare_vdiff_output(args.input, args.output)))
         return 0
     if args.command == "compare-python-tpcore-output":
         print(format_python_tpcore_comparison(compare_python_tpcore_output(args.input, args.output)))

@@ -116,9 +116,14 @@ class TransportForcing:
     surface_pressure_pa: np.ndarray
     specific_humidity_kg_kg: np.ndarray
     temperature_k: np.ndarray
+    pbl_height_m: np.ndarray
+    sensible_heat_flux_w_m2: np.ndarray
+    latent_heat_flux_w_m2: np.ndarray
+    friction_velocity_m_s: np.ndarray
     lat_deg: np.ndarray
     lon_deg: np.ndarray
     vertical_mapping: str
+    a1_path: Path
     a3dyn_path: Path
     i3_path: Path
 
@@ -134,10 +139,16 @@ def load_transport_forcing(
     met_root = Path(met_root)
     day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
     date = timestamp.strftime("%Y%m%d")
+    a1_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A1")
     a3dyn_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3dyn")
     i3_path = day_dir / MERRA2_FILENAME.format(date=date, collection="I3")
 
-    with netCDF4.Dataset(a3dyn_path) as a3dyn, netCDF4.Dataset(i3_path) as i3, netCDF4.Dataset(template_path) as template:
+    with (
+        netCDF4.Dataset(a1_path) as a1,
+        netCDF4.Dataset(a3dyn_path) as a3dyn,
+        netCDF4.Dataset(i3_path) as i3,
+        netCDF4.Dataset(template_path) as template,
+    ):
         lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
         lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
         u = _read_3d_time_slice(a3dyn, "U", time_index)
@@ -146,6 +157,10 @@ def load_transport_forcing(
         qv = _read_3d_time_slice(i3, "QV", time_index)
         temperature = _read_3d_time_slice(i3, "T", time_index)
         surface_pressure = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
+        pblh = _read_2d_time_slice(a1, "PBLH", time_index)
+        hflux = _read_2d_time_slice(a1, "HFLUX", time_index)
+        eflux = _read_2d_time_slice(a1, "EFLUX", time_index)
+        ustar = _read_2d_time_slice(a1, "USTAR", time_index)
 
     return TransportForcing(
         u_m_s=_map_met_levels_to_47(u),
@@ -154,14 +169,22 @@ def load_transport_forcing(
         surface_pressure_pa=surface_pressure,
         specific_humidity_kg_kg=_map_met_levels_to_47(qv),
         temperature_k=_map_met_levels_to_47(temperature),
+        pbl_height_m=pblh,
+        sensible_heat_flux_w_m2=hflux,
+        latent_heat_flux_w_m2=eflux,
+        friction_velocity_m_s=ustar,
         lat_deg=lat,
         lon_deg=lon,
         vertical_mapping=MERRA2_72_TO_47_MAPPING,
+        a1_path=a1_path.resolve(),
         a3dyn_path=a3dyn_path.resolve(),
         i3_path=i3_path.resolve(),
     )
 
 def _read_3d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index: int) -> np.ndarray:
+    return np.asarray(dataset.variables[variable_name][time_index : time_index + 1], dtype=np.float64)
+
+def _read_2d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index: int) -> np.ndarray:
     return np.asarray(dataset.variables[variable_name][time_index : time_index + 1], dtype=np.float64)
 
 def _map_met_levels_to_47(data: np.ndarray) -> np.ndarray:

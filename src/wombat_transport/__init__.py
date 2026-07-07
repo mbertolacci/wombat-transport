@@ -29,6 +29,7 @@ from wombat_transport.transport import (
     TransportForcing,
     TransportStepResult,
     TransportWindowResult,
+    VdiffDrResult,
     compute_pbl_height,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
@@ -38,6 +39,7 @@ from wombat_transport.transport import (
     pjc_mass_flux_hpa,
     run_transport_one_step,
     run_transport_window,
+    run_vdiffdr_one_step,
 )
 
 __all__ = [
@@ -51,6 +53,7 @@ __all__ = [
     "TransportForcing",
     "TransportStepResult",
     "TransportWindowResult",
+    "VdiffDrResult",
     "apply_emissions",
     "compare_to_time_slice",
     "compute_pbl_height",
@@ -73,6 +76,7 @@ __all__ = [
     "run_emissions_replay",
     "run_transport_one_step",
     "run_transport_window",
+    "run_vdiffdr_one_step",
     "tracer_gridbox_mass_kg",
     "tracer_mass_kg",
     "write_restart_like",

@@ -22,6 +22,8 @@ from wombat_transport.gc_harness import (
     TPCORE_SNAPSHOT_VERSION,
     TRANSPORT_INPUT_VERSION,
     TRANSPORT_OUTPUT_VERSION,
+    VDIFF_INPUT_VERSION,
+    VDIFF_OUTPUT_VERSION,
     append_transport_step_tracers,
     attribute_python_tpcore_error,
     check_large_oracle_fixture,
@@ -30,13 +32,18 @@ from wombat_transport.gc_harness import (
     compare_large_oracle_fixture,
     compare_python_tpcore_output,
     compare_transport_step_output,
+    compare_vdiff_output,
     format_large_oracle_fixture_check,
+    format_vdiff_comparison,
     large_oracle_fixture_paths,
+    read_vdiff_output,
     read_transport_step_output,
     write_python_tpcore_trace,
+    write_python_vdiff_output,
     run_pjc_harness,
     sha256_file,
     write_synthetic_tpcore_branch_input,
+    write_synthetic_vdiff_input,
     write_synthetic_pjc_snapshot_input,
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
@@ -56,6 +63,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
 TPCORE_FXPPM_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_fxppm_low_courant_v1"
 TPCORE_LARGE_CX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_large_courant_polar_v1"
+VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v1"
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -198,6 +206,58 @@ def test_write_pjc_input_records_fixture_contract(tmp_path):
         assert dataset.dimensions["ilev"].size == 5
         assert dataset.variables["u_m_s"].shape == (4, 7, 3)
         assert dataset.variables["area_m2"].shape == (7, 3)
+
+
+def test_write_synthetic_vdiff_input_records_fixture_contract(tmp_path):
+    input_path = write_synthetic_vdiff_input(tmp_path / "vdiff_input.nc")
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == VDIFF_INPUT_VERSION
+        assert dataset.dt_s == 600.0
+        assert dataset.dimensions["lev"].size == 47
+        assert dataset.dimensions["ilev"].size == 48
+        assert dataset.dimensions["lat"].size == 3
+        assert dataset.dimensions["lon"].size == 4
+        assert dataset.dimensions["tracer"].size == 2
+        assert dataset.variables["tracer_conc"].shape == (2, 47, 3, 4)
+        assert dataset.variables["surface_flux_kg_m2_s"].shape == (2, 3, 4)
+
+
+def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):
+    input_path = write_synthetic_vdiff_input(tmp_path / "vdiff_input.nc")
+    output_path = write_python_vdiff_output(input_path, tmp_path / "vdiff_output.nc")
+
+    output = read_vdiff_output(output_path)
+    assert output.tracer_conc_after.shape == (2, 47, 3, 4)
+    assert output.specific_humidity_after.shape == (47, 3, 4)
+    assert output.kvh_m2_s.shape == (48, 3, 4)
+    assert output.kvm_m2_s.shape == (48, 3, 4)
+    assert output.negative_count_after_clip == 0
+
+    comparison = compare_vdiff_output(input_path, output_path)
+    assert comparison.tracer_max_abs_error == 0.0
+    assert comparison.specific_humidity_max_abs_error == 0.0
+    assert comparison.kvh_max_abs_error == 0.0
+    assert "tracer_max_abs_error,0.00000000e+00" in format_vdiff_comparison(comparison)
+
+
+def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
+    comparison = compare_vdiff_output(
+        VDIFF_FIXTURE_DIR / "vdiff_input.nc",
+        VDIFF_FIXTURE_DIR / "vdiff_output.nc",
+        python_output_path=tmp_path / "python_vdiff_output.nc",
+    )
+
+    assert comparison.tracer_max_abs_error < 1.0e-15
+    assert comparison.specific_humidity_max_abs_error < 1.0e-15
+    assert comparison.kvh_max_abs_error == 0.0
+    assert comparison.kvm_max_abs_error == 0.0
+    assert comparison.pbl_top_max_abs_error_m == 0.0
+    assert comparison.tpert_max_abs_error == 0.0
+    assert comparison.qpert_max_abs_error == 0.0
+    assert comparison.negative_count_before_clip_actual == comparison.negative_count_before_clip_expected
+    assert comparison.negative_count_after_clip_actual == comparison.negative_count_after_clip_expected
+    assert comparison.final_mass_max_abs_error < 1.0e-12
 
 
 def test_compare_pjc_output_reports_zero_for_matching_numpy_pjc_fluxes(tmp_path):
