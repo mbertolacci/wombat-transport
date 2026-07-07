@@ -11,10 +11,12 @@ from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
+    compute_pbl_height,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_hpa,
     load_transport_forcing,
+    mix_full_pbl,
     run_transport_one_step,
     run_transport_window,
     _map_met_levels_to_47,
@@ -87,6 +89,90 @@ def test_dry_pressure_edges_from_thickness_reconstructs_bottom_to_top_edges():
     edges = dry_pressure_edges_from_thickness_hpa(delp, top_edge_hpa=0.01)
 
     np.testing.assert_allclose(edges[:, :, 0, 0], [[125.01, 25.01, 5.01, 0.01]])
+
+
+def test_compute_pbl_height_matches_geos_chem_fractional_level_bookkeeping():
+    bxheight = np.array(
+        [
+            [[100.0, 100.0]],
+            [[100.0, 100.0]],
+            [[100.0, 100.0]],
+        ],
+        dtype=np.float64,
+    )
+    pedge = np.array(
+        [
+            [[1000.0, 1000.0]],
+            [[900.0, 900.0]],
+            [[800.0, 800.0]],
+            [[700.0, 700.0]],
+        ],
+        dtype=np.float64,
+    )
+    tv = np.full_like(bxheight, 280.0)
+    pblh = np.array([[150.0, 60.0]], dtype=np.float64)
+
+    state = compute_pbl_height(
+        pbl_height_m=pblh,
+        bxheight_m=bxheight,
+        pressure_edges_hpa=pedge,
+        virtual_temperature_k=tv,
+    )
+
+    expected_first_top = 900.0 * np.exp(-50.0 * 9.80665 / (287.0 * 280.0))
+    expected_second_top = 1000.0 * np.exp(-60.0 * 9.80665 / (287.0 * 280.0))
+    np.testing.assert_allclose(state.pbl_top_hpa, [[expected_first_top, expected_second_top]])
+    np.testing.assert_allclose(state.pbl_thick_hpa, [[1000.0 - expected_first_top, 1000.0 - expected_second_top]])
+    np.testing.assert_allclose(np.sum(state.f_of_pbl, axis=0), np.ones((1, 2)))
+    np.testing.assert_array_equal(state.in_pbl[:, 0, 0], [True, False, False])
+    np.testing.assert_array_equal(state.in_pbl[:, 0, 1], [False, False, False])
+    np.testing.assert_allclose(state.pbl_top_l[0, 0], 1.0 + (900.0 - expected_first_top) / 100.0)
+    np.testing.assert_allclose(state.pbl_top_l[0, 1], (1000.0 - expected_second_top) / 100.0)
+    assert state.pbl_max_l == 2
+
+
+def test_mix_full_pbl_mass_weights_full_and_fractional_levels():
+    tracer = np.array(
+        [
+            [
+                [[1.0]],
+                [[3.0]],
+                [[9.0]],
+            ],
+            [
+                [[2.0]],
+                [[6.0]],
+                [[18.0]],
+            ],
+        ],
+        dtype=np.float64,
+    )
+    dry_mass = np.array(
+        [
+            [[2.0]],
+            [[6.0]],
+            [[10.0]],
+        ],
+        dtype=np.float64,
+    )
+    pbl_top_l = np.array([[1.5]], dtype=np.float64)
+
+    mixed = mix_full_pbl(tracer, dry_mass, pbl_top_l)
+
+    expected_mean = np.array(
+        [
+            (1.0 * 2.0 + 3.0 * 6.0 * 0.5) / (2.0 + 6.0 * 0.5),
+            (2.0 * 2.0 + 6.0 * 6.0 * 0.5) / (2.0 + 6.0 * 0.5),
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(mixed[:, 0, 0, 0], expected_mean)
+    np.testing.assert_allclose(mixed[:, 1, 0, 0], tracer[:, 1, 0, 0] + 0.5 * (expected_mean - tracer[:, 1, 0, 0]))
+    np.testing.assert_allclose(mixed[:, 2, 0, 0], tracer[:, 2, 0, 0])
+
+    before_column_mass = np.sum(tracer[:, :, 0, 0] * dry_mass[:, 0, 0], axis=1)
+    after_column_mass = np.sum(mixed[:, :, 0, 0] * dry_mass[:, 0, 0], axis=1)
+    np.testing.assert_allclose(after_column_mass, before_column_mass)
 
 
 def test_transport_one_step_conserves_residual_scalar_mass():

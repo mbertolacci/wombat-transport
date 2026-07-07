@@ -1,10 +1,10 @@
 # Wombat Transport Status
 
-Last checkpoint: `6b0bc4d Fix TPCORE cross-term real index semantics`
+Last checkpoint: `db33b02 Remove legacy transport scaffold`
 
 Validation at that checkpoint:
 
-- Full test suite passed at that checkpoint: `77 passed`.
+- Full test suite passed at that checkpoint: `71 passed`.
 - Working tree was clean immediately after the commit.
 
 ## Where We Are
@@ -33,6 +33,10 @@ Validation at that checkpoint:
     diagnostics;
   - pressure-thickness and pressure-edge comparison output against
     `Met_PEDGEDRY` when LevelEdge diagnostics are available.
+- PBL work has started with a direct Python port of GEOS-Chem
+  `Compute_Pbl_Height` bookkeeping plus the compact mass-weighted full-PBL
+  mixer core from `TurbDay`. The configured production path still needs
+  non-local VDIFF before PBL can be coupled into transport.
 - A GEOS-Chem-backed operator harness exists under `tools/gc_harness/`. It
   writes NetCDF fixtures from a Wombat run config, calls `DO_PJC_PFIX` through
   a small Fortran executable linked against `base/build`, and can also run one
@@ -74,6 +78,9 @@ Validation at that checkpoint:
   behavior instead of continuing silently outside the validated path.
 - PBL mixing, convection, three-hourly production validation, and performance
   benchmarks are not implemented yet.
+- Missing-operator gaps are not validation milestones. The project target is
+  operator-by-operator numerical parity: isolate a GEOS-Chem operator, match it
+  to roundoff or a documented floating-point tolerance, then move on.
 - `oracle_data/manifests/base_initial_tpcore_v1.json` defines the first
   full-grid base initial-condition PJC+TPCORE fixture. It is useful for oracle
   coverage and branch reporting. Current Python TPCORE matches it at
@@ -95,79 +102,49 @@ Validation at that checkpoint:
 
 ## Good Next Steps
 
-1. Extend TPCORE validation beyond the one-tracer full-grid oracle.
-   - Use the tracked compact fixture in `tests/fixtures/tpcore_snapshot_v1/`
-     for fast iteration and `python -m wombat_transport.gc_harness
-     transport-step base_wombat/run.yml --max-tracers 1` for full-grid smoke
-     checks.
-   - The compact fixture now matches final surface pressure exactly and final
-     tracer concentrations with max error below `1e-11`.
-   - The X full-PPM and compact large-Courant E-W branch fixtures now pass.
-     The full-grid synthetic low-Courant control fixture and full-grid
-     `base_initial_tpcore_v1` fixture also pass at roundoff.
-   - Add a residual multi-tracer one-step oracle fixture next, then add
-     multi-step/window fixtures once the main transport path is routed through
-     the GEOS-Chem-oriented TPCORE port.
-   - Use the `oracle_data/` cache for full-grid and later multi-step fixtures;
-     keep `tests/fixtures/` reserved for tiny microscope fixtures that can run
-     in normal unit tests.
-   - Keep comparisons per substage; do not tune against only an aggregate
-     concentration error.
-   - Use `compare-python-tpcore-output` to keep PJC flux, surface pressure,
-     tracer error, and fixture Courant limits visible as separate metrics.
+1. Continue PBL mixing with non-local VDIFF.
+   - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.
+   - Treat `Do_Vdiff -> VDIFFDR -> vdiff/pbldif/qvdiff` as the configured
+     non-local PBL target.
+   - Extend the GEOS-Chem harness with only the `MetState`, `ChmState`,
+     `DgnState`, and `Input_Opt` fields proven necessary by source tracing.
+   - Keep zero surface fluxes and no dry deposition for the first oracle so
+     turbulent mixing is isolated from emissions and deposition sequencing.
+   - Verify PBL as its own operator stage before coupling it into
+     `transport-one-step` or `transport-window`.
 
-2. Lock down any remaining PJC differences before treating it as exact.
-   - The current one-step full-grid base mass-flux differences are at
-     roundoff-level tolerance; residual-specific mass-flux behavior still needs
-     explicit coverage.
-   - If needed, expose intermediate diagnostics from `pjc_pfix_mod.F90` to
-     isolate whether the remaining difference is constants, pressure
-     coordinate setup, or floating-point/order-of-operations.
-
-3. Extend transport-step fixtures beyond one base tracer.
-   - Run the same harness on residual tracers now that the one-tracer base
-     orientation and units are verified.
-   - Add larger synthetic tracer-count fixtures after the oracle comparison is
-     stable enough to benchmark.
-
-4. Add a transport verification command.
-   - Walk base `SpeciesConcThreeHourly`, `LevelEdgeDiagsThreeHourly`, and
-     `StateMetThreeHourly` files in chronological order.
-   - Run Wombat in repeated three-hour windows.
-   - Emit CSV-style equivalence checks for concentration, scalar mass, dry
-     pressure thickness, and dry pressure edges.
-   - Include `--max-windows` for quick smoke runs and `--output-csv` for longer
-     verification runs.
-
-5. Port and verify transport in GEOS-Chem operator order.
+2. Port and verify transport in GEOS-Chem operator order.
    - Treat GEOS-Chem as the reference semantics, not as an approximate target.
    - For each operator, add the closest practical single-step or short-window
      check before moving on.
    - Keep each new operator behind a clear stage until it has its own parity
      check or direct GEOS-Chem justification.
 
-6. Add negative-value filling.
+3. Add negative-value filling where it is used outside current TPCORE coverage.
    - Match GEOS-Chem behavior before any high-order advection work depends on
      it.
    - Track negative counts/minima before and after filling in verification
      output.
 
-7. Extend the main transport path beyond TPCORE.
+4. Extend the main transport path beyond TPCORE.
    - Use `transport_mod.F90`, `tpcore_fvdas_mod.F90`, and `pjc_pfix_mod.F90` as
      references.
    - Preserve the current TPCORE parity checks while adding the next
      GEOS-Chem operator stages.
 
-8. Add PBL mixing.
-   - Use `mixing_mod.F90`, `vdiff_mod.F90`, and `pbl_mix_mod.F90` as references.
-   - Verify it as its own operator stage before coupling it into longer
-     transport windows.
-
-9. Add convection.
+5. Add convection.
    - Use `convection_mod.F90` as the reference.
    - Keep it behind a clear operator stage so it can be tested independently.
 
-10. Benchmark vectorized multi-tracer scaling once the verification harness
+6. Add production verification once the relevant operators exist.
+   - Walk base `SpeciesConcThreeHourly`, `LevelEdgeDiagsThreeHourly`, and
+     `StateMetThreeHourly` files in chronological order.
+   - Run Wombat in repeated three-hour windows only after the staged operator
+     sequence is present enough for the comparison to be meaningful.
+   - Emit CSV-style equivalence checks for concentration, scalar mass, dry
+     pressure thickness, and dry pressure edges.
+
+7. Benchmark vectorized multi-tracer scaling once the verification harness
    exists.
    - Measure 1 tracer, 24 tracers, and larger synthetic tracer counts.
    - Report operator time separately from NetCDF I/O.

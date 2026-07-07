@@ -168,6 +168,13 @@ Port transport behavior in stages:
 Prefer direct semantic ports from GEOS-Chem source before algebraic
 simplification. Any simplification must be covered by comparison tests.
 
+For missing operators, do not spend time quantifying the expected full-run gap
+against GEOS-Chem as a milestone. The target is operator-by-operator numerical
+parity: isolate one GEOS-Chem operator, match it to roundoff or a documented
+floating-point tolerance, then move to the next operator. Full-window
+comparisons are useful only after the relevant operators are present, or when
+debugging unexplained drift in an already-covered operator sequence.
+
 ### 4. Validation
 
 Compare Python output to GEOS-Chem fields in increasing time horizon. Use the
