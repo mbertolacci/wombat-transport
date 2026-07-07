@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from wombat_transport.transport.driver import (
+    ConvectionInputState,
     TransportStageMass,
+    TransportStepDiagnostics,
     TransportStepResult,
     TransportWindowResult,
+    VdiffInputState,
     run_transport_one_step,
     run_transport_window,
+    trace_transport_one_step,
 )
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import (
@@ -51,9 +55,12 @@ __all__ = [
     "MERRA2_FILENAME",
     "TransportForcing",
     "ConvectionResult",
+    "ConvectionInputState",
     "TransportStageMass",
+    "TransportStepDiagnostics",
     "TransportStepResult",
     "TransportWindowResult",
+    "VdiffInputState",
     "PblHeightState",
     "VdiffDrResult",
     "TpcoreBranchReport",
@@ -72,6 +79,7 @@ __all__ = [
     "pressure_edges_hpa",
     "run_transport_one_step",
     "run_transport_window",
+    "trace_transport_one_step",
     "run_cloud_convection_one_step",
     "run_tpcore_one_step",
     "run_vdiffdr_one_step",

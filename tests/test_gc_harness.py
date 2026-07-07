@@ -38,6 +38,7 @@ from wombat_transport.gc_harness import (
     compare_python_tpcore_output,
     compare_transport_step_output,
     compare_convection_output,
+    compare_transport_chain_handoffs,
     compare_vdiff_output,
     format_convection_comparison,
     format_large_oracle_fixture_check,
@@ -246,6 +247,32 @@ def test_transport_chain_oracle_fixture_if_cached_reports_common_and_reported_ma
     assert "common_basis_vdiff_stage_mass_change_max_abs" in metrics
     assert "reported_vdiff_stage_mass_change_max_abs" in metrics
     assert int(metrics["negative_count_actual"]) == 0
+
+
+def test_transport_chain_handoff_report_if_cached_locates_stage_interfaces():
+    required = (
+        BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+        BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+    )
+    for fixture_id in required:
+        check = check_large_oracle_fixture(fixture_id)
+        if not check.is_available:
+            pytest.skip(format_large_oracle_fixture_check(check))
+
+    report = compare_transport_chain_handoffs(BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID)
+    rows = {
+        (section, field): (float(max_abs), float(mean_abs))
+        for section, field, max_abs, mean_abs, *_ in (line.split(",") for line in report.splitlines()[1:])
+    }
+
+    assert ("tpcore_to_vdiff_input", "tracer_conc") in rows
+    assert ("tpcore_to_vdiff_input", "dry_air_mass_kg") in rows
+    assert ("vdiff_output", "tracer_conc_after") in rows
+    assert ("vdiff_to_convection_input", "tracer_conc") in rows
+    assert ("vdiff_to_convection_input", "cmfmc_kg_m2_s") in rows
+    assert ("convection_output", "tracer_conc_after") in rows
+    assert ("final_chain_output", "tracer_conc_after") in rows
 
 
 def test_residual_initial_oracle_fixture_if_cached_matches_python_tpcore():

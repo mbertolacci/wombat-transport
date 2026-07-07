@@ -21,6 +21,7 @@ from wombat_transport.transport import (
     run_vdiffdr_one_step,
     run_transport_one_step,
     run_transport_window,
+    trace_transport_one_step,
     _map_met_levels_to_47,
 )
 
@@ -232,6 +233,26 @@ def test_transport_one_step_conserves_residual_scalar_mass():
     assert result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert np.all(np.isfinite(result.state.data))
     np.testing.assert_allclose(result.final_scalar_mass, result.initial_scalar_mass, rtol=1e-13)
+
+
+def test_trace_transport_one_step_captures_operator_handoffs():
+    config = load_run_config(RESIDUAL_CONFIG)
+    field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
+    field = TracerField(
+        names=field.names[:1],
+        data=field.data[:1],
+        units=field.units[:1],
+        coords=field.coords,
+    )
+
+    trace = trace_transport_one_step(field, _load_forcing(config), config.grid_template, dt_s=600.0)
+
+    assert trace.result.transport_operators == ("tpcore", "vdiff", "convection")
+    assert trace.tpcore_state.tracer_conc_after.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert trace.vdiff_input.tracer_conc.shape == trace.tpcore_state.tracer_conc_after.shape
+    assert trace.vdiff_output.tracer_conc.shape == trace.convection_input.tracer_conc.shape
+    assert trace.convection_output.tracer_conc.shape == trace.result.state.data[:, 0, :, :, :].shape
+    np.testing.assert_allclose(trace.result.state.data[:, 0, :, :, :], trace.convection_output.tracer_conc)
 
 
 def test_transport_window_accumulates_average_state_and_conserves_mass():

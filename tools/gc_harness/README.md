@@ -160,6 +160,8 @@ python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_tpcore
 
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_transport_chain_v1
 
+python -m wombat_transport.gc_harness oracle-fixture-handoff-compare base_initial_transport_chain_v1
+
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_vdiff_after_tpcore_v1
 
 python -m wombat_transport.gc_harness oracle-fixture-compare base_initial_convection_fullgrid_v1
@@ -304,6 +306,23 @@ This chained fixture is an integration diagnostic, not a parity claim. The
 remaining final-field and common-basis mass-change deltas should be
 investigated before using the chained transport sequence for SpeciesConc parity
 claims.
+
+Current chain handoff diagnostic highlights:
+
+```text
+section,field,max_abs,mean_abs,actual_shape,expected_shape
+tpcore_to_vdiff_input,tracer_conc,3.79470760e-18,7.51501943e-20,1x47x91x144,1x47x91x144
+tpcore_to_vdiff_input,virtual_temperature_k,2.35230899e-02,2.38926906e-03,47x91x144,47x91x144
+tpcore_to_vdiff_input,bxheight_m,1.65653995e-02,1.71004461e-03,47x91x144,47x91x144
+vdiff_output,tracer_conc_after,4.87602580e-10,1.04213886e-13,1x47x91x144,1x47x91x144
+vdiff_to_convection_input,tracer_conc,4.87602580e-10,1.04213886e-13,1x47x91x144,1x47x91x144
+convection_output,tracer_conc_after,4.85862642e-10,9.54864856e-14,1x47x91x144,1x47x91x144
+final_chain_output,tracer_conc_after,4.85862642e-10,9.54864856e-14,1x47x91x144,1x47x91x144
+```
+
+This points the current chain mismatch at the VDIFF handoff inputs, before the
+VDIFF output tracer delta appears. The largest nontracer differences are in
+`virtual_temperature_k` and derived `bxheight_m`.
 
 Current full-grid one-tracer VDIFF-after-TPCORE diagnostic fixture result:
 

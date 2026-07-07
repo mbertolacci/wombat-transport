@@ -28,6 +28,7 @@ from wombat_transport.transport import (
     _map_met_levels_to_47,
 )
 from wombat_transport.transport.driver import run_transport_one_step
+from wombat_transport.transport.driver import trace_transport_one_step
 from wombat_transport.transport.forcing import _map_met_edges_to_48
 from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
 from wombat_transport.transport.tpcore import trace_tpcore_one_step
@@ -1903,6 +1904,194 @@ def compare_transport_chain_oracle_fixture(
     )
 
 
+def compare_transport_chain_handoffs(
+    fixture_id: str = BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+    *,
+    cache_dir: str | Path = "oracle_data",
+    manifest_dir: str | Path | None = None,
+) -> str:
+    if fixture_id != BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
+        raise ValueError(f"{fixture_id!r} is not a transport-chain oracle fixture")
+    for required in (
+        BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
+        BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+    ):
+        check = check_large_oracle_fixture(required, cache_dir=cache_dir, manifest_dir=manifest_dir)
+        if not check.is_available:
+            raise FileNotFoundError(format_large_oracle_fixture_check(check))
+
+    chain_paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
+    vdiff_paths = large_oracle_fixture_paths(
+        BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
+        cache_dir=cache_dir,
+        manifest_dir=manifest_dir,
+    )
+    convection_paths = large_oracle_fixture_paths(
+        BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
+        cache_dir=cache_dir,
+        manifest_dir=manifest_dir,
+    )
+    diagnostics = _trace_transport_chain_fixture(chain_paths)
+    rows = ["section,field,max_abs,mean_abs,actual_shape,expected_shape"]
+
+    with netCDF4.Dataset(vdiff_paths.input_path) as dataset:
+        _append_vdiff_input_handoff_rows(rows, diagnostics.vdiff_input, dataset)
+    expected_vdiff = read_vdiff_output(vdiff_paths.output_path)
+    _append_vdiff_output_handoff_rows(rows, diagnostics.vdiff_output, expected_vdiff)
+
+    with netCDF4.Dataset(convection_paths.input_path) as dataset:
+        _append_convection_input_handoff_rows(rows, diagnostics.convection_input, dataset)
+    expected_convection = read_convection_output(convection_paths.output_path)
+    _append_convection_output_handoff_rows(rows, diagnostics.convection_output, expected_convection)
+
+    with netCDF4.Dataset(chain_paths.output_path) as dataset:
+        _append_array_error_row(
+            rows,
+            "final_chain_output",
+            "tracer_conc_after",
+            diagnostics.result.state.data[:, 0, :, :, :],
+            np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64),
+        )
+        _append_array_error_row(
+            rows,
+            "final_chain_output",
+            "diag14_mass_flux",
+            diagnostics.convection_output.diag14_mass_flux,
+            np.asarray(dataset.variables["diag14_mass_flux"][:], dtype=np.float64),
+        )
+    return "\n".join(rows)
+
+
+def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
+    definition = _load_large_oracle_definition(paths.manifest_path if paths.manifest_path.exists() else paths.definition_path)
+    source = dict(definition.get("source", {}))
+    config = load_run_config(source.get("run_config", "base_wombat/run.yml"))
+    tracer_names = _read_transport_step_tracer_names(paths.input_path)
+    with netCDF4.Dataset(paths.input_path) as dataset:
+        tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        dt_s = float(dataset.dt_s)
+    forcing = load_transport_forcing(
+        _resolve_config_value(config.root, config.transport["met_root"]),
+        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        config.grid_template,
+        time_index=int(source.get("time_index", 0)),
+    )
+    field = TracerField(
+        names=tracer_names,
+        data=tracer0[:, np.newaxis, :, :, :],
+        units=tuple("mol mol-1 dry" for _ in tracer_names),
+        coords={},
+    )
+    return trace_transport_one_step(field, forcing, config.grid_template, dt_s=dt_s)
+
+
+def _append_vdiff_input_handoff_rows(rows: list[str], actual, dataset: netCDF4.Dataset) -> None:
+    fields = (
+        ("tracer_conc", "tracer_conc"),
+        ("u_m_s", "u_m_s"),
+        ("v_m_s", "v_m_s"),
+        ("temperature_k", "temperature_k"),
+        ("specific_humidity_kg_kg", "specific_humidity_kg_kg"),
+        ("pmid_hpa", "pmid_hpa"),
+        ("pedge_hpa", "pedge_hpa"),
+        ("virtual_temperature_k", "virtual_temperature_k"),
+        ("bxheight_m", "bxheight_m"),
+        ("dry_air_mass_kg", "dry_air_mass_kg"),
+        ("pbl_top_m", "pbl_top_m"),
+        ("hflux_w_m2", "hflux_w_m2"),
+        ("eflux_w_m2", "eflux_w_m2"),
+        ("ustar_m_s", "ustar_m_s"),
+        ("area_m2", "area_m2"),
+        ("surface_flux_kg_m2_s", "surface_flux_kg_m2_s"),
+    )
+    for attr, variable in fields:
+        _append_array_error_row(
+            rows,
+            "tpcore_to_vdiff_input",
+            variable,
+            getattr(actual, attr),
+            np.asarray(dataset.variables[variable][:], dtype=np.float64),
+        )
+
+
+def _append_vdiff_output_handoff_rows(rows: list[str], actual, expected: VdiffOutput) -> None:
+    comparisons = (
+        ("tracer_conc_after", actual.tracer_conc, expected.tracer_conc_after),
+        ("specific_humidity_after", actual.specific_humidity_kg_kg, expected.specific_humidity_after),
+        ("kvh_m2_s", actual.kvh_m2_s, expected.kvh_m2_s),
+        ("kvm_m2_s", actual.kvm_m2_s, expected.kvm_m2_s),
+        ("pbl_top_m", actual.pbl_top_m, expected.pbl_top_m),
+        ("tpert_k", actual.tpert_k, expected.tpert_k),
+        ("qpert_kg_kg", actual.qpert_kg_kg, expected.qpert_kg_kg),
+    )
+    for field, actual_values, expected_values in comparisons:
+        _append_array_error_row(rows, "vdiff_output", field, actual_values, expected_values)
+
+
+def _append_convection_input_handoff_rows(rows: list[str], actual, dataset: netCDF4.Dataset) -> None:
+    fields = (
+        ("tracer_conc", "tracer_conc"),
+        ("cmfmc_kg_m2_s", "cmfmc_kg_m2_s"),
+        ("dtrain_kg_m2_s", "dtrain_kg_m2_s"),
+        ("dqrcu_kg_kg_s", "dqrcu_kg_kg_s"),
+        ("reevapcn_kg_kg_s", "reevapcn_kg_kg_s"),
+        ("delp_dry_hpa", "delp_dry_hpa"),
+        ("delp_hpa", "delp_hpa"),
+        ("area_m2", "area_m2"),
+        ("bxheight_m", "bxheight_m"),
+        ("pficu_kg_m2_s", "pficu_kg_m2_s"),
+        ("pflcu_kg_m2_s", "pflcu_kg_m2_s"),
+        ("temperature_k", "temperature_k"),
+        ("precccon_mm_day", "precccon_mm_day"),
+    )
+    for attr, variable in fields:
+        _append_array_error_row(
+            rows,
+            "vdiff_to_convection_input",
+            variable,
+            getattr(actual, attr),
+            np.asarray(dataset.variables[variable][:], dtype=np.float64),
+        )
+
+
+def _append_convection_output_handoff_rows(rows: list[str], actual, expected: ConvectionOutput) -> None:
+    _append_array_error_row(
+        rows,
+        "convection_output",
+        "tracer_conc_after",
+        actual.tracer_conc,
+        expected.tracer_conc_after,
+    )
+    _append_array_error_row(
+        rows,
+        "convection_output",
+        "diag14_mass_flux",
+        actual.diag14_mass_flux,
+        expected.diag14_mass_flux,
+    )
+
+
+def _append_array_error_row(
+    rows: list[str],
+    section: str,
+    field: str,
+    actual_values: np.ndarray,
+    expected_values: np.ndarray,
+) -> None:
+    actual = np.asarray(actual_values, dtype=np.float64)
+    expected = np.asarray(expected_values, dtype=np.float64)
+    actual_shape = "x".join(str(value) for value in actual.shape)
+    expected_shape = "x".join(str(value) for value in expected.shape)
+    if actual.shape != expected.shape:
+        rows.append(f"{section},{field},nan,nan,{actual_shape},{expected_shape}")
+        return
+    error = np.abs(actual - expected)
+    rows.append(
+        f"{section},{field},{float(np.max(error)):.8e},{float(np.mean(error)):.8e},{actual_shape},{expected_shape}"
+    )
+
+
 def sha256_file(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -3255,6 +3444,11 @@ def main(argv: list[str] | None = None) -> int:
     compare_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
     compare_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
 
+    handoff_compare_oracle_parser = subparsers.add_parser("oracle-fixture-handoff-compare")
+    handoff_compare_oracle_parser.add_argument("fixture_id", choices=(BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,))
+    handoff_compare_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
+    handoff_compare_oracle_parser.add_argument("--manifest-dir", type=Path, default=None)
+
     trace_compare_oracle_parser = subparsers.add_parser("oracle-fixture-trace-compare")
     trace_compare_oracle_parser.add_argument("fixture_id", choices=LARGE_ORACLE_FIXTURE_IDS)
     trace_compare_oracle_parser.add_argument("--cache-dir", type=Path, default=Path("oracle_data"))
@@ -3410,6 +3604,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "oracle-fixture-compare":
         print(compare_large_oracle_fixture(args.fixture_id, cache_dir=args.cache_dir, manifest_dir=args.manifest_dir))
+        return 0
+    if args.command == "oracle-fixture-handoff-compare":
+        print(compare_transport_chain_handoffs(args.fixture_id, cache_dir=args.cache_dir, manifest_dir=args.manifest_dir))
         return 0
     if args.command == "oracle-fixture-trace-compare":
         print(
