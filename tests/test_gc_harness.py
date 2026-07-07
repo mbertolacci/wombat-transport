@@ -10,6 +10,7 @@ import pytest
 from wombat_transport.gc_harness import (
     BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
     BASE_INITIAL_TPCORE_FIXTURE_ID,
+    BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
     BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID,
     FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID,
     RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
@@ -210,7 +211,8 @@ def test_fullgrid_vdiff_after_tpcore_oracle_fixture_if_cached_reports_vdiff_metr
 
     assert "specific_humidity_max_abs_error" in metrics
     assert "kvh_max_abs_error" in metrics
-    assert "final_mass_max_abs_error" in metrics
+    assert "common_basis_final_mass_max_abs_error" in metrics
+    assert "reported_final_mass_max_abs_error" in metrics
     assert float(metrics["tracer_max_abs_error"]) < 1.0e-15
     assert int(metrics["negative_count_after_clip_actual"]) == 0
 
@@ -225,9 +227,25 @@ def test_fullgrid_convection_oracle_fixture_if_cached_reports_convection_metrics
 
     assert "diag14_max_abs_error" in metrics
     assert "internal_steps_actual" in metrics
-    assert "final_mass_max_abs_error" in metrics
+    assert "common_basis_final_mass_max_abs_error" in metrics
+    assert "reported_final_mass_max_abs_error" in metrics
     assert float(metrics["tracer_max_abs_error"]) < 1.0e-15
     assert int(metrics["negative_count_after_actual"]) == 0
+
+
+def test_transport_chain_oracle_fixture_if_cached_reports_common_and_reported_mass_metrics():
+    check = check_large_oracle_fixture(BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID)
+    if not check.is_available:
+        pytest.skip(format_large_oracle_fixture_check(check))
+
+    report = compare_large_oracle_fixture(BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID)
+    metrics = dict(line.split(",", 1) for line in report.splitlines()[1:])
+
+    assert "common_basis_final_mass_max_abs_error" in metrics
+    assert "reported_final_mass_max_abs_error" in metrics
+    assert "common_basis_vdiff_stage_mass_change_max_abs" in metrics
+    assert "reported_vdiff_stage_mass_change_max_abs" in metrics
+    assert int(metrics["negative_count_actual"]) == 0
 
 
 def test_residual_initial_oracle_fixture_if_cached_matches_python_tpcore():
@@ -335,6 +353,25 @@ def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):
     assert comparison.specific_humidity_max_abs_error == 0.0
     assert comparison.kvh_max_abs_error == 0.0
     assert "tracer_max_abs_error,0.00000000e+00" in format_vdiff_comparison(comparison)
+    assert "common_basis_final_mass_max_abs_error,0.00000000e+00" in format_vdiff_comparison(comparison)
+
+
+def test_vdiff_common_basis_mass_ignores_perturbed_reported_scalar(tmp_path):
+    input_path = write_synthetic_vdiff_input(tmp_path / "vdiff_input.nc")
+    output_path = write_python_vdiff_output(input_path, tmp_path / "vdiff_output.nc")
+    with netCDF4.Dataset(output_path, "a") as dataset:
+        dataset.variables["final_tracer_mass"][:] = np.asarray(dataset.variables["final_tracer_mass"][:]) + 123.0
+
+    comparison = compare_vdiff_output(
+        input_path,
+        output_path,
+        python_output_path=tmp_path / "python_vdiff_output.nc",
+    )
+
+    assert comparison.tracer_max_abs_error == 0.0
+    assert comparison.common_basis_final_mass_max_abs_error == 0.0
+    assert comparison.common_basis_mass_change_max_abs_error == 0.0
+    assert comparison.reported_final_mass_max_abs_error == pytest.approx(123.0)
 
 
 def test_write_synthetic_convection_input_records_fixture_contract(tmp_path):
@@ -372,6 +409,27 @@ def test_python_convection_output_roundtrips_through_comparison_contract(tmp_pat
     assert comparison.tracer_max_abs_error == 0.0
     assert comparison.diag14_max_abs_error == 0.0
     assert "tracer_max_abs_error,0.00000000e+00" in format_convection_comparison(comparison)
+    assert "common_basis_final_mass_max_abs_error,0.00000000e+00" in format_convection_comparison(comparison)
+
+
+def test_convection_common_basis_mass_ignores_perturbed_reported_scalar(tmp_path):
+    input_path = write_synthetic_convection_input(tmp_path / "convection_input.nc")
+    output_path = write_python_convection_output(input_path, tmp_path / "convection_output.nc")
+    with netCDF4.Dataset(output_path, "a") as dataset:
+        dataset.variables["initial_tracer_mass"][:] = np.asarray(dataset.variables["initial_tracer_mass"][:]) - 10.0
+        dataset.variables["final_tracer_mass"][:] = np.asarray(dataset.variables["final_tracer_mass"][:]) + 15.0
+
+    comparison = compare_convection_output(
+        input_path,
+        output_path,
+        python_output_path=tmp_path / "python_convection_output.nc",
+    )
+
+    assert comparison.tracer_max_abs_error == 0.0
+    assert comparison.common_basis_final_mass_max_abs_error == 0.0
+    assert comparison.common_basis_mass_change_max_abs_error == 0.0
+    assert comparison.reported_initial_mass_max_abs_error == pytest.approx(10.0)
+    assert comparison.reported_final_mass_max_abs_error == pytest.approx(15.0)
 
 
 def test_convection_no_cloud_leaves_tracer_unchanged(tmp_path):
@@ -492,8 +550,8 @@ def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path):
     assert comparison.diag14_max_abs_error == 0.0
     assert comparison.negative_count_before_actual == comparison.negative_count_before_expected
     assert comparison.negative_count_after_actual == comparison.negative_count_after_expected
-    assert comparison.mass_change_max_abs == 0.0
-    assert comparison.expected_mass_change_max_abs == 0.0
+    assert comparison.common_basis_python_mass_change_max_abs == 0.0
+    assert comparison.common_basis_oracle_mass_change_max_abs == 0.0
 
 
 def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
@@ -512,7 +570,7 @@ def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
     assert comparison.qpert_max_abs_error == 0.0
     assert comparison.negative_count_before_clip_actual == comparison.negative_count_before_clip_expected
     assert comparison.negative_count_after_clip_actual == comparison.negative_count_after_clip_expected
-    assert comparison.final_mass_max_abs_error < 1.0e-12
+    assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
 
 
 def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_path):
@@ -528,7 +586,7 @@ def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_pat
     assert comparison.kvm_max_abs_error == 0.0
     assert comparison.negative_count_before_clip_actual == 0
     assert comparison.negative_count_after_clip_actual == 0
-    assert comparison.final_mass_max_abs_error < 1.0e-12
+    assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
 
 
 def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path):
@@ -546,7 +604,7 @@ def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path):
     assert comparison.negative_count_before_clip_actual == 2
     assert comparison.negative_count_after_clip_expected == 0
     assert comparison.negative_count_after_clip_actual == 0
-    assert comparison.final_mass_max_abs_error < 1.0e-12
+    assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
 
 
 def test_compare_pjc_output_reports_zero_for_matching_numpy_pjc_fluxes(tmp_path):

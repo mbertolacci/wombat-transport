@@ -214,12 +214,20 @@ class TransportChainComparison:
     tracer_mean_abs_error: float
     negative_count_expected: int
     negative_count_actual: int
-    final_mass_max_abs_error: float
-    python_mass_change_max_abs: float
-    oracle_mass_change_max_abs: float
-    tpcore_stage_mass_change_max_abs: float
-    vdiff_stage_mass_change_max_abs: float
-    convection_stage_mass_change_max_abs: float
+    common_basis_initial_mass_max_abs_error: float
+    common_basis_final_mass_max_abs_error: float
+    common_basis_mass_change_max_abs_error: float
+    common_basis_python_mass_change_max_abs: float
+    common_basis_oracle_mass_change_max_abs: float
+    common_basis_tpcore_stage_mass_change_max_abs: float
+    common_basis_vdiff_stage_mass_change_max_abs: float
+    common_basis_convection_stage_mass_change_max_abs: float
+    reported_final_mass_max_abs_error: float
+    reported_python_mass_change_max_abs: float
+    reported_oracle_mass_change_max_abs: float
+    reported_tpcore_stage_mass_change_max_abs: float
+    reported_vdiff_stage_mass_change_max_abs: float
+    reported_convection_stage_mass_change_max_abs: float
 
 
 @dataclass(frozen=True)
@@ -278,7 +286,11 @@ class VdiffComparison:
     negative_count_before_clip_actual: int
     negative_count_after_clip_expected: int
     negative_count_after_clip_actual: int
-    final_mass_max_abs_error: float
+    common_basis_initial_mass_max_abs_error: float
+    common_basis_final_mass_max_abs_error: float
+    common_basis_mass_change_max_abs_error: float
+    reported_initial_mass_max_abs_error: float
+    reported_final_mass_max_abs_error: float
 
 
 @dataclass(frozen=True)
@@ -291,10 +303,15 @@ class ConvectionComparison:
     negative_count_before_actual: int
     negative_count_after_expected: int
     negative_count_after_actual: int
-    initial_mass_max_abs_error: float
-    final_mass_max_abs_error: float
-    mass_change_max_abs: float
-    expected_mass_change_max_abs: float
+    common_basis_initial_mass_max_abs_error: float
+    common_basis_final_mass_max_abs_error: float
+    common_basis_mass_change_max_abs_error: float
+    common_basis_python_mass_change_max_abs: float
+    common_basis_oracle_mass_change_max_abs: float
+    reported_initial_mass_max_abs_error: float
+    reported_final_mass_max_abs_error: float
+    reported_python_mass_change_max_abs: float
+    reported_oracle_mass_change_max_abs: float
     top_error_tracer: int
     top_error_level: int
     top_error_lat: int
@@ -1644,6 +1661,25 @@ def _tracer_mass_for_chain(tracer: np.ndarray, dry_air_mass: np.ndarray) -> np.n
     )
 
 
+def _tracer_mass_common_basis(tracer: np.ndarray, dry_air_mass: np.ndarray) -> np.ndarray:
+    """Compute per-tracer scalar mass from a shared mass field for comparisons."""
+
+    tracer_array = np.asarray(tracer, dtype=np.float64)
+    mass_array = np.asarray(dry_air_mass, dtype=np.float64)
+    if tracer_array.ndim != 4:
+        raise ValueError(f"tracer must have shape (tracer, lev, lat, lon), found {tracer_array.shape}")
+    if mass_array.ndim == 4 and mass_array.shape[0] == 1:
+        mass_array = mass_array[0]
+    if mass_array.shape != tracer_array.shape[1:]:
+        raise ValueError(f"dry_air_mass must have shape {tracer_array.shape[1:]}, found {mass_array.shape}")
+    return np.sum(tracer_array * mass_array[np.newaxis, :, :, :], axis=(1, 2, 3))
+
+
+def _convection_common_dry_air_mass(delp_dry_hpa: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
+    mass = dry_air_mass_from_pressure(np.asarray(delp_dry_hpa, dtype=np.float64)[np.newaxis, :, :, :], area_m2)
+    return mass[0]
+
+
 def fetch_large_oracle_fixture(
     fixture_id: str,
     *,
@@ -1787,6 +1823,10 @@ def compare_transport_chain_oracle_fixture(
     tracer_names = _read_transport_step_tracer_names(paths.input_path)
     with netCDF4.Dataset(paths.input_path) as dataset:
         tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        hyai = np.asarray(dataset.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
+        p1_hpa = np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64)
         dt_s = float(dataset.dt_s)
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
@@ -1803,11 +1843,21 @@ def compare_transport_chain_oracle_fixture(
     result = run_transport_one_step(field, forcing, config.grid_template, dt_s=dt_s)
     with netCDF4.Dataset(paths.output_path) as dataset:
         expected_tracer = np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64)
+        expected_tpcore_tracer = np.asarray(dataset.variables["tpcore_tracer_conc_after"][:], dtype=np.float64)
+        expected_vdiff_tracer = np.asarray(dataset.variables["vdiff_tracer_conc_after"][:], dtype=np.float64)
         initial_mass = np.asarray(dataset.variables["initial_tracer_mass"][:], dtype=np.float64)
         tpcore_mass = np.asarray(dataset.variables["tpcore_tracer_mass"][:], dtype=np.float64)
         vdiff_mass = np.asarray(dataset.variables["vdiff_tracer_mass"][:], dtype=np.float64)
         convection_mass = np.asarray(dataset.variables["convection_tracer_mass"][:], dtype=np.float64)
         negative_count = int(getattr(dataset, "negative_count_after_convection"))
+    initial_delp = dry_pressure_thickness_hpa(p1_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
+    initial_dry_mass = dry_air_mass_from_pressure(initial_delp, area)[0]
+    final_dry_mass = result.dry_air_mass_kg[0]
+    common_oracle_initial_mass = _tracer_mass_common_basis(tracer0, initial_dry_mass)
+    common_oracle_tpcore_mass = _tracer_mass_common_basis(expected_tpcore_tracer, final_dry_mass)
+    common_oracle_vdiff_mass = _tracer_mass_common_basis(expected_vdiff_tracer, final_dry_mass)
+    common_oracle_convection_mass = _tracer_mass_common_basis(expected_tracer, final_dry_mass)
+    common_actual_convection_mass = result.final_scalar_mass
     actual_tracer = result.state.data[:, 0, :, :, :]
     error = np.abs(actual_tracer - expected_tracer)
     return TransportChainComparison(
@@ -1815,12 +1865,41 @@ def compare_transport_chain_oracle_fixture(
         tracer_mean_abs_error=float(np.mean(error)),
         negative_count_expected=negative_count,
         negative_count_actual=int(np.count_nonzero(actual_tracer < 0.0)),
-        final_mass_max_abs_error=float(np.max(np.abs(result.final_scalar_mass - convection_mass))),
-        python_mass_change_max_abs=float(np.max(np.abs(result.final_scalar_mass - result.initial_scalar_mass))),
-        oracle_mass_change_max_abs=float(np.max(np.abs(convection_mass - initial_mass))),
-        tpcore_stage_mass_change_max_abs=float(np.max(np.abs(tpcore_mass - initial_mass))),
-        vdiff_stage_mass_change_max_abs=float(np.max(np.abs(vdiff_mass - tpcore_mass))),
-        convection_stage_mass_change_max_abs=float(np.max(np.abs(convection_mass - vdiff_mass))),
+        common_basis_initial_mass_max_abs_error=float(
+            np.max(np.abs(result.initial_scalar_mass - common_oracle_initial_mass))
+        ),
+        common_basis_final_mass_max_abs_error=float(
+            np.max(np.abs(common_actual_convection_mass - common_oracle_convection_mass))
+        ),
+        common_basis_mass_change_max_abs_error=float(
+            np.max(
+                np.abs(
+                    (common_actual_convection_mass - result.initial_scalar_mass)
+                    - (common_oracle_convection_mass - common_oracle_initial_mass)
+                )
+            )
+        ),
+        common_basis_python_mass_change_max_abs=float(
+            np.max(np.abs(common_actual_convection_mass - result.initial_scalar_mass))
+        ),
+        common_basis_oracle_mass_change_max_abs=float(
+            np.max(np.abs(common_oracle_convection_mass - common_oracle_initial_mass))
+        ),
+        common_basis_tpcore_stage_mass_change_max_abs=float(
+            np.max(np.abs(common_oracle_tpcore_mass - common_oracle_initial_mass))
+        ),
+        common_basis_vdiff_stage_mass_change_max_abs=float(
+            np.max(np.abs(common_oracle_vdiff_mass - common_oracle_tpcore_mass))
+        ),
+        common_basis_convection_stage_mass_change_max_abs=float(
+            np.max(np.abs(common_oracle_convection_mass - common_oracle_vdiff_mass))
+        ),
+        reported_final_mass_max_abs_error=float(np.max(np.abs(result.final_scalar_mass - convection_mass))),
+        reported_python_mass_change_max_abs=float(np.max(np.abs(result.final_scalar_mass - result.initial_scalar_mass))),
+        reported_oracle_mass_change_max_abs=float(np.max(np.abs(convection_mass - initial_mass))),
+        reported_tpcore_stage_mass_change_max_abs=float(np.max(np.abs(tpcore_mass - initial_mass))),
+        reported_vdiff_stage_mass_change_max_abs=float(np.max(np.abs(vdiff_mass - tpcore_mass))),
+        reported_convection_stage_mass_change_max_abs=float(np.max(np.abs(convection_mass - vdiff_mass))),
     )
 
 
@@ -2023,6 +2102,13 @@ def compare_vdiff_output(
     write_python_vdiff_output(input_path, python_path)
     expected = read_vdiff_output(output_path)
     actual = read_vdiff_output(python_path)
+    with netCDF4.Dataset(input_path) as dataset:
+        initial_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        dry_air_mass = np.asarray(dataset.variables["dry_air_mass_kg"][:], dtype=np.float64)
+    common_actual_initial_mass = _tracer_mass_common_basis(initial_tracer, dry_air_mass)
+    common_expected_initial_mass = common_actual_initial_mass
+    common_actual_final_mass = _tracer_mass_common_basis(actual.tracer_conc_after, dry_air_mass)
+    common_expected_final_mass = _tracer_mass_common_basis(expected.tracer_conc_after, dry_air_mass)
     tracer_error = np.abs(actual.tracer_conc_after - expected.tracer_conc_after)
     sphu_error = np.abs(actual.specific_humidity_after - expected.specific_humidity_after)
     kvh_error = np.abs(actual.kvh_m2_s - expected.kvh_m2_s)
@@ -2040,7 +2126,24 @@ def compare_vdiff_output(
         negative_count_before_clip_actual=actual.negative_count_before_clip,
         negative_count_after_clip_expected=expected.negative_count_after_clip,
         negative_count_after_clip_actual=actual.negative_count_after_clip,
-        final_mass_max_abs_error=float(np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))),
+        common_basis_initial_mass_max_abs_error=float(
+            np.max(np.abs(common_actual_initial_mass - common_expected_initial_mass))
+        ),
+        common_basis_final_mass_max_abs_error=float(
+            np.max(np.abs(common_actual_final_mass - common_expected_final_mass))
+        ),
+        common_basis_mass_change_max_abs_error=float(
+            np.max(
+                np.abs(
+                    (common_actual_final_mass - common_actual_initial_mass)
+                    - (common_expected_final_mass - common_expected_initial_mass)
+                )
+            )
+        ),
+        reported_initial_mass_max_abs_error=float(
+            np.max(np.abs(actual.initial_tracer_mass - expected.initial_tracer_mass))
+        ),
+        reported_final_mass_max_abs_error=float(np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))),
     )
 
 
@@ -2118,6 +2221,16 @@ def compare_convection_output(
     write_python_convection_output(input_path, python_path)
     expected = read_convection_output(output_path)
     actual = read_convection_output(python_path)
+    with netCDF4.Dataset(input_path) as dataset:
+        initial_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        common_dry_mass = _convection_common_dry_air_mass(
+            np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
+            np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+        )
+    common_actual_initial_mass = _tracer_mass_common_basis(initial_tracer, common_dry_mass)
+    common_expected_initial_mass = common_actual_initial_mass
+    common_actual_final_mass = _tracer_mass_common_basis(actual.tracer_conc_after, common_dry_mass)
+    common_expected_final_mass = _tracer_mass_common_basis(expected.tracer_conc_after, common_dry_mass)
     tracer_error = np.abs(actual.tracer_conc_after - expected.tracer_conc_after)
     diag14_error = np.abs(actual.diag14_mass_flux - expected.diag14_mass_flux)
     top_error_index = np.unravel_index(int(np.argmax(tracer_error)), tracer_error.shape)
@@ -2130,10 +2243,36 @@ def compare_convection_output(
         negative_count_before_actual=actual.negative_count_before,
         negative_count_after_expected=expected.negative_count_after,
         negative_count_after_actual=actual.negative_count_after,
-        initial_mass_max_abs_error=float(np.max(np.abs(actual.initial_tracer_mass - expected.initial_tracer_mass))),
-        final_mass_max_abs_error=float(np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))),
-        mass_change_max_abs=float(np.max(np.abs(actual.final_tracer_mass - actual.initial_tracer_mass))),
-        expected_mass_change_max_abs=float(np.max(np.abs(expected.final_tracer_mass - expected.initial_tracer_mass))),
+        common_basis_initial_mass_max_abs_error=float(
+            np.max(np.abs(common_actual_initial_mass - common_expected_initial_mass))
+        ),
+        common_basis_final_mass_max_abs_error=float(
+            np.max(np.abs(common_actual_final_mass - common_expected_final_mass))
+        ),
+        common_basis_mass_change_max_abs_error=float(
+            np.max(
+                np.abs(
+                    (common_actual_final_mass - common_actual_initial_mass)
+                    - (common_expected_final_mass - common_expected_initial_mass)
+                )
+            )
+        ),
+        common_basis_python_mass_change_max_abs=float(
+            np.max(np.abs(common_actual_final_mass - common_actual_initial_mass))
+        ),
+        common_basis_oracle_mass_change_max_abs=float(
+            np.max(np.abs(common_expected_final_mass - common_expected_initial_mass))
+        ),
+        reported_initial_mass_max_abs_error=float(
+            np.max(np.abs(actual.initial_tracer_mass - expected.initial_tracer_mass))
+        ),
+        reported_final_mass_max_abs_error=float(
+            np.max(np.abs(actual.final_tracer_mass - expected.final_tracer_mass))
+        ),
+        reported_python_mass_change_max_abs=float(np.max(np.abs(actual.final_tracer_mass - actual.initial_tracer_mass))),
+        reported_oracle_mass_change_max_abs=float(
+            np.max(np.abs(expected.final_tracer_mass - expected.initial_tracer_mass))
+        ),
         top_error_tracer=int(top_error_index[0]),
         top_error_level=int(top_error_index[1]),
         top_error_lat=int(top_error_index[2]),
@@ -2872,7 +3011,11 @@ def format_vdiff_comparison(comparison: VdiffComparison) -> str:
             f"negative_count_before_clip_actual,{comparison.negative_count_before_clip_actual}",
             f"negative_count_after_clip_expected,{comparison.negative_count_after_clip_expected}",
             f"negative_count_after_clip_actual,{comparison.negative_count_after_clip_actual}",
-            f"final_mass_max_abs_error,{comparison.final_mass_max_abs_error:.8e}",
+            f"common_basis_initial_mass_max_abs_error,{comparison.common_basis_initial_mass_max_abs_error:.8e}",
+            f"common_basis_final_mass_max_abs_error,{comparison.common_basis_final_mass_max_abs_error:.8e}",
+            f"common_basis_mass_change_max_abs_error,{comparison.common_basis_mass_change_max_abs_error:.8e}",
+            f"reported_initial_mass_max_abs_error,{comparison.reported_initial_mass_max_abs_error:.8e}",
+            f"reported_final_mass_max_abs_error,{comparison.reported_final_mass_max_abs_error:.8e}",
         ]
     )
 
@@ -2889,10 +3032,15 @@ def format_convection_comparison(comparison: ConvectionComparison) -> str:
             f"negative_count_before_actual,{comparison.negative_count_before_actual}",
             f"negative_count_after_expected,{comparison.negative_count_after_expected}",
             f"negative_count_after_actual,{comparison.negative_count_after_actual}",
-            f"initial_mass_max_abs_error,{comparison.initial_mass_max_abs_error:.8e}",
-            f"final_mass_max_abs_error,{comparison.final_mass_max_abs_error:.8e}",
-            f"mass_change_max_abs,{comparison.mass_change_max_abs:.8e}",
-            f"expected_mass_change_max_abs,{comparison.expected_mass_change_max_abs:.8e}",
+            f"common_basis_initial_mass_max_abs_error,{comparison.common_basis_initial_mass_max_abs_error:.8e}",
+            f"common_basis_final_mass_max_abs_error,{comparison.common_basis_final_mass_max_abs_error:.8e}",
+            f"common_basis_mass_change_max_abs_error,{comparison.common_basis_mass_change_max_abs_error:.8e}",
+            f"common_basis_python_mass_change_max_abs,{comparison.common_basis_python_mass_change_max_abs:.8e}",
+            f"common_basis_oracle_mass_change_max_abs,{comparison.common_basis_oracle_mass_change_max_abs:.8e}",
+            f"reported_initial_mass_max_abs_error,{comparison.reported_initial_mass_max_abs_error:.8e}",
+            f"reported_final_mass_max_abs_error,{comparison.reported_final_mass_max_abs_error:.8e}",
+            f"reported_python_mass_change_max_abs,{comparison.reported_python_mass_change_max_abs:.8e}",
+            f"reported_oracle_mass_change_max_abs,{comparison.reported_oracle_mass_change_max_abs:.8e}",
             f"top_error_index,{comparison.top_error_tracer}:{comparison.top_error_level}:{comparison.top_error_lat}:{comparison.top_error_lon}",
             f"internal_steps_expected,{comparison.internal_steps_expected}",
             f"internal_steps_actual,{comparison.internal_steps_actual}",
@@ -2926,12 +3074,20 @@ def format_transport_chain_comparison(comparison: TransportChainComparison) -> s
             f"tracer_mean_abs_error,{comparison.tracer_mean_abs_error:.8e}",
             f"negative_count_expected,{comparison.negative_count_expected}",
             f"negative_count_actual,{comparison.negative_count_actual}",
-            f"final_mass_max_abs_error,{comparison.final_mass_max_abs_error:.8e}",
-            f"python_mass_change_max_abs,{comparison.python_mass_change_max_abs:.8e}",
-            f"oracle_mass_change_max_abs,{comparison.oracle_mass_change_max_abs:.8e}",
-            f"tpcore_stage_mass_change_max_abs,{comparison.tpcore_stage_mass_change_max_abs:.8e}",
-            f"vdiff_stage_mass_change_max_abs,{comparison.vdiff_stage_mass_change_max_abs:.8e}",
-            f"convection_stage_mass_change_max_abs,{comparison.convection_stage_mass_change_max_abs:.8e}",
+            f"common_basis_initial_mass_max_abs_error,{comparison.common_basis_initial_mass_max_abs_error:.8e}",
+            f"common_basis_final_mass_max_abs_error,{comparison.common_basis_final_mass_max_abs_error:.8e}",
+            f"common_basis_mass_change_max_abs_error,{comparison.common_basis_mass_change_max_abs_error:.8e}",
+            f"common_basis_python_mass_change_max_abs,{comparison.common_basis_python_mass_change_max_abs:.8e}",
+            f"common_basis_oracle_mass_change_max_abs,{comparison.common_basis_oracle_mass_change_max_abs:.8e}",
+            f"common_basis_tpcore_stage_mass_change_max_abs,{comparison.common_basis_tpcore_stage_mass_change_max_abs:.8e}",
+            f"common_basis_vdiff_stage_mass_change_max_abs,{comparison.common_basis_vdiff_stage_mass_change_max_abs:.8e}",
+            f"common_basis_convection_stage_mass_change_max_abs,{comparison.common_basis_convection_stage_mass_change_max_abs:.8e}",
+            f"reported_final_mass_max_abs_error,{comparison.reported_final_mass_max_abs_error:.8e}",
+            f"reported_python_mass_change_max_abs,{comparison.reported_python_mass_change_max_abs:.8e}",
+            f"reported_oracle_mass_change_max_abs,{comparison.reported_oracle_mass_change_max_abs:.8e}",
+            f"reported_tpcore_stage_mass_change_max_abs,{comparison.reported_tpcore_stage_mass_change_max_abs:.8e}",
+            f"reported_vdiff_stage_mass_change_max_abs,{comparison.reported_vdiff_stage_mass_change_max_abs:.8e}",
+            f"reported_convection_stage_mass_change_max_abs,{comparison.reported_convection_stage_mass_change_max_abs:.8e}",
         ]
     )
 

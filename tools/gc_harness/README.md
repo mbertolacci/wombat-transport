@@ -262,10 +262,15 @@ negative_count_before_expected,0
 negative_count_before_actual,0
 negative_count_after_expected,0
 negative_count_after_actual,0
-initial_mass_max_abs_error,1.22070312e-03
-final_mass_max_abs_error,1.22070312e-03
-mass_change_max_abs,0.00000000e+00
-expected_mass_change_max_abs,0.00000000e+00
+common_basis_initial_mass_max_abs_error,0.00000000e+00
+common_basis_final_mass_max_abs_error,0.00000000e+00
+common_basis_mass_change_max_abs_error,0.00000000e+00
+common_basis_python_mass_change_max_abs,0.00000000e+00
+common_basis_oracle_mass_change_max_abs,0.00000000e+00
+reported_initial_mass_max_abs_error,1.22070312e-03
+reported_final_mass_max_abs_error,1.22070312e-03
+reported_python_mass_change_max_abs,0.00000000e+00
+reported_oracle_mass_change_max_abs,0.00000000e+00
 top_error_index,0:0:0:0
 internal_steps_expected,2
 internal_steps_actual,2
@@ -279,17 +284,26 @@ tracer_max_abs_error,4.85862642e-10
 tracer_mean_abs_error,9.54864856e-14
 negative_count_expected,0
 negative_count_actual,0
-final_mass_max_abs_error,2.50000000e-01
-python_mass_change_max_abs,3.65000000e+01
-oracle_mass_change_max_abs,3.62500000e+01
-tpcore_stage_mass_change_max_abs,3.60000000e+01
-vdiff_stage_mass_change_max_abs,2.50000000e-01
-convection_stage_mass_change_max_abs,0.00000000e+00
+common_basis_initial_mass_max_abs_error,0.00000000e+00
+common_basis_final_mass_max_abs_error,2.50000000e-01
+common_basis_mass_change_max_abs_error,2.50000000e-01
+common_basis_python_mass_change_max_abs,3.65000000e+01
+common_basis_oracle_mass_change_max_abs,3.62500000e+01
+common_basis_tpcore_stage_mass_change_max_abs,3.60000000e+01
+common_basis_vdiff_stage_mass_change_max_abs,2.50000000e-01
+common_basis_convection_stage_mass_change_max_abs,0.00000000e+00
+reported_final_mass_max_abs_error,2.50000000e-01
+reported_python_mass_change_max_abs,3.65000000e+01
+reported_oracle_mass_change_max_abs,3.62500000e+01
+reported_tpcore_stage_mass_change_max_abs,3.60000000e+01
+reported_vdiff_stage_mass_change_max_abs,2.50000000e-01
+reported_convection_stage_mass_change_max_abs,0.00000000e+00
 ```
 
 This chained fixture is an integration diagnostic, not a parity claim. The
-remaining final-field and VDIFF-stage mass deltas should be investigated before
-using the chained transport sequence for SpeciesConc parity claims.
+remaining final-field and common-basis mass-change deltas should be
+investigated before using the chained transport sequence for SpeciesConc parity
+claims.
 
 Current full-grid one-tracer VDIFF-after-TPCORE diagnostic fixture result:
 
@@ -307,7 +321,11 @@ negative_count_before_clip_expected,0
 negative_count_before_clip_actual,0
 negative_count_after_clip_expected,0
 negative_count_after_clip_actual,0
-final_mass_max_abs_error,2.37500000e+01
+common_basis_initial_mass_max_abs_error,0.00000000e+00
+common_basis_final_mass_max_abs_error,2.50000000e-01
+common_basis_mass_change_max_abs_error,2.50000000e-01
+reported_initial_mass_max_abs_error,3.75000000e+01
+reported_final_mass_max_abs_error,2.37500000e+01
 ```
 
 Current full-grid one-tracer convection-after-VDIFF diagnostic fixture result:
@@ -322,17 +340,25 @@ negative_count_before_expected,0
 negative_count_before_actual,0
 negative_count_after_expected,0
 negative_count_after_actual,0
-initial_mass_max_abs_error,2.35000000e+01
-final_mass_max_abs_error,1.85000000e+01
-mass_change_max_abs,2.50000000e-01
-expected_mass_change_max_abs,4.75000000e+00
+common_basis_initial_mass_max_abs_error,0.00000000e+00
+common_basis_final_mass_max_abs_error,0.00000000e+00
+common_basis_mass_change_max_abs_error,0.00000000e+00
+common_basis_python_mass_change_max_abs,0.00000000e+00
+common_basis_oracle_mass_change_max_abs,0.00000000e+00
+reported_initial_mass_max_abs_error,2.35000000e+01
+reported_final_mass_max_abs_error,1.85000000e+01
+reported_python_mass_change_max_abs,2.50000000e-01
+reported_oracle_mass_change_max_abs,4.75000000e+00
 top_error_index,0:0:17:2
 internal_steps_expected,2
 internal_steps_actual,2
 ```
 
 These full-grid single-operator fixtures match final tracer fields at roundoff.
-The remaining nonzero mass diagnostics are therefore likely accounting or
-fixture-summary differences, and the earlier chained final-field mismatch
-should be investigated as an input-construction or production-driver coupling
-difference rather than as a standalone VDIFF or convection kernel mismatch.
+The `reported_*` mass diagnostics preserve the harness-written scalar totals;
+the `common_basis_*` diagnostics recompute both sides from the same fixture
+mass field. Convection is clean on that basis, while VDIFF still has a
+`2.5e-01` absolute common-basis mass delta on a roundoff-scale tracer-field
+error. The chained final-field mismatch should be investigated as an
+input-construction or production-driver coupling difference rather than as a
+standalone VDIFF or convection kernel mismatch.
