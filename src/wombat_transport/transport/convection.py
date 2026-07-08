@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 import numpy as np
+
+try:  # Optional acceleration path; NumPy remains the reference fallback.
+    from numba import njit
+except ImportError:  # pragma: no cover - exercised in environments without numba.
+    njit = None
+
 
 G0_100 = 100.0 / 9.80665
 _TINYNUM = 1.0e-14
 _MAX_GROUP_TRACER_BYTES = 1024**3
+_NUMBA_AVAILABLE = njit is not None
 
 
 @dataclass(frozen=True)
@@ -169,9 +177,8 @@ def _convect_active_columns_top(
 
     for cloud_base in np.unique(cloud_base_by_column[active_columns]):
         columns = active_columns[cloud_base_by_column[active_columns] == cloud_base]
-        max_chunk_columns = _max_convection_group_columns(nlev, ntracer)
-        for column_chunk in _iter_column_chunks(columns, max_chunk_columns):
-            _convect_column_group_top(
+        if _numba_convection_enabled():
+            _convect_column_group_top_numba(
                 q,
                 diag,
                 cmf,
@@ -180,10 +187,26 @@ def _convect_active_columns_top(
                 bm,
                 area,
                 int(cloud_base),
-                column_chunk,
+                columns,
                 internal_steps=internal_steps,
                 internal_dt_s=internal_dt_s,
             )
+        else:
+            max_chunk_columns = _max_convection_group_columns(nlev, ntracer)
+            for column_chunk in _iter_column_chunks(columns, max_chunk_columns):
+                _convect_column_group_top(
+                    q,
+                    diag,
+                    cmf,
+                    detrain,
+                    delp_d,
+                    bm,
+                    area,
+                    int(cloud_base),
+                    column_chunk,
+                    internal_steps=internal_steps,
+                    internal_dt_s=internal_dt_s,
+                )
 
 
 def _convective_precip_rates_columns(
@@ -354,5 +377,229 @@ def _convect_column_group_top(
     diag_all[:, columns, :] = diag
 
 
+def _numba_convection_mode() -> str:
+    return os.environ.get("WOMBAT_CONVECTION_NUMBA", "1").lower()
+
+
+def _numba_convection_enabled() -> bool:
+    if not _NUMBA_AVAILABLE:
+        return False
+    return _numba_convection_mode() not in {"0", "false", "no", "off", "none"}
+
+
+def _convect_column_group_top_numba(
+    q_all: np.ndarray,
+    diag_all: np.ndarray,
+    cmfmc_all: np.ndarray,
+    dtrain_all: np.ndarray,
+    delp_dry_all: np.ndarray,
+    bmass_all: np.ndarray,
+    area_all: np.ndarray,
+    cloud_base: int,
+    columns: np.ndarray,
+    *,
+    internal_steps: int,
+    internal_dt_s: float,
+) -> None:
+    if not _NUMBA_AVAILABLE:
+        _convect_column_group_top(
+            q_all,
+            diag_all,
+            cmfmc_all,
+            dtrain_all,
+            delp_dry_all,
+            bmass_all,
+            area_all,
+            cloud_base,
+            columns,
+            internal_steps=internal_steps,
+            internal_dt_s=internal_dt_s,
+        )
+        return
+    _convect_column_group_top_numba_kernel(
+        q_all,
+        diag_all,
+        cmfmc_all,
+        dtrain_all,
+        delp_dry_all,
+        bmass_all,
+        area_all,
+        cloud_base,
+        columns,
+        internal_steps,
+        internal_dt_s,
+    )
+
+
+if njit is not None:
+
+    @njit(cache=True)
+    def _convect_column_group_top_numba_kernel(
+        q_all: np.ndarray,
+        diag_all: np.ndarray,
+        cmfmc_all: np.ndarray,
+        dtrain_all: np.ndarray,
+        delp_dry_all: np.ndarray,
+        bmass_all: np.ndarray,
+        area_all: np.ndarray,
+        cloud_base: int,
+        columns: np.ndarray,
+        internal_steps: int,
+        internal_dt_s: float,
+    ) -> None:
+        nlev = q_all.shape[0]
+        ntracer = q_all.shape[2]
+        ncolumns = columns.size
+        bottom_index = nlev - 1
+        dns = float(internal_steps)
+        qc = np.empty(ntracer, dtype=np.float64)
+        qb_num = np.empty(ntracer, dtype=np.float64)
+
+        for step in range(internal_steps):
+            _ = step
+            for column_index in range(ncolumns):
+                col = columns[column_index]
+
+                for tracer in range(ntracer):
+                    qc[tracer] = q_all[cloud_base, col, tracer]
+
+                if cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM:
+                    denominator = 0.0
+                    mass_below_base = 0.0
+                    for level in range(cloud_base + 1, nlev):
+                        denominator += delp_dry_all[level, col]
+                        mass_below_base += bmass_all[level, col]
+                    if denominator <= 0.0:
+                        raise ValueError("dry pressure below cloud base must be positive")
+
+                    cmfmc_base = cmfmc_all[cloud_base + 1, col]
+                    denom_qc = mass_below_base + cmfmc_base * internal_dt_s
+                    for tracer in range(ntracer):
+                        qb_num[tracer] = 0.0
+                    for level in range(cloud_base + 1, nlev):
+                        delp_dry = delp_dry_all[level, col]
+                        for tracer in range(ntracer):
+                            qb_num[tracer] += q_all[level, col, tracer] * delp_dry
+                    for tracer in range(ntracer):
+                        qb = qb_num[tracer] / denominator
+                        plume = (
+                            mass_below_base * qb
+                            + cmfmc_base * q_all[cloud_base, col, tracer] * internal_dt_s
+                        ) / denom_qc
+                        qc[tracer] = plume
+                    for level in range(cloud_base + 1, nlev):
+                        for tracer in range(ntracer):
+                            q_all[level, col, tracer] = qc[tracer]
+
+                for level in range(cloud_base, 0, -1):
+                    if level == bottom_index:
+                        cmfmc_below = 0.0
+                    else:
+                        cmfmc_below = cmfmc_all[level + 1, col]
+
+                    if cmfmc_below > _TINYNUM:
+                        cmout = cmfmc_all[level, col] + dtrain_all[level, col]
+                        entrn = cmout - cmfmc_below
+                        entrains = entrn >= 0.0 and cmout > 0.0
+                        area_scale = area_all[col] / dns
+                        tendency_scale = internal_dt_s / bmass_all[level, col]
+
+                        for tracer in range(ntracer):
+                            qc_pres = qc[tracer]
+                            qc_next = qc_pres
+                            if entrains:
+                                qc_next = (
+                                    cmfmc_below * qc_pres + entrn * q_all[level, col, tracer]
+                                ) / cmout
+
+                            delq = cmfmc_below * qc_pres
+                            temp = -(cmfmc_all[level, col] * qc_next)
+                            delq += temp
+                            qc[tracer] = qc_next
+
+                            upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                            delq += upward
+                            diag_all[level, col, tracer] += (-temp - upward) * area_scale
+
+                            delq -= cmfmc_below * q_all[level, col, tracer]
+                            delq *= tendency_scale
+                            current = q_all[level, col, tracer]
+                            if current + delq < 0.0:
+                                delq = -current
+                            q_all[level, col, tracer] = current + delq
+                    else:
+                        has_current_flux = cmfmc_all[level, col] > _TINYNUM
+                        tendency_scale = internal_dt_s / bmass_all[level, col]
+                        for tracer in range(ntracer):
+                            qc[tracer] = q_all[level, col, tracer]
+                            if has_current_flux:
+                                delq = -(cmfmc_all[level, col] * qc[tracer])
+                                delq += cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                delq *= tendency_scale
+                                current = q_all[level, col, tracer]
+                                if current + delq < 0.0:
+                                    delq = -current
+                                q_all[level, col, tracer] = current + delq
+
+else:
+
+    def _convect_column_group_top_numba_kernel(
+        q_all: np.ndarray,
+        diag_all: np.ndarray,
+        cmfmc_all: np.ndarray,
+        dtrain_all: np.ndarray,
+        delp_dry_all: np.ndarray,
+        bmass_all: np.ndarray,
+        area_all: np.ndarray,
+        cloud_base: int,
+        columns: np.ndarray,
+        internal_steps: int,
+        internal_dt_s: float,
+    ) -> None:
+        raise RuntimeError("numba is not available")
+
+
 def _column_mass_transport(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
+    if _NUMBA_AVAILABLE and _numba_convection_enabled():
+        return _column_mass_transport_numba(tracer, bmass_kg_m2, area_m2)
     return np.sum(tracer * bmass_kg_m2[:, :, :, np.newaxis] * area_m2[np.newaxis, :, :, np.newaxis], axis=(0, 1, 2))
+
+
+def _column_mass_transport_numba(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
+    if not _NUMBA_AVAILABLE:
+        return np.sum(
+            tracer * bmass_kg_m2[:, :, :, np.newaxis] * area_m2[np.newaxis, :, :, np.newaxis],
+            axis=(0, 1, 2),
+        )
+    return _column_mass_transport_numba_kernel(tracer, bmass_kg_m2, area_m2)
+
+
+if njit is not None:
+
+    @njit(cache=True)
+    def _column_mass_transport_numba_kernel(
+        tracer: np.ndarray,
+        bmass_kg_m2: np.ndarray,
+        area_m2: np.ndarray,
+    ) -> np.ndarray:
+        nlev = tracer.shape[0]
+        nlat = tracer.shape[1]
+        nlon = tracer.shape[2]
+        ntracer = tracer.shape[3]
+        total = np.zeros(ntracer, dtype=np.float64)
+        for lev in range(nlev):
+            for lat in range(nlat):
+                for lon in range(nlon):
+                    mass = bmass_kg_m2[lev, lat, lon] * area_m2[lat, lon]
+                    for tracer_index in range(ntracer):
+                        total[tracer_index] += tracer[lev, lat, lon, tracer_index] * mass
+        return total
+
+else:
+
+    def _column_mass_transport_numba_kernel(
+        tracer: np.ndarray,
+        bmass_kg_m2: np.ndarray,
+        area_m2: np.ndarray,
+    ) -> np.ndarray:
+        raise RuntimeError("numba is not available")
