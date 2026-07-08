@@ -232,8 +232,13 @@ def _convect_column_group_top(
     bmass = bmass_all[:, columns]
     area = area_all[columns]
     nlev = q.shape[0]
+    ncol = q.shape[1]
+    ntracer = q.shape[2]
     dns = float(internal_steps)
     bottom_index = nlev - 1
+    flux_work = np.empty((ncol, ntracer), dtype=np.float64)
+    temp_work = np.empty((ncol, ntracer), dtype=np.float64)
+    next_work = np.empty((ncol, ntracer), dtype=np.float64)
 
     for _step in range(internal_steps):
         if cloud_base < bottom_index:
@@ -263,10 +268,13 @@ def _convect_column_group_top(
             has_below_flux = cmfmc_below > _TINYNUM
             if np.any(has_below_flux):
                 local = np.flatnonzero(has_below_flux)
+                local_count = local.size
                 cmout = cmfmc[level, local] + dtrain[level, local]
                 entrn = cmout - cmfmc_below[local]
                 qc_pres = qc[local].copy()
-                qc_next = qc_pres.copy()
+                qc_next = next_work[:local_count, :]
+                temp = temp_work[:local_count, :]
+                qc_next[:] = qc_pres
                 entrains = (entrn >= 0.0) & (cmout > 0.0)
                 if np.any(entrains):
                     entrain_local = local[entrains]
@@ -275,30 +283,57 @@ def _convect_column_group_top(
                         + entrn[entrains, np.newaxis] * q[level, entrain_local, :]
                     ) / cmout[entrains, np.newaxis]
 
-                t1 = cmfmc_below[local, np.newaxis] * qc_pres
-                t2 = -cmfmc[level, local, np.newaxis] * qc_next
-                t3 = cmfmc[level, local, np.newaxis] * q[level - 1, local, :]
-                t4 = -cmfmc_below[local, np.newaxis] * q[level, local, :]
-                delq = (internal_dt_s / bmass[level, local, np.newaxis]) * (t1 + t2 + t3 + t4)
-                current = q[level, local, :]
-                delq = np.where(current + delq < 0.0, -current, delq)
-                q[level, local, :] = current + delq
-                diag[level, local, :] += (-t2 - t3) * area[local, np.newaxis] / dns
+                delq = flux_work[:local_count, :]
+                np.multiply(cmfmc_below[local, np.newaxis], qc_pres, out=delq)
+                np.multiply(cmfmc[level, local, np.newaxis], qc_next, out=temp)
+                np.negative(temp, out=temp)
+                delq += temp
                 qc[local] = qc_next
+
+                np.multiply(cmfmc[level, local, np.newaxis], q[level - 1, local, :], out=qc_next)
+                delq += qc_next
+                np.negative(temp, out=temp)
+                temp -= qc_next
+                temp *= area[local, np.newaxis] / dns
+                diag[level, local, :] += temp
+
+                np.multiply(cmfmc_below[local, np.newaxis], q[level, local, :], out=qc_next)
+                delq -= qc_next
+                delq *= internal_dt_s / bmass[level, local, np.newaxis]
+                current = q[level, local, :]
+                np.add(current, delq, out=qc_next)
+                negative = qc_next < 0.0
+                if np.any(negative):
+                    delq[negative] = -current[negative]
+                np.add(current, delq, out=current)
+                q[level, local, :] = current
 
             no_below_flux = ~has_below_flux
             if np.any(no_below_flux):
                 local = np.flatnonzero(no_below_flux)
-                qc[local] = q[level, local, :].copy()
+                qc[local] = q[level, local, :]
                 has_current_flux = cmfmc[level, local] > _TINYNUM
                 if np.any(has_current_flux):
                     flux_local = local[has_current_flux]
-                    t2 = -cmfmc[level, flux_local, np.newaxis] * qc[flux_local]
-                    t3 = cmfmc[level, flux_local, np.newaxis] * q[level - 1, flux_local, :]
-                    delq = (internal_dt_s / bmass[level, flux_local, np.newaxis]) * (t2 + t3)
+                    flux_count = flux_local.size
+                    delq = flux_work[:flux_count, :]
+                    temp = temp_work[:flux_count, :]
+                    np.multiply(cmfmc[level, flux_local, np.newaxis], qc[flux_local], out=delq)
+                    np.negative(delq, out=delq)
+                    np.multiply(
+                        cmfmc[level, flux_local, np.newaxis],
+                        q[level - 1, flux_local, :],
+                        out=temp,
+                    )
+                    delq += temp
+                    delq *= internal_dt_s / bmass[level, flux_local, np.newaxis]
                     current = q[level, flux_local, :]
-                    delq = np.where(current + delq < 0.0, -current, delq)
-                    q[level, flux_local, :] = current + delq
+                    np.add(current, delq, out=temp)
+                    negative = temp < 0.0
+                    if np.any(negative):
+                        delq[negative] = -current[negative]
+                    np.add(current, delq, out=current)
+                    q[level, flux_local, :] = current
 
     q_all[:, columns, :] = q
     diag_all[:, columns, :] = diag
