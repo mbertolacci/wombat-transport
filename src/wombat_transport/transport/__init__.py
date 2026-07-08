@@ -11,7 +11,11 @@ from wombat_transport.transport.driver import (
     run_transport_window,
     trace_transport_one_step,
 )
-from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
+from wombat_transport.transport.convection import (
+    ConvectionResult,
+    run_cloud_convection_one_step,
+    run_cloud_convection_one_step_from_geos_order,
+)
 from wombat_transport.transport.forcing import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
@@ -28,6 +32,7 @@ from wombat_transport.transport.pbl import (
     compute_pbl_height,
     mix_full_pbl,
     run_vdiffdr_one_step,
+    run_vdiffdr_one_step_from_geos_order,
 )
 from wombat_transport.transport.pjc import pjc_mass_flux_hpa
 from wombat_transport.transport.pressure import (
@@ -43,8 +48,10 @@ from wombat_transport.transport.tpcore import (
     TpcoreTrace,
     analyze_tpcore_branches,
     run_tpcore_one_step,
+    run_tpcore_one_step_from_geos_order,
     setup_tpcore_terms,
     trace_tpcore_one_step,
+    trace_tpcore_one_step_from_geos_order,
     validate_tpcore_branch_support,
 )
 
@@ -81,10 +88,14 @@ __all__ = [
     "run_transport_window",
     "trace_transport_one_step",
     "run_cloud_convection_one_step",
+    "run_cloud_convection_one_step_from_geos_order",
     "run_tpcore_one_step",
+    "run_tpcore_one_step_from_geos_order",
     "run_vdiffdr_one_step",
+    "run_vdiffdr_one_step_from_geos_order",
     "scalar_mass_by_tracer",
     "setup_tpcore_terms",
     "trace_tpcore_one_step",
+    "trace_tpcore_one_step_from_geos_order",
     "validate_tpcore_branch_support",
 ]

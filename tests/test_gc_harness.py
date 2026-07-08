@@ -60,15 +60,15 @@ from wombat_transport.gc_harness import (
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
 )
-from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step_from_geos_order
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
     _calc_advec_cross_terms,
     analyze_tpcore_branches,
-    run_tpcore_one_step,
+    run_tpcore_one_step_from_geos_order,
     setup_tpcore_terms,
-    trace_tpcore_one_step,
+    trace_tpcore_one_step_from_geos_order,
     validate_tpcore_branch_support,
 )
 
@@ -468,7 +468,7 @@ def test_convection_no_cloud_leaves_tracer_unchanged(tmp_path):
 
     with netCDF4.Dataset(input_path) as dataset:
         tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
-        result = run_cloud_convection_one_step(
+        result = run_cloud_convection_one_step_from_geos_order(
             tracer_conc=tracer,
             cmfmc_kg_m2_s=np.asarray(dataset.variables["cmfmc_kg_m2_s"][:], dtype=np.float64),
             dtrain_kg_m2_s=np.asarray(dataset.variables["dtrain_kg_m2_s"][:], dtype=np.float64),
@@ -952,7 +952,7 @@ def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture():
     with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
         tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
         tracer[:] = 4.0e-4
-        state = run_tpcore_one_step(
+        state = run_tpcore_one_step_from_geos_order(
             tracer_conc=tracer,
             p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
             p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
@@ -983,8 +983,8 @@ def test_python_tpcore_trace_preserves_final_output_on_low_courant_fixture():
             "dt_s": float(dataset.dt_s),
         }
 
-    normal = run_tpcore_one_step(**kwargs)
-    traced, trace = trace_tpcore_one_step(**kwargs)
+    normal = run_tpcore_one_step_from_geos_order(**kwargs)
+    traced, trace = trace_tpcore_one_step_from_geos_order(**kwargs)
 
     np.testing.assert_array_equal(traced.tracer_conc_after, normal.tracer_conc_after)
     np.testing.assert_array_equal(trace.tracer_conc_after, normal.tracer_conc_after)
@@ -1011,7 +1011,7 @@ def test_write_python_tpcore_trace_records_stage_contract(tmp_path):
 def test_attribute_python_tpcore_error_reports_error_bins(tmp_path):
     input_path = TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME
     with netCDF4.Dataset(input_path) as dataset:
-        state = run_tpcore_one_step(
+        state = run_tpcore_one_step_from_geos_order(
             tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
             p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
             p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),

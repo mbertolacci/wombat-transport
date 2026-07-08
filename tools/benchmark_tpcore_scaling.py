@@ -18,7 +18,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.run_config import load_run_config
-from wombat_transport.transport.tpcore import run_tpcore_one_step
+from wombat_transport.transport.tpcore import run_tpcore_one_step_from_geos_order
 
 
 DEFAULT_COUNTS = (1, 24, 96, 256, 512)
@@ -252,7 +252,7 @@ def _benchmark_inputs(
     checksum = 0.0
     for _ in range(repeat):
         start = time.perf_counter()
-        state = run_tpcore_one_step(
+        state = run_tpcore_one_step_from_geos_order(
             tracer_conc=inputs.tracer_conc,
             p1_hpa=inputs.p1_hpa,
             p2_hpa=inputs.p2_hpa,
@@ -293,7 +293,7 @@ def _benchmark_inputs(
 def _profile_inputs(inputs: SyntheticTpcoreInputs, *, profile_top: int) -> str:
     profiler = cProfile.Profile()
     profiler.enable()
-    state = run_tpcore_one_step(
+    state = run_tpcore_one_step_from_geos_order(
         tracer_conc=inputs.tracer_conc,
         p1_hpa=inputs.p1_hpa,
         p2_hpa=inputs.p2_hpa,

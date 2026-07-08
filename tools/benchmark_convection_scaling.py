@@ -12,7 +12,7 @@ from typing import TextIO
 import netCDF4
 import numpy as np
 
-from wombat_transport.transport.convection import run_cloud_convection_one_step
+from wombat_transport.transport.convection import run_cloud_convection_one_step_from_geos_order
 
 
 DEFAULT_INPUT = Path("tests/fixtures/convection_real_sampled_v1/convection_input.nc")
@@ -125,7 +125,7 @@ def _benchmark_inputs(inputs: ConvectionInputs, *, fixture: Path, repeat: int, v
     checksum = 0.0
     for _ in range(repeat):
         start = time.perf_counter()
-        result = run_cloud_convection_one_step(
+        result = run_cloud_convection_one_step_from_geos_order(
             tracer_conc=inputs.tracer_conc,
             cmfmc_kg_m2_s=inputs.cmfmc_kg_m2_s,
             dtrain_kg_m2_s=inputs.dtrain_kg_m2_s,

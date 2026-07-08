@@ -15,7 +15,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.run_config import load_run_config
-from wombat_transport.transport.pbl import G0_M_PER_S2, ZVIR, run_vdiffdr_one_step
+from wombat_transport.transport.pbl import G0_M_PER_S2, ZVIR, run_vdiffdr_one_step_from_geos_order
 
 
 DEFAULT_COUNTS = (1, 24, 96, 256, 512)
@@ -260,7 +260,7 @@ def _benchmark_inputs(
     checksum = 0.0
     for _ in range(repeat):
         start = time.perf_counter()
-        state = run_vdiffdr_one_step(
+        state = run_vdiffdr_one_step_from_geos_order(
             tracer_conc=inputs.tracer_conc,
             u_m_s=inputs.u_m_s,
             v_m_s=inputs.v_m_s,
