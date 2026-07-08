@@ -12,10 +12,10 @@ from typing import TextIO
 import netCDF4
 import numpy as np
 
-from wombat_transport.transport.convection import run_cloud_convection_one_step_from_geos_order
+from wombat_transport.transport.convection import run_cloud_convection_one_step
 
 
-DEFAULT_INPUT = Path("tests/fixtures/convection_real_sampled_v1/convection_input.nc")
+DEFAULT_INPUT = Path("tests/fixtures/convection_real_sampled_v2/convection_input.nc")
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,7 @@ def _benchmark_inputs(inputs: ConvectionInputs, *, fixture: Path, repeat: int, v
     checksum = 0.0
     for _ in range(repeat):
         start = time.perf_counter()
-        result = run_cloud_convection_one_step_from_geos_order(
+        result = run_cloud_convection_one_step(
             tracer_conc=inputs.tracer_conc,
             cmfmc_kg_m2_s=inputs.cmfmc_kg_m2_s,
             dtrain_kg_m2_s=inputs.dtrain_kg_m2_s,
@@ -150,8 +150,8 @@ def _benchmark_inputs(inputs: ConvectionInputs, *, fixture: Path, repeat: int, v
         repeat=repeat,
         best_wall_s=min(elapsed),
         mean_wall_s=sum(elapsed) / len(elapsed),
-        tracer_count=int(inputs.tracer_conc.shape[0]),
-        grid_shape=tuple(int(value) for value in inputs.tracer_conc.shape[1:]),
+        tracer_count=int(inputs.tracer_conc.shape[-1]),
+        grid_shape=tuple(int(value) for value in inputs.tracer_conc.shape[:3]),
         active_columns=int(active.sum()),
         total_columns=int(active.size),
         checksum=checksum,

@@ -1,0 +1,20 @@
+{
+  "fixture": "vdiff_nonzero_surface_flux_v2",
+  "input": {
+    "name": "vdiff_input.nc",
+    "sha256": "bc02e2af0f3c17b80fe59b64a42c2fef3030cf5c4a6f528c9c6e5d08d9f47009",
+    "size_bytes": 71371,
+    "version": "vdiffdr-input-v2"
+  },
+  "output": {
+    "name": "vdiff_output.nc",
+    "sha256": "6e1a60ef414db40294394012856d14d761e6499decb68f695c799216775d11cc",
+    "size_bytes": 39497,
+    "version": "vdiffdr-output-v2"
+  },
+  "source": {
+    "build_command": "tools/gc_harness/build_vdiff_harness.sh",
+    "input_command": "python -m wombat_transport.gc_harness write-synthetic-vdiff-input tests/fixtures/vdiff_nonzero_surface_flux_v2/vdiff_input.nc --scenario nonzero_surface_flux",
+    "oracle_command": "tools/gc_harness/build/vdiff_harness tests/fixtures/vdiff_nonzero_surface_flux_v2/vdiff_input.nc tests/fixtures/vdiff_nonzero_surface_flux_v2/vdiff_output.nc"
+  }
+}

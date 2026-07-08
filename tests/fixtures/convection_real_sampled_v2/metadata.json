@@ -1,0 +1,46 @@
+{
+  "files": {
+    "convection_input.nc": {
+      "sha256": "6013b517fc1b65a6ac3c1750f953294aac92b99441e70cdf638ab831d2c80333",
+      "size_bytes": 112887
+    },
+    "convection_output.nc": {
+      "sha256": "352b593eadc6c03cfda0d91a7a4742217e04c5b12d4c422c94cef59d3ab27856",
+      "size_bytes": 138168
+    }
+  },
+  "selected_columns": {
+    "source_lat_index": [
+      77,
+      74,
+      34,
+      76,
+      77,
+      52,
+      0
+    ],
+    "source_lon_index": [
+      66,
+      17,
+      112,
+      68,
+      67,
+      107,
+      0
+    ]
+  },
+  "shape": {
+    "lat": 7,
+    "lev": 47,
+    "lon": 1,
+    "tracer": 24
+  },
+  "snapshot": "convection-real-sampled-v2",
+  "source": {
+    "dt_s": 600.0,
+    "met_time_index": 0,
+    "run_config": "residual_20140901_part001_split01_wombat/run.yml",
+    "timestamp": "2014-09-01 00:00",
+    "vertical_mapping": "native_72_to_47_center_and_73_to_48_edge"
+  }
+}

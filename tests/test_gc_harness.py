@@ -60,26 +60,26 @@ from wombat_transport.gc_harness import (
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
 )
-from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step_from_geos_order
+from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
     _calc_advec_cross_terms,
     analyze_tpcore_branches,
-    run_tpcore_one_step_from_geos_order,
+    run_tpcore_one_step,
     setup_tpcore_terms,
-    trace_tpcore_one_step_from_geos_order,
+    trace_tpcore_one_step,
     validate_tpcore_branch_support,
 )
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
-TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v1"
-TPCORE_FXPPM_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_fxppm_low_courant_v1"
-TPCORE_LARGE_CX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_large_courant_polar_v1"
-VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v1"
-VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v1"
-VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v1"
-CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v1"
+TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v2"
+TPCORE_FXPPM_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_fxppm_low_courant_v2"
+TPCORE_LARGE_CX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_x_large_courant_polar_v2"
+VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v2"
+VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v2"
+VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v2"
+CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v2"
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -301,7 +301,7 @@ def test_residual_initial_oracle_fixture_if_cached_matches_python_tpcore():
         )
     branch_report = analyze_tpcore_branches(setup)
 
-    assert tracer.shape == (24, 47, 91, 144)
+    assert tracer.shape == (47, 91, 144, 24)
     assert names[0] == "r0002p001s001"
     assert names[-1] == "r0002p001s024"
     assert branch_report.is_supported
@@ -345,8 +345,8 @@ def test_write_synthetic_vdiff_input_records_fixture_contract(tmp_path):
         assert dataset.dimensions["lat"].size == 3
         assert dataset.dimensions["lon"].size == 4
         assert dataset.dimensions["tracer"].size == 2
-        assert dataset.variables["tracer_conc"].shape == (2, 47, 3, 4)
-        assert dataset.variables["surface_flux_kg_m2_s"].shape == (2, 3, 4)
+        assert dataset.variables["tracer_conc"].shape == (47, 3, 4, 2)
+        assert dataset.variables["surface_flux_kg_m2_s"].shape == (3, 4, 2)
 
 
 def test_write_synthetic_vdiff_input_can_exercise_nonzero_surface_flux(tmp_path):
@@ -373,7 +373,7 @@ def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):
     output_path = write_python_vdiff_output(input_path, tmp_path / "vdiff_output.nc")
 
     output = read_vdiff_output(output_path)
-    assert output.tracer_conc_after.shape == (2, 47, 3, 4)
+    assert output.tracer_conc_after.shape == (47, 3, 4, 2)
     assert output.specific_humidity_after.shape == (47, 3, 4)
     assert output.kvh_m2_s.shape == (48, 3, 4)
     assert output.kvm_m2_s.shape == (48, 3, 4)
@@ -416,7 +416,7 @@ def test_write_synthetic_convection_input_records_fixture_contract(tmp_path):
         assert dataset.dimensions["lat"].size == 2
         assert dataset.dimensions["lon"].size == 3
         assert dataset.dimensions["tracer"].size == 2
-        assert dataset.variables["tracer_conc"].shape == (2, 47, 2, 3)
+        assert dataset.variables["tracer_conc"].shape == (47, 2, 3, 2)
         assert dataset.variables["cmfmc_kg_m2_s"].shape == (47, 2, 3)
         assert dataset.variables["precccon_mm_day"].shape == (2, 3)
         names = tuple(str(value).strip() for value in netCDF4.chartostring(dataset.variables["tracer_name"][:]))
@@ -430,8 +430,8 @@ def test_python_convection_output_roundtrips_through_comparison_contract(tmp_pat
     output = read_convection_output(output_path)
     with netCDF4.Dataset(output_path) as dataset:
         assert dataset.harness == CONVECTION_OUTPUT_VERSION
-    assert output.tracer_conc_after.shape == (2, 47, 2, 3)
-    assert output.diag14_mass_flux.shape == (2, 47, 2, 3)
+    assert output.tracer_conc_after.shape == (47, 2, 3, 2)
+    assert output.diag14_mass_flux.shape == (47, 2, 3, 2)
     assert output.internal_steps == 2
     assert output.internal_dt_s == 300.0
     assert output.negative_count_after == 0
@@ -468,7 +468,7 @@ def test_convection_no_cloud_leaves_tracer_unchanged(tmp_path):
 
     with netCDF4.Dataset(input_path) as dataset:
         tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
-        result = run_cloud_convection_one_step_from_geos_order(
+        result = run_cloud_convection_one_step(
             tracer_conc=tracer,
             cmfmc_kg_m2_s=np.asarray(dataset.variables["cmfmc_kg_m2_s"][:], dtype=np.float64),
             dtrain_kg_m2_s=np.asarray(dataset.variables["dtrain_kg_m2_s"][:], dtype=np.float64),
@@ -498,7 +498,7 @@ def test_convection_active_cloud_changes_tracer_and_conserves_mass(tmp_path):
         before = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
 
     assert float(np.max(np.abs(output.tracer_conc_after - before))) > 0.0
-    np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=1.0e-14, atol=0.0)
 
 
 def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_path):
@@ -517,9 +517,9 @@ def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_
         area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
 
     assert names == ("conv_001", "conv_002", "conv_003")
-    assert output.tracer_conc_after.shape[0] == 3
+    assert output.tracer_conc_after.shape[-1] == 3
     assert not np.array_equal(output.tracer_conc_after[0], output.tracer_conc_after[1])
-    expected_initial_mass = np.sum(before * bmass[np.newaxis, :, :, :] * area[np.newaxis, np.newaxis, :, :], axis=(1, 2, 3))
+    expected_initial_mass = np.sum(before * bmass[:, :, :, np.newaxis] * area[np.newaxis, :, :, np.newaxis], axis=(0, 1, 2))
     np.testing.assert_allclose(output.initial_tracer_mass, expected_initial_mass)
 
 
@@ -559,7 +559,7 @@ def test_python_real_convection_sampled_output_has_finite_mass(tmp_path):
     output_path = write_python_convection_output(input_path, tmp_path / "convection_output.nc")
     output = read_convection_output(output_path)
 
-    assert output.tracer_conc_after.shape[0] == 3
+    assert output.tracer_conc_after.shape[-1] == 3
     assert np.all(np.isfinite(output.tracer_conc_after))
     assert output.negative_count_after == 0
     np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=0.0, atol=1.0e-6)
@@ -568,7 +568,7 @@ def test_python_real_convection_sampled_output_has_finite_mass(tmp_path):
 def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path):
     with (CONVECTION_REAL_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
-    assert metadata["snapshot"] == "convection-real-sampled-v1"
+    assert metadata["snapshot"] == "convection-real-sampled-v2"
     assert metadata["shape"] == {"tracer": 24, "lev": 47, "lat": 7, "lon": 1}
 
     comparison = compare_convection_output(
@@ -736,7 +736,7 @@ def test_write_synthetic_tpcore_snapshot_input_records_compact_47_level_contract
         assert dataset.dimensions["lat"].size == 7
         assert dataset.dimensions["lev"].size == 47
         assert dataset.dimensions["ilev"].size == 48
-        assert dataset.variables["tracer_conc"].shape == (2, 47, 7, 8)
+        assert dataset.variables["tracer_conc"].shape == (47, 7, 8, 2)
         tracer = np.asarray(dataset.variables["tracer_conc"][:])
         assert np.all(tracer > 0.0)
         assert float(np.max(tracer) - np.min(tracer)) > 0.0
@@ -952,7 +952,7 @@ def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture():
     with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
         tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
         tracer[:] = 4.0e-4
-        state = run_tpcore_one_step_from_geos_order(
+        state = run_tpcore_one_step(
             tracer_conc=tracer,
             p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
             p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
@@ -983,8 +983,8 @@ def test_python_tpcore_trace_preserves_final_output_on_low_courant_fixture():
             "dt_s": float(dataset.dt_s),
         }
 
-    normal = run_tpcore_one_step_from_geos_order(**kwargs)
-    traced, trace = trace_tpcore_one_step_from_geos_order(**kwargs)
+    normal = run_tpcore_one_step(**kwargs)
+    traced, trace = trace_tpcore_one_step(**kwargs)
 
     np.testing.assert_array_equal(traced.tracer_conc_after, normal.tracer_conc_after)
     np.testing.assert_array_equal(trace.tracer_conc_after, normal.tracer_conc_after)
@@ -997,9 +997,9 @@ def test_write_python_tpcore_trace_records_stage_contract(tmp_path):
     trace_path = write_python_tpcore_trace(input_path, tmp_path / "python_tpcore_trace.nc")
 
     with netCDF4.Dataset(trace_path) as dataset:
-        assert dataset.harness == "tpcore-trace-v1"
-        assert dataset.variables["q_after_pole_average"].shape == (2, 47, 7, 8)
-        assert dataset.variables["dq_after_ytp_hpa"].shape == (2, 47, 7, 8)
+        assert dataset.harness == "tpcore-trace-v2"
+        assert dataset.variables["q_after_pole_average"].shape == (47, 7, 8, 2)
+        assert dataset.variables["dq_after_ytp_hpa"].shape == (47, 7, 8, 2)
         assert dataset.variables["cx"].shape == (47, 7, 8)
         assert dataset.variables["vertical_mass_flux_hpa"].shape == (47, 7, 8)
 
@@ -1011,7 +1011,7 @@ def test_write_python_tpcore_trace_records_stage_contract(tmp_path):
 def test_attribute_python_tpcore_error_reports_error_bins(tmp_path):
     input_path = TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME
     with netCDF4.Dataset(input_path) as dataset:
-        state = run_tpcore_one_step_from_geos_order(
+        state = run_tpcore_one_step(
             tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
             p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
             p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
@@ -1025,14 +1025,14 @@ def test_attribute_python_tpcore_error_reports_error_bins(tmp_path):
         )
     output_path = tmp_path / "transport_output.nc"
     perturbed = state.tracer_conc_after.copy()
-    perturbed[0, 3, 2, 1] += 1.0e-9
+    perturbed[3, 2, 1, 0] += 1.0e-9
     with netCDF4.Dataset(output_path, "w") as dataset:
-        dataset.createDimension("tracer", perturbed.shape[0])
-        dataset.createDimension("lev", perturbed.shape[1])
-        dataset.createDimension("lat", perturbed.shape[2])
-        dataset.createDimension("lon", perturbed.shape[3])
+        dataset.createDimension("lev", perturbed.shape[0])
+        dataset.createDimension("lat", perturbed.shape[1])
+        dataset.createDimension("lon", perturbed.shape[2])
+        dataset.createDimension("tracer", perturbed.shape[3])
         dataset.harness = TRANSPORT_OUTPUT_VERSION
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = perturbed
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = perturbed
         dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = state.xmass_hpa
         dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = state.ymass_hpa
         dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = state.surface_pressure_hpa
@@ -1046,7 +1046,7 @@ def test_attribute_python_tpcore_error_reports_error_bins(tmp_path):
 
 def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
     input_path = _write_synthetic_pjc_input(tmp_path / "transport_input.nc")
-    tracer_conc = np.arange(2 * 4 * 7 * 3, dtype=np.float64).reshape(2, 4, 7, 3)
+    tracer_conc = np.arange(4 * 7 * 3 * 2, dtype=np.float64).reshape(4, 7, 3, 2)
 
     append_transport_step_tracers(input_path, tracer_conc, tracer_names=("A", "B"))
 
@@ -1054,7 +1054,7 @@ def test_append_transport_step_tracers_records_fixture_contract(tmp_path):
         assert dataset.harness == TRANSPORT_INPUT_VERSION
         assert dataset.dimensions["tracer"].size == 2
         assert dataset.dimensions["name_strlen"].size == 1
-        assert dataset.variables["tracer_conc"].shape == (2, 4, 7, 3)
+        assert dataset.variables["tracer_conc"].shape == (4, 7, 3, 2)
         assert np.array_equal(np.asarray(dataset.variables["tracer_conc"][:]), tracer_conc)
 
 
@@ -1066,14 +1066,14 @@ def test_read_transport_step_output_records_oracle_fields(tmp_path):
         dataset.createDimension("lat", 2)
         dataset.createDimension("lon", 3)
         dataset.harness = TRANSPORT_OUTPUT_VERSION
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = 1.0
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = 1.0
         dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = 2.0
         dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = 3.0
         dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = 4.0
 
     output = read_transport_step_output(output_path)
 
-    assert output.tracer_conc_after.shape == (1, 4, 2, 3)
+    assert output.tracer_conc_after.shape == (4, 2, 3, 1)
     assert output.xmass_hpa.shape == (4, 2, 3)
     assert output.ymass_hpa.shape == (4, 2, 3)
     assert output.surface_pressure_hpa.shape == (2, 3)
@@ -1105,14 +1105,14 @@ def test_compare_transport_step_output_reports_pjc_flux_errors_and_tracer_summar
     )
     output_path = tmp_path / "transport_output.nc"
     with netCDF4.Dataset(output_path, "w") as dataset:
-        dataset.createDimension("tracer", tracer.shape[0])
-        dataset.createDimension("lev", tracer.shape[1])
-        dataset.createDimension("lat", tracer.shape[2])
-        dataset.createDimension("lon", tracer.shape[3])
+        dataset.createDimension("lev", tracer.shape[0])
+        dataset.createDimension("lat", tracer.shape[1])
+        dataset.createDimension("lon", tracer.shape[2])
+        dataset.createDimension("tracer", tracer.shape[3])
         dataset.harness = TRANSPORT_OUTPUT_VERSION
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer + 1.0e-12
-        dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = xmass
-        dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = ymass
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracer + 1.0e-12
+        dataset.createVariable("xmass_hpa", "f8", ("lev", "lat", "lon"))[:] = xmass[::-1]
+        dataset.createVariable("ymass_hpa", "f8", ("lev", "lat", "lon"))[:] = ymass[::-1]
         dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = 1000.0
 
     comparison = compare_transport_step_output(input_path, output_path)

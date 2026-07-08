@@ -8,9 +8,6 @@ import numpy as np
 from wombat_transport.fields import TracerField
 from wombat_transport.fields import (
     canonical_time_slice,
-    public_surface_flux_to_transport,
-    public_tracer4_to_transport,
-    transport_tracer_to_public4,
 )
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import load_run_config
@@ -31,7 +28,7 @@ from wombat_transport.transport import (
 )
 from wombat_transport.transport.pbl import (
     ZVIR,
-    run_vdiffdr_one_step_from_geos_order,
+    run_vdiffdr_one_step,
 )
 
 BASE_CONFIG = "base_wombat/run.yml"
@@ -195,7 +192,7 @@ def test_mix_full_pbl_mass_weights_full_and_fractional_levels():
 def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux():
     fixture = _synthetic_vdiff_fixture()
 
-    result = run_vdiffdr_one_step_from_geos_order(**fixture)
+    result = run_vdiffdr_one_step(**fixture)
 
     tracer = fixture["tracer_conc"]
     nlev, nlat, nlon = fixture["u_m_s"].shape
@@ -213,36 +210,12 @@ def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux()
     np.testing.assert_allclose(result.final_tracer_mass, result.initial_tracer_mass, rtol=2.0e-14)
 
 
-def test_vdiff_tracer_working_layout_roundtrips_public_order():
-    tracer = np.arange(2 * 3 * 4 * 5, dtype=np.float64).reshape(2, 3, 4, 5)
-
-    working = public_tracer4_to_transport(tracer)
-    roundtrip = transport_tracer_to_public4(working)
-
-    assert working.shape == (3, 4, 5, 2)
-    assert working.flags.c_contiguous
-    assert working[0, 0, 0, 0] == tracer[0, 2, 0, 0]
-    assert working[2, 3, 4, 1] == tracer[1, 0, 3, 4]
-    assert roundtrip.flags.c_contiguous
-    np.testing.assert_array_equal(roundtrip, tracer)
-
-
-def test_vdiff_surface_flux_working_layout_keeps_tracer_fast():
-    surface_flux = np.arange(3 * 4 * 5, dtype=np.float64).reshape(3, 4, 5)
-
-    working = public_surface_flux_to_transport(surface_flux)
-
-    assert working.shape == (4, 5, 3)
-    assert working.flags.c_contiguous
-    np.testing.assert_array_equal(working[2, 4, :], surface_flux[:, 2, 4])
-
-
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
     fixture = _synthetic_vdiff_fixture()
     fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]
 
     try:
-        run_vdiffdr_one_step_from_geos_order(**fixture)
+        run_vdiffdr_one_step(**fixture)
     except ValueError as exc:
         assert "pedge_hpa shape" in str(exc)
     else:
@@ -347,20 +320,22 @@ def _synthetic_vdiff_fixture():
     lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
     lat = np.linspace(-1.0, 1.0, nlat, dtype=np.float64)[np.newaxis, :, np.newaxis]
     lon = np.linspace(0.0, 1.0, nlon, dtype=np.float64)[np.newaxis, np.newaxis, :]
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
 
-    pedge_profile = np.linspace(1000.0, 50.0, nlev + 1, dtype=np.float64)
+    pedge_profile = np.linspace(50.0, 1000.0, nlev + 1, dtype=np.float64)
     pedge = np.broadcast_to(pedge_profile[:, np.newaxis, np.newaxis], (nlev + 1, nlat, nlon)).copy()
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = 289.0 - 0.45 * lev + 1.5 * lat + 0.2 * lon
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
     tv = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, nlat, nlon), 125.0, dtype=np.float64)
-    dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
+    dry_mass = (pedge[1:] - pedge[:-1]) * 100.0 / 9.80665
     dry_mass = dry_mass * np.ones((nlev, nlat, nlon), dtype=np.float64)
     u = (4.0 + 0.05 * lev + 0.2 * lon) * np.ones((1, nlat, 1), dtype=np.float64)
     v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
-    tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev + 2.0e-9 * lat + 1.0e-9 * lon
+    tracer = 4.0e-4 + 1.0e-7 * tracer_index
+    tracer = tracer + 4.0e-9 * lev[..., np.newaxis]
+    tracer = tracer + 2.0e-9 * lat[..., np.newaxis] + 1.0e-9 * lon[..., np.newaxis]
 
     return {
         "tracer_conc": tracer,

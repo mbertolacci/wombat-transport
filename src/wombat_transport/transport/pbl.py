@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.fields import public_surface_flux_to_transport, public_tracer4_to_transport, transport_tracer_to_public4
-
 G0_M_PER_S2 = 9.80665
 RD_J_PER_KG_K = 287.0
 RV_J_PER_KG_K = 461.0
@@ -357,66 +355,6 @@ def run_vdiffdr_one_step(
         negative_count_after_clip=negative_after,
         initial_tracer_mass=initial_mass,
         final_tracer_mass=final_mass,
-    )
-
-
-def run_vdiffdr_one_step_from_geos_order(
-    *,
-    tracer_conc: np.ndarray,
-    u_m_s: np.ndarray,
-    v_m_s: np.ndarray,
-    temperature_k: np.ndarray,
-    specific_humidity_kg_kg: np.ndarray,
-    pmid_hpa: np.ndarray,
-    pedge_hpa: np.ndarray,
-    virtual_temperature_k: np.ndarray,
-    bxheight_m: np.ndarray,
-    dry_air_mass_kg: np.ndarray,
-    pbl_top_m: np.ndarray,
-    hflux_w_m2: np.ndarray,
-    eflux_w_m2: np.ndarray,
-    ustar_m_s: np.ndarray,
-    area_m2: np.ndarray,
-    dt_s: float = 600.0,
-    surface_flux_kg_m2_s: np.ndarray | None = None,
-) -> VdiffDrResult:
-    """Run VDIFFDR from GEOS/fixture order and return GEOS-order fields."""
-
-    if surface_flux_kg_m2_s is None:
-        surface_flux = None
-    else:
-        surface_flux = public_surface_flux_to_transport(surface_flux_kg_m2_s)
-    result = run_vdiffdr_one_step(
-        tracer_conc=public_tracer4_to_transport(tracer_conc),
-        u_m_s=np.asarray(u_m_s, dtype=np.float64)[::-1],
-        v_m_s=np.asarray(v_m_s, dtype=np.float64)[::-1],
-        temperature_k=np.asarray(temperature_k, dtype=np.float64)[::-1],
-        specific_humidity_kg_kg=np.asarray(specific_humidity_kg_kg, dtype=np.float64)[::-1],
-        pmid_hpa=np.asarray(pmid_hpa, dtype=np.float64)[::-1],
-        pedge_hpa=np.asarray(pedge_hpa, dtype=np.float64)[::-1],
-        virtual_temperature_k=np.asarray(virtual_temperature_k, dtype=np.float64)[::-1],
-        bxheight_m=np.asarray(bxheight_m, dtype=np.float64)[::-1],
-        dry_air_mass_kg=np.asarray(dry_air_mass_kg, dtype=np.float64)[::-1],
-        pbl_top_m=pbl_top_m,
-        hflux_w_m2=hflux_w_m2,
-        eflux_w_m2=eflux_w_m2,
-        ustar_m_s=ustar_m_s,
-        area_m2=area_m2,
-        dt_s=dt_s,
-        surface_flux_kg_m2_s=surface_flux,
-    )
-    return VdiffDrResult(
-        tracer_conc=transport_tracer_to_public4(result.tracer_conc),
-        specific_humidity_kg_kg=result.specific_humidity_kg_kg[::-1],
-        kvh_m2_s=result.kvh_m2_s[::-1],
-        kvm_m2_s=result.kvm_m2_s[::-1],
-        pbl_top_m=result.pbl_top_m,
-        tpert_k=result.tpert_k,
-        qpert_kg_kg=result.qpert_kg_kg,
-        negative_count_before_clip=result.negative_count_before_clip,
-        negative_count_after_clip=result.negative_count_after_clip,
-        initial_tracer_mass=result.initial_tracer_mass,
-        final_tracer_mass=result.final_tracer_mass,
     )
 
 

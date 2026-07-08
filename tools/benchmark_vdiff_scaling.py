@@ -15,7 +15,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.run_config import load_run_config
-from wombat_transport.transport.pbl import G0_M_PER_S2, ZVIR, run_vdiffdr_one_step_from_geos_order
+from wombat_transport.transport.pbl import G0_M_PER_S2, ZVIR, run_vdiffdr_one_step
 
 
 DEFAULT_COUNTS = (1, 24, 96, 256, 512)
@@ -199,16 +199,16 @@ def _build_synthetic_vdiff_inputs(run_config_path: Path, ntracer: int, *, dt_s: 
     lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
     lat_rad = np.deg2rad(lat)[np.newaxis, :, np.newaxis]
     lon_rad = np.deg2rad(lon)[np.newaxis, np.newaxis, :]
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
 
-    pedge_profile = np.linspace(1000.0, 50.0, nlev + 1, dtype=np.float64)
+    pedge_profile = np.linspace(50.0, 1000.0, nlev + 1, dtype=np.float64)
     pedge = np.broadcast_to(pedge_profile[:, np.newaxis, np.newaxis], (nlev + 1, nlat, nlon)).copy()
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = 289.0 - 0.45 * lev + 1.5 * np.sin(lat_rad) + 0.2 * np.cos(lon_rad)
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * np.sin(lat_rad)) * np.ones((1, 1, nlon))
     virtual_temperature = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, nlat, nlon), 125.0, dtype=np.float64)
-    dry_air_mass = (pedge[:-1] - pedge[1:]) * 100.0 / G0_M_PER_S2
+    dry_air_mass = (pedge[1:] - pedge[:-1]) * 100.0 / G0_M_PER_S2
     dry_air_mass = dry_air_mass * area[np.newaxis, :, :]
 
     vertical_wave = np.sin((lev + 1.0) / float(nlev) * np.pi)
@@ -217,14 +217,15 @@ def _build_synthetic_vdiff_inputs(run_config_path: Path, ntracer: int, *, dt_s: 
     v = 0.3 * vertical_wave * np.sin(2.0 * lon_rad) + 0.02 * np.sin(lat_rad)
 
     tracer = 4.0e-4 + 1.0e-7 * tracer_index
-    tracer = tracer + 4.0e-9 * lev + 2.0e-9 * np.sin(lat_rad) + 1.0e-9 * np.cos(lon_rad)
+    tracer = tracer + 4.0e-9 * lev[..., np.newaxis]
+    tracer = tracer + 2.0e-9 * np.sin(lat_rad)[..., np.newaxis] + 1.0e-9 * np.cos(lon_rad)[..., np.newaxis]
     tracer = np.ascontiguousarray(tracer)
 
     pbl_top = np.full((nlat, nlon), 950.0, dtype=np.float64)
     hflux = np.full((nlat, nlon), 65.0, dtype=np.float64)
     eflux = np.full((nlat, nlon), 90.0, dtype=np.float64)
     ustar = np.full((nlat, nlon), 0.35, dtype=np.float64)
-    surface_flux = np.zeros((ntracer, nlat, nlon), dtype=np.float64)
+    surface_flux = np.zeros((nlat, nlon, ntracer), dtype=np.float64)
 
     return SyntheticVdiffInputs(
         tracer_conc=tracer,
@@ -260,7 +261,7 @@ def _benchmark_inputs(
     checksum = 0.0
     for _ in range(repeat):
         start = time.perf_counter()
-        state = run_vdiffdr_one_step_from_geos_order(
+        state = run_vdiffdr_one_step(
             tracer_conc=inputs.tracer_conc,
             u_m_s=inputs.u_m_s,
             v_m_s=inputs.v_m_s,
@@ -283,7 +284,7 @@ def _benchmark_inputs(
         checksum = float(np.sum(state.tracer_conc))
     best = min(elapsed_values)
     mean = sum(elapsed_values) / float(len(elapsed_values))
-    gridcell_tracers = tracer_count * np.prod(inputs.tracer_conc.shape[1:])
+    gridcell_tracers = np.prod(inputs.tracer_conc.shape)
     return BenchmarkRow(
         tracer_count=tracer_count,
         status="ok",

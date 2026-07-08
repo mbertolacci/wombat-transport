@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.fields import public_tracer4_to_transport, transport_tracer_to_public4
-
 G0_100 = 100.0 / 9.80665
 _TINYNUM = 1.0e-14
 
@@ -142,58 +140,6 @@ def run_cloud_convection_one_step(
     )
 
 
-def run_cloud_convection_one_step_from_geos_order(
-    *,
-    tracer_conc: np.ndarray,
-    cmfmc_kg_m2_s: np.ndarray,
-    dtrain_kg_m2_s: np.ndarray,
-    dqrcu_kg_kg_s: np.ndarray,
-    reevapcn_kg_kg_s: np.ndarray,
-    delp_dry_hpa: np.ndarray,
-    delp_hpa: np.ndarray,
-    area_m2: np.ndarray,
-    bxheight_m: np.ndarray | None = None,
-    pficu_kg_m2_s: np.ndarray | None = None,
-    pflcu_kg_m2_s: np.ndarray | None = None,
-    temperature_k: np.ndarray | None = None,
-    precccon_mm_day: np.ndarray | None = None,
-    dt_s: float = 600.0,
-    reconstruct_conv_precip_flux: bool = False,
-) -> ConvectionResult:
-    """Run cloud convection from GEOS/fixture order and return GEOS-order fields."""
-
-    result = run_cloud_convection_one_step(
-        tracer_conc=public_tracer4_to_transport(tracer_conc),
-        cmfmc_kg_m2_s=np.asarray(cmfmc_kg_m2_s, dtype=np.float64)[::-1],
-        dtrain_kg_m2_s=np.asarray(dtrain_kg_m2_s, dtype=np.float64)[::-1],
-        dqrcu_kg_kg_s=np.asarray(dqrcu_kg_kg_s, dtype=np.float64)[::-1],
-        reevapcn_kg_kg_s=np.asarray(reevapcn_kg_kg_s, dtype=np.float64)[::-1],
-        delp_dry_hpa=np.asarray(delp_dry_hpa, dtype=np.float64)[::-1],
-        delp_hpa=np.asarray(delp_hpa, dtype=np.float64)[::-1],
-        area_m2=area_m2,
-        bxheight_m=None if bxheight_m is None else np.asarray(bxheight_m, dtype=np.float64)[::-1],
-        pficu_kg_m2_s=None if pficu_kg_m2_s is None else np.asarray(pficu_kg_m2_s, dtype=np.float64)[::-1],
-        pflcu_kg_m2_s=None if pflcu_kg_m2_s is None else np.asarray(pflcu_kg_m2_s, dtype=np.float64)[::-1],
-        temperature_k=None if temperature_k is None else np.asarray(temperature_k, dtype=np.float64)[::-1],
-        precccon_mm_day=precccon_mm_day,
-        dt_s=dt_s,
-        reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
-    )
-    tracer_after = transport_tracer_to_public4(result.tracer_conc)
-    diag14 = transport_tracer_to_public4(result.diag14_mass_flux)
-    bmass = np.asarray(delp_dry_hpa, dtype=np.float64) * G0_100
-    return ConvectionResult(
-        tracer_conc=tracer_after,
-        diag14_mass_flux=diag14,
-        negative_count_before=result.negative_count_before,
-        negative_count_after=result.negative_count_after,
-        initial_tracer_mass=_column_mass_geos_order(np.asarray(tracer_conc, dtype=np.float64), bmass, area_m2),
-        final_tracer_mass=_column_mass_geos_order(tracer_after, bmass, area_m2),
-        internal_steps=result.internal_steps,
-        internal_dt_s=result.internal_dt_s,
-    )
-
-
 def _convective_precip_rates_top(
     dqrcu_met: np.ndarray,
     reevapcn_met: np.ndarray,
@@ -294,7 +240,3 @@ def _convect_column_top(
 
 def _column_mass_transport(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
     return np.sum(tracer * bmass_kg_m2[:, :, :, np.newaxis] * area_m2[np.newaxis, :, :, np.newaxis], axis=(0, 1, 2))
-
-
-def _column_mass_geos_order(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
-    return np.sum(tracer * bmass_kg_m2[np.newaxis, :, :, :] * area_m2[np.newaxis, np.newaxis, :, :], axis=(1, 2, 3))

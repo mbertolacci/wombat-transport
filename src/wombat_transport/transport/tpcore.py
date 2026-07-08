@@ -1,7 +1,7 @@
 """GEOS-Chem-oriented NumPy TPCORE pieces.
 
 The first tracked oracle fixture is intentionally compact and low-Courant:
-``tests/fixtures/tpcore_snapshot_v1`` has max ``|cx|`` around 0.0023 and max
+``tests/fixtures/tpcore_snapshot_v2`` has max ``|cx|`` around 0.0023 and max
 ``|cy|`` around 0.0008. Matching that fixture is useful one-step coverage for
 the ordinary low-Courant branches. Additional branch fixtures cover X full-PPM
 and compact large-Courant E-W behavior. Full-grid validation must
@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.fields import public_tracer4_to_transport, top_field3_to_bottom, transport_tracer_to_public4
 from wombat_transport.transport.pjc import _pjc_horizontal_geometry, pjc_mass_flux_hpa
 
 
@@ -140,38 +139,6 @@ def run_tpcore_one_step(
     )
 
 
-def run_tpcore_one_step_from_geos_order(
-    *,
-    tracer_conc: np.ndarray,
-    p1_hpa: np.ndarray,
-    p2_hpa: np.ndarray,
-    u_m_s: np.ndarray,
-    v_m_s: np.ndarray,
-    area_m2: np.ndarray,
-    hyai_hpa: np.ndarray,
-    hybi: np.ndarray,
-    lat_deg: np.ndarray,
-    dt_s: float,
-    fill: bool = True,
-) -> TpcoreState:
-    """Run TPCORE from GEOS/fixture tracer order and return GEOS-order fields."""
-
-    state = run_tpcore_one_step(
-        tracer_conc=public_tracer4_to_transport(tracer_conc),
-        p1_hpa=p1_hpa,
-        p2_hpa=p2_hpa,
-        u_m_s=u_m_s,
-        v_m_s=v_m_s,
-        area_m2=area_m2,
-        hyai_hpa=hyai_hpa,
-        hybi=hybi,
-        lat_deg=lat_deg,
-        dt_s=dt_s,
-        fill=fill,
-    )
-    return _tpcore_state_to_geos_order(state)
-
-
 def trace_tpcore_one_step(
     *,
     tracer_conc: np.ndarray,
@@ -222,64 +189,6 @@ def trace_tpcore_one_step(
     if trace is None:
         raise AssertionError("trace=True did not produce a TPCORE trace")
     return state, trace
-
-
-def trace_tpcore_one_step_from_geos_order(
-    *,
-    tracer_conc: np.ndarray,
-    p1_hpa: np.ndarray,
-    p2_hpa: np.ndarray,
-    u_m_s: np.ndarray,
-    v_m_s: np.ndarray,
-    area_m2: np.ndarray,
-    hyai_hpa: np.ndarray,
-    hybi: np.ndarray,
-    lat_deg: np.ndarray,
-    dt_s: float,
-    fill: bool = True,
-) -> tuple[TpcoreState, TpcoreTrace]:
-    """Run TPCORE from GEOS/fixture order and return GEOS-order diagnostics."""
-
-    state, trace = trace_tpcore_one_step(
-        tracer_conc=public_tracer4_to_transport(tracer_conc),
-        p1_hpa=p1_hpa,
-        p2_hpa=p2_hpa,
-        u_m_s=u_m_s,
-        v_m_s=v_m_s,
-        area_m2=area_m2,
-        hyai_hpa=hyai_hpa,
-        hybi=hybi,
-        lat_deg=lat_deg,
-        dt_s=dt_s,
-        fill=fill,
-    )
-    return _tpcore_state_to_geos_order(state), _tpcore_trace_to_geos_order(trace)
-
-
-def _tpcore_state_to_geos_order(state: TpcoreState) -> TpcoreState:
-    return TpcoreState(
-        tracer_conc_after=transport_tracer_to_public4(state.tracer_conc_after),
-        xmass_hpa=top_field3_to_bottom(state.xmass_hpa),
-        ymass_hpa=top_field3_to_bottom(state.ymass_hpa),
-        surface_pressure_hpa=state.surface_pressure_hpa,
-        delp1_hpa=top_field3_to_bottom(state.delp1_hpa),
-        delpm_hpa=top_field3_to_bottom(state.delpm_hpa),
-        delp2_hpa=top_field3_to_bottom(state.delp2_hpa),
-        vertical_mass_flux_hpa=top_field3_to_bottom(state.vertical_mass_flux_hpa),
-    )
-
-
-def _tpcore_trace_to_geos_order(trace: TpcoreTrace) -> TpcoreTrace:
-    return TpcoreTrace(
-        q_after_pole_average=transport_tracer_to_public4(trace.q_after_pole_average),
-        dq_after_init=transport_tracer_to_public4(trace.dq_after_init),
-        q_after_cross_terms=transport_tracer_to_public4(trace.q_after_cross_terms),
-        dq_after_xtp=transport_tracer_to_public4(trace.dq_after_xtp),
-        dq_after_ytp=transport_tracer_to_public4(trace.dq_after_ytp),
-        dq_after_fzppm=transport_tracer_to_public4(trace.dq_after_fzppm),
-        dq_after_fill=transport_tracer_to_public4(trace.dq_after_fill),
-        tracer_conc_after=transport_tracer_to_public4(trace.tracer_conc_after),
-    )
 
 
 def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
