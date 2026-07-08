@@ -11,6 +11,7 @@ gcclassic
 kpp_standalone
 __pycache__/
 .pytest_cache/
+.venv/
 *.egg-info/
 tools/gc_harness/work/
 oracle_data/*/
