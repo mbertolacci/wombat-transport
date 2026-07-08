@@ -1,0 +1,20 @@
+{
+  "fixture": "vdiff_snapshot_v2",
+  "input": {
+    "name": "vdiff_input.nc",
+    "sha256": "828c9c1fa2f53b87b4c2f665b180b705251ac8d0a8e46512a53c1784b6ee6ba0",
+    "size_bytes": 71314,
+    "version": "vdiffdr-input-v2"
+  },
+  "output": {
+    "name": "vdiff_output.nc",
+    "sha256": "62ce563abb5881747dd92b6a180a588d4ca746f490c4008a31e44cd0a968240e",
+    "size_bytes": 39497,
+    "version": "vdiffdr-output-v2"
+  },
+  "source": {
+    "build_command": "tools/gc_harness/build_vdiff_harness.sh",
+    "input_command": "python -m wombat_transport.gc_harness write-synthetic-vdiff-input tests/fixtures/vdiff_snapshot_v2/vdiff_input.nc",
+    "oracle_command": "tools/gc_harness/build/vdiff_harness tests/fixtures/vdiff_snapshot_v2/vdiff_input.nc tests/fixtures/vdiff_snapshot_v2/vdiff_output.nc"
+  }
+}

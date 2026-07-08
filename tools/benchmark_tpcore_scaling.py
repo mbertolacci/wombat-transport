@@ -216,14 +216,14 @@ def _build_synthetic_tpcore_inputs(run_config_path: Path, ntracer: int, *, dt_s:
     v = 0.35 * np.cos((level + 1.0) / float(nlev) * np.pi) * np.sin(2.0 * lon_3d)
     v = v * np.cos(lat_3d)
 
-    tracer = np.empty((ntracer, nlev, lat.size, lon.size), dtype=np.float64)
+    tracer = np.empty((nlev, lat.size, lon.size, ntracer), dtype=np.float64)
     tracer[:] = 4.0e-4
-    tracer += (np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis] + 1.0) * 1.0e-7
-    tracer += 2.5e-8 * np.arange(nlev, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis] / max(
+    tracer += (np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :] + 1.0) * 1.0e-7
+    tracer += 2.5e-8 * np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis] / max(
         float(nlev - 1), 1.0
     )
-    tracer += 1.5e-8 * np.sin(lat_rad)[np.newaxis, np.newaxis, :, np.newaxis]
-    tracer += 7.5e-9 * np.cos(lon_rad)[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer += 1.5e-8 * np.sin(lat_rad)[np.newaxis, :, np.newaxis, np.newaxis]
+    tracer += 7.5e-9 * np.cos(lon_rad)[np.newaxis, np.newaxis, :, np.newaxis]
 
     return SyntheticTpcoreInputs(
         tracer_conc=tracer,
@@ -265,13 +265,13 @@ def _benchmark_inputs(
             dt_s=inputs.dt_s,
         )
         elapsed_values.append(time.perf_counter() - start)
-        checksum = float(np.mean(state.tracer_conc_after[:, 0, 0, 0]))
+        checksum = float(np.mean(state.tracer_conc_after[0, 0, 0, :]))
         del state
         gc.collect()
 
     best = min(elapsed_values)
     mean = sum(elapsed_values) / len(elapsed_values)
-    gridcell_tracers = tracer_count * int(np.prod(inputs.tracer_conc.shape[1:]))
+    gridcell_tracers = int(np.prod(inputs.tracer_conc.shape))
     return BenchmarkRow(
         tracer_count=tracer_count,
         status="completed",
@@ -306,7 +306,7 @@ def _profile_inputs(inputs: SyntheticTpcoreInputs, *, profile_top: int) -> str:
         dt_s=inputs.dt_s,
     )
     profiler.disable()
-    checksum = float(np.mean(state.tracer_conc_after[:, 0, 0, 0]))
+    checksum = float(np.mean(state.tracer_conc_after[0, 0, 0, :]))
     del state
     stream = io.StringIO()
     stream.write(f"checksum,{checksum:.16g}\n")

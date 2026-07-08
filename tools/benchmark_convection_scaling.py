@@ -15,7 +15,7 @@ import numpy as np
 from wombat_transport.transport.convection import run_cloud_convection_one_step
 
 
-DEFAULT_INPUT = Path("tests/fixtures/convection_real_sampled_v1/convection_input.nc")
+DEFAULT_INPUT = Path("tests/fixtures/convection_real_sampled_v2/convection_input.nc")
 
 
 @dataclass(frozen=True)
@@ -150,8 +150,8 @@ def _benchmark_inputs(inputs: ConvectionInputs, *, fixture: Path, repeat: int, v
         repeat=repeat,
         best_wall_s=min(elapsed),
         mean_wall_s=sum(elapsed) / len(elapsed),
-        tracer_count=int(inputs.tracer_conc.shape[0]),
-        grid_shape=tuple(int(value) for value in inputs.tracer_conc.shape[1:]),
+        tracer_count=int(inputs.tracer_conc.shape[-1]),
+        grid_shape=tuple(int(value) for value in inputs.tracer_conc.shape[:3]),
         active_columns=int(active.sum()),
         total_columns=int(active.size),
         checksum=checksum,

@@ -6,6 +6,9 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.fields import (
+    canonical_time_slice,
+)
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -18,7 +21,6 @@ from wombat_transport.transport import (
     dry_pressure_thickness_hpa,
     load_transport_forcing,
     mix_full_pbl,
-    run_vdiffdr_one_step,
     run_transport_one_step,
     run_transport_window,
     trace_transport_one_step,
@@ -26,9 +28,7 @@ from wombat_transport.transport import (
 )
 from wombat_transport.transport.pbl import (
     ZVIR,
-    _surface_flux_public_to_vdiff_working,
-    _tracer_public_to_vdiff_working,
-    _tracer_vdiff_working_to_public,
+    run_vdiffdr_one_step,
 )
 
 BASE_CONFIG = "base_wombat/run.yml"
@@ -210,30 +210,6 @@ def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux()
     np.testing.assert_allclose(result.final_tracer_mass, result.initial_tracer_mass, rtol=2.0e-14)
 
 
-def test_vdiff_tracer_working_layout_roundtrips_public_order():
-    tracer = np.arange(2 * 3 * 4 * 5, dtype=np.float64).reshape(2, 3, 4, 5)
-
-    working = _tracer_public_to_vdiff_working(tracer)
-    roundtrip = _tracer_vdiff_working_to_public(working)
-
-    assert working.shape == (3, 4, 5, 2)
-    assert working.flags.c_contiguous
-    assert working[0, 0, 0, 0] == tracer[0, 2, 0, 0]
-    assert working[2, 3, 4, 1] == tracer[1, 0, 3, 4]
-    assert roundtrip.flags.c_contiguous
-    np.testing.assert_array_equal(roundtrip, tracer)
-
-
-def test_vdiff_surface_flux_working_layout_keeps_tracer_fast():
-    surface_flux = np.arange(3 * 4 * 5, dtype=np.float64).reshape(3, 4, 5)
-
-    working = _surface_flux_public_to_vdiff_working(surface_flux)
-
-    assert working.shape == (4, 5, 3)
-    assert working.flags.c_contiguous
-    np.testing.assert_array_equal(working[2, 4, :], surface_flux[:, 2, 4])
-
-
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
     fixture = _synthetic_vdiff_fixture()
     fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]
@@ -251,7 +227,7 @@ def test_transport_one_step_conserves_residual_scalar_mass():
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     field = TracerField(
         names=field.names[:1],
-        data=field.data[:1],
+        data=field.data[..., :1],
         units=field.units[:1],
         coords=field.coords,
     )
@@ -271,7 +247,7 @@ def test_trace_transport_one_step_captures_operator_handoffs():
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     field = TracerField(
         names=field.names[:1],
-        data=field.data[:1],
+        data=field.data[..., :1],
         units=field.units[:1],
         coords=field.coords,
     )
@@ -279,11 +255,12 @@ def test_trace_transport_one_step_captures_operator_handoffs():
     trace = trace_transport_one_step(field, _load_forcing(config), config.grid_template, dt_s=600.0)
 
     assert trace.result.transport_operators == ("tpcore", "vdiff", "convection")
-    assert trace.tpcore_state.tracer_conc_after.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert trace.tpcore_state.tracer_conc_after.shape == (FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
     assert trace.vdiff_input.tracer_conc.shape == trace.tpcore_state.tracer_conc_after.shape
     assert trace.vdiff_output.tracer_conc.shape == trace.convection_input.tracer_conc.shape
-    assert trace.convection_output.tracer_conc.shape == trace.result.state.data[:, 0, :, :, :].shape
-    np.testing.assert_allclose(trace.result.state.data[:, 0, :, :, :], trace.convection_output.tracer_conc)
+    canonical_result = canonical_time_slice(trace.result.state.data)
+    assert trace.convection_output.tracer_conc.shape == canonical_result.shape
+    np.testing.assert_allclose(canonical_result, trace.convection_output.tracer_conc)
 
 
 def test_transport_window_accumulates_average_state_and_conserves_mass():
@@ -343,20 +320,22 @@ def _synthetic_vdiff_fixture():
     lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
     lat = np.linspace(-1.0, 1.0, nlat, dtype=np.float64)[np.newaxis, :, np.newaxis]
     lon = np.linspace(0.0, 1.0, nlon, dtype=np.float64)[np.newaxis, np.newaxis, :]
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
 
-    pedge_profile = np.linspace(1000.0, 50.0, nlev + 1, dtype=np.float64)
+    pedge_profile = np.linspace(50.0, 1000.0, nlev + 1, dtype=np.float64)
     pedge = np.broadcast_to(pedge_profile[:, np.newaxis, np.newaxis], (nlev + 1, nlat, nlon)).copy()
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = 289.0 - 0.45 * lev + 1.5 * lat + 0.2 * lon
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
     tv = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, nlat, nlon), 125.0, dtype=np.float64)
-    dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
+    dry_mass = (pedge[1:] - pedge[:-1]) * 100.0 / 9.80665
     dry_mass = dry_mass * np.ones((nlev, nlat, nlon), dtype=np.float64)
     u = (4.0 + 0.05 * lev + 0.2 * lon) * np.ones((1, nlat, 1), dtype=np.float64)
     v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat) * np.ones((1, 1, nlon), dtype=np.float64)
-    tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev + 2.0e-9 * lat + 1.0e-9 * lon
+    tracer = 4.0e-4 + 1.0e-7 * tracer_index
+    tracer = tracer + 4.0e-9 * lev[..., np.newaxis]
+    tracer = tracer + 2.0e-9 * lat[..., np.newaxis] + 1.0e-9 * lon[..., np.newaxis]
 
     return {
         "tracer_conc": tracer,

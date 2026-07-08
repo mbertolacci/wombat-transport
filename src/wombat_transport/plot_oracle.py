@@ -11,7 +11,7 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import TracerField, canonical_time_slice, transport_tracer_to_public4
 from wombat_transport.gc_harness import (
     read_transport_step_output,
     run_pjc_harness,
@@ -335,13 +335,14 @@ def _build_comparison_bundle(
     oracle = read_transport_step_output(output_path)
     config = load_run_config(config_path)
     python_result = _run_python_step(config, max_tracers=max_tracers)
+    python_public = transport_tracer_to_public4(canonical_time_slice(python_result.state.data))
     python_surface_pressure = np.sum(python_result.delp_dry_hpa[0], axis=0) + 0.01
     return ComparisonBundle(
         lon=lon,
         lat=lat,
         initial=initial[0],
         oracle_after=oracle.tracer_conc_after[0],
-        python_after=python_result.state.data[0, 0],
+        python_after=python_public[0],
         oracle_xmass=oracle.xmass_hpa,
         oracle_ymass=oracle.ymass_hpa,
         python_xmass=python_result.xmass_hpa[0],
@@ -490,7 +491,7 @@ def _read_tracer_names(dataset: netCDF4.Dataset) -> tuple[str, ...]:
 def _limit_tracers(tracers: TracerField, max_tracers: int) -> TracerField:
     return TracerField(
         names=tracers.names[:max_tracers],
-        data=tracers.data[:max_tracers],
+        data=tracers.data[..., :max_tracers],
         units=tracers.units[:max_tracers],
         coords=tracers.coords,
     )

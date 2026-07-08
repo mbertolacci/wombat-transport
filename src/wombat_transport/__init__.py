@@ -1,7 +1,18 @@
 """NumPy-oriented GEOS-Chem transport prototype utilities."""
 
 from wombat_transport.compare import compare_to_time_slice, tracer_gridbox_mass_kg, tracer_mass_kg
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import (
+    TracerField,
+    bottom_field3_to_top,
+    canonical_time_slice,
+    canonical_to_public_tracer5,
+    public_surface_flux_to_transport,
+    public_tracer4_to_transport,
+    public_tracer5_to_canonical,
+    top_field3_to_bottom,
+    transport_tracer_to_canonical,
+    transport_tracer_to_public4,
+)
 from wombat_transport.emissions import (
     apply_emissions,
     dry_air_mass_per_area,
@@ -57,6 +68,9 @@ __all__ = [
     "TransportWindowResult",
     "VdiffDrResult",
     "apply_emissions",
+    "bottom_field3_to_top",
+    "canonical_time_slice",
+    "canonical_to_public_tracer5",
     "compare_to_time_slice",
     "compute_pbl_height",
     "discover_hemco_diagnostics",
@@ -75,10 +89,16 @@ __all__ = [
     "load_transport_forcing",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",
+    "public_surface_flux_to_transport",
+    "public_tracer4_to_transport",
+    "public_tracer5_to_canonical",
     "run_emissions_replay",
     "run_transport_one_step",
     "run_transport_window",
     "run_vdiffdr_one_step",
+    "top_field3_to_bottom",
+    "transport_tracer_to_canonical",
+    "transport_tracer_to_public4",
     "tracer_gridbox_mass_kg",
     "tracer_mass_kg",
     "write_restart_like",

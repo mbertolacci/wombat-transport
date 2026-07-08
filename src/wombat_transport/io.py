@@ -6,7 +6,7 @@ from typing import Iterable
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import TracerField, public_tracer5_to_canonical
 from wombat_transport.species import Species, load_species_database
 
 FIXED_GRID = {"lev": 47, "lat": 91, "lon": 144}
@@ -43,7 +43,7 @@ def write_restart_like(path: str | Path, tracer_field: TracerField, template_pat
         _assert_tracer_shape(tracer_field)
 
         for dim_name in ("time", "lev", "ilev", "lat", "lon"):
-            size = tracer_field.data.shape[1] if dim_name == "time" else len(template.dimensions[dim_name])
+            size = tracer_field.data.shape[0] if dim_name == "time" else len(template.dimensions[dim_name])
             output.createDimension(dim_name, size)
 
         for coord_name in GRID_COORDS:
@@ -64,7 +64,7 @@ def write_restart_like(path: str | Path, tracer_field: TracerField, template_pat
             variable = output.createVariable(f"SpeciesRst_{name}", "f8", ("time", "lev", "lat", "lon"))
             variable.units = tracer_field.units[index] if index < len(tracer_field.units) else ""
             variable.long_name = f"Wombat restart-like concentration of species {name}"
-            variable[:] = tracer_field.data[index]
+            variable[:] = tracer_field.data[:, ::-1, :, :, index]
 
 
 def initialize_tracers(
@@ -90,11 +90,11 @@ def initialize_tracers(
         _assert_fixed_grid(template_dataset)
         coords = _read_coords(template_dataset)
         shape = (
-            len(species),
             len(template_dataset.dimensions["time"]),
             FIXED_GRID["lev"],
             FIXED_GRID["lat"],
             FIXED_GRID["lon"],
+            len(species),
         )
 
     data = np.empty(shape, dtype=np.float64)
@@ -109,10 +109,10 @@ def initialize_tracers(
             var_name = f"SpeciesRst_{item.name}"
             if restart_dataset is not None and var_name in restart_dataset.variables:
                 variable = restart_dataset.variables[var_name]
-                data[index] = np.asarray(variable[:], dtype=np.float64)
+                data[..., index] = np.asarray(variable[:, ::-1, :, :], dtype=np.float64)
                 units.append(str(getattr(variable, "units", "")))
             else:
-                data[index].fill(item.background_vv)
+                data[..., index].fill(item.background_vv)
                 units.append("mol mol-1 dry")
     finally:
         if restart_dataset is not None:
@@ -151,7 +151,7 @@ def _load_tracer_variables(
             arrays.append(np.asarray(variable[:], dtype=np.float64))
             units.append(str(getattr(variable, "units", "")))
 
-    data = np.stack(arrays, axis=0)
+    data = public_tracer5_to_canonical(np.stack(arrays, axis=0))
     return TracerField(names=names, data=data, units=tuple(units), coords=coords)
 
 
@@ -169,16 +169,23 @@ def _assert_fixed_grid(dataset: netCDF4.Dataset) -> None:
 def _assert_tracer_shape(tracer_field: TracerField) -> None:
     if tracer_field.data.ndim != 5:
         raise ValueError(f"expected tracer data to be 5-D, found {tracer_field.data.ndim}-D")
-    if tracer_field.data.shape[0] != len(tracer_field.names):
-        raise ValueError("tracer name count does not match data first dimension")
+    if tracer_field.data.shape[-1] != len(tracer_field.names):
+        raise ValueError("tracer name count does not match data last dimension")
     expected = (FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
-    if tracer_field.data.shape[2:] != expected:
-        raise ValueError(f"expected tracer grid {expected}, found {tracer_field.data.shape[2:]}")
+    if tracer_field.data.shape[1:4] != expected:
+        raise ValueError(f"expected tracer grid {expected}, found {tracer_field.data.shape[1:4]}")
 
 
 def _read_coords(dataset: netCDF4.Dataset) -> dict[str, np.ndarray]:
-    return {
+    coords = {
         name: np.asarray(dataset.variables[name][:])
         for name in GRID_COORDS
         if name in dataset.variables
     }
+    for name in ("lev", "hyam", "hybm"):
+        if name in coords:
+            coords[name] = coords[name][::-1]
+    for name in ("ilev", "hyai", "hybi"):
+        if name in coords:
+            coords[name] = coords[name][::-1]
+    return coords

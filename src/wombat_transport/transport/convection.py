@@ -10,7 +10,7 @@ _TINYNUM = 1.0e-14
 
 @dataclass(frozen=True)
 class ConvectionResult:
-    """One-step GEOS-Chem cloud-convection result in Wombat vertical order."""
+    """One-step GEOS-Chem cloud-convection result in canonical transport order."""
 
     tracer_conc: np.ndarray
     diag14_mass_flux: np.ndarray
@@ -42,11 +42,10 @@ def run_cloud_convection_one_step(
 ) -> ConvectionResult:
     """Port GEOS-Chem ``DO_CLOUD_CONVECTION`` for transport-only tracers.
 
-    Public arrays use Wombat/GEOS-Chem convection order with level 0 nearest
-    the surface. Internally this routine uses the transport hot layout
-    ``(lev_top, lat, lon, tracer)``. Wet scavenging is intentionally disabled
-    by using zero soluble fractions, which keeps washout arrays as inert
-    plumbing while preserving the long-lived tracer mass transport path.
+    Arrays use canonical transport order ``(lev_top, lat, lon, tracer)``. Wet
+    scavenging is intentionally disabled by using zero soluble fractions, which
+    keeps washout arrays as inert plumbing while preserving the long-lived
+    tracer mass transport path.
     """
 
     tracer = np.asarray(tracer_conc, dtype=np.float64)
@@ -59,8 +58,8 @@ def run_cloud_convection_one_step(
     area = np.asarray(area_m2, dtype=np.float64)
 
     if tracer.ndim != 4:
-        raise ValueError(f"tracer_conc must be 4-D (tracer, lev, lat, lon), found {tracer.shape}")
-    _ntracer, nlev, nlat, nlon = tracer.shape
+        raise ValueError(f"tracer_conc must be 4-D (lev, lat, lon, tracer), found {tracer.shape}")
+    nlev, nlat, nlon, _ntracer = tracer.shape
     grid_shape = (nlev, nlat, nlon)
     horizontal_shape = (nlat, nlon)
     for name, value in (
@@ -93,39 +92,31 @@ def run_cloud_convection_one_step(
     internal_steps = max(int(dt_s) // 300, 1)
     internal_dt = float(dt_s) / float(internal_steps)
     bmass = delp_dry * G0_100
-    tracer_top = np.ascontiguousarray(np.transpose(tracer[:, ::-1, :, :], (1, 2, 3, 0)))
-    cmfmc_top = np.ascontiguousarray(cmfmc[::-1])
-    dtrain_top = np.ascontiguousarray(dtrain[::-1])
-    dqrcu_top = np.ascontiguousarray(dqrcu_met[::-1])
-    reevapcn_top = np.ascontiguousarray(reevapcn_met[::-1])
-    delp_dry_top = np.ascontiguousarray(delp_dry[::-1])
-    delp_top = np.ascontiguousarray(delp[::-1])
-    bmass_top = delp_dry_top * G0_100
-    tracer_after_top = tracer_top.copy()
+    tracer_after_top = np.ascontiguousarray(tracer).copy()
     diag14_top = np.zeros_like(tracer_after_top)
-    initial_mass = _column_mass(tracer, bmass, area)
+    initial_mass = _column_mass_transport(tracer_after_top, bmass, area)
     negative_before = int(np.count_nonzero(tracer_after_top < 0.0))
 
     for lat_index in range(nlat):
         for lon_index in range(nlon):
-            if not np.any(np.abs(cmfmc_top[:, lat_index, lon_index]) > _TINYNUM) and not np.any(
-                np.abs(dtrain_top[:, lat_index, lon_index]) > _TINYNUM
+            if not np.any(np.abs(cmfmc[:, lat_index, lon_index]) > _TINYNUM) and not np.any(
+                np.abs(dtrain[:, lat_index, lon_index]) > _TINYNUM
             ):
                 continue
             dqrcu, reevapcn = _convective_precip_rates_top(
-                dqrcu_top[:, lat_index, lon_index],
-                reevapcn_top[:, lat_index, lon_index],
-                delp_top[:, lat_index, lon_index],
+                dqrcu_met[:, lat_index, lon_index],
+                reevapcn_met[:, lat_index, lon_index],
+                delp[:, lat_index, lon_index],
                 reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
             )
             cloud_base = _cloud_base_index_top(dqrcu)
-            mass_below_base = float(np.sum(bmass_top[cloud_base + 1 :, lat_index, lon_index]))
+            mass_below_base = float(np.sum(bmass[cloud_base + 1 :, lat_index, lon_index]))
             column, diag_column = _convect_column_top(
                 tracer_after_top[:, lat_index, lon_index, :],
-                cmfmc_top[:, lat_index, lon_index],
-                dtrain_top[:, lat_index, lon_index],
-                delp_dry_top[:, lat_index, lon_index],
-                bmass_top[:, lat_index, lon_index],
+                cmfmc[:, lat_index, lon_index],
+                dtrain[:, lat_index, lon_index],
+                delp_dry[:, lat_index, lon_index],
+                bmass[:, lat_index, lon_index],
                 area[lat_index, lon_index],
                 cloud_base=cloud_base,
                 mass_below_base=mass_below_base,
@@ -136,12 +127,10 @@ def run_cloud_convection_one_step(
             diag14_top[:, lat_index, lon_index, :] = diag_column
             _ = reevapcn
 
-    tracer_after = np.ascontiguousarray(np.transpose(tracer_after_top[::-1], (3, 0, 1, 2)))
-    diag14 = np.ascontiguousarray(np.transpose(diag14_top[::-1], (3, 0, 1, 2)))
-    final_mass = _column_mass(tracer_after, bmass, area)
+    final_mass = _column_mass_transport(tracer_after_top, bmass, area)
     return ConvectionResult(
-        tracer_conc=tracer_after,
-        diag14_mass_flux=diag14,
+        tracer_conc=tracer_after_top,
+        diag14_mass_flux=diag14_top,
         negative_count_before=negative_before,
         negative_count_after=int(np.count_nonzero(tracer_after_top < 0.0)),
         initial_tracer_mass=initial_mass,
@@ -249,5 +238,5 @@ def _convect_column_top(
     return q, diag14
 
 
-def _column_mass(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
-    return np.sum(tracer * bmass_kg_m2[np.newaxis, :, :, :] * area_m2[np.newaxis, np.newaxis, :, :], axis=(1, 2, 3))
+def _column_mass_transport(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
+    return np.sum(tracer * bmass_kg_m2[:, :, :, np.newaxis] * area_m2[np.newaxis, :, :, np.newaxis], axis=(0, 1, 2))

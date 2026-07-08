@@ -13,7 +13,11 @@ from urllib.request import urlretrieve
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import (
+    TracerField,
+    canonical_time_slice,
+    transport_tracer_to_canonical,
+)
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -33,23 +37,27 @@ from wombat_transport.transport.driver import run_transport_one_step
 from wombat_transport.transport.driver import trace_transport_one_step
 from wombat_transport.transport.forcing import _map_met_edges_to_48
 from wombat_transport.transport.pbl import ZVIR
-from wombat_transport.transport.tpcore import analyze_tpcore_branches, run_tpcore_one_step, setup_tpcore_terms
-from wombat_transport.transport.tpcore import trace_tpcore_one_step
+from wombat_transport.transport.tpcore import (
+    analyze_tpcore_branches,
+    run_tpcore_one_step,
+    setup_tpcore_terms,
+    trace_tpcore_one_step,
+)
 
 
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 PJC_INPUT_VERSION = "pjc-pfix-input-v1"
 PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
 PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
-TRANSPORT_INPUT_VERSION = "transport-step-input-v1"
-TRANSPORT_OUTPUT_VERSION = "transport-step-output-v1"
-TRANSPORT_CHAIN_OUTPUT_VERSION = "transport-chain-output-v1"
-VDIFF_INPUT_VERSION = "vdiffdr-input-v1"
-VDIFF_OUTPUT_VERSION = "vdiffdr-output-v1"
-CONVECTION_INPUT_VERSION = "convection-input-v1"
-CONVECTION_OUTPUT_VERSION = "convection-output-v1"
-TPCORE_TRACE_VERSION = "tpcore-trace-v1"
-TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v1"
+TRANSPORT_INPUT_VERSION = "transport-step-input-v2"
+TRANSPORT_OUTPUT_VERSION = "transport-step-output-v2"
+TRANSPORT_CHAIN_OUTPUT_VERSION = "transport-chain-output-v2"
+VDIFF_INPUT_VERSION = "vdiffdr-input-v2"
+VDIFF_OUTPUT_VERSION = "vdiffdr-output-v2"
+CONVECTION_INPUT_VERSION = "convection-input-v2"
+CONVECTION_OUTPUT_VERSION = "convection-output-v2"
+TPCORE_TRACE_VERSION = "tpcore-trace-v2"
+TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v2"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
 SNAPSHOT_OUTPUT_NAME = "pjc_output.nc"
 TPCORE_SNAPSHOT_INPUT_NAME = "tpcore_input.nc"
@@ -66,12 +74,12 @@ REAL_CONVECTION_MODES = ("sampled-columns", "full-grid")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
-BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v1"
-RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v1"
-FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v1"
-BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID = "base_initial_transport_chain_v1"
-BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID = "base_initial_vdiff_after_tpcore_v1"
-BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID = "base_initial_convection_fullgrid_v1"
+BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v2"
+RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v2"
+FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v2"
+BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID = "base_initial_transport_chain_v2"
+BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID = "base_initial_vdiff_after_tpcore_v2"
+BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID = "base_initial_convection_fullgrid_v2"
 LARGE_ORACLE_FIXTURE_IDS = (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
     RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
@@ -421,10 +429,10 @@ def write_transport_step_input_from_config(
         config.species_database,
         template_path=config.grid_template,
     )
-    tracer_data = np.asarray(tracers.data[:, tracer_time_index, :, :, :], dtype=np.float64)
+    tracer_data = canonical_time_slice(tracers.data, tracer_time_index)
     tracer_names = tracers.names
     if max_tracers is not None:
-        tracer_data = tracer_data[:max_tracers]
+        tracer_data = tracer_data[..., :max_tracers]
         tracer_names = tracer_names[:max_tracers]
 
     forcing_path = write_pjc_input_from_config(
@@ -492,10 +500,10 @@ def write_fullgrid_synthetic_tpcore_input_from_config(
         dt_s=dt_s,
     )
 
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
-    lev_index = np.arange(nlev, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
-    lat_wave = np.sin(lat_rad)[np.newaxis, np.newaxis, :, np.newaxis]
-    lon_wave = np.cos(lon_rad)[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
+    lev_index = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    lat_wave = np.sin(lat_rad)[np.newaxis, :, np.newaxis, np.newaxis]
+    lon_wave = np.cos(lon_rad)[np.newaxis, np.newaxis, :, np.newaxis]
     tracer = 4.0e-4
     tracer = tracer + (tracer_index + 1.0) * 1.0e-7
     tracer = tracer + 2.5e-8 * lev_index / max(float(nlev - 1), 1.0)
@@ -555,10 +563,10 @@ def write_synthetic_tpcore_snapshot_input(path: str | Path, *, dt_s: float = 600
         lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
         lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
 
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
-    lev_index = np.arange(nlev, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
-    lat_wave = np.sin(np.deg2rad(lat))[np.newaxis, np.newaxis, :, np.newaxis]
-    lon_wave = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, np.newaxis, :]
+    lev_index = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    lat_wave = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis, np.newaxis]
+    lon_wave = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
     tracer = 4.0e-4
     tracer = tracer + (tracer_index + 1.0) * 1.0e-7
     tracer = tracer + 2.5e-8 * lev_index / max(float(nlev - 1), 1.0)
@@ -588,28 +596,29 @@ def write_synthetic_vdiff_input(
     lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
     lat_term = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
     lon_term = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :]
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
 
-    pedge_profile = np.linspace(1000.0, 50.0, nlev + 1, dtype=np.float64)
+    pedge_profile = np.linspace(50.0, 1000.0, nlev + 1, dtype=np.float64)
     pedge = np.broadcast_to(pedge_profile[:, np.newaxis, np.newaxis], (nlev + 1, lat.size, lon.size)).copy()
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = 289.0 - 0.45 * lev + 1.5 * lat_term + 0.2 * lon_term
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat_term) * np.ones((1, 1, lon.size))
     tv = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, lat.size, lon.size), 125.0, dtype=np.float64)
-    dry_mass = (pedge[:-1] - pedge[1:]) * 100.0 / 9.80665
+    dry_mass = (pedge[1:] - pedge[:-1]) * 100.0 / 9.80665
     u = (4.0 + 0.05 * lev + 0.2 * lon_term) * np.ones((1, lat.size, 1), dtype=np.float64)
     v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat_term) * np.ones((1, 1, lon.size))
-    tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev + 2.0e-9 * lat_term + 1.0e-9 * lon_term
-    surface_flux = np.zeros((ntracer, lat.size, lon.size), dtype=np.float64)
+    tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev[..., np.newaxis]
+    tracer = tracer + 2.0e-9 * lat_term[..., np.newaxis] + 1.0e-9 * lon_term[..., np.newaxis]
+    surface_flux = np.zeros((lat.size, lon.size, ntracer), dtype=np.float64)
     if scenario == "nonzero_surface_flux":
-        tracer_scale = np.arange(1, ntracer + 1, dtype=np.float64)[:, np.newaxis, np.newaxis]
-        lat_scale = 1.0 + 0.15 * np.arange(lat.size, dtype=np.float64)[np.newaxis, :, np.newaxis]
-        lon_scale = 1.0 + 0.05 * np.arange(lon.size, dtype=np.float64)[np.newaxis, np.newaxis, :]
+        lat_scale = 1.0 + 0.15 * np.arange(lat.size, dtype=np.float64)[:, np.newaxis, np.newaxis]
+        lon_scale = 1.0 + 0.05 * np.arange(lon.size, dtype=np.float64)[np.newaxis, :, np.newaxis]
+        tracer_scale = np.arange(1, ntracer + 1, dtype=np.float64)[np.newaxis, np.newaxis, :]
         surface_flux = 1.0e-12 * tracer_scale * lat_scale * lon_scale
     elif scenario == "negative_clipping":
-        tracer[0, 0, 1, 2] = -1.0e-3
-        tracer[min(1, ntracer - 1), 1, 2, 3] = -5.0e-4
+        tracer[0, 1, 2, 0] = -1.0e-3
+        tracer[1, 2, 3, min(1, ntracer - 1)] = -5.0e-4
 
     with netCDF4.Dataset(path, "w") as dataset:
         dataset.createDimension("tracer", ntracer)
@@ -622,7 +631,7 @@ def write_synthetic_vdiff_input(
         dataset.scenario = scenario
         dataset.createVariable("lon", "f8", ("lon",))[:] = lon
         dataset.createVariable("lat", "f8", ("lat",))[:] = lat
-        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer
+        dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracer
         dataset.createVariable("u_m_s", "f8", ("lev", "lat", "lon"))[:] = u
         dataset.createVariable("v_m_s", "f8", ("lev", "lat", "lon"))[:] = v
         dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = temperature
@@ -637,7 +646,7 @@ def write_synthetic_vdiff_input(
         dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 90.0)
         dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = np.full((lat.size, lon.size), 0.35)
         dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = np.ones((lat.size, lon.size))
-        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = surface_flux
+        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("lat", "lon", "tracer"))[:] = surface_flux
     return path
 
 
@@ -665,14 +674,15 @@ def write_synthetic_convection_input(
     lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
     lat_term = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
     lon_term = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :]
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
 
     delp_profile = np.linspace(62.0, 8.0, nlev, dtype=np.float64)
     delp_dry = np.broadcast_to(delp_profile[:, np.newaxis, np.newaxis], (nlev, lat.size, lon.size)).copy()
     delp_dry *= 1.0 + 0.01 * lat_term + 0.005 * lon_term
     delp = delp_dry * 1.01
     tracer = 4.0e-4 + 2.0e-7 * tracer_index
-    tracer = tracer + 3.0e-9 * lev + 2.0e-9 * lat_term + 1.0e-9 * lon_term
+    tracer = tracer + 3.0e-9 * lev[..., np.newaxis]
+    tracer = tracer + 2.0e-9 * lat_term[..., np.newaxis] + 1.0e-9 * lon_term[..., np.newaxis]
     area = _spherical_band_area(lat, lon.size)
     bxheight = 150.0 + 3.0 * lev + np.zeros((1, lat.size, lon.size), dtype=np.float64)
     temperature = 288.0 - 0.55 * lev + 0.8 * lat_term + 0.1 * lon_term
@@ -708,7 +718,7 @@ def write_synthetic_convection_input(
         dataset.reconstruct_conv_precip_flux = 0
         dataset.createVariable("lon", "f8", ("lon",))[:] = lon
         dataset.createVariable("lat", "f8", ("lat",))[:] = lat
-        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracer
+        dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracer
         name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
         encoded = np.asarray([name.encode("ascii", errors="replace") for name in names], dtype=f"S{name_length}")
         name_var[:] = netCDF4.stringtochar(encoded)
@@ -756,10 +766,10 @@ def write_real_convection_input_from_config(
         config.species_database,
         template_path=config.grid_template,
     )
-    tracer_data = np.asarray(tracers.data[:, tracer_time_index, :, :, :], dtype=np.float64)
+    tracer_data = canonical_time_slice(tracers.data, tracer_time_index)
     tracer_names = tracers.names
     if max_tracers is not None:
-        tracer_data = tracer_data[:max_tracers]
+        tracer_data = tracer_data[..., :max_tracers]
         tracer_names = tracer_names[:max_tracers]
 
     real_met = _load_real_convection_met(
@@ -918,7 +928,7 @@ def _pack_convection_columns(
         "lon": np.array([0.0], dtype=np.float64),
         "source_lat_index": rows[:, np.newaxis].astype(np.int32),
         "source_lon_index": cols[:, np.newaxis].astype(np.int32),
-        "tracer_conc": tracer_data[:, :, rows, cols][:, :, :, np.newaxis],
+        "tracer_conc": tracer_data[:, rows, cols, :][:, :, np.newaxis, :],
     }
     for name in (
         "cmfmc_kg_m2_s",
@@ -971,9 +981,9 @@ def _write_convection_input_file(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tracers = np.asarray(tracer_conc, dtype=np.float64)
-    ntracer, nlev, nlat, nlon = tracers.shape
+    nlev, nlat, nlon, ntracer = tracers.shape
     if len(tracer_names) != ntracer:
-        raise ValueError("tracer_names length must match tracer_conc first dimension")
+        raise ValueError("tracer_names length must match tracer_conc last dimension")
     with netCDF4.Dataset(path, "w") as dataset:
         dataset.createDimension("tracer", ntracer)
         dataset.createDimension("lev", nlev)
@@ -995,7 +1005,7 @@ def _write_convection_input_file(
             dataset.vertical_mapping = vertical_mapping
         dataset.createVariable("lon", "f8", ("lon",))[:] = lon
         dataset.createVariable("lat", "f8", ("lat",))[:] = lat
-        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracers
+        dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracers
         name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
         encoded = np.asarray([name.encode("ascii", errors="replace") for name in tracer_names], dtype=f"S{name_length}")
         name_var[:] = netCDF4.stringtochar(encoded)
@@ -1093,10 +1103,10 @@ def _write_synthetic_tpcore_branch_input(
         v_m_s=v,
         dt_s=dt_s,
     )
-    tracer_index = np.arange(ntracer, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
-    lev_index = np.arange(GEOS_47_AP_HPA.size - 1, dtype=np.float64)[np.newaxis, :, np.newaxis, np.newaxis]
-    lat_wave = np.sin(np.deg2rad(lat))[np.newaxis, np.newaxis, :, np.newaxis]
-    lon_wave = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, np.newaxis, :]
+    lev_index = np.arange(GEOS_47_AP_HPA.size - 1, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    lat_wave = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis, np.newaxis]
+    lon_wave = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :, np.newaxis]
+    tracer_index = np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
     tracer = 4.0e-4
     tracer = tracer + (tracer_index + 1.0) * 1.0e-7
     tracer = tracer + 2.5e-8 * lev_index / 46.0
@@ -1505,7 +1515,7 @@ def _write_chain_vdiff_input(
     dry_mass = dry_air_mass_from_pressure(delp, area)[0]
     tpcore_state = TracerField(
         names=tracer_names,
-        data=tpcore.tracer_conc_after[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(tpcore.tracer_conc_after),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -1521,18 +1531,18 @@ def _write_chain_vdiff_input(
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    ntracer = vdiff_input.tracer_conc.shape[0]
+    ntracer = vdiff_input.tracer_conc.shape[-1]
     with netCDF4.Dataset(output, "w") as dataset:
         dataset.createDimension("tracer", ntracer)
-        dataset.createDimension("lev", vdiff_input.tracer_conc.shape[1])
-        dataset.createDimension("ilev", vdiff_input.tracer_conc.shape[1] + 1)
+        dataset.createDimension("lev", vdiff_input.tracer_conc.shape[0])
+        dataset.createDimension("ilev", vdiff_input.tracer_conc.shape[0] + 1)
         dataset.createDimension("lat", lat.size)
         dataset.createDimension("lon", lon.size)
         dataset.harness = VDIFF_INPUT_VERSION
         dataset.dt_s = dt_s
         dataset.createVariable("lon", "f8", ("lon",))[:] = lon
         dataset.createVariable("lat", "f8", ("lat",))[:] = lat
-        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = vdiff_input.tracer_conc
+        dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = vdiff_input.tracer_conc
         dataset.createVariable("u_m_s", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.u_m_s
         dataset.createVariable("v_m_s", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.v_m_s
         dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = vdiff_input.temperature_k
@@ -1551,7 +1561,7 @@ def _write_chain_vdiff_input(
         dataset.createVariable("eflux_w_m2", "f8", ("lat", "lon"))[:] = vdiff_input.eflux_w_m2
         dataset.createVariable("ustar_m_s", "f8", ("lat", "lon"))[:] = vdiff_input.ustar_m_s
         dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = vdiff_input.area_m2
-        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("tracer", "lat", "lon"))[:] = (
+        dataset.createVariable("surface_flux_kg_m2_s", "f8", ("lat", "lon", "tracer"))[:] = (
             vdiff_input.surface_flux_kg_m2_s
         )
     return output
@@ -1586,7 +1596,7 @@ def _write_chain_convection_input(
     delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
     vdiff_state = TracerField(
         names=tracer_names,
-        data=vdiff.tracer_conc_after[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(vdiff.tracer_conc_after),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -1645,14 +1655,14 @@ def _write_transport_chain_output(
     final_delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
     initial_mass = dry_air_mass_from_pressure(initial_delp, area)
     final_mass = dry_air_mass_from_pressure(final_delp, area)
-    initial_tracer_mass = _tracer_mass_for_chain(tracer0, initial_mass)
-    tpcore_tracer_mass = _tracer_mass_for_chain(tpcore.tracer_conc_after, final_mass)
-    vdiff_tracer_mass = _tracer_mass_for_chain(vdiff.tracer_conc_after, final_mass)
-    convection_tracer_mass = _tracer_mass_for_chain(convection.tracer_conc_after, final_mass)
+    initial_tracer_mass = _tracer_mass_for_chain(tracer0, initial_mass[:, ::-1, :, :])
+    tpcore_tracer_mass = _tracer_mass_for_chain(tpcore.tracer_conc_after, final_mass[:, ::-1, :, :])
+    vdiff_tracer_mass = _tracer_mass_for_chain(vdiff.tracer_conc_after, final_mass[:, ::-1, :, :])
+    convection_tracer_mass = _tracer_mass_for_chain(convection.tracer_conc_after, final_mass[:, ::-1, :, :])
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    ntracer, nlev, nlat, nlon = convection.tracer_conc_after.shape
+    nlev, nlat, nlon, ntracer = convection.tracer_conc_after.shape
     with netCDF4.Dataset(output, "w") as dataset:
         dataset.harness = TRANSPORT_CHAIN_OUTPUT_VERSION
         dataset.createDimension("tracer", ntracer)
@@ -1662,30 +1672,31 @@ def _write_transport_chain_output(
         dataset.negative_count_after_tpcore = int(np.count_nonzero(tpcore.tracer_conc_after < 0.0))
         dataset.negative_count_after_vdiff = int(vdiff.negative_count_after_clip)
         dataset.negative_count_after_convection = int(convection.negative_count_after)
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             convection.tracer_conc_after
         )
-        dataset.createVariable("tpcore_tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("tpcore_tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             tpcore.tracer_conc_after
         )
-        dataset.createVariable("vdiff_tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("vdiff_tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             vdiff.tracer_conc_after
         )
         dataset.createVariable("initial_tracer_mass", "f8", ("tracer",))[:] = initial_tracer_mass
         dataset.createVariable("tpcore_tracer_mass", "f8", ("tracer",))[:] = tpcore_tracer_mass
         dataset.createVariable("vdiff_tracer_mass", "f8", ("tracer",))[:] = vdiff_tracer_mass
         dataset.createVariable("convection_tracer_mass", "f8", ("tracer",))[:] = convection_tracer_mass
-        dataset.createVariable("diag14_mass_flux", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("diag14_mass_flux", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             convection.diag14_mass_flux
         )
     return output
 
 
 def _tracer_mass_for_chain(tracer: np.ndarray, dry_air_mass: np.ndarray) -> np.ndarray:
-    return np.sum(
-        np.asarray(tracer, dtype=np.float64) * np.asarray(dry_air_mass, dtype=np.float64),
-        axis=(1, 2, 3),
-    )
+    tracer_array = np.asarray(tracer, dtype=np.float64)
+    mass_array = np.asarray(dry_air_mass, dtype=np.float64)
+    if mass_array.ndim == 4 and mass_array.shape[0] == 1:
+        mass_array = mass_array[0]
+    return np.sum(tracer_array * mass_array[:, :, :, np.newaxis], axis=(0, 1, 2))
 
 
 def _tracer_mass_common_basis(tracer: np.ndarray, dry_air_mass: np.ndarray) -> np.ndarray:
@@ -1694,12 +1705,12 @@ def _tracer_mass_common_basis(tracer: np.ndarray, dry_air_mass: np.ndarray) -> n
     tracer_array = np.asarray(tracer, dtype=np.float64)
     mass_array = np.asarray(dry_air_mass, dtype=np.float64)
     if tracer_array.ndim != 4:
-        raise ValueError(f"tracer must have shape (tracer, lev, lat, lon), found {tracer_array.shape}")
+        raise ValueError(f"tracer must have shape (lev, lat, lon, tracer), found {tracer_array.shape}")
     if mass_array.ndim == 4 and mass_array.shape[0] == 1:
         mass_array = mass_array[0]
-    if mass_array.shape != tracer_array.shape[1:]:
-        raise ValueError(f"dry_air_mass must have shape {tracer_array.shape[1:]}, found {mass_array.shape}")
-    return np.sum(tracer_array * mass_array[np.newaxis, :, :, :], axis=(1, 2, 3))
+    if mass_array.shape != tracer_array.shape[:3]:
+        raise ValueError(f"dry_air_mass must have shape {tracer_array.shape[:3]}, found {mass_array.shape}")
+    return np.sum(tracer_array * mass_array[:, :, :, np.newaxis], axis=(0, 1, 2))
 
 
 def _convection_common_dry_air_mass(delp_dry_hpa: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
@@ -1863,7 +1874,7 @@ def compare_transport_chain_oracle_fixture(
     )
     field = TracerField(
         names=tracer_names,
-        data=tracer0[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(tracer0),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -1878,14 +1889,14 @@ def compare_transport_chain_oracle_fixture(
         convection_mass = np.asarray(dataset.variables["convection_tracer_mass"][:], dtype=np.float64)
         negative_count = int(getattr(dataset, "negative_count_after_convection"))
     initial_delp = dry_pressure_thickness_hpa(p1_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
-    initial_dry_mass = dry_air_mass_from_pressure(initial_delp, area)[0]
-    final_dry_mass = result.dry_air_mass_kg[0]
+    initial_dry_mass = dry_air_mass_from_pressure(initial_delp, area)[0][::-1]
+    final_dry_mass = result.dry_air_mass_kg[0][::-1]
     common_oracle_initial_mass = _tracer_mass_common_basis(tracer0, initial_dry_mass)
     common_oracle_tpcore_mass = _tracer_mass_common_basis(expected_tpcore_tracer, final_dry_mass)
     common_oracle_vdiff_mass = _tracer_mass_common_basis(expected_vdiff_tracer, final_dry_mass)
     common_oracle_convection_mass = _tracer_mass_common_basis(expected_tracer, final_dry_mass)
     common_actual_convection_mass = result.final_scalar_mass
-    actual_tracer = result.state.data[:, 0, :, :, :]
+    actual_tracer = canonical_time_slice(result.state.data)
     error = np.abs(actual_tracer - expected_tracer)
     return TransportChainComparison(
         tracer_max_abs_error=float(np.max(error)),
@@ -1976,7 +1987,7 @@ def compare_transport_chain_handoffs(
             rows,
             "final_chain_output",
             "tracer_conc_after",
-            diagnostics.result.state.data[:, 0, :, :, :],
+            canonical_time_slice(diagnostics.result.state.data),
             np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64),
         )
         _append_array_error_row(
@@ -2005,7 +2016,7 @@ def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
     )
     field = TracerField(
         names=tracer_names,
-        data=tracer0[:, np.newaxis, :, :, :],
+        data=transport_tracer_to_canonical(tracer0),
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
@@ -2184,13 +2195,13 @@ def append_transport_step_tracers(
     path = Path(path)
     tracers = np.asarray(tracer_conc, dtype=np.float64)
     if tracers.ndim != 4:
-        raise ValueError(f"tracer_conc must have shape (tracer, lev, lat, lon), found {tracers.shape}")
+        raise ValueError(f"tracer_conc must have shape (lev, lat, lon, tracer), found {tracers.shape}")
     if tracer_names is None:
-        names = tuple(f"tracer_{index + 1:03d}" for index in range(tracers.shape[0]))
+        names = tuple(f"tracer_{index + 1:03d}" for index in range(tracers.shape[-1]))
     else:
         names = tuple(tracer_names)
-    if len(names) != tracers.shape[0]:
-        raise ValueError("tracer_names length must match tracer_conc first dimension")
+    if len(names) != tracers.shape[-1]:
+        raise ValueError("tracer_names length must match tracer_conc last dimension")
 
     with netCDF4.Dataset(path, "a") as dataset:
         if getattr(dataset, "harness", "") != PJC_INPUT_VERSION:
@@ -2200,13 +2211,13 @@ def append_transport_step_tracers(
             len(dataset.dimensions["lat"]),
             len(dataset.dimensions["lon"]),
         )
-        if tracers.shape[1:] != expected:
-            raise ValueError(f"tracer_conc grid must have shape {expected}, found {tracers.shape[1:]}")
+        if tracers.shape[:3] != expected:
+            raise ValueError(f"tracer_conc grid must have shape {expected}, found {tracers.shape[:3]}")
         dataset.harness = TRANSPORT_INPUT_VERSION
-        dataset.createDimension("tracer", tracers.shape[0])
+        dataset.createDimension("tracer", tracers.shape[-1])
         name_length = max(max((len(name) for name in names), default=1), 1)
         dataset.createDimension("name_strlen", name_length)
-        dataset.createVariable("tracer_conc", "f8", ("tracer", "lev", "lat", "lon"))[:] = tracers
+        dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracers
         name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
         encoded = np.asarray([name.encode("ascii", errors="replace") for name in names], dtype=f"S{name_length}")
         name_var[:] = netCDF4.stringtochar(encoded)
@@ -2283,7 +2294,7 @@ def write_vdiff_output(path: str | Path, result) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with netCDF4.Dataset(path, "w") as dataset:
-        ntracer, nlev, nlat, nlon = result.tracer_conc.shape
+        nlev, nlat, nlon, ntracer = result.tracer_conc.shape
         dataset.createDimension("tracer", ntracer)
         dataset.createDimension("lev", nlev)
         dataset.createDimension("ilev", nlev + 1)
@@ -2292,7 +2303,7 @@ def write_vdiff_output(path: str | Path, result) -> Path:
         dataset.harness = VDIFF_OUTPUT_VERSION
         dataset.negative_count_before_clip = int(result.negative_count_before_clip)
         dataset.negative_count_after_clip = int(result.negative_count_after_clip)
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = result.tracer_conc
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = result.tracer_conc
         dataset.createVariable("specific_humidity_after", "f8", ("lev", "lat", "lon"))[:] = (
             result.specific_humidity_kg_kg
         )
@@ -2406,7 +2417,7 @@ def write_convection_output(path: str | Path, result) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with netCDF4.Dataset(path, "w") as dataset:
-        ntracer, nlev, nlat, nlon = result.tracer_conc.shape
+        nlev, nlat, nlon, ntracer = result.tracer_conc.shape
         dataset.createDimension("tracer", ntracer)
         dataset.createDimension("lev", nlev)
         dataset.createDimension("lat", nlat)
@@ -2416,8 +2427,8 @@ def write_convection_output(path: str | Path, result) -> Path:
         dataset.negative_count_after = int(result.negative_count_after)
         dataset.internal_steps = int(result.internal_steps)
         dataset.internal_dt_s = float(result.internal_dt_s)
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = result.tracer_conc
-        dataset.createVariable("diag14_mass_flux", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = result.tracer_conc
+        dataset.createVariable("diag14_mass_flux", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             result.diag14_mass_flux
         )
         dataset.createVariable("initial_tracer_mass", "f8", ("tracer",))[:] = result.initial_tracer_mass
@@ -2488,10 +2499,10 @@ def compare_convection_output(
         reported_oracle_mass_change_max_abs=float(
             np.max(np.abs(expected.final_tracer_mass - expected.initial_tracer_mass))
         ),
-        top_error_tracer=int(top_error_index[0]),
-        top_error_level=int(top_error_index[1]),
-        top_error_lat=int(top_error_index[2]),
-        top_error_lon=int(top_error_index[3]),
+        top_error_level=int(top_error_index[0]),
+        top_error_lat=int(top_error_index[1]),
+        top_error_lon=int(top_error_index[2]),
+        top_error_tracer=int(top_error_index[3]),
         internal_steps_expected=expected.internal_steps,
         internal_steps_actual=actual.internal_steps,
     )
@@ -2552,7 +2563,7 @@ def write_python_tpcore_trace(input_path: str | Path, output_path: str | Path) -
     )
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    ntracer, nlev, nlat, nlon = trace.tracer_conc_after.shape
+    nlev, nlat, nlon, ntracer = trace.tracer_conc_after.shape
     with netCDF4.Dataset(output, "w") as dataset:
         dataset.harness = TPCORE_TRACE_VERSION
         dataset.source_input = str(input_path)
@@ -2561,23 +2572,25 @@ def write_python_tpcore_trace(input_path: str | Path, output_path: str | Path) -
         dataset.createDimension("lev", nlev)
         dataset.createDimension("lat", nlat)
         dataset.createDimension("lon", nlon)
-        dataset.createVariable("q_after_pole_average", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("q_after_pole_average", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             trace.q_after_pole_average
         )
-        dataset.createVariable("dq_after_init_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_init
-        dataset.createVariable("q_after_cross_terms", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("dq_after_init_hpa", "f8", ("lev", "lat", "lon", "tracer"))[:] = trace.dq_after_init
+        dataset.createVariable("q_after_cross_terms", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             trace.q_after_cross_terms
         )
-        dataset.createVariable("dq_after_xtp_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_xtp
-        dataset.createVariable("dq_after_ytp_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_ytp
-        dataset.createVariable("dq_after_fzppm_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_fzppm
-        dataset.createVariable("dq_after_fill_hpa", "f8", ("tracer", "lev", "lat", "lon"))[:] = trace.dq_after_fill
-        dataset.createVariable("tracer_conc_after", "f8", ("tracer", "lev", "lat", "lon"))[:] = (
+        dataset.createVariable("dq_after_xtp_hpa", "f8", ("lev", "lat", "lon", "tracer"))[:] = trace.dq_after_xtp
+        dataset.createVariable("dq_after_ytp_hpa", "f8", ("lev", "lat", "lon", "tracer"))[:] = trace.dq_after_ytp
+        dataset.createVariable("dq_after_fzppm_hpa", "f8", ("lev", "lat", "lon", "tracer"))[:] = trace.dq_after_fzppm
+        dataset.createVariable("dq_after_fill_hpa", "f8", ("lev", "lat", "lon", "tracer"))[:] = trace.dq_after_fill
+        dataset.createVariable("tracer_conc_after", "f8", ("lev", "lat", "lon", "tracer"))[:] = (
             trace.tracer_conc_after
         )
         dataset.createVariable("cx", "f8", ("lev", "lat", "lon"))[:] = setup.cx
         dataset.createVariable("cy", "f8", ("lev", "lat", "lon"))[:] = setup.cy
-        dataset.createVariable("vertical_mass_flux_hpa", "f8", ("lev", "lat", "lon"))[:] = setup.vertical_mass_flux_hpa
+        dataset.createVariable("vertical_mass_flux_hpa", "f8", ("lev", "lat", "lon"))[:] = (
+            setup.vertical_mass_flux_hpa
+        )
         dataset.createVariable("delp1_hpa", "f8", ("lev", "lat", "lon"))[:] = setup.delp1_hpa
         dataset.createVariable("delp2_hpa", "f8", ("lev", "lat", "lon"))[:] = setup.delp2_hpa
         dataset.createVariable("surface_pressure_hpa", "f8", ("lat", "lon"))[:] = state.surface_pressure_hpa
@@ -2643,8 +2656,8 @@ def compare_transport_step_output(input_path: str | Path, output_path: str | Pat
         dt_s=dt_s,
     )
     output = read_transport_step_output(output_path)
-    x_error = np.abs(output.xmass_hpa - expected_x)
-    y_error = np.abs(output.ymass_hpa - expected_y)
+    x_error = np.abs(output.xmass_hpa - expected_x[::-1])
+    y_error = np.abs(output.ymass_hpa - expected_y[::-1])
     tracer_change = np.abs(output.tracer_conc_after - tracer_before)
     return TransportStepComparison(
         xmass_max_abs_error_hpa=float(np.max(x_error)),
@@ -2749,12 +2762,19 @@ def attribute_python_tpcore_error(input_path: str | Path, output_path: str | Pat
     rows = ["section,key,max_abs,mean_abs,count,extra"]
     rows.append(_error_row("global", "all", error))
     rows.append(_top_cell_row(error))
-    rows.extend(_top_axis_rows("level", error, axis=1, top_n=8))
-    rows.extend(_top_axis_rows("latitude", error, axis=2, top_n=8))
-    rows.extend(_top_axis_rows("longitude", error, axis=3, top_n=8))
+    rows.extend(_top_axis_rows("level", error, axis=0, top_n=8))
+    rows.extend(_top_axis_rows("latitude", error, axis=1, top_n=8))
+    rows.extend(_top_axis_rows("longitude", error, axis=2, top_n=8))
     rows.extend(_bin_rows("abs_cx", error, np.abs(setup.cx), (0.0, 0.1, 0.5, 1.0, np.inf)))
     rows.extend(_bin_rows("abs_cy", error, np.abs(setup.cy), (0.0, 0.05, 0.1, 0.5, 1.0, np.inf)))
-    rows.extend(_bin_rows("abs_wz_hpa", error, np.abs(setup.vertical_mass_flux_hpa), (0.0, 0.01, 0.1, 1.0, 10.0, np.inf)))
+    rows.extend(
+        _bin_rows(
+            "abs_wz_hpa",
+            error,
+            np.abs(setup.vertical_mass_flux_hpa),
+            (0.0, 0.01, 0.1, 1.0, 10.0, np.inf),
+        )
+    )
     rows.extend(_bin_rows("initial_gradient", error, _tracer_gradient_magnitude(fixture.tracer_conc), (0.0, 1e-8, 1e-7, 1e-6, np.inf)))
     return "\n".join(rows)
 
@@ -2859,7 +2879,7 @@ def _error_row(section: str, key: str, error: np.ndarray, *, extra: str = "") ->
 
 def _top_cell_row(error: np.ndarray) -> str:
     top = np.unravel_index(int(np.argmax(error)), error.shape)
-    extra = f"tracer={top[0]} lev={top[1]} lat={top[2]} lon={top[3]}"
+    extra = f"lev={top[0]} lat={top[1]} lon={top[2]} tracer={top[3]}"
     return _error_row("top_cell", "max", error[top], extra=extra)
 
 
@@ -2878,7 +2898,7 @@ def _top_axis_rows(section: str, error: np.ndarray, *, axis: int, top_n: int) ->
 
 def _bin_rows(section: str, error: np.ndarray, values: np.ndarray, edges: tuple[float, ...]) -> list[str]:
     rows = []
-    value_4d = values[np.newaxis, :, :, :] if values.ndim == 3 else values
+    value_4d = values[:, :, :, np.newaxis] if values.ndim == 3 else values
     for low, high in zip(edges[:-1], edges[1:]):
         mask = (value_4d >= low) & (value_4d < high)
         mask = np.broadcast_to(mask, error.shape)
@@ -2892,7 +2912,7 @@ def _bin_rows(section: str, error: np.ndarray, values: np.ndarray, edges: tuple[
 
 def _tracer_gradient_magnitude(tracer: np.ndarray) -> np.ndarray:
     grad = np.zeros_like(tracer, dtype=np.float64)
-    for axis in (1, 2, 3):
+    for axis in (0, 1, 2):
         grad += np.gradient(tracer, axis=axis) ** 2
     return np.sqrt(grad)
 

@@ -47,7 +47,7 @@ def test_base_restart_initializes_from_restart_variable():
     direct = load_restart(BASE_RESTART, load_species_database(BASE_SPECIES))
 
     assert initialized.names == ("CO2",)
-    assert initialized.shape == (1, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert initialized.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
     np.testing.assert_array_equal(initialized.data, direct.data)
     assert not np.all(initialized.data == 0.000355)
 
@@ -60,7 +60,7 @@ def test_residual_missing_restart_initializes_from_background():
     )
 
     assert len(initialized.names) == 24
-    assert initialized.shape == (24, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert initialized.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
     assert np.all(initialized.data == 0.0004)
 
 
@@ -69,7 +69,7 @@ def test_residual_monthly_restart_stacks_in_species_order():
     restart = load_restart(RESIDUAL_MONTHLY_RESTART, species)
 
     assert restart.names == tuple(item.name for item in species)
-    assert restart.shape == (24, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert restart.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
 
 
 def test_write_restart_like_roundtrips_base_initialized_field(tmp_path):
@@ -103,16 +103,16 @@ def test_species_conc_readers_stack_base_and_residual():
     residual = load_species_conc(RESIDUAL_SPECIES_CONC)
 
     assert base.names == ("CO2",)
-    assert base.shape == (1, 8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert base.shape == (8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
     assert len(residual.names) == 24
-    assert residual.shape == (24, 8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert residual.shape == (8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
 
 
 def test_hemco_reader_stacks_residual_emissions():
     emissions = load_hemco_emissions(RESIDUAL_HEMCO)
 
     assert len(emissions.names) == 24
-    assert emissions.shape == (24, 1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert emissions.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
     assert set(emissions.units) == {"kg/m2/s"}
 
 
@@ -193,12 +193,12 @@ def test_emissions_increment_preserves_global_emitted_mass():
 
     dt_s = 3600.0
     increment = emission_increment_vv(emissions.data, delp, species, dt_s=dt_s)
-    dry_air = dry_air_mass_per_area(delp)[np.newaxis, ...]
-    area_5d = area[np.newaxis, np.newaxis, np.newaxis, :, :]
+    dry_air = dry_air_mass_per_area(delp)[:, ::-1, :, :]
+    area_5d = area[np.newaxis, np.newaxis, :, :, np.newaxis]
     species_mw = np.asarray([item.molecular_weight_g for item in species])
-    species_mw = species_mw[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
+    species_mw = species_mw[np.newaxis, np.newaxis, np.newaxis, np.newaxis, :]
 
     expected_mass_kg = np.sum(emissions.data * dt_s * area_5d)
-    actual_mass_kg = np.sum(increment * (species_mw / AIRMW_G_PER_MOL) * dry_air * area_5d)
+    actual_mass_kg = np.sum(increment * (species_mw / AIRMW_G_PER_MOL) * dry_air[..., np.newaxis] * area_5d)
 
     np.testing.assert_allclose(actual_mass_kg, expected_mass_kg, rtol=1e-12)

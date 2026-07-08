@@ -1,7 +1,7 @@
 """GEOS-Chem-oriented NumPy TPCORE pieces.
 
 The first tracked oracle fixture is intentionally compact and low-Courant:
-``tests/fixtures/tpcore_snapshot_v1`` has max ``|cx|`` around 0.0023 and max
+``tests/fixtures/tpcore_snapshot_v2`` has max ``|cx|`` around 0.0023 and max
 ``|cy|`` around 0.0008. Matching that fixture is useful one-step coverage for
 the ordinary low-Courant branches. Additional branch fixtures cover X full-PPM
 and compact large-Courant E-W behavior. Full-grid validation must
@@ -20,14 +20,11 @@ from wombat_transport.transport.pjc import _pjc_horizontal_geometry, pjc_mass_fl
 
 @dataclass(frozen=True)
 class TpcoreState:
-    """One-step TPCORE state arrays in NetCDF order.
+    """One-step TPCORE state arrays in canonical transport order.
 
     Arrays exposed by this dataclass use the project orientation
-    ``(lev, lat, lon)`` for 3-D fields and ``(tracer, lev, lat, lon)`` for
-    tracers. The public tracer API remains tracer-first for current callers,
-    but TPCORE's hot internal state is C-contiguous ``(lev, lat, lon, tracer)``.
-    GEOS-Chem TPCORE internally runs in top-to-bottom vertical order; this
-    module reverses only inside the implementation.
+    ``(lev_top, lat, lon)`` for 3-D fields and ``(lev_top, lat, lon, tracer)``
+    for tracers.
     """
 
     tracer_conc_after: np.ndarray
@@ -42,7 +39,7 @@ class TpcoreState:
 
 @dataclass(frozen=True)
 class TpcoreTrace:
-    """Optional one-step tracer checkpoints in project orientation."""
+    """Optional one-step tracer checkpoints in canonical transport order."""
 
     q_after_pole_average: np.ndarray
     dq_after_init: np.ndarray
@@ -104,7 +101,7 @@ def run_tpcore_one_step(
     dt_s: float,
     fill: bool = True,
 ) -> TpcoreState:
-    """Run the first NumPy TPCORE one-step path.
+    """Run the first NumPy TPCORE one-step path on canonical tracer layout.
 
     This path ports the GEOS-Chem pressure/mass bookkeeping and the active
     tracer branches for the compact low-Courant oracle fixture.
@@ -156,7 +153,7 @@ def trace_tpcore_one_step(
     dt_s: float,
     fill: bool = True,
 ) -> tuple[TpcoreState, TpcoreTrace]:
-    """Run TPCORE and return diagnostic checkpoints for discrepancy searches."""
+    """Run TPCORE and return canonical diagnostic checkpoints."""
 
     setup = setup_tpcore_terms(
         p1_hpa=p1_hpa,
@@ -197,8 +194,8 @@ def trace_tpcore_one_step(
 def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
     """Classify which currently ported TPCORE branches a setup would use."""
 
-    cx = setup.cx[::-1]
-    cy = setup.cy[::-1]
+    cx = setup.cx
+    cy = setup.cy
     nlev, nlat, nlon = cx.shape
     j1p, j2p = _polar_cap_bounds(nlat)
     jn, js = _set_jn_js(cx)
@@ -317,16 +314,16 @@ def setup_tpcore_terms(
     ps = ak[0] + np.sum(delp2_t, axis=0)
 
     return TpcoreSetup(
-        xmass_hpa=xmass,
-        ymass_hpa=ymass,
+        xmass_hpa=x_tpcore,
+        ymass_hpa=y_tpcore,
         surface_pressure_hpa=ps,
-        delp1_hpa=delp1_t[::-1],
-        delpm_hpa=delpm_t[::-1],
-        delp2_hpa=delp2_t[::-1],
-        pu_hpa=pu_t[::-1],
-        vertical_mass_flux_hpa=wz_t[::-1],
-        cx=cx_t[::-1],
-        cy=cy_t[::-1],
+        delp1_hpa=delp1_t,
+        delpm_hpa=delpm_t,
+        delp2_hpa=delp2_t,
+        pu_hpa=pu_t,
+        vertical_mass_flux_hpa=wz_t,
+        cx=cx_t,
+        cy=cy_t,
         geofac=geofac,
         geofac_pc=geofac_pc,
     )
@@ -424,29 +421,29 @@ def _advect_tracers(
     fill: bool,
     trace: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, TpcoreTrace | None]:
-    """Advect public tracer-first input using tracer-last internal arrays."""
+    """Advect canonical tracer arrays in top-level order."""
 
     if tracer_conc.ndim != 4:
-        raise ValueError(f"tracer_conc must have shape (tracer, lev, lat, lon), found {tracer_conc.shape}")
-    _ntracer, nlev, nlat, nlon = tracer_conc.shape
+        raise ValueError(f"tracer_conc must have shape (lev, lat, lon, tracer), found {tracer_conc.shape}")
+    nlev, nlat, nlon, _ntracer = tracer_conc.shape
     if setup.delp1_hpa.shape != (nlev, nlat, nlon):
         raise ValueError("TPCORE setup shape does not match tracer_conc")
 
-    delp1 = setup.delp1_hpa[::-1]
-    delp2 = setup.delp2_hpa[::-1]
-    pu = setup.pu_hpa[::-1]
-    xmass = setup.xmass_hpa[::-1]
-    ymass = setup.ymass_hpa[::-1]
-    wz = setup.vertical_mass_flux_hpa[::-1]
-    cx = setup.cx[::-1]
-    cy = setup.cy[::-1]
+    delp1 = setup.delp1_hpa
+    delp2 = setup.delp2_hpa
+    pu = setup.pu_hpa
+    xmass = setup.xmass_hpa
+    ymass = setup.ymass_hpa
+    wz = setup.vertical_mass_flux_hpa
+    cx = setup.cx
+    cy = setup.cy
     geofac = setup.geofac
     geofac_pc = setup.geofac_pc
     ua, va = _set_cross_terms(cx, cy)
     jn, js = _set_jn_js(cx)
     area_1d = area_m2[:, 0]
 
-    q = np.ascontiguousarray(np.transpose(tracer_conc[:, ::-1, :, :], (1, 2, 3, 0)))
+    q = np.ascontiguousarray(tracer_conc).copy()
     dq1 = np.zeros_like(q)
     q_after_pole_average = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
     dq_after_init = np.empty_like(tracer_conc, dtype=np.float64) if trace else None
@@ -458,16 +455,16 @@ def _advect_tracers(
     for level in range(nlev):
         _average_const_poles_batch(q[level], delp1[level], area_1d)
         if trace:
-            q_after_pole_average[:, nlev - level - 1] = np.moveaxis(q[level], -1, 0)
+            q_after_pole_average[level] = q[level]
         dq1[level] = q[level] * delp1[level][:, :, np.newaxis]
         if trace:
-            dq_after_init[:, nlev - level - 1] = np.moveaxis(dq1[level], -1, 0)
+            dq_after_init[level] = dq1[level]
         qqu, qqv = _calc_advec_cross_terms_batch(q[level], ua[level], va[level], int(jn[level]), int(js[level]))
         adx = _xadv_dao2_batch(qqv, ua[level], int(jn[level]), int(js[level]))
         ady = _yadv_dao2_batch(qqu, va[level])
         q[level] = q[level] + ady + adx
         if trace:
-            q_after_cross_terms[:, nlev - level - 1] = np.moveaxis(q[level], -1, 0)
+            q_after_cross_terms[level] = q[level]
         _xtp_batch(
             dq1[level],
             qqv,
@@ -478,7 +475,7 @@ def _advect_tracers(
             int(js[level]),
         )
         if trace:
-            dq_after_xtp[:, nlev - level - 1] = np.moveaxis(dq1[level], -1, 0)
+            dq_after_xtp[level] = dq1[level]
         _ytp_batch(
             dq1[level],
             qqu,
@@ -489,19 +486,19 @@ def _advect_tracers(
             geofac_pc,
         )
         if trace:
-            dq_after_ytp[:, nlev - level - 1] = np.moveaxis(dq1[level], -1, 0)
+            dq_after_ytp[level] = dq1[level]
     _fzppm_batch(delp1, wz, dq1, q)
     if trace:
-        dq_after_fzppm[:] = np.transpose(dq1[::-1], (3, 0, 1, 2))
+        dq_after_fzppm[:] = dq1
     if fill:
         _qckxyz_batch(dq1)
     if trace:
-        dq_after_fill[:] = np.transpose(dq1[::-1], (3, 0, 1, 2))
+        dq_after_fill[:] = dq1
     q_after = dq1 / delp2[:, :, :, np.newaxis]
     q_after[:, 1, :, :] = q_after[:, 0, :, :]
     q_after[:, -2, :, :] = q_after[:, -1, :, :]
     q_after[q_after < 0.0] = 1.0e-26
-    out = np.ascontiguousarray(np.transpose(q_after[::-1], (3, 0, 1, 2)))
+    out = np.ascontiguousarray(q_after)
     if not trace:
         return out
     return out, TpcoreTrace(

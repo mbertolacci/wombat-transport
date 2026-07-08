@@ -34,10 +34,10 @@ def compare_to_time_slice(
 
     if candidate.names != reference.names:
         raise ValueError("candidate and reference tracer names do not match")
-    if reference.data.shape[1] == 0:
+    if reference.data.shape[0] == 0:
         raise ValueError("reference field has no time records")
 
-    reference_slice = reference.data[:, [reference_time_index], ...]
+    reference_slice = reference.data[[reference_time_index], ...]
     if candidate.data.shape != reference_slice.shape:
         raise ValueError(
             f"candidate shape {candidate.data.shape} does not match "
@@ -45,7 +45,7 @@ def compare_to_time_slice(
         )
 
     abs_error = np.abs(candidate.data - reference_slice)
-    reduce_axes = tuple(range(1, abs_error.ndim))
+    reduce_axes = tuple(range(0, abs_error.ndim - 1))
     mass_metrics = _mass_metrics(candidate.data, reference_slice, species, delp_dry_hpa, area_m2)
     return ComparisonMetrics(
         names=candidate.names,
@@ -105,7 +105,7 @@ def tracer_mass_kg(
     """Return total species mass by tracer for dry mixing-ratio fields."""
 
     gridbox_mass = tracer_gridbox_mass_kg(field_data, species, delp_dry_hpa, area_m2)
-    return np.sum(gridbox_mass, axis=(1, 2, 3, 4))
+    return np.sum(gridbox_mass, axis=(0, 1, 2, 3))
 
 
 def tracer_gridbox_mass_kg(
@@ -119,20 +119,26 @@ def tracer_gridbox_mass_kg(
     data = np.asarray(field_data, dtype=np.float64)
     if data.ndim != 5:
         raise ValueError(f"expected field data to be 5-D, found {data.ndim}-D")
-    if data.shape[0] != len(species):
+    if data.shape[-1] != len(species):
         raise ValueError("field tracer count does not match species count")
 
     dry_air = np.asarray(delp_dry_hpa, dtype=np.float64) * 100.0 / G0_M_PER_S2
+    if dry_air.ndim == 4:
+        dry_air = dry_air[:, ::-1, :, :]
+    elif dry_air.ndim == 3:
+        dry_air = dry_air[::-1][np.newaxis, ...]
+    else:
+        raise ValueError(f"dry pressure must be 3-D or 4-D, found shape {dry_air.shape}")
     area = np.asarray(area_m2, dtype=np.float64)
-    if dry_air.shape != data.shape[1:]:
-        raise ValueError(f"dry pressure shape {dry_air.shape} does not match field shape {data.shape[1:]}")
-    if area.shape != data.shape[-2:]:
-        raise ValueError(f"area shape {area.shape} does not match horizontal grid {data.shape[-2:]}")
+    if dry_air.shape != data.shape[:-1]:
+        raise ValueError(f"dry pressure shape {dry_air.shape} does not match field shape {data.shape[:-1]}")
+    if area.shape != data.shape[2:4]:
+        raise ValueError(f"area shape {area.shape} does not match horizontal grid {data.shape[2:4]}")
 
     species_mw = np.asarray([item.molecular_weight_g for item in species], dtype=np.float64)
-    species_mw = species_mw[:, np.newaxis, np.newaxis, np.newaxis, np.newaxis]
-    dry_air = dry_air[np.newaxis, ...]
-    area = area[np.newaxis, np.newaxis, np.newaxis, :, :]
+    species_mw = species_mw[np.newaxis, np.newaxis, np.newaxis, np.newaxis, :]
+    dry_air = dry_air[..., np.newaxis]
+    area = area[np.newaxis, np.newaxis, :, :, np.newaxis]
     return data * (species_mw / AIRMW_G_PER_MOL) * dry_air * area
 
 
@@ -151,12 +157,12 @@ def _mass_metrics(
     candidate_gridbox = tracer_gridbox_mass_kg(candidate_data, species, delp_dry_hpa, area_m2)
     reference_gridbox = tracer_gridbox_mass_kg(reference_data, species, delp_dry_hpa, area_m2)
     gridbox_error = candidate_gridbox - reference_gridbox
-    column_error = np.sum(gridbox_error, axis=2)
-    column_reduce_axes = (1, 2, 3)
+    column_error = np.sum(gridbox_error, axis=1)
+    column_reduce_axes = (0, 1, 2)
     return {
-        "candidate_mass_kg": np.sum(candidate_gridbox, axis=(1, 2, 3, 4)),
-        "reference_mass_kg": np.sum(reference_gridbox, axis=(1, 2, 3, 4)),
-        "mass_error_kg": np.sum(gridbox_error, axis=(1, 2, 3, 4)),
+        "candidate_mass_kg": np.sum(candidate_gridbox, axis=(0, 1, 2, 3)),
+        "reference_mass_kg": np.sum(reference_gridbox, axis=(0, 1, 2, 3)),
+        "mass_error_kg": np.sum(gridbox_error, axis=(0, 1, 2, 3)),
         "max_abs_column_error_kg": np.max(np.abs(column_error), axis=column_reduce_axes),
         "mean_abs_column_error_kg": np.mean(np.abs(column_error), axis=column_reduce_axes),
     }

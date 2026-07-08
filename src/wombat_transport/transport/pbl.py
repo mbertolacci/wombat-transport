@@ -44,7 +44,7 @@ class PblHeightState:
 
 @dataclass(frozen=True)
 class VdiffDrResult:
-    """One-step GEOS-Chem non-local VDIFFDR result in Wombat vertical order."""
+    """One-step GEOS-Chem non-local VDIFFDR result in canonical vertical order."""
 
     tracer_conc: np.ndarray
     specific_humidity_kg_kg: np.ndarray
@@ -57,24 +57,6 @@ class VdiffDrResult:
     negative_count_after_clip: int
     initial_tracer_mass: np.ndarray
     final_tracer_mass: np.ndarray
-
-
-def _tracer_public_to_vdiff_working(tracer_conc: np.ndarray) -> np.ndarray:
-    """Return VDIFF working layout ``(lev_top, lat, lon, tracer)``."""
-
-    return np.ascontiguousarray(np.transpose(tracer_conc[:, ::-1, :, :], (1, 2, 3, 0)))
-
-
-def _tracer_vdiff_working_to_public(tracer_conc: np.ndarray) -> np.ndarray:
-    """Return public layout ``(tracer, lev_bottom, lat, lon)`` from VDIFF working layout."""
-
-    return np.ascontiguousarray(np.transpose(tracer_conc[::-1], (3, 0, 1, 2)))
-
-
-def _surface_flux_public_to_vdiff_working(surface_flux_kg_m2_s: np.ndarray) -> np.ndarray:
-    """Return VDIFF working surface-flux layout ``(lat, lon, tracer)``."""
-
-    return np.ascontiguousarray(np.moveaxis(surface_flux_kg_m2_s, 0, -1))
 
 
 def _tracer_working_mass(tracer_conc: np.ndarray, dry_air_mass_top: np.ndarray) -> np.ndarray:
@@ -236,9 +218,8 @@ def run_vdiffdr_one_step(
 ) -> VdiffDrResult:
     """Port GEOS-Chem ``VDIFFDR`` for one non-local PBL mixing step.
 
-    Inputs and outputs use Wombat order: level 0 is nearest the surface. The
-    implementation flips local views internally to match GEOS-Chem's
-    top-to-bottom ``vdiff/pbldif/qvdiff`` loops.
+    Inputs and outputs use canonical transport order: level 0 is the model top
+    and tracer is the last axis.
     """
 
     tracer = np.asarray(tracer_conc, dtype=np.float64)
@@ -258,8 +239,8 @@ def run_vdiffdr_one_step(
     area = np.asarray(area_m2, dtype=np.float64)
 
     if tracer.ndim != 4:
-        raise ValueError(f"tracer_conc must be 4-D (tracer, lev, lat, lon), found {tracer.shape}")
-    ntracer, nlev, nlat, nlon = tracer.shape
+        raise ValueError(f"tracer_conc must be 4-D (lev, lat, lon, tracer), found {tracer.shape}")
+    nlev, nlat, nlon, ntracer = tracer.shape
     grid_shape = (nlev, nlat, nlon)
     edge_shape = (nlev + 1, nlat, nlon)
     horizontal_shape = (nlat, nlon)
@@ -289,38 +270,26 @@ def run_vdiffdr_one_step(
     if dt_s <= 0.0:
         raise ValueError("dt_s must be positive")
     if surface_flux_kg_m2_s is None:
-        surface_flux = np.zeros((ntracer, nlat, nlon), dtype=np.float64)
+        surface_flux = np.zeros((nlat, nlon, ntracer), dtype=np.float64)
     else:
         surface_flux = np.asarray(surface_flux_kg_m2_s, dtype=np.float64)
-        if surface_flux.shape != (ntracer, nlat, nlon):
+        if surface_flux.shape != (nlat, nlon, ntracer):
             raise ValueError(
-                f"surface_flux_kg_m2_s shape {surface_flux.shape} does not match {(ntracer, nlat, nlon)}"
+                f"surface_flux_kg_m2_s shape {surface_flux.shape} does not match {(nlat, nlon, ntracer)}"
             )
 
     pmid_pa = pmid * 100.0
     pedge_pa = pedge * 100.0
-    thp_bottom = temperature * (1.0e5 / pmid_pa) ** CAPPA
-    zm_bottom = _vdiff_midpoint_height_m(
+    thp_top = temperature * (1.0e5 / pmid_pa) ** CAPPA
+    zm_top = _vdiff_midpoint_height_top_m(
         bxheight_m=bxheight,
         pmid_pa=pmid_pa,
         pedge_pa=pedge_pa,
         virtual_temperature_k=tv,
     )
-    rpdel_bottom = 1.0 / (pedge_pa[:-1] - pedge_pa[1:])
-    rpdeli_bottom = np.zeros_like(rpdel_bottom)
-    rpdeli_bottom[1:] = 1.0 / (pmid_pa[:-1] - pmid_pa[1:])
-
-    pmid_top = pmid_pa[::-1]
-    pint_top = pedge_pa[::-1]
-    u_top = u[::-1]
-    v_top = v[::-1]
-    temperature_top = temperature[::-1]
-    sphu_top = sphu[::-1]
-    thp_top = thp_bottom[::-1]
-    zm_top = zm_bottom[::-1]
-    rpdel_top = rpdel_bottom[::-1]
-    rpdeli_top = rpdeli_bottom[::-1]
-    dry_mass_top = dry_mass[::-1]
+    rpdel_top = 1.0 / (pedge_pa[1:] - pedge_pa[:-1])
+    rpdeli_top = np.zeros_like(rpdel_top)
+    rpdeli_top[:-1] = 1.0 / (pmid_pa[1:] - pmid_pa[:-1])
 
     ntopfl = 0
     npbl = _max_pbl_levels_from_pressure(pmid_hpa)
@@ -328,36 +297,34 @@ def run_vdiffdr_one_step(
     if nlev > 1:
         ml2[1:nlev] = 900.0
 
-    tracer_top = _tracer_public_to_vdiff_working(tracer)
-    surface_flux_working = _surface_flux_public_to_vdiff_working(surface_flux)
-    tracer_after_top = np.empty_like(tracer_top)
-    sphu_after_top = sphu_top.copy()
+    tracer_after_top = np.empty_like(tracer)
+    sphu_after_top = sphu.copy()
     kvh_top = np.zeros((nlev + 1, nlat, nlon), dtype=np.float64)
     kvm_top = np.zeros_like(kvh_top)
     tpert = np.zeros((nlat, nlon), dtype=np.float64)
     qpert = np.zeros((nlat, nlon), dtype=np.float64)
     negative_before = 0
 
-    initial_mass = _tracer_working_mass(tracer_top, dry_mass_top)
+    initial_mass = _tracer_working_mass(tracer, dry_mass)
 
     for lat_index in range(nlat):
         column = _run_vdiff_latitude(
-            tracer_top=tracer_top[:, lat_index, :, :].transpose(1, 0, 2),
-            u_top=u_top[:, lat_index, :].T,
-            v_top=v_top[:, lat_index, :].T,
-            temperature_top=temperature_top[:, lat_index, :].T,
-            sphu_top=sphu_top[:, lat_index, :].T,
-            pmid_top=pmid_top[:, lat_index, :].T,
-            pint_top=pint_top[:, lat_index, :].T,
+            tracer_top=tracer[:, lat_index, :, :].transpose(1, 0, 2),
+            u_top=u[:, lat_index, :].T,
+            v_top=v[:, lat_index, :].T,
+            temperature_top=temperature[:, lat_index, :].T,
+            sphu_top=sphu[:, lat_index, :].T,
+            pmid_top=pmid_pa[:, lat_index, :].T,
+            pint_top=pedge_pa[:, lat_index, :].T,
             rpdel_top=rpdel_top[:, lat_index, :].T,
             rpdeli_top=rpdeli_top[:, lat_index, :].T,
             zm_top=zm_top[:, lat_index, :].T,
             thp_top=thp_top[:, lat_index, :].T,
-            dry_mass_top=dry_mass_top[:, lat_index, :].T,
+            dry_mass_top=dry_mass[:, lat_index, :].T,
             pblh_m=pblh[lat_index, :],
             hflux_w_m2=hflux[lat_index, :],
             water_flux_kg_m2_s=eflux[lat_index, :] / LATVAP_J_PER_KG,
-            surface_flux_kg_m2_s=surface_flux_working[lat_index],
+            surface_flux_kg_m2_s=surface_flux[lat_index],
             ustar_m_s=ustar[lat_index, :],
             area_m2=area[lat_index, :],
             dt_s=float(dt_s),
@@ -373,18 +340,14 @@ def run_vdiffdr_one_step(
         qpert[lat_index, :] = column.qpert
         negative_before += column.negative_count_before_clip
 
-    sphu_after = sphu_after_top[::-1]
-    kvh = kvh_top[::-1]
-    kvm = kvm_top[::-1]
-    tracer_after = _tracer_vdiff_working_to_public(tracer_after_top)
-    negative_after = int(np.count_nonzero(tracer_after < 0.0))
-    final_mass = _tracer_working_mass(tracer_after_top, dry_mass_top)
+    negative_after = int(np.count_nonzero(tracer_after_top < 0.0))
+    final_mass = _tracer_working_mass(tracer_after_top, dry_mass)
 
     return VdiffDrResult(
-        tracer_conc=tracer_after,
-        specific_humidity_kg_kg=sphu_after,
-        kvh_m2_s=kvh,
-        kvm_m2_s=kvm,
+        tracer_conc=tracer_after_top,
+        specific_humidity_kg_kg=sphu_after_top,
+        kvh_m2_s=kvh_top,
+        kvm_m2_s=kvm_top,
         pbl_top_m=pblh.copy(),
         tpert_k=tpert,
         qpert_kg_kg=qpert,
@@ -422,8 +385,21 @@ def _vdiff_midpoint_height_m(
     return midpoint
 
 
+def _vdiff_midpoint_height_top_m(
+    *,
+    bxheight_m: np.ndarray,
+    pmid_pa: np.ndarray,
+    pedge_pa: np.ndarray,
+    virtual_temperature_k: np.ndarray,
+) -> np.ndarray:
+    top_edge_height = np.flip(np.cumsum(np.flip(bxheight_m, axis=0), axis=0), axis=0)
+    return top_edge_height - np.log(pmid_pa / pedge_pa[:-1]) * (
+        RD_J_PER_KG_K / G0_M_PER_S2
+    ) * virtual_temperature_k
+
+
 def _max_pbl_levels_from_pressure(pmid_hpa: np.ndarray) -> int:
-    ref_pmid_top = np.mean(pmid_hpa, axis=(1, 2))[::-1]
+    ref_pmid_top = np.mean(pmid_hpa, axis=(1, 2))
     nlev = ref_pmid_top.size
     break_index = 0
     for index in range(nlev - 1, -1, -1):
