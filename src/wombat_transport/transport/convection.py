@@ -97,35 +97,21 @@ def run_cloud_convection_one_step(
     initial_mass = _column_mass_transport(tracer_after_top, bmass, area)
     negative_before = int(np.count_nonzero(tracer_after_top < 0.0))
 
-    for lat_index in range(nlat):
-        for lon_index in range(nlon):
-            if not np.any(np.abs(cmfmc[:, lat_index, lon_index]) > _TINYNUM) and not np.any(
-                np.abs(dtrain[:, lat_index, lon_index]) > _TINYNUM
-            ):
-                continue
-            dqrcu, reevapcn = _convective_precip_rates_top(
-                dqrcu_met[:, lat_index, lon_index],
-                reevapcn_met[:, lat_index, lon_index],
-                delp[:, lat_index, lon_index],
-                reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
-            )
-            cloud_base = _cloud_base_index_top(dqrcu)
-            mass_below_base = float(np.sum(bmass[cloud_base + 1 :, lat_index, lon_index]))
-            column, diag_column = _convect_column_top(
-                tracer_after_top[:, lat_index, lon_index, :],
-                cmfmc[:, lat_index, lon_index],
-                dtrain[:, lat_index, lon_index],
-                delp_dry[:, lat_index, lon_index],
-                bmass[:, lat_index, lon_index],
-                area[lat_index, lon_index],
-                cloud_base=cloud_base,
-                mass_below_base=mass_below_base,
-                internal_steps=internal_steps,
-                internal_dt_s=internal_dt,
-            )
-            tracer_after_top[:, lat_index, lon_index, :] = column
-            diag14_top[:, lat_index, lon_index, :] = diag_column
-            _ = reevapcn
+    _convect_active_columns_top(
+        tracer_after_top,
+        diag14_top,
+        cmfmc,
+        dtrain,
+        dqrcu_met,
+        reevapcn_met,
+        delp,
+        delp_dry,
+        bmass,
+        area,
+        reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
+        internal_steps=internal_steps,
+        internal_dt_s=internal_dt,
+    )
 
     final_mass = _column_mass_transport(tracer_after_top, bmass, area)
     return ConvectionResult(
@@ -140,102 +126,182 @@ def run_cloud_convection_one_step(
     )
 
 
-def _convective_precip_rates_top(
+def _convect_active_columns_top(
+    tracer: np.ndarray,
+    diag14: np.ndarray,
+    cmfmc: np.ndarray,
+    dtrain: np.ndarray,
+    dqrcu_met: np.ndarray,
+    reevapcn_met: np.ndarray,
+    delp_hpa: np.ndarray,
+    delp_dry: np.ndarray,
+    bmass: np.ndarray,
+    area_m2: np.ndarray,
+    *,
+    reconstruct_conv_precip_flux: bool,
+    internal_steps: int,
+    internal_dt_s: float,
+) -> None:
+    nlev, nlat, nlon, _ntracer = tracer.shape
+    ncol = nlat * nlon
+    q = tracer.reshape(nlev, ncol, -1)
+    diag = diag14.reshape(nlev, ncol, -1)
+    cmf = cmfmc.reshape(nlev, ncol)
+    detrain = dtrain.reshape(nlev, ncol)
+    delp = delp_hpa.reshape(nlev, ncol)
+    delp_d = delp_dry.reshape(nlev, ncol)
+    bm = bmass.reshape(nlev, ncol)
+    area = area_m2.reshape(ncol)
+
+    active = (np.max(np.abs(cmf), axis=0) > _TINYNUM) | (np.max(np.abs(detrain), axis=0) > _TINYNUM)
+    if not np.any(active):
+        return
+
+    dqrcu = _convective_precip_rates_columns(
+        dqrcu_met.reshape(nlev, ncol),
+        reevapcn_met.reshape(nlev, ncol),
+        delp,
+        reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
+    )
+    cloud_base_by_column = _cloud_base_indices_top(dqrcu)
+    active_columns = np.flatnonzero(active)
+
+    for cloud_base in np.unique(cloud_base_by_column[active_columns]):
+        columns = active_columns[cloud_base_by_column[active_columns] == cloud_base]
+        _convect_column_group_top(
+            q,
+            diag,
+            cmf,
+            detrain,
+            delp_d,
+            bm,
+            area,
+            int(cloud_base),
+            columns,
+            internal_steps=internal_steps,
+            internal_dt_s=internal_dt_s,
+        )
+
+
+def _convective_precip_rates_columns(
     dqrcu_met: np.ndarray,
     reevapcn_met: np.ndarray,
     delp_hpa: np.ndarray,
     *,
     reconstruct_conv_precip_flux: bool,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray:
     if not reconstruct_conv_precip_flux:
-        return dqrcu_met.copy(), reevapcn_met.copy()
+        return dqrcu_met
 
-    nlev = dqrcu_met.size
+    nlev = dqrcu_met.shape[0]
     bottom_index = nlev - 1
-    dqrcu = np.zeros(nlev, dtype=np.float64)
-    reevapcn = np.zeros(nlev, dtype=np.float64)
+    reevapcn = np.zeros_like(reevapcn_met)
+    dqrcu = np.zeros_like(dqrcu_met)
     reevapcn[0] = reevapcn_met[0]
     for level in range(1, bottom_index):
         reevapcn[level] = (
             reevapcn_met[level] * delp_hpa[level] - reevapcn_met[level - 1] * delp_hpa[level - 1]
         ) / delp_hpa[level]
-    reevapcn[bottom_index] = 0.0
     dqrcu[:bottom_index] = dqrcu_met[:bottom_index] + reevapcn[:bottom_index]
-    dqrcu[bottom_index] = 0.0
-    return dqrcu, reevapcn
+    return dqrcu
 
 
-def _cloud_base_index_top(dqrcu: np.ndarray) -> int:
-    found = np.flatnonzero(dqrcu[::-1] > 0.0)
-    if found.size == 0:
-        return dqrcu.size - 1
-    return int(dqrcu.size - 1 - found[0])
+def _cloud_base_indices_top(dqrcu: np.ndarray) -> np.ndarray:
+    return dqrcu.shape[0] - 1 - np.argmax(dqrcu[::-1] > 0.0, axis=0)
 
 
-def _convect_column_top(
-    q_in: np.ndarray,
-    cmfmc: np.ndarray,
-    dtrain: np.ndarray,
-    delp_dry: np.ndarray,
-    bmass: np.ndarray,
-    area_m2: float,
-    *,
+def _convect_column_group_top(
+    q_all: np.ndarray,
+    diag_all: np.ndarray,
+    cmfmc_all: np.ndarray,
+    dtrain_all: np.ndarray,
+    delp_dry_all: np.ndarray,
+    bmass_all: np.ndarray,
+    area_all: np.ndarray,
     cloud_base: int,
-    mass_below_base: float,
+    columns: np.ndarray,
+    *,
     internal_steps: int,
     internal_dt_s: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    q = q_in.copy()
-    nlev, _ntracer = q.shape
-    diag14 = np.zeros_like(q)
+) -> None:
+    q = q_all[:, columns, :].copy()
+    diag = np.zeros_like(q)
+    cmfmc = cmfmc_all[:, columns]
+    dtrain = dtrain_all[:, columns]
+    delp_dry = delp_dry_all[:, columns]
+    bmass = bmass_all[:, columns]
+    area = area_all[columns]
+    nlev = q.shape[0]
     dns = float(internal_steps)
     bottom_index = nlev - 1
 
     for _step in range(internal_steps):
         if cloud_base < bottom_index:
             cmfmc_below_base = cmfmc[cloud_base + 1]
-            if cmfmc_below_base > _TINYNUM:
-                denominator = np.sum(delp_dry[cloud_base + 1 :])
-                if denominator <= 0.0:
+            below_base_active = cmfmc_below_base > _TINYNUM
+            qc = q[cloud_base].copy()
+            if np.any(below_base_active):
+                denominator = np.sum(delp_dry[cloud_base + 1 :, below_base_active], axis=0)
+                if np.any(denominator <= 0.0):
                     raise ValueError("dry pressure below cloud base must be positive")
-                qb = np.sum(q[cloud_base + 1 :, :] * delp_dry[cloud_base + 1 :, np.newaxis], axis=0) / denominator
-                qc = (mass_below_base * qb + cmfmc_below_base * q[cloud_base, :] * internal_dt_s) / (
-                    mass_below_base + cmfmc_below_base * internal_dt_s
+                qb = (
+                    np.sum(q[cloud_base + 1 :, below_base_active, :] * delp_dry[cloud_base + 1 :, below_base_active, np.newaxis], axis=0)
+                    / denominator[:, np.newaxis]
                 )
-                q[cloud_base + 1 :, :] = qc[np.newaxis, :]
-            else:
-                qc = q[cloud_base, :].copy()
+                mass_below_base = np.sum(bmass[cloud_base + 1 :, below_base_active], axis=0)
+                cmfmc_base = cmfmc_below_base[below_base_active]
+                qc[below_base_active] = (
+                    mass_below_base[:, np.newaxis] * qb
+                    + cmfmc_base[:, np.newaxis] * q[cloud_base, below_base_active, :] * internal_dt_s
+                ) / (mass_below_base + cmfmc_base * internal_dt_s)[:, np.newaxis]
+                q[cloud_base + 1 :, below_base_active, :] = qc[below_base_active][np.newaxis, :, :]
         else:
-            qc = q[cloud_base, :].copy()
+            qc = q[cloud_base].copy()
 
         for level in range(cloud_base, 0, -1):
-            cmfmc_below = 0.0 if level == bottom_index else cmfmc[level + 1]
-            if cmfmc_below > _TINYNUM:
-                cmout = cmfmc[level] + dtrain[level]
-                entrn = cmout - cmfmc_below
-                qc_pres = qc.copy()
-                qc_scav = 0.0
-                if entrn >= 0.0 and cmout > 0.0:
-                    qc = (cmfmc_below * qc_pres + entrn * q[level, :]) / cmout
+            cmfmc_below = np.zeros(columns.size, dtype=np.float64) if level == bottom_index else cmfmc[level + 1]
+            has_below_flux = cmfmc_below > _TINYNUM
+            if np.any(has_below_flux):
+                local = np.flatnonzero(has_below_flux)
+                cmout = cmfmc[level, local] + dtrain[level, local]
+                entrn = cmout - cmfmc_below[local]
+                qc_pres = qc[local].copy()
+                qc_next = qc_pres.copy()
+                entrains = (entrn >= 0.0) & (cmout > 0.0)
+                if np.any(entrains):
+                    entrain_local = local[entrains]
+                    qc_next[entrains] = (
+                        cmfmc_below[entrain_local, np.newaxis] * qc_pres[entrains]
+                        + entrn[entrains, np.newaxis] * q[level, entrain_local, :]
+                    ) / cmout[entrains, np.newaxis]
 
-                t1 = cmfmc_below * qc_pres
-                t2 = -cmfmc[level] * qc
-                t3 = cmfmc[level] * q[level - 1, :]
-                t4 = -cmfmc_below * q[level, :]
-                delq = (internal_dt_s / bmass[level]) * (t1 + t2 + t3 + t4)
-                delq = np.where(q[level, :] + delq < 0.0, -q[level, :], delq)
-                q[level, :] = q[level, :] + delq
-                diag14[level, :] += (-t2 - t3) * area_m2 / dns
-                _ = qc_scav
-            else:
-                qc = q[level, :].copy()
-                if cmfmc[level] > _TINYNUM:
-                    t2 = -cmfmc[level] * qc
-                    t3 = cmfmc[level] * q[level - 1, :]
-                    delq = (internal_dt_s / bmass[level]) * (t2 + t3)
-                    delq = np.where(q[level, :] + delq < 0.0, -q[level, :], delq)
-                    q[level, :] = q[level, :] + delq
-    return q, diag14
+                t1 = cmfmc_below[local, np.newaxis] * qc_pres
+                t2 = -cmfmc[level, local, np.newaxis] * qc_next
+                t3 = cmfmc[level, local, np.newaxis] * q[level - 1, local, :]
+                t4 = -cmfmc_below[local, np.newaxis] * q[level, local, :]
+                delq = (internal_dt_s / bmass[level, local, np.newaxis]) * (t1 + t2 + t3 + t4)
+                current = q[level, local, :]
+                delq = np.where(current + delq < 0.0, -current, delq)
+                q[level, local, :] = current + delq
+                diag[level, local, :] += (-t2 - t3) * area[local, np.newaxis] / dns
+                qc[local] = qc_next
+
+            no_below_flux = ~has_below_flux
+            if np.any(no_below_flux):
+                local = np.flatnonzero(no_below_flux)
+                qc[local] = q[level, local, :].copy()
+                has_current_flux = cmfmc[level, local] > _TINYNUM
+                if np.any(has_current_flux):
+                    flux_local = local[has_current_flux]
+                    t2 = -cmfmc[level, flux_local, np.newaxis] * qc[flux_local]
+                    t3 = cmfmc[level, flux_local, np.newaxis] * q[level - 1, flux_local, :]
+                    delq = (internal_dt_s / bmass[level, flux_local, np.newaxis]) * (t2 + t3)
+                    current = q[level, flux_local, :]
+                    delq = np.where(current + delq < 0.0, -current, delq)
+                    q[level, flux_local, :] = current + delq
+
+    q_all[:, columns, :] = q
+    diag_all[:, columns, :] = diag
 
 
 def _column_mass_transport(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:

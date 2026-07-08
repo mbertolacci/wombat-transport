@@ -501,6 +501,49 @@ def test_convection_active_cloud_changes_tracer_and_conserves_mass(tmp_path):
     np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=1.0e-14, atol=0.0)
 
 
+def test_convection_vectorized_batches_mixed_cloud_bases_and_inactive_columns():
+    nlev, nlat, nlon, ntracer = 5, 2, 2, 2
+    tracer = np.full((nlev, nlat, nlon, ntracer), 4.0e-4, dtype=np.float64)
+    tracer += 1.0e-7 * np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer += 1.0e-8 * np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    cmfmc = np.zeros((nlev, nlat, nlon), dtype=np.float64)
+    dtrain = np.zeros_like(cmfmc)
+    dqrcu = np.zeros_like(cmfmc)
+    reevapcn = np.zeros_like(cmfmc)
+    delp_dry = np.broadcast_to(np.linspace(10.0, 50.0, nlev)[:, np.newaxis, np.newaxis], (nlev, nlat, nlon)).copy()
+    delp = delp_dry * 1.01
+    area = np.full((nlat, nlon), 2.0e10, dtype=np.float64)
+
+    cmfmc[:, 0, 1] = [0.0, 0.003, 0.004, 0.005, 0.006]
+    dtrain[:, 0, 1] = [0.0, 0.0002, 0.0002, 0.0002, 0.0002]
+    dqrcu[3, 0, 1] = 1.0e-8
+    cmfmc[:, 1, 0] = [0.0, 0.002, 0.003, 0.004, 0.0]
+    dtrain[:, 1, 0] = [0.0, 0.0001, 0.0001, 0.0001, 0.0]
+    dqrcu[2, 1, 0] = 1.0e-8
+    cmfmc[:, 1, 1] = [0.0, 0.0, 0.0, 0.0, 0.004]
+    dtrain[:, 1, 1] = [0.0, 0.0, 0.0, 0.0, 0.0001]
+
+    result = run_cloud_convection_one_step(
+        tracer_conc=tracer,
+        cmfmc_kg_m2_s=cmfmc,
+        dtrain_kg_m2_s=dtrain,
+        dqrcu_kg_kg_s=dqrcu,
+        reevapcn_kg_kg_s=reevapcn,
+        delp_dry_hpa=delp_dry,
+        delp_hpa=delp,
+        area_m2=area,
+        dt_s=600.0,
+    )
+
+    np.testing.assert_array_equal(result.tracer_conc[:, 0, 0, :], tracer[:, 0, 0, :])
+    np.testing.assert_array_equal(result.diag14_mass_flux[:, 0, 0, :], np.zeros((nlev, ntracer)))
+    assert float(np.max(np.abs(result.tracer_conc[:, 0, 1, :] - tracer[:, 0, 1, :]))) > 0.0
+    assert float(np.max(np.abs(result.tracer_conc[:, 1, 0, :] - tracer[:, 1, 0, :]))) > 0.0
+    assert float(np.max(np.abs(result.tracer_conc[:, 1, 1, :] - tracer[:, 1, 1, :]))) > 0.0
+    assert np.all(np.isfinite(result.tracer_conc))
+    assert result.negative_count_after == 0
+
+
 def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_path):
     input_path = write_synthetic_convection_input(
         tmp_path / "convection_input.nc",
