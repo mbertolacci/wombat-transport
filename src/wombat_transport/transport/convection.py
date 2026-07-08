@@ -6,6 +6,7 @@ import numpy as np
 
 G0_100 = 100.0 / 9.80665
 _TINYNUM = 1.0e-14
+_MAX_GROUP_TRACER_BYTES = 1024**3
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ def run_cloud_convection_one_step(
 
     if tracer.ndim != 4:
         raise ValueError(f"tracer_conc must be 4-D (lev, lat, lon, tracer), found {tracer.shape}")
-    nlev, nlat, nlon, _ntracer = tracer.shape
+    nlev, nlat, nlon, ntracer = tracer.shape
     grid_shape = (nlev, nlat, nlon)
     horizontal_shape = (nlat, nlon)
     for name, value in (
@@ -142,7 +143,7 @@ def _convect_active_columns_top(
     internal_steps: int,
     internal_dt_s: float,
 ) -> None:
-    nlev, nlat, nlon, _ntracer = tracer.shape
+    nlev, nlat, nlon, ntracer = tracer.shape
     ncol = nlat * nlon
     q = tracer.reshape(nlev, ncol, -1)
     diag = diag14.reshape(nlev, ncol, -1)
@@ -168,19 +169,21 @@ def _convect_active_columns_top(
 
     for cloud_base in np.unique(cloud_base_by_column[active_columns]):
         columns = active_columns[cloud_base_by_column[active_columns] == cloud_base]
-        _convect_column_group_top(
-            q,
-            diag,
-            cmf,
-            detrain,
-            delp_d,
-            bm,
-            area,
-            int(cloud_base),
-            columns,
-            internal_steps=internal_steps,
-            internal_dt_s=internal_dt_s,
-        )
+        max_chunk_columns = _max_convection_group_columns(nlev, ntracer)
+        for column_chunk in _iter_column_chunks(columns, max_chunk_columns):
+            _convect_column_group_top(
+                q,
+                diag,
+                cmf,
+                detrain,
+                delp_d,
+                bm,
+                area,
+                int(cloud_base),
+                column_chunk,
+                internal_steps=internal_steps,
+                internal_dt_s=internal_dt_s,
+            )
 
 
 def _convective_precip_rates_columns(
@@ -208,6 +211,18 @@ def _convective_precip_rates_columns(
 
 def _cloud_base_indices_top(dqrcu: np.ndarray) -> np.ndarray:
     return dqrcu.shape[0] - 1 - np.argmax(dqrcu[::-1] > 0.0, axis=0)
+
+
+def _max_convection_group_columns(nlev: int, ntracer: int) -> int:
+    bytes_per_column = max(nlev, 1) * max(ntracer, 1) * np.dtype(np.float64).itemsize
+    return max(int(_MAX_GROUP_TRACER_BYTES // bytes_per_column), 1)
+
+
+def _iter_column_chunks(columns: np.ndarray, max_columns: int):
+    if max_columns <= 0:
+        raise ValueError("max_columns must be positive")
+    for start in range(0, columns.size, max_columns):
+        yield columns[start : start + max_columns]
 
 
 def _convect_column_group_top(

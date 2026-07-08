@@ -60,6 +60,7 @@ from wombat_transport.gc_harness import (
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
 )
+from wombat_transport.transport import convection as convection_mod
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
@@ -542,6 +543,52 @@ def test_convection_vectorized_batches_mixed_cloud_bases_and_inactive_columns():
     assert float(np.max(np.abs(result.tracer_conc[:, 1, 1, :] - tracer[:, 1, 1, :]))) > 0.0
     assert np.all(np.isfinite(result.tracer_conc))
     assert result.negative_count_after == 0
+
+
+def test_convection_column_chunking_preserves_results(monkeypatch):
+    nlev, nlat, nlon, ntracer = 6, 2, 4, 3
+    tracer = np.full((nlev, nlat, nlon, ntracer), 4.0e-4, dtype=np.float64)
+    tracer += 1.0e-7 * np.arange(ntracer, dtype=np.float64)[np.newaxis, np.newaxis, np.newaxis, :]
+    tracer += 1.0e-8 * np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis, np.newaxis]
+    tracer += 1.0e-9 * np.arange(nlat * nlon, dtype=np.float64).reshape(1, nlat, nlon, 1)
+    cmfmc = np.zeros((nlev, nlat, nlon), dtype=np.float64)
+    dtrain = np.zeros_like(cmfmc)
+    dqrcu = np.zeros_like(cmfmc)
+    reevapcn = np.zeros_like(cmfmc)
+    delp_dry = np.broadcast_to(np.linspace(10.0, 55.0, nlev)[:, np.newaxis, np.newaxis], (nlev, nlat, nlon)).copy()
+    delp = delp_dry * 1.01
+    area = np.full((nlat, nlon), 2.0e10, dtype=np.float64)
+    cmfmc[1:, :, :] = np.linspace(0.002, 0.006, nlev - 1, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    dtrain[1:, :, :] = 1.0e-4
+    dqrcu[3, :, :] = 1.0e-8
+
+    wide = run_cloud_convection_one_step(
+        tracer_conc=tracer,
+        cmfmc_kg_m2_s=cmfmc,
+        dtrain_kg_m2_s=dtrain,
+        dqrcu_kg_kg_s=dqrcu,
+        reevapcn_kg_kg_s=reevapcn,
+        delp_dry_hpa=delp_dry,
+        delp_hpa=delp,
+        area_m2=area,
+        dt_s=600.0,
+    )
+    monkeypatch.setattr(convection_mod, "_MAX_GROUP_TRACER_BYTES", nlev * ntracer * np.dtype(np.float64).itemsize)
+    chunked = run_cloud_convection_one_step(
+        tracer_conc=tracer,
+        cmfmc_kg_m2_s=cmfmc,
+        dtrain_kg_m2_s=dtrain,
+        dqrcu_kg_kg_s=dqrcu,
+        reevapcn_kg_kg_s=reevapcn,
+        delp_dry_hpa=delp_dry,
+        delp_hpa=delp,
+        area_m2=area,
+        dt_s=600.0,
+    )
+
+    np.testing.assert_array_equal(chunked.tracer_conc, wide.tracer_conc)
+    np.testing.assert_array_equal(chunked.diag14_mass_flux, wide.diag14_mass_flux)
+    np.testing.assert_array_equal(chunked.final_tracer_mass, wide.final_tracer_mass)
 
 
 def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_path):
