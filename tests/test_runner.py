@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emiss
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import (
     _is_time_for_emissions,
+    _load_emissions_operator,
     _validate_timestep_schedule,
     has_invalid_emissions,
     run_tracer_simulation,
@@ -28,6 +30,7 @@ RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
 
 def test_configured_residual_emissions_config_covers_expected_species():
     config = load_run_config(RESIDUAL_CONFIG)
+    assert config.emissions == "emissions.yml"
     operator = _residual_emissions_operator(config)
 
     assert len(operator.config.scales) == 32
@@ -35,6 +38,32 @@ def test_configured_residual_emissions_config_covers_expected_species():
     assert "r0002p001s001" not in operator.emitted_species
     assert operator.emitted_species[0] == "r0002p001s002"
     assert operator.emitted_species[-1] == "r0002p001s024"
+
+
+def test_inline_emissions_mapping_is_accepted_in_run_config():
+    config = load_run_config(RESIDUAL_CONFIG)
+    inline = {
+        "unit_conversion": "none",
+        "missing_species": "zero",
+        "scales": {},
+        "fields": [
+            {
+                "name": "field_a",
+                "species": "r0002p001s001",
+                "path_template": "../fluxes/SOM_FFN_vBAMS2024v2_residual.nc",
+                "variable": "residual",
+                "frequency": "monthly",
+                "dimensions": "xy",
+            }
+        ],
+    }
+    config = replace(config, emissions=inline)
+
+    operator = _residual_emissions_operator(config)
+    emissions = operator.evaluate(datetime(2014, 9, 1, 0, 30))
+
+    assert emissions.names[0] == "r0002p001s001"
+    assert emissions.shape[-1] == 24
 
 
 def test_configured_residual_emissions_match_hemco_diagnostic_sample():
@@ -284,9 +313,4 @@ def test_run_cli_writes_restart_like_output(tmp_path):
 def _residual_emissions_operator(config):
     species = load_species_database(config.species_database)
     grid = load_transport_grid(config.grid_template)
-    return EmissionsOperator.from_yaml(
-        str(config.emissions["config"]),
-        root=config.root,
-        species=species,
-        grid=grid,
-    )
+    return _load_emissions_operator(config, species, grid)

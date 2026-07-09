@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -68,9 +69,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     emissions_dt_s = float(emissions_timestep_s(config))
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
 
-    emissions_source = str(config.emissions.get("source", "configured_fields"))
-    if emissions_source != "configured_fields":
-        raise ValueError(f"unsupported emissions source {emissions_source}; use configured_fields")
     configured_emissions = _load_emissions_operator(config, species, grid)
 
     forcing_cache = {}
@@ -129,14 +127,12 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
 
 
 def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOperator:
-    if "config" not in config.emissions:
-        raise KeyError("emissions.config is required for configured_fields emissions")
-    return EmissionsOperator.from_yaml(
-        str(config.emissions["config"]),
-        root=config.root,
-        species=species,
-        grid=grid,
-    )
+    if isinstance(config.emissions, str):
+        return EmissionsOperator.from_yaml(config.emissions, root=config.root, species=species, grid=grid)
+    if isinstance(config.emissions, dict):
+        raw: dict[str, Any] = dict(config.emissions)
+        return EmissionsOperator.from_mapping(raw, root=config.root, species=species, grid=grid)
+    raise TypeError("emissions must be a path string or an inline emissions mapping")
 
 
 def has_invalid_emissions(emissions: TracerField) -> bool:

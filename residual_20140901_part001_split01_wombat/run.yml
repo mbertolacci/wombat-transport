@@ -11,8 +11,7 @@ simulation:
   emissions_timestep_s: 1200
 meteorology:
   root: ../ExtData/GEOS_2x2.5/MERRA2
-emissions:
-  config: emissions.yml
+emissions: emissions.yml
 diagnostics:
   species_conc_sample: ../residual_20140901_part001_split01/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
   hemco_sample: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409010030.nc

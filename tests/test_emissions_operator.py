@@ -42,6 +42,26 @@ def test_same_grid_surface_source_and_missing_species_are_exact(tmp_path):
     np.testing.assert_array_equal(emissions.data[0, :, :, :, 1], np.zeros((3, 2, 4)))
 
 
+def test_from_mapping_accepts_inline_emissions_spec(tmp_path):
+    grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
+    values = np.arange(8.0).reshape(2, 4) + 1.0
+    _write_xy_file(tmp_path / "source.nc", values)
+
+    emissions = EmissionsOperator.from_mapping(
+        {
+            "unit_conversion": "none",
+            "missing_species": "zero",
+            "scales": {},
+            "fields": [_field("field_a", "A", "source.nc")],
+        },
+        root=tmp_path,
+        species=_species("A"),
+        grid=grid,
+    ).evaluate(datetime(2014, 9, 1))
+
+    np.testing.assert_array_equal(emissions.data[0, -1, :, :, 0], values)
+
+
 def test_constant_file_and_multiple_scale_factors_are_multiplied(tmp_path):
     grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
     values = np.full((2, 4), 3.0)

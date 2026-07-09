@@ -23,7 +23,7 @@ class RunConfig:
     comparison: dict[str, Any]
     simulation: dict[str, Any]
     meteorology: dict[str, Any]
-    emissions: dict[str, Any]
+    emissions: str | dict[str, Any]
     validation: dict[str, Any]
 
 
@@ -54,7 +54,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         comparison=dict(raw.get("comparison", {})),
         simulation=dict(raw.get("simulation", {})),
         meteorology=dict(raw.get("meteorology", {})),
-        emissions=dict(raw.get("emissions", {})),
+        emissions=raw.get("emissions", {}),
         validation=dict(raw.get("validation", {})),
     )
 

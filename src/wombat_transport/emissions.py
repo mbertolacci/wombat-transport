@@ -67,13 +67,24 @@ class EmissionsOperator:
         config_path = _resolve_path(root, str(path))
         with config_path.open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or {}
+        return cls.from_mapping(raw, root=config_path.parent, species=species, grid=grid)
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw: dict[str, Any],
+        *,
+        root: Path,
+        species: list[Species] | tuple[Species, ...],
+        grid: TransportGrid,
+    ) -> "EmissionsOperator":
         config = EmissionOperatorConfiguration(
             scales=dict(raw.get("scales", {})),
             fields=tuple(dict(item) for item in raw.get("fields", ())),
             unit_conversion=str(raw.get("unit_conversion", "none")),
             missing_species=str(raw.get("missing_species", "zero")),
         )
-        return cls(config, root=config_path.parent, species=species, grid=grid)
+        return cls(config, root=root, species=species, grid=grid)
 
     @property
     def emitted_species(self) -> tuple[str, ...]:
