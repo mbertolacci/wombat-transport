@@ -34,6 +34,7 @@ from wombat_transport.transport import (
     trace_transport_one_step,
     _map_met_levels_to_47,
 )
+import wombat_transport.transport.pbl as pbl_module
 from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
@@ -265,6 +266,53 @@ def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux()
     assert np.all(result.kvh_m2_s >= 0.0)
     assert np.max(result.kvh_m2_s) > 0.0
     np.testing.assert_allclose(result.final_tracer_mass, result.initial_tracer_mass, rtol=2.0e-14)
+
+
+def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path(monkeypatch):
+    fixture = _synthetic_vdiff_fixture()
+    calls = []
+
+    def fake_fullgrid_kernel(
+        tracer_top,
+        u_top,
+        v_top,
+        temperature_top,
+        sphu_top,
+        pmid_hpa,
+        pint_hpa,
+        virtual_temperature_top,
+        bxheight_top,
+        dry_mass_top,
+        pblh_m,
+        hflux_w_m2,
+        water_flux_kg_m2_s,
+        ustar_m_s,
+        dt_s,
+        npbl,
+        tracer_out,
+        sphu_out,
+        *workspace,
+    ):
+        calls.append((tracer_top.shape, sphu_top.shape, npbl))
+        tracer_out[:] = tracer_top + 1.0
+        sphu_out[:] = sphu_top + 2.0
+        assert len(workspace) > 0
+        return 7
+
+    monkeypatch.setattr(pbl_module, "_NUMBA_AVAILABLE", True)
+    monkeypatch.setattr(pbl_module, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
+
+    result = run_vdiffdr_one_step(**fixture, diagnostics=False)
+
+    assert calls == [(fixture["tracer_conc"].shape, fixture["specific_humidity_kg_kg"].shape, 30)]
+    np.testing.assert_allclose(result.tracer_conc, fixture["tracer_conc"] + 1.0)
+    np.testing.assert_allclose(result.specific_humidity_kg_kg, fixture["specific_humidity_kg_kg"] + 2.0)
+    assert result.negative_count_before_clip == 7
+    assert result.negative_count_after_clip == 0
+    assert result.kvh_m2_s.shape == (0,)
+    assert result.kvm_m2_s.shape == (0,)
+    assert result.initial_tracer_mass.shape == (0,)
+    assert result.final_tracer_mass.shape == (0,)
 
 
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():

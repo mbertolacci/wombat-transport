@@ -388,7 +388,7 @@ def _run_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
     )
-    vdiff = _run_vdiff_input(vdiff_input)
+    vdiff = _run_vdiff_input(vdiff_input, diagnostics=False)
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(vdiff.tracer_conc),
@@ -484,7 +484,7 @@ def _trace_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
     )
-    vdiff = _run_vdiff_input(vdiff_input)
+    vdiff = _run_vdiff_input(vdiff_input, diagnostics=True)
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(vdiff.tracer_conc),
@@ -544,7 +544,8 @@ def _run_vdiff_after_tpcore(
             area,
             top_edge_hpa=top_edge_hpa,
             dt_s=dt_s,
-        )
+        ),
+        diagnostics=False,
     )
 
 
@@ -586,7 +587,7 @@ def _build_vdiff_input_after_tpcore(
     )
 
 
-def _run_vdiff_input(state: VdiffInputState) -> VdiffDrResult:
+def _run_vdiff_input(state: VdiffInputState, *, diagnostics: bool = False) -> VdiffDrResult:
     return run_vdiffdr_one_step(
         tracer_conc=state.tracer_conc,
         u_m_s=state.u_m_s,
@@ -605,6 +606,7 @@ def _run_vdiff_input(state: VdiffInputState) -> VdiffDrResult:
         area_m2=state.area_m2,
         dt_s=state.dt_s,
         surface_flux_kg_m2_s=state.surface_flux_kg_m2_s,
+        diagnostics=diagnostics,
     )
 
 

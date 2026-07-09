@@ -474,3 +474,123 @@ Next candidates are now less obvious. The leading stages are close together
 are a comparable target. A plausible next pass is reducing/fusing those
 prepass memory sweeps rather than continuing to optimize one PPM kernel in
 isolation.
+
+## 2026-07-09 VDIFF full-grid diagnostics-light path
+
+VDIFF now has a production hot path for the normal zero-tracer-surface-flux
+case used by the transport driver:
+
+- `run_vdiffdr_one_step(..., diagnostics=True)` remains the default and keeps
+  the existing full `kvh`, `kvm`, `tpert`, `qpert`, and mass diagnostics for
+  oracle comparisons.
+- `diagnostics=False` uses one full-grid Numba call for zero tracer surface
+  flux, computes pressure/height setup inside compiled code, skips diagnostic
+  output arrays, and avoids the Python latitude loop.
+- The non-trace transport driver path requests `diagnostics=False`; trace and
+  GEOS-Chem fixture paths keep `diagnostics=True`.
+- `tools/benchmark_vdiff_scaling.py` benchmarks the diagnostics-light path.
+
+Equivalence check against the existing diagnostic implementation on a 24-tracer
+synthetic full grid:
+
+```text
+tracer_max_abs 0.0
+sphu_max_abs 0.0
+negative 0 0
+diag_shape (0,)
+```
+
+Same-environment 96-tracer timing:
+
+| Path | Best wall s | Mean wall s | Checksum |
+| --- | ---: | ---: | ---: |
+| Full diagnostics | 0.425 | 0.429 | 23936.383650816002 |
+| Diagnostics-light full-grid Numba | 0.301 | 0.301 | 23936.383650816002 |
+
+Updated VDIFF scaling benchmark:
+
+| Tracers | Best wall s | Mean wall s | Seconds/tracer |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.083 | 0.084 | 0.00345 |
+| 96 | 0.299 | 0.304 | 0.00312 |
+
+Updated VDIFF 96-tracer perf counters for the diagnostics-light path:
+
+| Metric | Value |
+| --- | ---: |
+| IPC | 1.40 |
+| Backend bound | 64.3% |
+| Frontend bound | 7.4% |
+| Retiring | 27.1% |
+| Branch miss | 0.08% |
+| L1D miss | 9.45% |
+| LLC miss | 48.31% |
+| Page faults | 1,484,287 |
+
+The remaining profile was still memory/backend bound. This motivated the
+reusable-workspace pass below, since the profile still showed page-fault and
+NRT deallocation activity even after removing the full diagnostic array outputs.
+
+## 2026-07-09 VDIFF reusable workspace pass
+
+The diagnostics-light full-grid kernel now gets all scratch arrays from a
+module-level reusable workspace keyed by `(nlev, nlon, ntracer)`. The retained
+version keeps the previous full `(nlon, nlev, ntracer)` tracer scratch layout
+because that loop shape is faster than a streamed one-column solve.
+
+Tried and rejected: streaming the tracer solve through one `(nlev,)` column
+buffer. It was numerically identical, but slower:
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s |
+| --- | ---: | ---: | ---: |
+| Pre-workspace diagnostics-light | 0.083 | 0.299 | 0.304 |
+| Streamed column solve | 0.111 | 0.377 | 0.409 |
+| Reusable workspace, tracer-cube solve | 0.078 | 0.260 | 0.265 |
+
+The likely reason is that the tracer-cube solve exposes contiguous tracer lanes
+more cleanly to LLVM, while the column solve trades memory footprint for much
+less favorable vector/cache behavior.
+
+Updated 24-tracer equivalence check against the full diagnostic implementation:
+
+```text
+tracer_max_abs 0.0
+sphu_max_abs 0.0
+negative 0 0
+diag_shape (0,)
+```
+
+Updated VDIFF 96-tracer perf counters for the retained reusable-workspace path:
+
+| Metric | Value |
+| --- | ---: |
+| Best wall | 0.258 s |
+| Mean wall | 0.260 s |
+| IPC | 1.43 |
+| Backend bound | 66.5% |
+| Frontend bound | 5.1% |
+| Retiring | 28.3% |
+| Branch miss | 0.10% |
+| L1D miss | 8.36% |
+| LLC miss | 11.98% |
+| Page faults | 11,937 |
+
+LLVM/ASM inspection of the retained kernel:
+
+```text
+NRT allocation mentions: 0
+LLVM vector.body mentions: 195
+LLVM <N x double> vector types: 308
+ASM ymm mentions: 928
+ASM xmm mentions: 1543
+```
+
+The page-fault collapse is the clearest proof that this change hit the intended
+allocation churn. The kernel is still backend bound, but now much more of that
+is actual compiled VDIFF work rather than repeated Numba scratch allocation.
+
+Future note: splitting met/coefficient setup from the tracer solve remains a
+good candidate, but it should wait until we know whether real driver forcing
+cadence lets those coefficients be reused across multiple transport substeps.
+If met changes every step, coefficient reuse is mostly an organization cleanup;
+if met is reused, it could be a large win.
