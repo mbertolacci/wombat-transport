@@ -594,3 +594,169 @@ good candidate, but it should wait until we know whether real driver forcing
 cadence lets those coefficients be reused across multiple transport substeps.
 If met changes every step, coefficient reuse is mostly an organization cleanup;
 if met is reused, it could be a large win.
+
+## Numba profiling workflow
+
+Use three profiling layers for Numba transport kernels:
+
+1. `cProfile` for Python wrapper overhead. It cannot see inside compiled Numba
+   code, but it quickly answers whether time is still in Python, benchmark
+   checksums, allocation wrappers, or the Numba dispatcher call.
+2. `perf` for native and hardware-counter behavior. Use it to measure IPC,
+   backend/frontend bound, cache misses, branch misses, page faults, and the
+   split between JIT code, NumPy, libc, and kernel work.
+3. `Profila` for approximate line-level attribution inside single-threaded
+   Numba kernels.
+
+Profila is useful when `perf` reports mostly `[JIT]` addresses and cannot map
+them back to Python source lines. It is Linux-only, supports single-threaded
+Numba, and samples every 10 ms, so run the target kernel in a loop for several
+seconds.
+
+Install/run Profila in a temporary environment rather than adding it as a
+project dependency:
+
+```bash
+UV_CACHE_DIR=/tmp/wombat-uv-cache \
+uv run --no-project --python 3.11 \
+  --with numpy --with netCDF4 --with PyYAML --with numba --with profila \
+  python -m profila setup
+```
+
+`profila setup` downloads an isolated `gdb` helper. It does not replace system
+`gdb`. In this environment Profila needed ptrace permission, so the annotate
+run had to be allowed outside the sandbox. A fresh Numba cache was also
+important; otherwise Profila reused cached code without useful debug/source
+mapping.
+
+Template command:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+UV_CACHE_DIR=/tmp/wombat-uv-cache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache-profila-fresh \
+NUMBA_NUM_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+uv run --no-project --python 3.11 \
+  --with numpy --with netCDF4 --with PyYAML --with numba --with profila \
+  python -m profila annotate -- /tmp/profile_vdiff_profila.py --tracers 96 --seconds 12
+```
+
+For repeatable use, create a small operator-specific script that:
+
+- builds synthetic inputs,
+- warms the target Numba function once,
+- loops the warmed compiled function for at least 5-10 seconds,
+- prints an iteration count and checksum.
+
+Interpret Profila percentages directionally. Debug info and `gdb` sampling can
+change runtime behavior; in the VDIFF run, Profila roughly doubled wall time.
+Always validate candidate changes with the normal benchmark and keep only
+wall-time-neutral-or-better changes.
+
+## 2026-07-09 VDIFF Profila-guided zero-fill removal
+
+Profila worked after running with ptrace permission and a fresh Numba cache so
+the kernel was compiled with debug info. A successful 96-tracer diagnostics-light
+run collected 1,788 samples and annotated the full-grid kernel. Treat these
+percentages directionally, not as exact timings, because debug info and gdb
+sampling roughly doubled wall time under Profila.
+
+The useful signal was that the hot region is the tracer solve plus mass
+rescale/output, not setup. The largest annotated lines were:
+
+| Line/area | Profila share |
+| --- | ---: |
+| final `tracer_out[...] = tracer_diffused[...] * ratio` | 16.6% |
+| load `value = tracer_diffused[...]` in mass scan | 9.7% |
+| forward tracer diffusion body | ~8-9% |
+| `before_mass += tracer_top * dry_mass` | 4.9% |
+| backward substitution body | ~4-5% |
+| negative check | 3.1% |
+| zeroing `tracer_diffused[...] = 0.0` | 2.9% |
+
+The full-grid fast path overwrote every `tracer_diffused` value before reading
+it, so the explicit zero-fill loop was removed. The older diagnostic latitude
+kernel was left unchanged.
+
+Validation and timing:
+
+```text
+tracer_max_abs 0.0
+sphu_max_abs 0.0
+negative 0 0
+```
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s | 192 tracer best s |
+| --- | ---: | ---: | ---: | ---: |
+| Reusable workspace before zero-fill removal | 0.078 | 0.258 | 0.260 | 0.498 |
+| Zero-fill removed | 0.077 | 0.250 | 0.252 | 0.484 |
+
+This is a small but real win, and it agrees with the Profila hint.
+
+## 2026-07-09 VDIFF ratio/write-order rewrite
+
+Profila's largest signal after zero-fill removal was still the mass-rescale and
+output write phase. The original loop computed each `(lon, tracer)` ratio and
+then wrote `tracer_out` with `lev` as the inner loop. That made the hottest
+store stride through the output array rather than writing contiguous tracer
+lanes.
+
+The retained rewrite stores per-`(lon, tracer)` scale factors in a reusable
+`tracer_ratio` workspace, then writes output with `lev` outer and `tracer`
+inner:
+
+```text
+for lon:
+    for tracer:
+        compute tracer_ratio[lon, tracer]
+    for lev:
+        for tracer:
+            tracer_out[lev, lat, lon, tracer] = tracer_diffused[lon, lev, tracer] * tracer_ratio[lon, tracer]
+```
+
+This keeps the two-pass dependency required by the column mass ratio, but makes
+the final output write and `tracer_diffused` read run across contiguous tracer
+lanes.
+
+Validation:
+
+```text
+tracer_max_abs 0.0
+sphu_max_abs 0.0
+negative 0 0
+checksum 5930.883189504  # 24-tracer synthetic check
+```
+
+Timing:
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s | 192 tracer best s |
+| --- | ---: | ---: | ---: | ---: |
+| Zero-fill removed | 0.077 | 0.250 | 0.252 | 0.484 |
+| Ratio workspace + contiguous-tracer writeback | 0.064 | 0.198 | 0.211 | 0.359 |
+
+Perf counters for a 96-tracer profile run after the rewrite:
+
+| Metric | Value |
+| --- | ---: |
+| Best wall in profiler run | 0.215 s |
+| IPC | 1.67 |
+| Backend bound | 59.4% |
+| Frontend bound | 6.7% |
+| Retiring | 33.5% |
+| Branch miss | 0.13% |
+| L1D miss | 8.23% |
+| LLC miss | 19.79% |
+| Page faults | 10,655 |
+
+The direct benchmark is faster than the profiler-run benchmark, but both show
+the same direction. Compared with the pre-workspace diagnostics-light path, the
+96-tracer VDIFF best wall time is now about `0.299 -> 0.198 s`. Compared with
+the full-diagnostics path, it is about `0.425 -> 0.198 s`.
+
+The next likely target is now less obvious. A fresh Profila run would be useful
+before making another change, because the previous hottest output-write line
+has been structurally changed. Candidate areas to re-check are the mass scan,
+the forward/backward tridiagonal solve, and remaining output allocation/page
+clearing.

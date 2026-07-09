@@ -104,6 +104,7 @@ class _VdiffFullGridWorkspace:
     zeh: np.ndarray
     termh: np.ndarray
     tracer_diffused: np.ndarray
+    tracer_ratio: np.ndarray
     shmx: np.ndarray
     zfq_scalar: np.ndarray
     sphu_diffused: np.ndarray
@@ -119,11 +120,13 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         existing is not None
         and existing.pmid.shape == (nlon, nlev)
         and existing.tracer_diffused.shape == (nlon, nlev, ntracer)
+        and existing.tracer_ratio.shape == (nlon, ntracer)
     ):
         return existing
 
     lev_shape = (nlon, nlev)
     edge_shape = (nlon, nlev + 1)
+    tracer_shape = (nlon, ntracer)
     _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
         pmid=np.empty(lev_shape, dtype=np.float64),
         pint=np.empty(edge_shape, dtype=np.float64),
@@ -160,6 +163,7 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         zeh=np.empty(lev_shape, dtype=np.float64),
         termh=np.empty(lev_shape, dtype=np.float64),
         tracer_diffused=np.empty((nlon, nlev, ntracer), dtype=np.float64),
+        tracer_ratio=np.empty(tracer_shape, dtype=np.float64),
         shmx=np.empty(lev_shape, dtype=np.float64),
         zfq_scalar=np.empty(lev_shape, dtype=np.float64),
         sphu_diffused=np.empty(lev_shape, dtype=np.float64),
@@ -889,6 +893,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.zeh,
         workspace.termh,
         workspace.tracer_diffused,
+        workspace.tracer_ratio,
         workspace.shmx,
         workspace.zfq_scalar,
         workspace.sphu_diffused,
@@ -982,6 +987,7 @@ if njit is not None:
         zeh: np.ndarray,
         termh: np.ndarray,
         tracer_diffused: np.ndarray,
+        tracer_ratio: np.ndarray,
         shmx: np.ndarray,
         zfq_scalar: np.ndarray,
         sphu_diffused: np.ndarray,
@@ -1196,9 +1202,6 @@ if njit is not None:
                     zeh[lon, lev] = cah[lon, lev] * termh[lon, lev]
 
             for lon in range(nlon):
-                for lev in range(nlev):
-                    for tracer in range(ntracer):
-                        tracer_diffused[lon, lev, tracer] = 0.0
                 for tracer in range(ntracer):
                     tracer_diffused[lon, ntopfl, tracer] = (
                         tracer_top[ntopfl, lat, lon, tracer] * termh[lon, ntopfl]
@@ -1240,8 +1243,12 @@ if njit is not None:
                     ratio = 1.0
                     if abs(before_mass) > 0.0 and abs(after_mass) > 0.0:
                         ratio = before_mass / after_mass
-                    for lev in range(ntopfl, nlev):
-                        tracer_out[lev, lat, lon, tracer] = tracer_diffused[lon, lev, tracer] * ratio
+                    tracer_ratio[lon, tracer] = ratio
+                for lev in range(ntopfl, nlev):
+                    for tracer in range(ntracer):
+                        tracer_out[lev, lat, lon, tracer] = tracer_diffused[lon, lev, tracer] * tracer_ratio[
+                            lon, tracer
+                        ]
 
             for lon in range(nlon):
                 for lev in range(nlev):
