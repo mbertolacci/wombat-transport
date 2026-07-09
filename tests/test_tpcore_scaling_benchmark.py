@@ -22,6 +22,18 @@ def _load_benchmark_module():
 benchmark = _load_benchmark_module()
 
 
+def test_tpcore_numba_defaults_to_all(monkeypatch):
+    from wombat_transport.transport import tpcore
+
+    monkeypatch.delenv("WOMBAT_TPCORE_NUMBA", raising=False)
+
+    assert tpcore._numba_tpcore_mode() == "all"
+    assert tpcore._numba_tpcore_x_enabled()
+    assert tpcore._numba_tpcore_y_enabled()
+    assert tpcore._numba_tpcore_z_enabled()
+    assert tpcore._numba_tpcore_prepass_enabled()
+
+
 def test_tracer_state_bytes_scale_linearly_with_tracer_count():
     grid_shape = (47, 91, 144)
 

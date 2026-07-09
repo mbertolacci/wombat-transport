@@ -1480,7 +1480,7 @@ def _make_ytp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.nd
 
 
 def _numba_tpcore_mode() -> str:
-    return os.environ.get("WOMBAT_TPCORE_NUMBA", "z").lower()
+    return os.environ.get("WOMBAT_TPCORE_NUMBA", "all").lower()
 
 
 def _numba_tpcore_z_enabled() -> bool:
