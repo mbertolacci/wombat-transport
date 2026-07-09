@@ -4,7 +4,6 @@ import argparse
 import json
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
 from html import escape
 from pathlib import Path
 
@@ -19,11 +18,17 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
-from wombat_transport.run_config import RunConfig, load_run_config
+from wombat_transport.run_config import (
+    RunConfig,
+    load_run_config,
+    meteorology_initial_time_index,
+    meteorology_root,
+    simulation_start,
+    transport_timestep_s,
+)
 from wombat_transport.transport import load_transport_forcing, run_transport_one_step
 
 
-CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 DEFAULT_BASE_CONFIG = Path("base_wombat/run.yml")
 DEFAULT_RESIDUAL_CONFIG = Path("residual_20140901_part001_split01_wombat/run.yml")
 DEFAULT_EXECUTABLE = Path("tools/gc_harness/build/pjc_pfix_harness")
@@ -363,16 +368,16 @@ def _run_python_step(config: RunConfig, *, max_tracers: int):
     )
     tracers = _limit_tracers(tracers, max_tracers)
     forcing = load_transport_forcing(
-        _resolve_config_value(config.root, config.transport["met_root"]),
-        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
-        time_index=int(config.transport.get("met_time_index", 0)),
+        time_index=meteorology_initial_time_index(config),
     )
     return run_transport_one_step(
         tracers,
         forcing,
         grid,
-        dt_s=float(config.transport.get("dt_s", 600.0)),
+        dt_s=transport_timestep_s(config),
     )
 
 
@@ -497,13 +502,6 @@ def _limit_tracers(tracers: TracerField, max_tracers: int) -> TracerField:
         units=tracers.units[:max_tracers],
         coords=tracers.coords,
     )
-
-
-def _resolve_config_value(root: Path, value: str) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = root / path
-    return path.resolve()
 
 
 def _fmt(value: float) -> str:

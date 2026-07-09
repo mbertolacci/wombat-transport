@@ -30,7 +30,17 @@ from wombat_transport.io import (
     load_species_conc,
     write_restart_like,
 )
-from wombat_transport.run_config import RunConfig, load_run_config
+from wombat_transport.run_config import (
+    RunConfig,
+    emissions_timestep_s,
+    load_run_config,
+    meteorology_initial_time_index,
+    meteorology_root,
+    resolve_config_path,
+    simulation_end,
+    simulation_start,
+    transport_timestep_s,
+)
 from wombat_transport.runner import (
     EmissionsStep,
     TracerSimulationResult,
@@ -83,6 +93,7 @@ __all__ = [
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
     "emission_increment_vv",
+    "emissions_timestep_s",
     "initialize_tracers",
     "load_base_met",
     "load_hemco_emissions",
@@ -92,11 +103,14 @@ __all__ = [
     "load_species_database",
     "load_transport_forcing",
     "load_transport_grid",
+    "meteorology_initial_time_index",
+    "meteorology_root",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",
     "public_surface_flux_to_transport",
     "public_tracer4_to_transport",
     "public_tracer5_to_canonical",
+    "resolve_config_path",
     "run_tracer_simulation",
     "run_transport_one_step",
     "run_transport_window",
@@ -104,7 +118,10 @@ __all__ = [
     "top_field3_to_bottom",
     "transport_tracer_to_canonical",
     "transport_tracer_to_public4",
+    "transport_timestep_s",
     "tracer_gridbox_mass_kg",
     "tracer_mass_kg",
+    "simulation_end",
+    "simulation_start",
     "write_restart_like",
 ]

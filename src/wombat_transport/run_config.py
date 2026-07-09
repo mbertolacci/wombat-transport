@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 
 
 @dataclass(frozen=True)
@@ -18,7 +21,6 @@ class RunConfig:
     output_dir: Path
     diagnostics: dict[str, str]
     comparison: dict[str, Any]
-    transport: dict[str, Any]
     simulation: dict[str, Any]
     meteorology: dict[str, Any]
     emissions: dict[str, Any]
@@ -50,9 +52,47 @@ def load_run_config(path: str | Path) -> RunConfig:
         output_dir=resolve(raw["output_dir"]),  # type: ignore[arg-type]
         diagnostics=dict(raw.get("diagnostics", {})),
         comparison=dict(raw.get("comparison", {})),
-        transport=dict(raw.get("transport", {})),
         simulation=dict(raw.get("simulation", {})),
         meteorology=dict(raw.get("meteorology", {})),
         emissions=dict(raw.get("emissions", {})),
         validation=dict(raw.get("validation", {})),
     )
+
+
+def resolve_config_path(root: Path, value: str | Path) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def simulation_start(config: RunConfig) -> datetime:
+    value = config.simulation.get("start")
+    if value is None:
+        raise KeyError("simulation.start is required")
+    return datetime.strptime(str(value), CONFIG_TIME_FORMAT)
+
+
+def simulation_end(config: RunConfig) -> datetime:
+    value = config.simulation.get("end")
+    if value is None:
+        raise KeyError("simulation.end is required")
+    return datetime.strptime(str(value), CONFIG_TIME_FORMAT)
+
+
+def transport_timestep_s(config: RunConfig) -> float:
+    return float(config.simulation.get("transport_timestep_s", 600.0))
+
+
+def emissions_timestep_s(config: RunConfig) -> float:
+    return float(config.simulation.get("emissions_timestep_s", transport_timestep_s(config)))
+
+
+def meteorology_root(config: RunConfig) -> Path:
+    if "root" not in config.meteorology:
+        raise KeyError("meteorology.root is required")
+    return resolve_config_path(config.root, str(config.meteorology["root"]))
+
+
+def meteorology_initial_time_index(config: RunConfig) -> int:
+    return int(config.meteorology.get("initial_time_index", 0))

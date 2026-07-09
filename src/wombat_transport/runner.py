@@ -10,7 +10,15 @@ from wombat_transport.emissions import EmissionsOperator, apply_emissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
-from wombat_transport.run_config import RunConfig
+from wombat_transport.run_config import (
+    RunConfig,
+    emissions_timestep_s,
+    meteorology_initial_time_index,
+    meteorology_root,
+    simulation_end,
+    simulation_start,
+    transport_timestep_s,
+)
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
     TransportStageMass,
@@ -18,9 +26,6 @@ from wombat_transport.transport import (
     load_transport_forcing,
     run_transport_one_step,
 )
-
-CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
-
 
 @dataclass(frozen=True)
 class EmissionsStep:
@@ -56,11 +61,11 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         template_path=config.grid_template,
     )
     grid = load_transport_grid(config.grid_template)
-    met_root = _resolve_config_path(config.root, _meteorology_root(config))
-    start = _simulation_start(config)
-    end = _simulation_end(config)
-    transport_dt_s = float(_transport_timestep_s(config))
-    emissions_dt_s = float(_emissions_timestep_s(config))
+    met_root = meteorology_root(config)
+    start = simulation_start(config)
+    end = simulation_end(config)
+    transport_dt_s = float(transport_timestep_s(config))
+    emissions_dt_s = float(emissions_timestep_s(config))
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
 
     emissions_source = str(config.emissions.get("source", "configured_fields"))
@@ -88,7 +93,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             grid,
             current,
             transport_dt_s=transport_dt_s,
-            initial_met_time_index=int(config.transport.get("met_time_index", 0)),
+            initial_met_time_index=meteorology_initial_time_index(config),
         )
         delp_dry_hpa = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, grid.hyai_hpa, grid.hybi)
 
@@ -145,39 +150,6 @@ def emitted_mass_by_tracer_for_step(emissions: TracerField, dt_s: float) -> np.n
     area = emissions.coords["AREA"]
     area_5d = area[np.newaxis, np.newaxis, :, :, np.newaxis]
     return np.sum(emissions.data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
-
-
-def _resolve_config_path(root: Path, value: str) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = root / path
-    return path
-
-
-def _simulation_start(config: RunConfig) -> datetime:
-    value = config.simulation.get("start", config.transport.get("start"))
-    if value is None:
-        raise KeyError("simulation.start is required")
-    return datetime.strptime(str(value), CONFIG_TIME_FORMAT)
-
-
-def _simulation_end(config: RunConfig) -> datetime:
-    value = config.simulation.get("end")
-    if value is None:
-        raise KeyError("simulation.end is required")
-    return datetime.strptime(str(value), CONFIG_TIME_FORMAT)
-
-
-def _transport_timestep_s(config: RunConfig) -> float:
-    return float(config.simulation.get("transport_timestep_s", config.transport.get("dt_s", 600.0)))
-
-
-def _emissions_timestep_s(config: RunConfig) -> float:
-    return float(config.simulation.get("emissions_timestep_s", _transport_timestep_s(config)))
-
-
-def _meteorology_root(config: RunConfig) -> str:
-    return str(config.meteorology.get("root", config.transport["met_root"]))
 
 
 def _validate_timestep_schedule(transport_dt_s: float, emissions_dt_s: float) -> None:

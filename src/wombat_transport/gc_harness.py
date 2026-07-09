@@ -20,7 +20,13 @@ from wombat_transport.fields import (
 )
 from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.io import initialize_tracers
-from wombat_transport.run_config import load_run_config
+from wombat_transport.run_config import (
+    load_run_config,
+    meteorology_initial_time_index,
+    meteorology_root,
+    simulation_start,
+    transport_timestep_s,
+)
 from wombat_transport.transport import (
     MERRA2_FILENAME,
     dry_air_mass_from_pressure,
@@ -46,7 +52,6 @@ from wombat_transport.transport.tpcore import (
 )
 
 
-CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 PJC_INPUT_VERSION = "pjc-pfix-input-v1"
 PJC_OUTPUT_VERSION = "pjc-pfix-output-v1"
 PJC_SNAPSHOT_VERSION = "pjc-pfix-snapshot-v1"
@@ -387,11 +392,11 @@ def write_pjc_input_from_config(
 ) -> Path:
     config = load_run_config(run_config_path)
     if dt_s is None:
-        dt_s = float(config.transport.get("dt_s", 600.0))
+        dt_s = transport_timestep_s(config)
     grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
-        _resolve_config_value(config.root, config.transport["met_root"]),
-        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
         time_index=time_index,
     )
@@ -456,7 +461,7 @@ def write_fullgrid_synthetic_tpcore_input_from_config(
         raise ValueError("ntracer must be positive")
     config = load_run_config(run_config_path)
     if dt_s is None:
-        dt_s = float(config.transport.get("dt_s", 600.0))
+        dt_s = transport_timestep_s(config)
     grid = load_transport_grid(config.grid_template)
     lat = grid.lat_deg
     lon = grid.lon_deg
@@ -754,10 +759,10 @@ def write_real_convection_input_from_config(
         raise ValueError("active_columns must be positive")
 
     config = load_run_config(run_config_path)
-    fixture_dt_s = float(config.transport.get("dt_s", 600.0)) if dt_s is None else float(dt_s)
-    fixture_time_index = int(config.transport.get("met_time_index", 0)) if time_index is None else int(time_index)
-    start = datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT)
-    met_root = _resolve_config_value(config.root, config.transport["met_root"])
+    fixture_dt_s = transport_timestep_s(config) if dt_s is None else float(dt_s)
+    fixture_time_index = meteorology_initial_time_index(config) if time_index is None else int(time_index)
+    start = simulation_start(config)
+    met_root = meteorology_root(config)
 
     tracers = initialize_tracers(
         config.initial_restart,
@@ -1496,8 +1501,8 @@ def _write_chain_vdiff_input(
     config = load_run_config(run_config_path)
     grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
-        _resolve_config_value(config.root, config.transport["met_root"]),
-        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
         time_index=time_index,
     )
@@ -1578,8 +1583,8 @@ def _write_chain_convection_input(
     config = load_run_config(run_config_path)
     grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
-        _resolve_config_value(config.root, config.transport["met_root"]),
-        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
         time_index=time_index,
     )
@@ -1629,7 +1634,7 @@ def _write_chain_convection_input(
         dt_s=convection_input.dt_s,
         scenario="transport-chain-full-grid",
         source_run_config=str(run_config_path),
-        source_timestamp=config.transport["start"],
+        source_timestamp=simulation_start(config).strftime("%Y-%m-%d %H:%M"),
         source_time_index=time_index,
         vertical_mapping="native_72_to_47_center_and_73_to_48_edge",
     )
@@ -1868,8 +1873,8 @@ def compare_transport_chain_oracle_fixture(
         dt_s = float(dataset.dt_s)
     grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
-        _resolve_config_value(config.root, config.transport["met_root"]),
-        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
         time_index=int(source.get("time_index", 0)),
     )
@@ -2011,8 +2016,8 @@ def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
         dt_s = float(dataset.dt_s)
     grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
-        _resolve_config_value(config.root, config.transport["met_root"]),
-        datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
         time_index=int(source.get("time_index", 0)),
     )

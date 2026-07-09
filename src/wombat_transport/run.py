@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 
 import netCDF4
@@ -10,7 +9,13 @@ import numpy as np
 from wombat_transport.compare import compare_to_time_slice, format_metrics
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers, load_species_conc, write_restart_like
-from wombat_transport.run_config import load_run_config
+from wombat_transport.run_config import (
+    load_run_config,
+    meteorology_initial_time_index,
+    meteorology_root,
+    simulation_start,
+    transport_timestep_s,
+)
 from wombat_transport.runner import run_tracer_simulation
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
@@ -19,9 +24,6 @@ from wombat_transport.transport import (
     run_transport_one_step,
     run_transport_window,
 )
-
-CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -62,16 +64,16 @@ def main(argv: list[str] | None = None) -> int:
             template_path=config.grid_template,
         )
         forcing = load_transport_forcing(
-            _resolve_config_value(config.root, config.transport["met_root"]),
-            datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+            meteorology_root(config),
+            simulation_start(config),
             grid,
-            time_index=int(config.transport.get("met_time_index", 0)),
+            time_index=meteorology_initial_time_index(config),
         )
         transport_result = run_transport_one_step(
             state,
             forcing,
             grid,
-            dt_s=float(config.transport.get("dt_s", 600.0)),
+            dt_s=transport_timestep_s(config),
         )
         state = transport_result.state
         comparison_state = state
@@ -84,15 +86,15 @@ def main(argv: list[str] | None = None) -> int:
             config.species_database,
             template_path=config.grid_template,
         )
-        steps = int(config.transport.get("window_steps", args.max_steps or 18))
+        steps = args.max_steps or 18
         transport_result = run_transport_window(
             state,
-            _resolve_config_value(config.root, config.transport["met_root"]),
-            datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
+            meteorology_root(config),
+            simulation_start(config),
             grid,
             steps=steps,
-            dt_s=float(config.transport.get("dt_s", 600.0)),
-            initial_met_time_index=int(config.transport.get("met_time_index", 0)),
+            dt_s=transport_timestep_s(config),
+            initial_met_time_index=meteorology_initial_time_index(config),
         )
         state = transport_result.state
         comparison_state = transport_result.average_state
@@ -119,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         transport_steps = getattr(transport_result, "steps", 1)
         if hasattr(transport_result, "transport_steps"):
             transport_steps = transport_result.transport_steps
-        transport_dt_s = getattr(transport_result, "dt_s", float(config.transport.get("dt_s", 600.0)))
+        transport_dt_s = getattr(transport_result, "dt_s", transport_timestep_s(config))
         if hasattr(transport_result, "transport_dt_s"):
             transport_dt_s = transport_result.transport_dt_s
         print(f"transport_operators: {','.join(transport_result.transport_operators)}")
@@ -173,13 +175,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pressure_edge_dry_mean_abs_error_hpa: {np.mean(edge_error):.8e}")
 
     return 0
-
-
-def _resolve_config_value(root: Path, value: str) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = root / path
-    return path.resolve()
 
 
 if __name__ == "__main__":

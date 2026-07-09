@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 import netCDF4
 import numpy as np
 
@@ -11,7 +9,13 @@ from wombat_transport.fields import (
 )
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers
-from wombat_transport.run_config import load_run_config
+from wombat_transport.run_config import (
+    load_run_config,
+    meteorology_initial_time_index,
+    meteorology_root,
+    simulation_start,
+    transport_timestep_s,
+)
 from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
@@ -297,11 +301,11 @@ def test_transport_window_accumulates_average_state_and_conserves_mass():
     field = initialize_tracers(config.initial_restart, config.species_database)
     result = run_transport_window(
         field,
-        config.root / config.transport["met_root"],
-        datetime.strptime(config.transport["start"], "%Y-%m-%d %H:%M"),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
         steps=2,
-        dt_s=600.0,
+        dt_s=transport_timestep_s(config),
     )
 
     assert result.steps == 2
@@ -331,15 +335,13 @@ def test_transport_forcing_loads_convection_fields_on_target_grid():
 
 
 def _load_forcing(config, *, grid=None):
-    from datetime import datetime
-
     if grid is None:
         grid = load_transport_grid(config.grid_template)
     return load_transport_forcing(
-        config.root / config.transport["met_root"],
-        datetime.strptime(config.transport["start"], "%Y-%m-%d %H:%M"),
+        meteorology_root(config),
+        simulation_start(config),
         grid,
-        time_index=int(config.transport["met_time_index"]),
+        time_index=meteorology_initial_time_index(config),
     )
 
 
