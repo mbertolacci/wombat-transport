@@ -11,7 +11,7 @@ from wombat_transport.compare import compare_to_time_slice, format_metrics
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers, load_species_conc, write_restart_like
 from wombat_transport.run_config import load_run_config
-from wombat_transport.runner import run_emissions_replay
+from wombat_transport.runner import run_emissions_replay, run_tracer_simulation
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
     dry_pressure_edges_from_thickness_hpa,
@@ -33,15 +33,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("run_config", type=Path)
     parser.add_argument(
         "--mode",
-        choices=["init-only", "emissions-only", "transport-one-step", "transport-window"],
-        default="emissions-only",
+        choices=["run", "init-only", "emissions-only", "transport-one-step", "transport-window"],
+        default="run",
     )
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--write-output", type=Path, default=None)
     args = parser.parse_args(argv)
 
     config = load_run_config(args.run_config)
-    if args.mode == "init-only":
+    if args.mode == "run":
+        result = run_tracer_simulation(config, max_steps=args.max_steps)
+        state = result.state
+        transport_result = result
+        comparison_state = state
+        comparison_delp_dry_hpa = result.final_delp_dry_hpa
+    elif args.mode == "init-only":
         state = initialize_tracers(
             config.initial_restart,
             config.species_database,
@@ -119,21 +125,32 @@ def main(argv: list[str] | None = None) -> int:
             print(f"skipped_invalid_emissions: {diagnostic.path.name}")
         print(f"total_emitted_mass_kg: {result.total_emitted_mass:.8e}")
     if transport_result is not None:
-        scalar_mass_error = transport_result.final_scalar_mass - transport_result.initial_scalar_mass
+        scalar_mass_error = None
+        if hasattr(transport_result, "final_scalar_mass") and hasattr(transport_result, "initial_scalar_mass"):
+            scalar_mass_error = transport_result.final_scalar_mass - transport_result.initial_scalar_mass
         transport_steps = getattr(transport_result, "steps", 1)
+        if hasattr(transport_result, "transport_steps"):
+            transport_steps = transport_result.transport_steps
         transport_dt_s = getattr(transport_result, "dt_s", float(config.transport.get("dt_s", 600.0)))
+        if hasattr(transport_result, "transport_dt_s"):
+            transport_dt_s = transport_result.transport_dt_s
         print(f"transport_operators: {','.join(transport_result.transport_operators)}")
         print(f"transport_steps: {transport_steps}")
         print(f"transport_dt_s: {transport_dt_s:.8e}")
+        if hasattr(transport_result, "emissions_steps"):
+            print(f"emissions_steps: {transport_result.emissions_steps}")
+            print(f"emissions_dt_s: {transport_result.emissions_dt_s:.8e}")
         for stage in transport_result.stage_masses:
             stage_error = stage.final_scalar_mass - stage.initial_scalar_mass
             print(f"{stage.operator}_max_scalar_mass_error: {np.max(np.abs(stage_error)):.8e}")
-        print(f"max_transport_scalar_mass_error: {np.max(np.abs(scalar_mass_error)):.8e}")
+        if scalar_mass_error is not None:
+            print(f"max_transport_scalar_mass_error: {np.max(np.abs(scalar_mass_error)):.8e}")
 
-    comparison_path = config.comparison.get("species_conc_sample")
+    validation = config.validation or config.comparison
+    comparison_path = validation.get("species_conc_sample")
     if comparison_path:
         reference = load_species_conc(config.root / comparison_path)
-        time_index = int(config.comparison.get("species_conc_time_index", -1))
+        time_index = int(validation.get("species_conc_time_index", -1))
         with netCDF4.Dataset(config.grid_template) as dataset:
             area_m2 = np.asarray(dataset.variables["AREA"][:])
             if comparison_delp_dry_hpa is None:
@@ -152,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
 
     level_edge_path = config.diagnostics.get("level_edge_sample")
     if transport_result is not None and level_edge_path and comparison_delp_dry_hpa is not None:
-        time_index = int(config.comparison.get("species_conc_time_index", 0))
+        time_index = int(validation.get("species_conc_time_index", 0))
         with netCDF4.Dataset(config.root / level_edge_path) as dataset:
             reference_edges = np.asarray(dataset.variables["Met_PEDGEDRY"][time_index : time_index + 1])
         reference_delp = np.abs(reference_edges[:, :-1, :, :] - reference_edges[:, 1:, :, :])

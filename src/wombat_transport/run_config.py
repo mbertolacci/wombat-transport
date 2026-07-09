@@ -20,6 +20,10 @@ class RunConfig:
     replay: dict[str, Any]
     comparison: dict[str, Any]
     transport: dict[str, Any]
+    simulation: dict[str, Any]
+    meteorology: dict[str, Any]
+    emissions: dict[str, Any]
+    validation: dict[str, Any]
 
 
 def load_run_config(path: str | Path) -> RunConfig:
@@ -49,4 +53,8 @@ def load_run_config(path: str | Path) -> RunConfig:
         replay=dict(raw.get("replay", {})),
         comparison=dict(raw.get("comparison", {})),
         transport=dict(raw.get("transport", {})),
+        simulation=dict(raw.get("simulation", {})),
+        meteorology=dict(raw.get("meteorology", {})),
+        emissions=dict(raw.get("emissions", {})),
+        validation=dict(raw.get("validation", {})),
     )

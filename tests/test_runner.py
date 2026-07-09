@@ -5,17 +5,22 @@ import sys
 
 import netCDF4
 import numpy as np
+import pytest
 
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
 from wombat_transport.fields import TracerField
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import (
+    _is_time_for_emissions,
+    _load_hemco_emissions_for_species,
+    _validate_timestep_schedule,
     discover_hemco_diagnostics,
     emitted_mass_by_tracer_for_step,
     has_invalid_emissions,
     parse_hemco_timestamp,
     run_emissions_replay,
+    run_tracer_simulation,
 )
 from wombat_transport.species import load_species_database
 
@@ -54,6 +59,40 @@ def test_emissions_replay_processes_prefix_and_accumulates_mass():
     expected = np.zeros(24)
     for diagnostic in result.processed_files:
         expected += emitted_mass_by_tracer_for_step(load_hemco_emissions(diagnostic.path), dt_s=3600.0)
+    np.testing.assert_allclose(result.emitted_mass_by_tracer, expected)
+
+
+def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():
+    assert _is_time_for_emissions(0, 600.0, 1200.0)
+    assert not _is_time_for_emissions(600, 600.0, 1200.0)
+    assert _is_time_for_emissions(1200, 600.0, 1200.0)
+
+    assert not _is_time_for_emissions(0, 600.0, 3600.0)
+    assert not _is_time_for_emissions(600, 600.0, 3600.0)
+    assert _is_time_for_emissions(1200, 600.0, 3600.0)
+
+
+def test_emissions_timestep_must_be_transport_multiple():
+    with pytest.raises(ValueError, match="integer multiple"):
+        _validate_timestep_schedule(600.0, 1000.0)
+
+
+def test_tracer_simulation_couples_emissions_and_transport_on_geos_chem_schedule():
+    config = load_run_config(BASE_CONFIG)
+    species = load_species_database(config.species_database)
+
+    result = run_tracer_simulation(config, max_steps=3)
+
+    assert result.state.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
+    assert result.transport_steps == 3
+    assert result.emissions_steps == 2
+    assert len(result.processed_files) == 2
+    assert len(result.skipped_files) == 0
+    assert result.processed_files[0].path.name == "HEMCO_diagnostics.201409010030.nc"
+    assert result.processed_files[1].path.name == "HEMCO_diagnostics.201409010030.nc"
+
+    emissions = _load_hemco_emissions_for_species(result.processed_files[0].path, species)
+    expected = 2.0 * emitted_mass_by_tracer_for_step(emissions, dt_s=1200.0)
     np.testing.assert_allclose(result.emitted_mass_by_tracer, expected)
 
 
@@ -182,6 +221,29 @@ def test_run_cli_smoke_with_prefix():
     assert "emissions_files_skipped: 0" in completed.stdout
     assert "total_emitted_mass_kg:" in completed.stdout
     assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
+
+
+def test_run_cli_default_coupled_run_smoke():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "wombat_transport.run",
+            BASE_CONFIG,
+            "--max-steps",
+            "1",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "mode: run" in completed.stdout
+    assert "transport_operators: tpcore,vdiff,convection" in completed.stdout
+    assert "transport_steps: 1" in completed.stdout
+    assert "emissions_steps: 1" in completed.stdout
+    assert "emissions_dt_s: 1.20000000e+03" in completed.stdout
+    assert "emissions_files_processed: 1" in completed.stdout
 
 
 def test_run_cli_base_init_only_smoke():

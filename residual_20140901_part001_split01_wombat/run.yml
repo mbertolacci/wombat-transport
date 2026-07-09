@@ -4,6 +4,17 @@ species_database: ../residual_20140901_part001_split01/species_database.yml
 initial_restart:
 grid_template: ../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4
 output_dir: ./OutputDir
+simulation:
+  start: "2014-09-01 00:00"
+  end: "2014-09-05 23:00"
+  transport_timestep_s: 600
+  emissions_timestep_s: 1200
+meteorology:
+  root: ../ExtData/GEOS_2x2.5/MERRA2
+emissions:
+  source: hemco_diagnostics
+  glob: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.*.nc
+  timestamp: midpoint
 diagnostics:
   species_conc_sample: ../residual_20140901_part001_split01/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
   hemco_sample: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409010030.nc
