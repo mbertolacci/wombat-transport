@@ -755,8 +755,57 @@ the same direction. Compared with the pre-workspace diagnostics-light path, the
 96-tracer VDIFF best wall time is now about `0.299 -> 0.198 s`. Compared with
 the full-diagnostics path, it is about `0.425 -> 0.198 s`.
 
-The next likely target is now less obvious. A fresh Profila run would be useful
-before making another change, because the previous hottest output-write line
-has been structurally changed. Candidate areas to re-check are the mass scan,
-the forward/backward tridiagonal solve, and remaining output allocation/page
-clearing.
+## 2026-07-09 VDIFF mass-scan loop-order rewrite
+
+A fresh Profila pass after the ratio/write-order rewrite showed that the final
+writeback remained the largest single line, but the conservation/negative scan
+was now the clearest non-solve block:
+
+| Region | Approx samples |
+| --- | ---: |
+| final `tracer_out[...] = tracer_diffused[...] * tracer_ratio[...]` | 13.2% |
+| mass/negative scan loop, load, branch, and mass adds | ~17% |
+| forward tracer solve | ~10% |
+| backward tracer solve | ~7-8% |
+
+The retained change rewrites the mass/negative scan to accumulate all tracers
+for a longitude with `lev` outer and `tracer` inner. The existing
+`tracer_ratio` workspace temporarily holds before-mass, and a new
+`tracer_after_mass` workspace holds after-mass. This keeps each individual
+tracer's vertical accumulation order unchanged, but makes the hot inner loop
+walk contiguous tracer lanes.
+
+A second retained pass then moved the before-mass accumulation into the forward
+tracer solve, where `tracer_top` is already being read. The post-solve scan now
+only clips negatives and accumulates after-mass before computing the ratio.
+
+Old-vs-new validation against the previous commit for the 24-tracer synthetic
+case was bitwise identical:
+
+```text
+tracer_max_abs 0.0
+sphu_max_abs 0.0
+negative 0 0
+checksum 5930.883189504
+```
+
+Timing:
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s | 192 tracer best s |
+| --- | ---: | ---: | ---: | ---: |
+| Ratio workspace + contiguous-tracer writeback | 0.063 | 0.191 | 0.192 | 0.356 |
+| Mass scan reordered across contiguous tracers | 0.059 | 0.171 | 0.172 | 0.325 |
+| Before-mass fused into tracer solve | 0.059 | 0.160 | 0.162 | 0.295 |
+
+Final Profila check after both retained changes:
+
+| Region | Approx samples |
+| --- | ---: |
+| final writeback | 13.6% |
+| fused before-mass accumulation inside forward solve | 9.5% |
+| forward tracer solve arithmetic/store | ~8% |
+| backward tracer solve | ~7% |
+| post-solve after-mass/negative scan | ~4% |
+
+The remaining likely VDIFF targets are the final writeback, the forward/backward
+tridiagonal tracer solve, and call-level output allocation/page clearing.

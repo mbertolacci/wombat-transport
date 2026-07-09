@@ -105,6 +105,7 @@ class _VdiffFullGridWorkspace:
     termh: np.ndarray
     tracer_diffused: np.ndarray
     tracer_ratio: np.ndarray
+    tracer_after_mass: np.ndarray
     shmx: np.ndarray
     zfq_scalar: np.ndarray
     sphu_diffused: np.ndarray
@@ -121,6 +122,7 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         and existing.pmid.shape == (nlon, nlev)
         and existing.tracer_diffused.shape == (nlon, nlev, ntracer)
         and existing.tracer_ratio.shape == (nlon, ntracer)
+        and existing.tracer_after_mass.shape == (nlon, ntracer)
     ):
         return existing
 
@@ -164,6 +166,7 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         termh=np.empty(lev_shape, dtype=np.float64),
         tracer_diffused=np.empty((nlon, nlev, ntracer), dtype=np.float64),
         tracer_ratio=np.empty(tracer_shape, dtype=np.float64),
+        tracer_after_mass=np.empty(tracer_shape, dtype=np.float64),
         shmx=np.empty(lev_shape, dtype=np.float64),
         zfq_scalar=np.empty(lev_shape, dtype=np.float64),
         sphu_diffused=np.empty(lev_shape, dtype=np.float64),
@@ -894,6 +897,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.termh,
         workspace.tracer_diffused,
         workspace.tracer_ratio,
+        workspace.tracer_after_mass,
         workspace.shmx,
         workspace.zfq_scalar,
         workspace.sphu_diffused,
@@ -988,6 +992,7 @@ if njit is not None:
         termh: np.ndarray,
         tracer_diffused: np.ndarray,
         tracer_ratio: np.ndarray,
+        tracer_after_mass: np.ndarray,
         shmx: np.ndarray,
         zfq_scalar: np.ndarray,
         sphu_diffused: np.ndarray,
@@ -1202,23 +1207,35 @@ if njit is not None:
                     zeh[lon, lev] = cah[lon, lev] * termh[lon, lev]
 
             for lon in range(nlon):
+                dry_mass = dry_mass_top[ntopfl, lat, lon]
                 for tracer in range(ntracer):
+                    tracer_value = tracer_top[ntopfl, lat, lon, tracer]
+                    tracer_ratio[lon, tracer] = tracer_value * dry_mass
                     tracer_diffused[lon, ntopfl, tracer] = (
-                        tracer_top[ntopfl, lat, lon, tracer] * termh[lon, ntopfl]
+                        tracer_value * termh[lon, ntopfl]
                     )
             for lev in range(ntopfl + 1, nlev - 1):
                 for lon in range(nlon):
+                    dry_mass = dry_mass_top[lev, lat, lon]
+                    cch_value = cch[lon, lev]
+                    termh_value = termh[lon, lev]
                     for tracer in range(ntracer):
+                        tracer_value = tracer_top[lev, lat, lon, tracer]
+                        tracer_ratio[lon, tracer] += tracer_value * dry_mass
                         tracer_diffused[lon, lev, tracer] = (
-                            tracer_top[lev, lat, lon, tracer]
-                            + cch[lon, lev] * tracer_diffused[lon, lev - 1, tracer]
-                        ) * termh[lon, lev]
+                            tracer_value
+                            + cch_value * tracer_diffused[lon, lev - 1, tracer]
+                        ) * termh_value
             for lon in range(nlon):
                 tmp1d = 1.0 / (1.0 + cch[lon, nlev - 1] * (1.0 - zeh[lon, nlev - 2]))
+                dry_mass = dry_mass_top[nlev - 1, lat, lon]
+                cch_bottom = cch[lon, nlev - 1]
                 for tracer in range(ntracer):
+                    tracer_value = tracer_top[nlev - 1, lat, lon, tracer]
+                    tracer_ratio[lon, tracer] += tracer_value * dry_mass
                     tracer_diffused[lon, nlev - 1, tracer] = (
-                        tracer_top[nlev - 1, lat, lon, tracer]
-                        + cch[lon, nlev - 1] * tracer_diffused[lon, nlev - 2, tracer]
+                        tracer_value
+                        + cch_bottom * tracer_diffused[lon, nlev - 2, tracer]
                     ) * tmp1d
             for lev in range(nlev - 2, ntopfl - 1, -1):
                 for lon in range(nlon):
@@ -1230,17 +1247,20 @@ if njit is not None:
 
             for lon in range(nlon):
                 for tracer in range(ntracer):
-                    before_mass = 0.0
-                    after_mass = 0.0
-                    for lev in range(ntopfl, nlev):
+                    tracer_after_mass[lon, tracer] = 0.0
+                for lev in range(ntopfl, nlev):
+                    dry_mass = dry_mass_top[lev, lat, lon]
+                    for tracer in range(ntracer):
                         value = tracer_diffused[lon, lev, tracer]
                         if value < 0.0:
                             negative_count += 1
                             value = 0.0
                             tracer_diffused[lon, lev, tracer] = 0.0
-                        before_mass += tracer_top[lev, lat, lon, tracer] * dry_mass_top[lev, lat, lon]
-                        after_mass += value * dry_mass_top[lev, lat, lon]
+                        tracer_after_mass[lon, tracer] += value * dry_mass
+                for tracer in range(ntracer):
                     ratio = 1.0
+                    before_mass = tracer_ratio[lon, tracer]
+                    after_mass = tracer_after_mass[lon, tracer]
                     if abs(before_mass) > 0.0 and abs(after_mass) > 0.0:
                         ratio = before_mass / after_mass
                     tracer_ratio[lon, tracer] = ratio
