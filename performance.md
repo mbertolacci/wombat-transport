@@ -809,3 +809,111 @@ Final Profila check after both retained changes:
 
 The remaining likely VDIFF targets are the final writeback, the forward/backward
 tridiagonal tracer solve, and call-level output allocation/page clearing.
+
+## 2026-07-09 TPCORE follow-up targets after Profila
+
+TPCORE was revisited after the VDIFF/Profila workflow was available. No code was
+changed in that pass; the goal was to identify the next useful optimization
+targets.
+
+Current standalone fused-Numba TPCORE timings:
+
+| Tracers | Best wall s | Mean wall s |
+| ---: | ---: | ---: |
+| 24 | 0.262 | 0.264 |
+| 96 | 0.805 | 0.860 |
+| 192 | 1.622 | 1.623 |
+
+Current 96-tracer staged profile:
+
+| Stage | Mean s | Percent |
+| --- | ---: | ---: |
+| `ytp_horizontal_mass_flux` | 0.170 | 21.5% |
+| `xtp_horizontal_mass_flux` | 0.160 | 20.2% |
+| `fzppm_vertical` | 0.150 | 19.0% |
+| `poles_plus_dq_init` | 0.069 | 8.7% |
+| `calc_cross_terms` | 0.058 | 7.3% |
+| `python_copy_workspace_cross_terms` | 0.057 | 7.2% |
+| `qckxyz_fill_finalize` | 0.053 | 6.7% |
+
+Profila gave useful but noisy line-level attribution. The strongest signal was
+not a single dominant stage, but limiter-heavy scalar inner loops across XTP,
+YTP, and FZPPM. Numba's lowered `min(...)`/`max(...)` helpers also appeared in
+the sample profile, matching the hot limiter regions.
+
+Follow-up ideas to try later, in likely payoff/risk order:
+
+1. Replace hot chained `min(...)`/`max(...)` limiter expressions in XTP, YTP,
+   and FZPPM with explicit scalar comparisons. Validate tightly because NaN and
+   equality behavior can differ from Python builtins.
+2. Precompute horizontal remap indices, coefficients, and masks for X/Y paths
+   to remove repeated `int`, `rint`, modulo, validity, and sign work from hot
+   loops.
+3. Add reusable or caller-managed TPCORE output/workspace to avoid per-call
+   `q` copies, `dq1` allocation, and repeated cross-term setup where valid.
+4. Revisit `qckxyz_fill_finalize`; the separate full-grid negative/finalize
+   scan is now around 6-7% at 96 tracers.
+5. Move FZPPM column scratch out of the compiled kernel into reusable workspace.
+   This is less obvious than the first two, but FZPPM is again close to XTP/YTP
+   in total cost.
+
+## 2026-07-09 Convection diagnostics-light path
+
+Convection was profiled after the VDIFF work. The old Python column chunking is
+not used by the Numba path: Numba receives each cloud-base column group in one
+call, while `_max_convection_group_columns` and `_iter_column_chunks` are only
+used by the pure Python fallback.
+
+Before this pass, standalone convection timings were:
+
+| Tracers | Best wall s | Mean wall s |
+| ---: | ---: | ---: |
+| 24 | 0.108 | 0.110 |
+| 96 | 0.397 | 0.399 |
+| 192 | 0.808 | 0.835 |
+
+Manual timing around the 96-tracer path showed that the Numba kernel was only
+about half of wall time:
+
+| Bucket | Mean s | Share |
+| --- | ---: | ---: |
+| Numba convection kernel | 0.200 | 49.7% |
+| Mass reductions | 0.039 | 9.7% |
+| Wrapper/copy/diag allocation | 0.164 | 40.6% |
+
+The retained change adds `diagnostics=False` for the normal driver and
+benchmark path, while preserving `diagnostics=True` as the default for direct
+operator calls and harness/oracle comparisons. The light path skips
+`diag14_mass_flux` allocation/writes, initial/final mass reductions, and
+negative-count scans. It returns empty diagnostic arrays, matching the VDIFF
+diagnostics-light convention.
+
+Full-vs-light validation on the 24-tracer synthetic benchmark input:
+
+```text
+tracer_max_abs 0.0
+light_diag_shape (0,)
+light_mass_shapes (0,) (0,)
+full_checksum 0.0004012190050963058
+light_checksum 0.0004012190050963058
+```
+
+Updated diagnostics-light benchmark:
+
+| Tracers | Best wall s | Mean wall s |
+| ---: | ---: | ---: |
+| 24 | 0.066 | 0.067 |
+| 96 | 0.217 | 0.218 |
+| 192 | 0.417 | 0.419 |
+
+This is a large wrapper/diagnostic win: about `0.397 -> 0.217 s` at 96 tracers
+and `0.808 -> 0.417 s` at 192 tracers. The remaining obvious convection target
+is reusable output/workspace to reduce the still-present tracer copy and page
+clearing, followed by profiling the now-more-dominant Numba kernel itself.
+
+Current end-to-end driver benchmark after the convection change:
+
+| Tracers | Best total s | TPCORE s | VDIFF s | Convection s | Overhead s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 0.398 | 0.236 | 0.059 | 0.063 | 0.023 |
+| 96 | 1.214 | 0.797 | 0.163 | 0.212 | 0.026 |

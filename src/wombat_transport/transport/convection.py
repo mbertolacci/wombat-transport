@@ -48,6 +48,7 @@ def run_cloud_convection_one_step(
     precccon_mm_day: np.ndarray | None = None,
     dt_s: float = 600.0,
     reconstruct_conv_precip_flux: bool = False,
+    diagnostics: bool = True,
 ) -> ConvectionResult:
     """Port GEOS-Chem ``DO_CLOUD_CONVECTION`` for transport-only tracers.
 
@@ -102,9 +103,9 @@ def run_cloud_convection_one_step(
     internal_dt = float(dt_s) / float(internal_steps)
     bmass = delp_dry * G0_100
     tracer_after_top = np.ascontiguousarray(tracer).copy()
-    diag14_top = np.zeros_like(tracer_after_top)
-    initial_mass = _column_mass_transport(tracer_after_top, bmass, area)
-    negative_before = int(np.count_nonzero(tracer_after_top < 0.0))
+    diag14_top = np.zeros_like(tracer_after_top) if diagnostics else np.empty((0,), dtype=np.float64)
+    initial_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else np.empty(0, dtype=np.float64)
+    negative_before = int(np.count_nonzero(tracer_after_top < 0.0)) if diagnostics else 0
 
     _convect_active_columns_top(
         tracer_after_top,
@@ -118,16 +119,17 @@ def run_cloud_convection_one_step(
         bmass,
         area,
         reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
+        diagnostics=diagnostics,
         internal_steps=internal_steps,
         internal_dt_s=internal_dt,
     )
 
-    final_mass = _column_mass_transport(tracer_after_top, bmass, area)
+    final_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else np.empty(0, dtype=np.float64)
     return ConvectionResult(
         tracer_conc=tracer_after_top,
         diag14_mass_flux=diag14_top,
         negative_count_before=negative_before,
-        negative_count_after=int(np.count_nonzero(tracer_after_top < 0.0)),
+        negative_count_after=int(np.count_nonzero(tracer_after_top < 0.0)) if diagnostics else 0,
         initial_tracer_mass=initial_mass,
         final_tracer_mass=final_mass,
         internal_steps=internal_steps,
@@ -148,13 +150,14 @@ def _convect_active_columns_top(
     area_m2: np.ndarray,
     *,
     reconstruct_conv_precip_flux: bool,
+    diagnostics: bool,
     internal_steps: int,
     internal_dt_s: float,
 ) -> None:
     nlev, nlat, nlon, ntracer = tracer.shape
     ncol = nlat * nlon
     q = tracer.reshape(nlev, ncol, -1)
-    diag = diag14.reshape(nlev, ncol, -1)
+    diag = diag14.reshape(nlev, ncol, -1) if diagnostics else diag14.reshape(0, 0, 0)
     cmf = cmfmc.reshape(nlev, ncol)
     detrain = dtrain.reshape(nlev, ncol)
     delp = delp_hpa.reshape(nlev, ncol)
@@ -188,6 +191,7 @@ def _convect_active_columns_top(
                 area,
                 int(cloud_base),
                 columns,
+                diagnostics=diagnostics,
                 internal_steps=internal_steps,
                 internal_dt_s=internal_dt_s,
             )
@@ -204,6 +208,7 @@ def _convect_active_columns_top(
                     area,
                     int(cloud_base),
                     column_chunk,
+                    diagnostics=diagnostics,
                     internal_steps=internal_steps,
                     internal_dt_s=internal_dt_s,
                 )
@@ -259,11 +264,12 @@ def _convect_column_group_top(
     cloud_base: int,
     columns: np.ndarray,
     *,
+    diagnostics: bool,
     internal_steps: int,
     internal_dt_s: float,
 ) -> None:
     q = q_all[:, columns, :].copy()
-    diag = np.zeros_like(q)
+    diag = np.zeros_like(q) if diagnostics else np.empty((0,), dtype=np.float64)
     cmfmc = cmfmc_all[:, columns]
     dtrain = dtrain_all[:, columns]
     delp_dry = delp_dry_all[:, columns]
@@ -330,10 +336,11 @@ def _convect_column_group_top(
 
                 np.multiply(cmfmc[level, local, np.newaxis], q[level - 1, local, :], out=qc_next)
                 delq += qc_next
-                np.negative(temp, out=temp)
-                temp -= qc_next
-                temp *= area[local, np.newaxis] / dns
-                diag[level, local, :] += temp
+                if diagnostics:
+                    np.negative(temp, out=temp)
+                    temp -= qc_next
+                    temp *= area[local, np.newaxis] / dns
+                    diag[level, local, :] += temp
 
                 np.multiply(cmfmc_below[local, np.newaxis], q[level, local, :], out=qc_next)
                 delq -= qc_next
@@ -374,7 +381,8 @@ def _convect_column_group_top(
                     q[level, flux_local, :] = current
 
     q_all[:, columns, :] = q
-    diag_all[:, columns, :] = diag
+    if diagnostics:
+        diag_all[:, columns, :] = diag
 
 
 def _numba_convection_mode() -> str:
@@ -398,6 +406,7 @@ def _convect_column_group_top_numba(
     cloud_base: int,
     columns: np.ndarray,
     *,
+    diagnostics: bool,
     internal_steps: int,
     internal_dt_s: float,
 ) -> None:
@@ -412,6 +421,7 @@ def _convect_column_group_top_numba(
             area_all,
             cloud_base,
             columns,
+            diagnostics=diagnostics,
             internal_steps=internal_steps,
             internal_dt_s=internal_dt_s,
         )
@@ -426,6 +436,7 @@ def _convect_column_group_top_numba(
         area_all,
         cloud_base,
         columns,
+        diagnostics,
         internal_steps,
         internal_dt_s,
     )
@@ -444,6 +455,7 @@ if njit is not None:
         area_all: np.ndarray,
         cloud_base: int,
         columns: np.ndarray,
+        diagnostics: bool,
         internal_steps: int,
         internal_dt_s: float,
     ) -> None:
@@ -519,7 +531,8 @@ if njit is not None:
 
                             upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
                             delq += upward
-                            diag_all[level, col, tracer] += (-temp - upward) * area_scale
+                            if diagnostics:
+                                diag_all[level, col, tracer] += (-temp - upward) * area_scale
 
                             delq -= cmfmc_below * q_all[level, col, tracer]
                             delq *= tendency_scale
@@ -553,6 +566,7 @@ else:
         area_all: np.ndarray,
         cloud_base: int,
         columns: np.ndarray,
+        diagnostics: bool,
         internal_steps: int,
         internal_dt_s: float,
     ) -> None:

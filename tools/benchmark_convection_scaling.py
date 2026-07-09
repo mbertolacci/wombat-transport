@@ -312,6 +312,7 @@ def _benchmark_inputs(
             precccon_mm_day=inputs.precccon_mm_day,
             dt_s=inputs.dt_s,
             reconstruct_conv_precip_flux=inputs.reconstruct_conv_precip_flux,
+            diagnostics=False,
         )
         del result
         gc.collect()
@@ -336,6 +337,7 @@ def _benchmark_inputs(
             precccon_mm_day=inputs.precccon_mm_day,
             dt_s=inputs.dt_s,
             reconstruct_conv_precip_flux=inputs.reconstruct_conv_precip_flux,
+            diagnostics=False,
         )
         elapsed_values.append(time.perf_counter() - start)
         checksum = float(np.mean(result.tracer_conc))

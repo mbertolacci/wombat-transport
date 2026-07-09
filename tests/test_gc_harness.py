@@ -571,6 +571,37 @@ def test_convection_active_cloud_changes_tracer_and_conserves_mass(tmp_path):
     np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=1.0e-14, atol=0.0)
 
 
+def test_convection_diagnostics_light_preserves_tracer_update(tmp_path):
+    input_path = write_synthetic_convection_input(tmp_path / "convection_input.nc", scenario="active_cloud")
+    with netCDF4.Dataset(input_path) as dataset:
+        kwargs = dict(
+            tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            cmfmc_kg_m2_s=np.asarray(dataset.variables["cmfmc_kg_m2_s"][:], dtype=np.float64),
+            dtrain_kg_m2_s=np.asarray(dataset.variables["dtrain_kg_m2_s"][:], dtype=np.float64),
+            dqrcu_kg_kg_s=np.asarray(dataset.variables["dqrcu_kg_kg_s"][:], dtype=np.float64),
+            reevapcn_kg_kg_s=np.asarray(dataset.variables["reevapcn_kg_kg_s"][:], dtype=np.float64),
+            delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
+            delp_hpa=np.asarray(dataset.variables["delp_hpa"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            pficu_kg_m2_s=np.asarray(dataset.variables["pficu_kg_m2_s"][:], dtype=np.float64),
+            pflcu_kg_m2_s=np.asarray(dataset.variables["pflcu_kg_m2_s"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            precccon_mm_day=np.asarray(dataset.variables["precccon_mm_day"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    full = run_cloud_convection_one_step(**kwargs, diagnostics=True)
+    light = run_cloud_convection_one_step(**kwargs, diagnostics=False)
+
+    np.testing.assert_array_equal(light.tracer_conc, full.tracer_conc)
+    assert light.diag14_mass_flux.shape == (0,)
+    assert light.initial_tracer_mass.shape == (0,)
+    assert light.final_tracer_mass.shape == (0,)
+    assert light.negative_count_before == 0
+    assert light.negative_count_after == 0
+
+
 def test_convection_vectorized_batches_mixed_cloud_bases_and_inactive_columns():
     nlev, nlat, nlon, ntracer = 5, 2, 2, 2
     tracer = np.full((nlev, nlat, nlon, ntracer), 4.0e-4, dtype=np.float64)

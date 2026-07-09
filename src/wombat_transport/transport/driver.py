@@ -403,7 +403,7 @@ def _run_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
     )
-    convection = _run_convection_input(convection_input)
+    convection = _run_convection_input(convection_input, diagnostics=False)
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(convection.tracer_conc),
@@ -499,7 +499,7 @@ def _trace_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
     )
-    convection = _run_convection_input(convection_input)
+    convection = _run_convection_input(convection_input, diagnostics=True)
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(convection.tracer_conc),
@@ -664,7 +664,7 @@ def _build_convection_input_after_vdiff(
     )
 
 
-def _run_convection_input(state: ConvectionInputState) -> ConvectionResult:
+def _run_convection_input(state: ConvectionInputState, *, diagnostics: bool = False) -> ConvectionResult:
     return run_cloud_convection_one_step(
         tracer_conc=state.tracer_conc,
         cmfmc_kg_m2_s=state.cmfmc_kg_m2_s,
@@ -680,6 +680,7 @@ def _run_convection_input(state: ConvectionInputState) -> ConvectionResult:
         temperature_k=state.temperature_k,
         precccon_mm_day=state.precccon_mm_day,
         dt_s=state.dt_s,
+        diagnostics=diagnostics,
     )
 
 
