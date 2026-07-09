@@ -405,3 +405,72 @@ Next candidate: focus first on `ytp_horizontal_mass_flux`, then `xtp` if the
 Y-path changes help. The first thing to inspect is whether Y transport's full
 `(nlat, nlon, ntracer)` work arrays can be made more local or reused without
 changing the validated GEOS-Chem semantics.
+
+## 2026-07-09 column/row scratch YTP and XTP update
+
+YTP and XTP now avoid their remaining large horizontal work arrays in the fused
+Numba path:
+
+- YTP uses column scratch shaped `(nlat, ntracer)` for `dcy`, `al`, `ar`, and
+  `a6`, instead of four full `(nlat, nlon, ntracer)` planes.
+- XTP uses row scratch shaped `(nlon, ntracer)` for `dcx`, instead of a full
+  `(nlat, nlon, ntracer)` plane.
+
+Synthetic TPCORE outputs for 1, 24, and 96 tracers matched the previous Numba
+output exactly after both changes.
+
+Standalone TPCORE timing after the combined YTP/XTP scratch rewrite:
+
+| Tracers | Best wall s | Mean wall s |
+| ---: | ---: | ---: |
+| 1 | 0.085 | 0.090 |
+| 24 | 0.279 | 0.289 |
+| 96 | 0.907 | 0.912 |
+
+The 96-tracer best wall time was previously about `1.02-1.04 s` after the
+FZPPM column-scratch rewrite, so this is another roughly 11-13% improvement for
+the large-tracer case.
+
+Current staged Numba timing for 96 tracers after the YTP/XTP rewrite:
+
+| Stage | Mean s | Percent |
+| --- | ---: | ---: |
+| `ytp_horizontal_mass_flux` | 0.178 | 20.2% |
+| `xtp_horizontal_mass_flux` | 0.151 | 17.1% |
+| `fzppm_vertical` | 0.149 | 16.8% |
+| `poles_plus_dq_init` | 0.069 | 7.8% |
+| `copy/workspace/cross setup` | 0.067 | 7.6% |
+| `yadv_dao2` | 0.066 | 7.5% |
+| `xadv_dao2` | 0.060 | 6.8% |
+| `calc_cross_terms` | 0.051 | 5.8% |
+| `qckxyz_fill` | 0.036 | 4.0% |
+| `q_prepass_update` | 0.032 | 3.6% |
+| `finalize_output` | 0.025 | 2.9% |
+
+Current isolated stage `perf stat` counters for 96 tracers:
+
+| Stage | Task ms | IPC | Backend bound | Branch miss | L1D miss | LLC miss |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ytp_horizontal_mass_flux` | 1898 | 2.47 | 53.1% | 0.24% | 4.16% | 63.92% |
+| `xtp_horizontal_mass_flux` | 1718 | 2.41 | 52.2% | 0.25% | 3.60% | 93.53% |
+| `fzppm_vertical` | 1543 | 2.25 | 52.0% | 0.47% | 9.94% | 48.74% |
+
+Compared with the pre-YTP/XTP split, YTP improved from `0.255 s` staged time,
+`1.65 IPC`, and `67.5%` backend bound to about `0.178 s`, `2.47 IPC`, and
+`53.1%` backend bound. XTP improved from about `0.171 s` staged time to about
+`0.151 s`.
+
+Focused verification:
+
+```text
+tests/test_tpcore_scaling_benchmark.py: 18 passed
+tests/test_transport.py + tests/test_transport_driver_scaling_benchmark.py: 22 passed
+tests/test_gc_harness.py -k tpcore: 15 passed, 4 skipped, 37 deselected
+```
+
+Next candidates are now less obvious. The leading stages are close together
+(`ytp`, `xtp`, `fzppm`), and the fixed per-level passes
+(`poles_plus_dq_init`, cross-term setup, DAO2 prepass, and q-update) together
+are a comparable target. A plausible next pass is reducing/fusing those
+prepass memory sweeps rather than continuing to optimize one PPM kernel in
+isolation.

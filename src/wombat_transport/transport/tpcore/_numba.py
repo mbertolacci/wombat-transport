@@ -89,7 +89,7 @@ def _make_tpcore_prepass_numba_workspace(nlat: int, nlon: int, ntracer: int) -> 
 
 def _make_xtp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.ndarray, ...]:
     return (
-        np.empty((nlat, nlon, ntracer), dtype=np.float64),
+        np.empty((nlon, ntracer), dtype=np.float64),
         np.empty((nlon, ntracer), dtype=np.float64),
         np.empty((nlon, ntracer), dtype=np.float64),
         np.empty((nlon, ntracer), dtype=np.float64),
@@ -101,10 +101,10 @@ def _make_xtp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.nd
 
 def _make_ytp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.ndarray, ...]:
     return (
-        np.empty((nlat, nlon, ntracer), dtype=np.float64),
-        np.empty((nlat, nlon, ntracer), dtype=np.float64),
-        np.empty((nlat, nlon, ntracer), dtype=np.float64),
-        np.empty((nlat, nlon, ntracer), dtype=np.float64),
+        np.empty((nlat, ntracer), dtype=np.float64),
+        np.empty((nlat, ntracer), dtype=np.float64),
+        np.empty((nlat, ntracer), dtype=np.float64),
+        np.empty((nlat, ntracer), dtype=np.float64),
     )
 
 
@@ -633,23 +633,23 @@ if njit is not None:
         r23 = 2.0 / 3.0
         r24 = 1.0 / 24.0
 
-        for j in range(j1p + 1, j2p):
-            for i in range(nlon):
-                im1 = (i - 1) % nlon
-                ip1 = (i + 1) % nlon
-                im2 = (i - 2) % nlon
-                ip2 = (i + 2) % nlon
-                for tracer in range(ntracer):
-                    q_im1 = qqv[j, im1, tracer]
-                    q_i = qqv[j, i, tracer]
-                    q_ip1 = qqv[j, ip1, tracer]
-                    tmp = (8.0 * (q_ip1 - q_im1) + qqv[j, im2, tracer] - qqv[j, ip2, tracer]) * r24
-                    pmax = max(q_im1, q_i, q_ip1) - q_i
-                    pmin = q_i - min(q_im1, q_i, q_ip1)
-                    bounded = min(abs(tmp), pmin, pmax)
-                    dcx[j, i, tracer] = bounded if tmp >= 0.0 else -bounded
-
         for j in range(j1p, j2p + 1):
+            if j > j1p and j < j2p:
+                for i in range(nlon):
+                    im1 = (i - 1) % nlon
+                    ip1 = (i + 1) % nlon
+                    im2 = (i - 2) % nlon
+                    ip2 = (i + 2) % nlon
+                    for tracer in range(ntracer):
+                        q_im1 = qqv[j, im1, tracer]
+                        q_i = qqv[j, i, tracer]
+                        q_ip1 = qqv[j, ip1, tracer]
+                        tmp = (8.0 * (q_ip1 - q_im1) + qqv[j, im2, tracer] - qqv[j, ip2, tracer]) * r24
+                        pmax = max(q_im1, q_i, q_ip1) - q_i
+                        pmin = q_i - min(q_im1, q_i, q_ip1)
+                        bounded = min(abs(tmp), pmin, pmax)
+                        dcx[i, tracer] = bounded if tmp >= 0.0 else -bounded
+
             if j > js and j < jn:
                 if j == j1p or j == j2p:
                     for i in range(nlon):
@@ -661,16 +661,16 @@ if njit is not None:
                         iu = (int((i + 1.0) - cx[j, i]) - 1) % nlon
                         sign_value = 1.0 if cx[j, i] >= 0.0 else -1.0
                         for tracer in range(ntracer):
-                            fx[i, tracer] = qqv[j, iu, tracer] + dcx[j, iu, tracer] * (sign_value - cx[j, i])
+                            fx[i, tracer] = qqv[j, iu, tracer] + dcx[iu, tracer] * (sign_value - cx[j, i])
                 else:
                     for i in range(nlon):
                         im1 = (i - 1) % nlon
                         for tracer in range(ntracer):
                             rval = 0.5 * (qqv[j, im1, tracer] + qqv[j, i, tracer])
-                            rval += (dcx[j, im1, tracer] - dcx[j, i, tracer]) * r13
+                            rval += (dcx[im1, tracer] - dcx[i, tracer]) * r13
                             al[i, tracer] = rval
                             ar[im1, tracer] = rval
-                            dc[i, tracer] = dcx[j, i, tracer]
+                            dc[i, tracer] = dcx[i, tracer]
                             qa[i, tracer] = qqv[j, i, tracer]
                     for i in range(nlon):
                         for tracer in range(ntracer):
@@ -733,20 +733,20 @@ if njit is not None:
                     else:
                         if cx[j, i] > 1.0:
                             for tracer in range(ntracer):
-                                val = rc * (qqv[j, iu_mod, tracer] + dcx[j, iu_mod, tracer] * (sign_value - rc))
+                                val = rc * (qqv[j, iu_mod, tracer] + dcx[iu_mod, tracer] * (sign_value - rc))
                                 for ix in range(isav, i):
                                     val += qqv[j, ix % nlon, tracer]
                                 fx[i, tracer] = pu[j, i] * val
                         elif cx[j, i] < -1.0:
                             for tracer in range(ntracer):
-                                val = rc * (qqv[j, iu_mod, tracer] + dcx[j, iu_mod, tracer] * (sign_value - rc))
+                                val = rc * (qqv[j, iu_mod, tracer] + dcx[iu_mod, tracer] * (sign_value - rc))
                                 for ix in range(i, isav):
                                     val -= qqv[j, ix % nlon, tracer]
                                 fx[i, tracer] = pu[j, i] * val
                         else:
                             for tracer in range(ntracer):
                                 fx[i, tracer] = pu[j, i] * (
-                                    rc * (qqv[j, iu_mod, tracer] + dcx[j, iu_mod, tracer] * (sign_value - rc))
+                                    rc * (qqv[j, iu_mod, tracer] + dcx[iu_mod, tracer] * (sign_value - rc))
                                 )
 
             for i in range(nlon - 1):
@@ -779,13 +779,16 @@ if njit is not None:
         r23 = 2.0 / 3.0
         r24 = 1.0 / 24.0
 
+        for tracer in range(ntracer):
+            al[0, tracer] = 0.0
+            ar[nlat - 1, tracer] = 0.0
+
         for i in range(nlon):
             for tracer in range(ntracer):
-                dcy[0, i, tracer] = 0.0
-                dcy[nlat - 1, i, tracer] = 0.0
+                dcy[0, tracer] = 0.0
+                dcy[nlat - 1, tracer] = 0.0
 
-        for j in range(1, nlat - 1):
-            for i in range(nlon):
+            for j in range(1, nlat - 1):
                 for tracer in range(ntracer):
                     qjm2 = 0.0 if j < 2 else qqu[j - 2, i, tracer]
                     qjm1 = qqu[j - 1, i, tracer]
@@ -796,76 +799,63 @@ if njit is not None:
                     pmax = max(qjm1, qj, qjp1) - qj
                     pmin = qj - min(qjm1, qj, qjp1)
                     bounded = min(abs(tmp), pmin, pmax)
-                    dcy[j, i, tracer] = bounded if tmp >= 0.0 else -bounded
+                    dcy[j, tracer] = bounded if tmp >= 0.0 else -bounded
 
-        for j in range(1, nlat):
-            for i in range(nlon):
+            for j in range(1, nlat):
                 for tracer in range(ntracer):
-                    al[j, i, tracer] = 0.5 * (qqu[j - 1, i, tracer] + qqu[j, i, tracer])
-                    al[j, i, tracer] += (dcy[j - 1, i, tracer] - dcy[j, i, tracer]) * r13
-                    ar[j - 1, i, tracer] = al[j, i, tracer]
+                    al[j, tracer] = 0.5 * (qqu[j - 1, i, tracer] + qqu[j, i, tracer])
+                    al[j, tracer] += (dcy[j - 1, tracer] - dcy[j, tracer]) * r13
+                    ar[j - 1, tracer] = al[j, tracer]
 
-        half = nlon // 2
-        for i in range(half):
-            for tracer in range(ntracer):
-                al[0, i, tracer] = al[1, i + half, tracer]
-                al[0, i + half, tracer] = al[1, i, tracer]
-                ar[nlat - 1, i, tracer] = ar[nlat - 2, i + half, tracer]
-                ar[nlat - 1, i + half, tracer] = ar[nlat - 2, i, tracer]
-
-        for j in range(1, nlat - 1):
-            for i in range(nlon):
+            for j in range(1, nlat - 1):
                 for tracer in range(ntracer):
-                    a6[j, i, tracer] = 3.0 * (
-                        qqu[j, i, tracer] + qqu[j, i, tracer] - (al[j, i, tracer] + ar[j, i, tracer])
+                    a6[j, tracer] = 3.0 * (
+                        qqu[j, i, tracer] + qqu[j, i, tracer] - (al[j, tracer] + ar[j, tracer])
                     )
-                    if dcy[j, i, tracer] == 0.0:
-                        a6[j, i, tracer] = 0.0
-                        al[j, i, tracer] = qqu[j, i, tracer]
-                        ar[j, i, tracer] = qqu[j, i, tracer]
+                    if dcy[j, tracer] == 0.0:
+                        a6[j, tracer] = 0.0
+                        al[j, tracer] = qqu[j, i, tracer]
+                        ar[j, tracer] = qqu[j, i, tracer]
                     else:
-                        da1 = ar[j, i, tracer] - al[j, i, tracer]
+                        da1 = ar[j, tracer] - al[j, tracer]
                         da2 = da1 * da1
-                        a6da = a6[j, i, tracer] * da1
+                        a6da = a6[j, tracer] * da1
                         if a6da < -da2:
-                            a6[j, i, tracer] = 3.0 * (al[j, i, tracer] - qqu[j, i, tracer])
-                            ar[j, i, tracer] = al[j, i, tracer] - a6[j, i, tracer]
+                            a6[j, tracer] = 3.0 * (al[j, tracer] - qqu[j, i, tracer])
+                            ar[j, tracer] = al[j, tracer] - a6[j, tracer]
                         elif a6da > da2:
-                            a6[j, i, tracer] = 3.0 * (ar[j, i, tracer] - qqu[j, i, tracer])
-                            al[j, i, tracer] = ar[j, i, tracer] - a6[j, i, tracer]
+                            a6[j, tracer] = 3.0 * (ar[j, tracer] - qqu[j, i, tracer])
+                            al[j, tracer] = ar[j, tracer] - a6[j, tracer]
 
-        for j in range(j1p, j2p + 2):
-            jm1 = j - 1
-            for i in range(nlon):
+            for j in range(j1p, j2p + 2):
+                jm1 = j - 1
                 c = cy[j, i]
                 if c > 0.0:
                     for tracer in range(ntracer):
-                        qqv[j, i, tracer] = ar[jm1, i, tracer] + 0.5 * c * (
-                            al[jm1, i, tracer]
-                            - ar[jm1, i, tracer]
-                            + a6[jm1, i, tracer] * (1.0 - r23 * c)
+                        qqv[j, i, tracer] = ar[jm1, tracer] + 0.5 * c * (
+                            al[jm1, tracer]
+                            - ar[jm1, tracer]
+                            + a6[jm1, tracer] * (1.0 - r23 * c)
                         )
                 else:
                     for tracer in range(ntracer):
-                        qqv[j, i, tracer] = al[j, i, tracer] - 0.5 * c * (
-                            ar[j, i, tracer] - al[j, i, tracer] + a6[j, i, tracer] * (1.0 + r23 * c)
+                        qqv[j, i, tracer] = al[j, tracer] - 0.5 * c * (
+                            ar[j, tracer] - al[j, tracer] + a6[j, tracer] * (1.0 + r23 * c)
                         )
 
-        for i in range(nlon):
             for tracer in range(ntracer):
                 qqv[j1p, i, tracer] *= ymass[j1p, i]
-        for j in range(j1p, j2p + 1):
-            for i in range(nlon):
+            for j in range(j1p, j2p + 1):
                 for tracer in range(ntracer):
                     qqv[j + 1, i, tracer] *= ymass[j + 1, i]
                     dq1[j, i, tracer] += (qqv[j, i, tracer] - qqv[j + 1, i, tracer]) * geofac[j]
+            for tracer in range(ntracer):
+                al[0, tracer] += qqv[j1p, i, tracer]
+                ar[nlat - 1, tracer] += qqv[j2p + 1, i, tracer]
 
         for tracer in range(ntracer):
-            sumsp = 0.0
-            sumnp = 0.0
-            for i in range(nlon):
-                sumsp += qqv[j1p, i, tracer]
-                sumnp += qqv[j2p + 1, i, tracer]
+            sumsp = al[0, tracer]
+            sumnp = ar[nlat - 1, tracer]
             dq_sp = dq1[0, 0, tracer] - sumsp / float(nlon) * geofac_pc
             dq_np = dq1[nlat - 1, 0, tracer] + sumnp / float(nlon) * geofac_pc
             for i in range(nlon):
