@@ -884,33 +884,30 @@ if njit is not None:
         r13 = 1.0 / 3.0
         r23 = 2.0 / 3.0
 
-        dpi = np.empty((nlev, nlon, ntracer), dtype=np.float64)
-        dc = np.empty((nlev, nlon, ntracer), dtype=np.float64)
-        al = np.empty((nlev, nlon, ntracer), dtype=np.float64)
-        ar = np.empty((nlev, nlon, ntracer), dtype=np.float64)
-        a6 = np.empty((nlev, nlon, ntracer), dtype=np.float64)
-        dca = np.empty((nlev, nlon, ntracer), dtype=np.float64)
+        dpi = np.empty((nlev, ntracer), dtype=np.float64)
+        dc = np.empty((nlev, ntracer), dtype=np.float64)
+        al = np.empty((nlev, ntracer), dtype=np.float64)
+        ar = np.empty((nlev, ntracer), dtype=np.float64)
+        a6 = np.empty((nlev, ntracer), dtype=np.float64)
+        dca = np.empty((nlev, ntracer), dtype=np.float64)
         prev_flux = np.empty(ntracer, dtype=np.float64)
 
         for j in range(nlat):
             if j == 1 or j == nlat - 2:
                 continue
 
-            for k in range(nlev - 1):
-                for i in range(nlon):
-                    for tracer in range(ntracer):
-                        dpi[k, i, tracer] = q[k + 1, j, i, tracer] - q[k, j, i, tracer]
             for i in range(nlon):
-                for tracer in range(ntracer):
-                    dpi[nlev - 1, i, tracer] = 0.0
-
-            for k in range(nlev):
-                for i in range(nlon):
+                for k in range(nlev - 1):
                     for tracer in range(ntracer):
-                        dc[k, i, tracer] = 0.0
+                        dpi[k, tracer] = q[k + 1, j, i, tracer] - q[k, j, i, tracer]
+                for tracer in range(ntracer):
+                    dpi[nlev - 1, tracer] = 0.0
 
-            for k in range(1, nlev - 1):
-                for i in range(nlon):
+                for k in range(nlev):
+                    for tracer in range(ntracer):
+                        dc[k, tracer] = 0.0
+
+                for k in range(1, nlev - 1):
                     dlp_km1 = delp1[k - 1, j, i]
                     dlp_k = delp1[k, j, i]
                     dlp_kp1 = delp1[k + 1, j, i]
@@ -918,48 +915,45 @@ if njit is not None:
                     c1 = (dlp_km1 + 0.5 * dlp_k) / (dlp_kp1 + dlp_k)
                     c2 = (dlp_kp1 + 0.5 * dlp_k) / (dlp_km1 + dlp_k)
                     for tracer in range(ntracer):
-                        tmp = c0 * (c1 * dpi[k, i, tracer] + c2 * dpi[k - 1, i, tracer])
+                        tmp = c0 * (c1 * dpi[k, tracer] + c2 * dpi[k - 1, tracer])
                         q_center = q[k, j, i, tracer]
                         q_prev = q[k - 1, j, i, tracer]
                         q_next = q[k + 1, j, i, tracer]
                         qmax = max(q_prev, q_center, q_next) - q_center
                         qmin = q_center - min(q_prev, q_center, q_next)
                         bounded = min(abs(tmp), qmax, qmin)
-                        dc[k, i, tracer] = np.copysign(bounded, tmp)
+                        dc[k, tracer] = np.copysign(bounded, tmp)
 
-            for i in range(nlon):
                 dlp0 = delp1[0, j, i]
                 dlp1_i = delp1[1, j, i]
                 dlp2_i = delp1[2, j, i]
                 fac2 = (dlp1_i + dlp2_i) * (dlp0 + dlp1_i + dlp2_i)
                 top_ratio = (dlp1_i + dlp2_i) / (dlp0 + dlp1_i)
                 for tracer in range(ntracer):
-                    fac1 = dpi[1, i, tracer] - dpi[0, i, tracer] * top_ratio
+                    fac1 = dpi[1, tracer] - dpi[0, tracer] * top_ratio
                     aa = 3.0 * fac1 / fac2
-                    bb = 2.0 * dpi[0, i, tracer] / (dlp0 + dlp1_i)
+                    bb = 2.0 * dpi[0, tracer] / (dlp0 + dlp1_i)
                     bb -= r23 * aa * (2.0 * dlp0 + dlp1_i)
-                    al[0, i, tracer] = q[0, j, i, tracer] - dlp0 * (r13 * aa * dlp0 + 0.5 * bb)
-                    al[1, i, tracer] = dlp0 * (aa * dlp0 + bb) + al[0, i, tracer]
-                    if q[0, j, i, tracer] * al[0, i, tracer] <= 0.0:
-                        al[0, i, tracer] = 0.0
-                        dca[0, i, tracer] = 0.0
+                    al[0, tracer] = q[0, j, i, tracer] - dlp0 * (r13 * aa * dlp0 + 0.5 * bb)
+                    al[1, tracer] = dlp0 * (aa * dlp0 + bb) + al[0, tracer]
+                    if q[0, j, i, tracer] * al[0, tracer] <= 0.0:
+                        al[0, tracer] = 0.0
+                        dca[0, tracer] = 0.0
                     else:
-                        dca[0, i, tracer] = q[0, j, i, tracer] - al[0, i, tracer]
+                        dca[0, tracer] = q[0, j, i, tracer] - al[0, tracer]
 
-            for i in range(nlon):
                 dlp_last = delp1[nlev - 1, j, i]
                 dlp_prev = delp1[nlev - 2, j, i]
                 bottom_ratio = (dlp_last * dlp_last) / ((dlp_last + dlp_prev) * (2.0 * dlp_last + dlp_prev))
                 for tracer in range(ntracer):
-                    fac1b = dpi[nlev - 2, i, tracer] * bottom_ratio
-                    ar[nlev - 1, i, tracer] = q[nlev - 1, j, i, tracer] + fac1b
-                    al[nlev - 1, i, tracer] = q[nlev - 1, j, i, tracer] - (fac1b + fac1b)
-                    if q[nlev - 1, j, i, tracer] * ar[nlev - 1, i, tracer] <= 0.0:
-                        ar[nlev - 1, i, tracer] = 0.0
-                    dca[nlev - 1, i, tracer] = ar[nlev - 1, i, tracer] - q[nlev - 1, j, i, tracer]
+                    fac1b = dpi[nlev - 2, tracer] * bottom_ratio
+                    ar[nlev - 1, tracer] = q[nlev - 1, j, i, tracer] + fac1b
+                    al[nlev - 1, tracer] = q[nlev - 1, j, i, tracer] - (fac1b + fac1b)
+                    if q[nlev - 1, j, i, tracer] * ar[nlev - 1, tracer] <= 0.0:
+                        ar[nlev - 1, tracer] = 0.0
+                    dca[nlev - 1, tracer] = ar[nlev - 1, tracer] - q[nlev - 1, j, i, tracer]
 
-            for k in range(2, nlev - 1):
-                for i in range(nlon):
+                for k in range(2, nlev - 1):
                     dlp_km2 = delp1[k - 2, j, i]
                     dlp_km1 = delp1[k - 1, j, i]
                     dlp_k = delp1[k, j, i]
@@ -969,99 +963,93 @@ if njit is not None:
                     a2 = (dlp_k + dlp_kp1) / (2.0 * dlp_k + dlp_km1)
                     c1_scale = dlp_km1 / (dlp_km1 + dlp_k)
                     for tracer in range(ntracer):
-                        c1 = dpi[k - 1, i, tracer] * c1_scale
-                        al[k, i, tracer] = q[k - 1, j, i, tracer] + c1 + c2 * (
-                            dlp_k * (c1 * (a1 - a2) + a2 * dc[k - 1, i, tracer])
-                            - dlp_km1 * a1 * dc[k, i, tracer]
+                        c1 = dpi[k - 1, tracer] * c1_scale
+                        al[k, tracer] = q[k - 1, j, i, tracer] + c1 + c2 * (
+                            dlp_k * (c1 * (a1 - a2) + a2 * dc[k - 1, tracer])
+                            - dlp_km1 * a1 * dc[k, tracer]
                         )
 
-            for k in range(nlev - 1):
-                for i in range(nlon):
+                for k in range(nlev - 1):
                     for tracer in range(ntracer):
-                        ar[k, i, tracer] = al[k + 1, i, tracer]
+                        ar[k, tracer] = al[k + 1, tracer]
 
-            for kk in range(2):
-                if kk == 0:
-                    k = 0
-                else:
-                    k = nlev - 1
-                for i in range(nlon):
+                for kk in range(2):
+                    if kk == 0:
+                        k = 0
+                    else:
+                        k = nlev - 1
                     for tracer in range(ntracer):
                         qa = q[k, j, i, tracer]
-                        a6[k, i, tracer] = 3.0 * (qa + qa - (al[k, i, tracer] + ar[k, i, tracer]))
-                        if dca[k, i, tracer] == 0.0:
-                            a6[k, i, tracer] = 0.0
-                            al[k, i, tracer] = qa
-                            ar[k, i, tracer] = qa
+                        a6[k, tracer] = 3.0 * (qa + qa - (al[k, tracer] + ar[k, tracer]))
+                        if dca[k, tracer] == 0.0:
+                            a6[k, tracer] = 0.0
+                            al[k, tracer] = qa
+                            ar[k, tracer] = qa
                         else:
-                            da1 = ar[k, i, tracer] - al[k, i, tracer]
+                            da1 = ar[k, tracer] - al[k, tracer]
                             da2 = da1 * da1
-                            a6da = a6[k, i, tracer] * da1
+                            a6da = a6[k, tracer] * da1
                             if a6da < -da2:
-                                a6[k, i, tracer] = 3.0 * (al[k, i, tracer] - qa)
-                                ar[k, i, tracer] = al[k, i, tracer] - a6[k, i, tracer]
+                                a6[k, tracer] = 3.0 * (al[k, tracer] - qa)
+                                ar[k, tracer] = al[k, tracer] - a6[k, tracer]
                             elif a6da > da2:
-                                a6[k, i, tracer] = 3.0 * (ar[k, i, tracer] - qa)
-                                al[k, i, tracer] = ar[k, i, tracer] - a6[k, i, tracer]
+                                a6[k, tracer] = 3.0 * (ar[k, tracer] - qa)
+                                al[k, tracer] = ar[k, tracer] - a6[k, tracer]
 
-            for kk in range(2):
-                if kk == 0:
-                    k = 1
-                else:
-                    k = nlev - 2
-                for i in range(nlon):
+                for kk in range(2):
+                    if kk == 0:
+                        k = 1
+                    else:
+                        k = nlev - 2
                     for tracer in range(ntracer):
                         qa = q[k, j, i, tracer]
-                        a6[k, i, tracer] = 3.0 * (qa + qa - (al[k, i, tracer] + ar[k, i, tracer]))
-                        if dc[k, i, tracer] == 0.0:
-                            a6[k, i, tracer] = 0.0
-                            al[k, i, tracer] = qa
-                            ar[k, i, tracer] = qa
+                        a6[k, tracer] = 3.0 * (qa + qa - (al[k, tracer] + ar[k, tracer]))
+                        if dc[k, tracer] == 0.0:
+                            a6[k, tracer] = 0.0
+                            al[k, tracer] = qa
+                            ar[k, tracer] = qa
                         else:
-                            da1 = ar[k, i, tracer] - al[k, i, tracer]
+                            da1 = ar[k, tracer] - al[k, tracer]
                             da2 = da1 * da1
-                            a6da = a6[k, i, tracer] * da1
+                            a6da = a6[k, tracer] * da1
                             if a6da < -da2:
-                                a6[k, i, tracer] = 3.0 * (al[k, i, tracer] - qa)
-                                ar[k, i, tracer] = al[k, i, tracer] - a6[k, i, tracer]
+                                a6[k, tracer] = 3.0 * (al[k, tracer] - qa)
+                                ar[k, tracer] = al[k, tracer] - a6[k, tracer]
                             elif a6da > da2:
-                                a6[k, i, tracer] = 3.0 * (ar[k, i, tracer] - qa)
-                                al[k, i, tracer] = ar[k, i, tracer] - a6[k, i, tracer]
+                                a6[k, tracer] = 3.0 * (ar[k, tracer] - qa)
+                                al[k, tracer] = ar[k, tracer] - a6[k, tracer]
 
-            for k in range(1, nlev - 1):
-                for i in range(nlon):
+                for k in range(1, nlev - 1):
                     for tracer in range(ntracer):
-                        dca[k, i, tracer] = dpi[k, i, tracer] - dpi[k - 1, i, tracer]
+                        dca[k, tracer] = dpi[k, tracer] - dpi[k - 1, tracer]
 
-            for k in range(2, nlev - 2):
-                for i in range(nlon):
+                for k in range(2, nlev - 2):
                     for tracer in range(ntracer):
                         qq = q[k, j, i, tracer]
-                        qmp = qq + 2.0 * dpi[k - 1, i, tracer]
-                        lac = qq + 1.5 * dca[k - 1, i, tracer] + 0.5 * dpi[k - 1, i, tracer]
+                        qmp = qq + 2.0 * dpi[k - 1, tracer]
+                        lac = qq + 1.5 * dca[k - 1, tracer] + 0.5 * dpi[k - 1, tracer]
                         qmin = min(qq, qmp, lac)
                         qmax = max(qq, qmp, lac)
-                        if ar[k, i, tracer] < qmin:
-                            ar[k, i, tracer] = qmin
-                        elif ar[k, i, tracer] > qmax:
-                            ar[k, i, tracer] = qmax
+                        if ar[k, tracer] < qmin:
+                            ar[k, tracer] = qmin
+                        elif ar[k, tracer] > qmax:
+                            ar[k, tracer] = qmax
 
-                        qmp = qq - 2.0 * dpi[k, i, tracer]
-                        lac = qq + 1.5 * dca[k + 1, i, tracer] - 0.5 * dpi[k, i, tracer]
+                        qmp = qq - 2.0 * dpi[k, tracer]
+                        lac = qq + 1.5 * dca[k + 1, tracer] - 0.5 * dpi[k, tracer]
                         qmin = min(qq, qmp, lac)
                         qmax = max(qq, qmp, lac)
-                        if al[k, i, tracer] < qmin:
-                            al[k, i, tracer] = qmin
-                        elif al[k, i, tracer] > qmax:
-                            al[k, i, tracer] = qmax
-                        a6[k, i, tracer] = 3.0 * (qq + qq - (ar[k, i, tracer] + al[k, i, tracer]))
+                        if al[k, tracer] < qmin:
+                            al[k, tracer] = qmin
+                        elif al[k, tracer] > qmax:
+                            al[k, tracer] = qmax
+                        a6[k, tracer] = 3.0 * (qq + qq - (ar[k, tracer] + al[k, tracer]))
 
-            for i in range(nlon):
                 if wz[0, j, i] > 0.0:
                     cm = wz[0, j, i] / delp1[0, j, i]
                     for tracer in range(ntracer):
-                        val = ar[0, i, tracer] + 0.5 * cm * (
-                            al[0, i, tracer] - ar[0, i, tracer] + a6[0, i, tracer] * (1.0 - r23 * cm)
+                        val = ar[0, tracer] + 0.5 * cm * (
+                            al[0, tracer] - ar[0, tracer] + a6[0, tracer] * (1.0 - r23 * cm)
                         )
                         flux = wz[0, j, i] * val
                         dq1[0, j, i, tracer] -= flux
@@ -1069,8 +1057,8 @@ if njit is not None:
                 else:
                     cp = wz[0, j, i] / delp1[1, j, i]
                     for tracer in range(ntracer):
-                        val = al[1, i, tracer] + 0.5 * cp * (
-                            al[1, i, tracer] - ar[1, i, tracer] - a6[1, i, tracer] * (1.0 + r23 * cp)
+                        val = al[1, tracer] + 0.5 * cp * (
+                            al[1, tracer] - ar[1, tracer] - a6[1, tracer] * (1.0 + r23 * cp)
                         )
                         flux = wz[0, j, i] * val
                         dq1[0, j, i, tracer] -= flux
@@ -1079,8 +1067,8 @@ if njit is not None:
                     if wz[k, j, i] > 0.0:
                         cm = wz[k, j, i] / delp1[k, j, i]
                         for tracer in range(ntracer):
-                            val = ar[k, i, tracer] + 0.5 * cm * (
-                                al[k, i, tracer] - ar[k, i, tracer] + a6[k, i, tracer] * (1.0 - r23 * cm)
+                            val = ar[k, tracer] + 0.5 * cm * (
+                                al[k, tracer] - ar[k, tracer] + a6[k, tracer] * (1.0 - r23 * cm)
                             )
                             flux = wz[k, j, i] * val
                             dq1[k, j, i, tracer] += prev_flux[tracer] - flux
@@ -1088,10 +1076,10 @@ if njit is not None:
                     else:
                         cp = wz[k, j, i] / delp1[k + 1, j, i]
                         for tracer in range(ntracer):
-                            val = al[k + 1, i, tracer] + 0.5 * cp * (
-                                al[k + 1, i, tracer]
-                                - ar[k + 1, i, tracer]
-                                - a6[k + 1, i, tracer] * (1.0 + r23 * cp)
+                            val = al[k + 1, tracer] + 0.5 * cp * (
+                                al[k + 1, tracer]
+                                - ar[k + 1, tracer]
+                                - a6[k + 1, tracer] * (1.0 + r23 * cp)
                             )
                             flux = wz[k, j, i] * val
                             dq1[k, j, i, tracer] += prev_flux[tracer] - flux
@@ -1154,4 +1142,3 @@ else:
 
     def _fzppm_batch_numba_kernel(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
         raise RuntimeError("numba is not available")
-
