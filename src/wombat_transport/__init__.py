@@ -13,6 +13,7 @@ from wombat_transport.fields import (
     transport_tracer_to_canonical,
     transport_tracer_to_public4,
 )
+from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.emissions import (
     apply_emissions,
     dry_air_mass_per_area,
@@ -63,6 +64,7 @@ __all__ = [
     "Species",
     "TracerField",
     "TransportForcing",
+    "TransportGrid",
     "TransportStageMass",
     "TransportStepResult",
     "TransportWindowResult",
@@ -87,6 +89,7 @@ __all__ = [
     "load_species_conc",
     "load_species_database",
     "load_transport_forcing",
+    "load_transport_grid",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",
     "public_surface_flux_to_transport",

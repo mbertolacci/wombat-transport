@@ -22,6 +22,7 @@ for path in (REPO_ROOT, SRC_ROOT):
 
 from tools.benchmark_convection_scaling import _build_synthetic_convection_inputs
 from tools.benchmark_vdiff_scaling import _build_synthetic_vdiff_inputs
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.gc_harness import (
     CONVECTION_INPUT_VERSION,
     TRANSPORT_INPUT_VERSION,
@@ -301,14 +302,8 @@ def _gc_libraries(build_root: Path) -> tuple[Path, ...]:
 
 def _grid_template_values(run_config_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     config = load_run_config(run_config_path)
-    with netCDF4.Dataset(config.grid_template) as template:
-        return (
-            np.asarray(template.variables["lat"][:], dtype=np.float64),
-            np.asarray(template.variables["lon"][:], dtype=np.float64),
-            np.asarray(template.variables["hyai"][:], dtype=np.float64),
-            np.asarray(template.variables["hybi"][:], dtype=np.float64),
-            np.asarray(template.variables["AREA"][:], dtype=np.float64),
-        )
+    grid = load_transport_grid(config.grid_template)
+    return grid.lat_deg, grid.lon_deg, grid.hyai_hpa, grid.hybi, grid.area_m2
 
 
 def _write_tpcore_input(path: Path, run_config: Path, ntracer: int, *, dt_s: float) -> None:

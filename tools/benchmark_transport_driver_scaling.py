@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TextIO
 
-import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import driver as driver_mod
 from wombat_transport.transport.forcing import MERRA2_72_TO_47_MAPPING, TransportForcing
@@ -58,7 +58,7 @@ STAGE_NAMES = ("setup", "tpcore", "vdiff", "convection")
 class SyntheticDriverInputs:
     tracer_field: TracerField
     forcing: TransportForcing
-    template_path: Path
+    grid: TransportGrid
     dt_s: float
 
 
@@ -193,25 +193,16 @@ def _positive_int(value: str) -> int:
 
 def _read_fullgrid_shape(run_config_path: Path) -> tuple[int, int, int]:
     config = load_run_config(run_config_path)
-    with netCDF4.Dataset(config.grid_template) as template:
-        nlev = len(template.dimensions["lev"])
-        nlat = len(template.dimensions["lat"])
-        nlon = len(template.dimensions["lon"])
-    return nlev, nlat, nlon
+    return load_transport_grid(config.grid_template).shape
 
 
 def _build_synthetic_driver_inputs(run_config_path: Path, ntracer: int, *, dt_s: float) -> SyntheticDriverInputs:
     config = load_run_config(run_config_path)
-    template_path = Path(config.grid_template)
-    with netCDF4.Dataset(template_path) as template:
-        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
-        lev_coord = np.asarray(template.variables["lev"][:], dtype=np.float64)
-        nlev = len(template.dimensions["lev"])
+    grid = load_transport_grid(config.grid_template)
+    lat = grid.lat_deg
+    lon = grid.lon_deg
+    nlev, nlat, nlon = grid.shape
 
-    nlat = lat.size
-    nlon = lon.size
     lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
     lat_rad = np.deg2rad(lat)
     lon_rad = np.deg2rad(lon)
@@ -248,7 +239,7 @@ def _build_synthetic_driver_inputs(run_config_path: Path, ntracer: int, *, dt_s:
         names=tuple(f"tracer_{index + 1:03d}" for index in range(ntracer)),
         data=tracer,
         units=tuple("mol mol-1 dry" for _ in range(ntracer)),
-        coords={"lev": lev_coord[::-1], "lat": lat, "lon": lon},
+        coords={"lev": grid.lev[::-1], "lat": lat, "lon": lon},
     )
     forcing = TransportForcing(
         u_m_s=u[np.newaxis, ...],
@@ -277,7 +268,7 @@ def _build_synthetic_driver_inputs(run_config_path: Path, ntracer: int, *, dt_s:
         a3mste_path=Path("<synthetic>"),
         i3_path=Path("<synthetic>"),
     )
-    return SyntheticDriverInputs(tracer_field=field, forcing=forcing, template_path=template_path, dt_s=dt_s)
+    return SyntheticDriverInputs(tracer_field=field, forcing=forcing, grid=grid, dt_s=dt_s)
 
 
 def _benchmark_inputs(
@@ -358,7 +349,7 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
         result = driver_mod.run_transport_one_step(
             inputs.tracer_field,
             inputs.forcing,
-            inputs.template_path,
+            inputs.grid,
             dt_s=inputs.dt_s,
         )
         total = time.perf_counter() - start

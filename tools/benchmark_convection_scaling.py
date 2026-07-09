@@ -14,6 +14,7 @@ from typing import TextIO
 import netCDF4
 import numpy as np
 
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport.convection import run_cloud_convection_one_step
 
@@ -184,20 +185,16 @@ def _positive_int(value: str) -> int:
 
 def _read_fullgrid_shape(run_config_path: Path) -> tuple[int, int, int]:
     config = load_run_config(run_config_path)
-    with netCDF4.Dataset(config.grid_template) as template:
-        nlev = len(template.dimensions["lev"])
-        nlat = len(template.dimensions["lat"])
-        nlon = len(template.dimensions["lon"])
-    return nlev, nlat, nlon
+    return load_transport_grid(config.grid_template).shape
 
 
 def _build_synthetic_convection_inputs(run_config_path: Path, ntracer: int, *, dt_s: float) -> ConvectionInputs:
     config = load_run_config(run_config_path)
-    with netCDF4.Dataset(config.grid_template) as template:
-        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
-        nlev = len(template.dimensions["lev"])
+    grid = load_transport_grid(config.grid_template)
+    lat = grid.lat_deg
+    lon = grid.lon_deg
+    area = grid.area_m2
+    nlev = grid.shape[0]
 
     nlat = lat.size
     nlon = lon.size

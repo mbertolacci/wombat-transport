@@ -17,6 +17,7 @@ from wombat_transport.gc_harness import (
     run_pjc_harness,
     write_transport_step_input_from_config,
 )
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import RunConfig, load_run_config
 from wombat_transport.transport import load_transport_forcing, run_transport_one_step
@@ -354,6 +355,7 @@ def _build_comparison_bundle(
 
 
 def _run_python_step(config: RunConfig, *, max_tracers: int):
+    grid = load_transport_grid(config.grid_template)
     tracers = initialize_tracers(
         config.initial_restart,
         config.species_database,
@@ -363,13 +365,13 @@ def _run_python_step(config: RunConfig, *, max_tracers: int):
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
         datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-        config.grid_template,
+        grid,
         time_index=int(config.transport.get("met_time_index", 0)),
     )
     return run_transport_one_step(
         tracers,
         forcing,
-        config.grid_template,
+        grid,
         dt_s=float(config.transport.get("dt_s", 600.0)),
     )
 

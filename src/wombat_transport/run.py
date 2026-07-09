@@ -8,6 +8,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.compare import compare_to_time_slice, format_metrics
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers, load_species_conc, write_restart_like
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import run_emissions_replay
@@ -51,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         comparison_state = state
         comparison_delp_dry_hpa = None
     elif args.mode == "transport-one-step":
+        grid = load_transport_grid(config.grid_template)
         state = initialize_tracers(
             config.initial_restart,
             config.species_database,
@@ -59,13 +61,13 @@ def main(argv: list[str] | None = None) -> int:
         forcing = load_transport_forcing(
             _resolve_config_value(config.root, config.transport["met_root"]),
             datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-            config.grid_template,
+            grid,
             time_index=int(config.transport.get("met_time_index", 0)),
         )
         transport_result = run_transport_one_step(
             state,
             forcing,
-            config.grid_template,
+            grid,
             dt_s=float(config.transport.get("dt_s", 600.0)),
         )
         state = transport_result.state
@@ -73,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         comparison_delp_dry_hpa = transport_result.delp_dry_hpa
         result = None
     elif args.mode == "transport-window":
+        grid = load_transport_grid(config.grid_template)
         state = initialize_tracers(
             config.initial_restart,
             config.species_database,
@@ -83,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             state,
             _resolve_config_value(config.root, config.transport["met_root"]),
             datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-            config.grid_template,
+            grid,
             steps=steps,
             dt_s=float(config.transport.get("dt_s", 600.0)),
             initial_met_time_index=int(config.transport.get("met_time_index", 0)),

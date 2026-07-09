@@ -18,6 +18,7 @@ from wombat_transport.fields import (
     canonical_time_slice,
     transport_tracer_to_canonical,
 )
+from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -387,25 +388,22 @@ def write_pjc_input_from_config(
     config = load_run_config(run_config_path)
     if dt_s is None:
         dt_s = float(config.transport.get("dt_s", 600.0))
+    grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
         datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-        config.grid_template,
+        grid,
         time_index=time_index,
     )
-    with netCDF4.Dataset(config.grid_template) as template:
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
     p1_hpa = forcing.surface_pressure_pa[0] / 100.0
     p2_hpa = p1_hpa.copy()
     return write_pjc_input(
         output_path,
         lat_deg=forcing.lat_deg,
         lon_deg=forcing.lon_deg,
-        area_m2=area,
-        hyai_hpa=hyai,
-        hybi=hybi,
+        area_m2=grid.area_m2,
+        hyai_hpa=grid.hyai_hpa,
+        hybi=grid.hybi,
         p1_hpa=p1_hpa,
         p2_hpa=p2_hpa,
         u_m_s=forcing.u_m_s[0],
@@ -459,12 +457,12 @@ def write_fullgrid_synthetic_tpcore_input_from_config(
     config = load_run_config(run_config_path)
     if dt_s is None:
         dt_s = float(config.transport.get("dt_s", 600.0))
-    with netCDF4.Dataset(config.grid_template) as template:
-        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
+    grid = load_transport_grid(config.grid_template)
+    lat = grid.lat_deg
+    lon = grid.lon_deg
+    hyai = grid.hyai_hpa
+    hybi = grid.hybi
+    area = grid.area_m2
 
     nlev = hyai.size - 1
     level = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
@@ -772,10 +770,11 @@ def write_real_convection_input_from_config(
         tracer_data = tracer_data[..., :max_tracers]
         tracer_names = tracer_names[:max_tracers]
 
+    grid = load_transport_grid(config.grid_template)
     real_met = _load_real_convection_met(
         met_root,
         start,
-        config.grid_template,
+        grid,
         time_index=fixture_time_index,
     )
     if mode == "sampled-columns":
@@ -831,7 +830,7 @@ def write_real_convection_input_from_config(
 def _load_real_convection_met(
     met_root: str | Path,
     timestamp: datetime,
-    template_path: str | Path,
+    grid: TransportGrid,
     *,
     time_index: int,
 ) -> dict[str, np.ndarray]:
@@ -851,13 +850,12 @@ def _load_real_convection_met(
         netCDF4.Dataset(a3mstc_path) as a3mstc,
         netCDF4.Dataset(a3mste_path) as a3mste,
         netCDF4.Dataset(i3_path) as i3,
-        netCDF4.Dataset(template_path) as template,
     ):
-        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
+        lat = grid.lat_deg
+        lon = grid.lon_deg
+        area = grid.area_m2
+        hyai = grid.hyai_hpa
+        hybi = grid.hybi
         ps = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
         sphu = _map_met_levels_to_47(_read_met_3d_time_slice(i3, "QV", time_index))[0]
         center = {
@@ -1496,10 +1494,11 @@ def _write_chain_vdiff_input(
     time_index: int,
 ) -> Path:
     config = load_run_config(run_config_path)
+    grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
         datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-        config.grid_template,
+        grid,
         time_index=time_index,
     )
     with netCDF4.Dataset(chain_input_path) as source:
@@ -1577,10 +1576,11 @@ def _write_chain_convection_input(
     time_index: int,
 ) -> Path:
     config = load_run_config(run_config_path)
+    grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
         datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-        config.grid_template,
+        grid,
         time_index=time_index,
     )
     with netCDF4.Dataset(chain_input_path) as source:
@@ -1866,10 +1866,11 @@ def compare_transport_chain_oracle_fixture(
         hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
         p1_hpa = np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64)
         dt_s = float(dataset.dt_s)
+    grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
         datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-        config.grid_template,
+        grid,
         time_index=int(source.get("time_index", 0)),
     )
     field = TracerField(
@@ -1878,7 +1879,7 @@ def compare_transport_chain_oracle_fixture(
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
-    result = run_transport_one_step(field, forcing, config.grid_template, dt_s=dt_s)
+    result = run_transport_one_step(field, forcing, grid, dt_s=dt_s)
     with netCDF4.Dataset(paths.output_path) as dataset:
         expected_tracer = np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64)
         expected_tpcore_tracer = np.asarray(dataset.variables["tpcore_tracer_conc_after"][:], dtype=np.float64)
@@ -2008,10 +2009,11 @@ def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
     with netCDF4.Dataset(paths.input_path) as dataset:
         tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
         dt_s = float(dataset.dt_s)
+    grid = load_transport_grid(config.grid_template)
     forcing = load_transport_forcing(
         _resolve_config_value(config.root, config.transport["met_root"]),
         datetime.strptime(config.transport["start"], CONFIG_TIME_FORMAT),
-        config.grid_template,
+        grid,
         time_index=int(source.get("time_index", 0)),
     )
     field = TracerField(
@@ -2020,7 +2022,7 @@ def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
-    return trace_transport_one_step(field, forcing, config.grid_template, dt_s=dt_s)
+    return trace_transport_one_step(field, forcing, grid, dt_s=dt_s)
 
 
 def _append_vdiff_input_handoff_rows(rows: list[str], actual, dataset: netCDF4.Dataset) -> None:

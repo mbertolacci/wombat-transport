@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import netCDF4
 import numpy as np
 
 from wombat_transport.fields import (
@@ -12,6 +11,7 @@ from wombat_transport.fields import (
     canonical_time_slice,
     transport_tracer_to_canonical,
 )
+from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import TransportForcing, load_transport_forcing
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
@@ -120,28 +120,27 @@ class TransportWindowResult:
 def run_transport_one_step(
     tracer_field: TracerField,
     forcing: TransportForcing,
-    template_path: str | Path,
+    grid: TransportGrid,
     *,
     dt_s: float = 600.0,
     max_courant: float = 0.95,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
-    with netCDF4.Dataset(template_path) as template:
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
-
     surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
-    delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
+    delp = dry_pressure_thickness_hpa(
+        forcing.surface_pressure_pa,
+        grid.hyai_hpa,
+        grid.hybi,
+    )
+    dry_air_mass = dry_air_mass_from_pressure(delp, grid.area_m2)
     return _run_tpcore_one_step_from_mass(
         tracer_field,
         forcing,
         dry_air_mass,
-        area,
-        hyai,
-        hybi,
+        grid.area_m2,
+        grid.hyai_hpa,
+        grid.hybi,
         p2_hpa=surface_pressure_hpa,
         p1_hpa=surface_pressure_hpa,
         dt_s=dt_s,
@@ -151,28 +150,27 @@ def run_transport_one_step(
 def trace_transport_one_step(
     tracer_field: TracerField,
     forcing: TransportForcing,
-    template_path: str | Path,
+    grid: TransportGrid,
     *,
     dt_s: float = 600.0,
     max_courant: float = 0.95,
 ) -> TransportStepDiagnostics:
     """Run one transport step and retain exact operator handoff arrays."""
 
-    with netCDF4.Dataset(template_path) as template:
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
-
     surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
-    delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
-    dry_air_mass = dry_air_mass_from_pressure(delp, area)
+    delp = dry_pressure_thickness_hpa(
+        forcing.surface_pressure_pa,
+        grid.hyai_hpa,
+        grid.hybi,
+    )
+    dry_air_mass = dry_air_mass_from_pressure(delp, grid.area_m2)
     return _trace_tpcore_one_step_from_mass(
         tracer_field,
         forcing,
         dry_air_mass,
-        area,
-        hyai,
-        hybi,
+        grid.area_m2,
+        grid.hyai_hpa,
+        grid.hybi,
         p2_hpa=surface_pressure_hpa,
         p1_hpa=surface_pressure_hpa,
         dt_s=dt_s,
@@ -183,7 +181,7 @@ def run_transport_window(
     tracer_field: TracerField,
     met_root: str | Path,
     start: datetime,
-    template_path: str | Path,
+    grid: TransportGrid,
     *,
     steps: int = 18,
     dt_s: float = 600.0,
@@ -202,22 +200,22 @@ def run_transport_window(
     initial_scalar_mass = None
     final_scalar_mass = None
     forcing_cache: dict[tuple[datetime, int], TransportForcing] = {}
-    with netCDF4.Dataset(template_path) as template:
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
     first_forcing = _load_window_forcing(
         forcing_cache,
         met_root,
         start,
-        template_path,
+        grid,
         step=0,
         dt_s=dt_s,
         initial_met_time_index=initial_met_time_index,
     )
     dry_air_mass = dry_air_mass_from_pressure(
-        dry_pressure_thickness_hpa(first_forcing.surface_pressure_pa, hyai, hybi),
-        area,
+        dry_pressure_thickness_hpa(
+            first_forcing.surface_pressure_pa,
+            grid.hyai_hpa,
+            grid.hybi,
+        ),
+        grid.area_m2,
     )
 
     for step in range(steps):
@@ -225,7 +223,7 @@ def run_transport_window(
             forcing_cache,
             met_root,
             start,
-            template_path,
+            grid,
             step=step,
             dt_s=dt_s,
             initial_met_time_index=initial_met_time_index,
@@ -234,9 +232,9 @@ def run_transport_window(
             state,
             forcing,
             dry_air_mass,
-            area,
-            hyai,
-            hybi,
+            grid.area_m2,
+            grid.hyai_hpa,
+            grid.hybi,
             dt_s=dt_s,
             max_courant=max_courant,
         )
@@ -728,7 +726,7 @@ def _load_window_forcing(
     cache: dict[tuple[datetime, int], TransportForcing],
     met_root: str | Path,
     start: datetime,
-    template_path: str | Path,
+    grid: TransportGrid,
     *,
     step: int,
     dt_s: float,
@@ -740,5 +738,5 @@ def _load_window_forcing(
     time_index = absolute_index % 8
     key = (datetime(timestamp.year, timestamp.month, timestamp.day), time_index)
     if key not in cache:
-        cache[key] = load_transport_forcing(met_root, key[0], template_path, time_index=time_index)
+        cache[key] = load_transport_forcing(met_root, key[0], grid, time_index=time_index)
     return cache[key]

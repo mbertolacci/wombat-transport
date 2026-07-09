@@ -7,6 +7,8 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
+from wombat_transport.grid import TransportGrid
+
 from wombat_transport.io import FIXED_GRID
 
 MERRA2_FILENAME = "MERRA2.{date}.{collection}.2x25.nc4"
@@ -139,7 +141,7 @@ class TransportForcing:
 def load_transport_forcing(
     met_root: str | Path,
     timestamp: datetime,
-    template_path: str | Path,
+    grid: TransportGrid,
     *,
     time_index: int = 0,
 ) -> TransportForcing:
@@ -161,10 +163,7 @@ def load_transport_forcing(
         netCDF4.Dataset(a3mstc_path) as a3mstc,
         netCDF4.Dataset(a3mste_path) as a3mste,
         netCDF4.Dataset(i3_path) as i3,
-        netCDF4.Dataset(template_path) as template,
     ):
-        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
         u = _read_3d_time_slice(a3dyn, "U", time_index)
         v = _read_3d_time_slice(a3dyn, "V", time_index)
         omega = _read_3d_time_slice(a3dyn, "OMEGA", time_index)
@@ -204,8 +203,8 @@ def load_transport_forcing(
         convective_ice_flux_kg_m2_s=pficu[np.newaxis, 1:, :, :],
         convective_liquid_flux_kg_m2_s=pflcu[np.newaxis, 1:, :, :],
         convective_precip_mm_day=precccon * 86400.0,
-        lat_deg=lat,
-        lon_deg=lon,
+        lat_deg=grid.lat_deg,
+        lon_deg=grid.lon_deg,
         vertical_mapping=MERRA2_72_TO_47_MAPPING,
         a1_path=a1_path.resolve(),
         a3dyn_path=a3dyn_path.resolve(),

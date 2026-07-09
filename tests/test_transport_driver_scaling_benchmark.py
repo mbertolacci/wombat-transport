@@ -114,6 +114,7 @@ def test_transport_driver_mean_run_averages_stage_times():
 def test_transport_driver_synthetic_builder_uses_canonical_tracer_field():
     inputs = benchmark._build_synthetic_driver_inputs(Path("base_wombat/run.yml"), 3, dt_s=600.0)
 
+    assert inputs.grid.shape == (47, 91, 144)
     assert inputs.tracer_field.data.shape == (1, 47, 91, 144, 3)
     assert inputs.forcing.u_m_s.shape == (1, 47, 91, 144)
     assert inputs.forcing.convective_mass_flux_kg_m2_s.shape == (1, 47, 91, 144)

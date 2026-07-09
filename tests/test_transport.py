@@ -9,6 +9,7 @@ from wombat_transport.fields import TracerField
 from wombat_transport.fields import (
     canonical_time_slice,
 )
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import (
@@ -55,6 +56,31 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert forcing.a3dyn_path.exists()
     assert forcing.i3_path.exists()
     assert np.all(np.isfinite(forcing.u_m_s))
+
+
+def test_load_transport_grid_reads_template_metadata():
+    config = load_run_config(BASE_CONFIG)
+
+    grid = load_transport_grid(config.grid_template)
+
+    assert grid.shape == (FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert grid.area_m2.shape == (FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert grid.hyai_hpa.shape == (FIXED_GRID["lev"] + 1,)
+    assert grid.hybi.shape == (FIXED_GRID["lev"] + 1,)
+    assert grid.lat_deg.shape == (FIXED_GRID["lat"],)
+    assert grid.lon_deg.shape == (FIXED_GRID["lon"],)
+    assert grid.lev.shape == (FIXED_GRID["lev"],)
+    assert np.all(grid.area_m2 > 0.0)
+
+
+def test_transport_forcing_accepts_preloaded_grid():
+    config = load_run_config(BASE_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+
+    forcing = _load_forcing(config, grid=grid)
+
+    np.testing.assert_array_equal(forcing.lat_deg, grid.lat_deg)
+    np.testing.assert_array_equal(forcing.lon_deg, grid.lon_deg)
 
 
 def test_met_level_mapping_returns_47_level_inputs_unchanged():
@@ -224,6 +250,7 @@ def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
 
 def test_transport_one_step_conserves_residual_scalar_mass():
     config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     field = TracerField(
         names=field.names[:1],
@@ -231,7 +258,7 @@ def test_transport_one_step_conserves_residual_scalar_mass():
         units=field.units[:1],
         coords=field.coords,
     )
-    result = run_transport_one_step(field, _load_forcing(config), config.grid_template, dt_s=600.0)
+    result = run_transport_one_step(field, _load_forcing(config, grid=grid), grid, dt_s=600.0)
 
     assert result.state.shape == field.shape
     assert result.transport_operators == ("tpcore", "vdiff", "convection")
@@ -244,6 +271,7 @@ def test_transport_one_step_conserves_residual_scalar_mass():
 
 def test_trace_transport_one_step_captures_operator_handoffs():
     config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     field = TracerField(
         names=field.names[:1],
@@ -252,7 +280,7 @@ def test_trace_transport_one_step_captures_operator_handoffs():
         coords=field.coords,
     )
 
-    trace = trace_transport_one_step(field, _load_forcing(config), config.grid_template, dt_s=600.0)
+    trace = trace_transport_one_step(field, _load_forcing(config, grid=grid), grid, dt_s=600.0)
 
     assert trace.result.transport_operators == ("tpcore", "vdiff", "convection")
     assert trace.tpcore_state.tracer_conc_after.shape == (FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
@@ -265,12 +293,13 @@ def test_trace_transport_one_step_captures_operator_handoffs():
 
 def test_transport_window_accumulates_average_state_and_conserves_mass():
     config = load_run_config(BASE_CONFIG)
+    grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database)
     result = run_transport_window(
         field,
         config.root / config.transport["met_root"],
         datetime.strptime(config.transport["start"], "%Y-%m-%d %H:%M"),
-        config.grid_template,
+        grid,
         steps=2,
         dt_s=600.0,
     )
@@ -301,13 +330,15 @@ def test_transport_forcing_loads_convection_fields_on_target_grid():
     assert np.max(np.abs(forcing.convective_mass_flux_kg_m2_s)) > 0.0
 
 
-def _load_forcing(config):
+def _load_forcing(config, *, grid=None):
     from datetime import datetime
 
+    if grid is None:
+        grid = load_transport_grid(config.grid_template)
     return load_transport_forcing(
         config.root / config.transport["met_root"],
         datetime.strptime(config.transport["start"], "%Y-%m-%d %H:%M"),
-        config.grid_template,
+        grid,
         time_index=int(config.transport["met_time_index"]),
     )
 

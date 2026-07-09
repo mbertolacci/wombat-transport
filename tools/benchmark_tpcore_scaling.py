@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-import netCDF4
 import numpy as np
 
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport.tpcore import run_tpcore_one_step
 
@@ -181,21 +181,17 @@ def _positive_int(value: str) -> int:
 
 def _read_fullgrid_shape(run_config_path: Path) -> tuple[int, int, int]:
     config = load_run_config(run_config_path)
-    with netCDF4.Dataset(config.grid_template) as template:
-        nlev = len(template.dimensions["lev"])
-        nlat = len(template.dimensions["lat"])
-        nlon = len(template.dimensions["lon"])
-    return nlev, nlat, nlon
+    return load_transport_grid(config.grid_template).shape
 
 
 def _build_synthetic_tpcore_inputs(run_config_path: Path, ntracer: int, *, dt_s: float) -> SyntheticTpcoreInputs:
     config = load_run_config(run_config_path)
-    with netCDF4.Dataset(config.grid_template) as template:
-        lat = np.asarray(template.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(template.variables["lon"][:], dtype=np.float64)
-        hyai = np.asarray(template.variables["hyai"][:], dtype=np.float64)
-        hybi = np.asarray(template.variables["hybi"][:], dtype=np.float64)
-        area = np.asarray(template.variables["AREA"][:], dtype=np.float64)
+    grid = load_transport_grid(config.grid_template)
+    lat = grid.lat_deg
+    lon = grid.lon_deg
+    hyai = grid.hyai_hpa
+    hybi = grid.hybi
+    area = grid.area_m2
 
     nlev = hyai.size - 1
     level = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]

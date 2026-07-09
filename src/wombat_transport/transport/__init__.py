@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.transport.driver import (
     ConvectionInputState,
     TransportStageMass,
@@ -54,6 +55,7 @@ __all__ = [
     "MERRA2_72_TO_47_MAPPING",
     "MERRA2_FILENAME",
     "TransportForcing",
+    "TransportGrid",
     "ConvectionResult",
     "ConvectionInputState",
     "TransportStageMass",
@@ -74,6 +76,7 @@ __all__ = [
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
     "load_transport_forcing",
+    "load_transport_grid",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",
     "pressure_edges_hpa",
