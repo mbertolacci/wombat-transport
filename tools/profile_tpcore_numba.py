@@ -17,16 +17,22 @@ import numpy as np
 from numba import njit
 
 from wombat_transport.transport.tpcore import _numba as nb
-from wombat_transport.transport.tpcore._core import _set_cross_terms, _set_jn_js, setup_tpcore_terms
+from wombat_transport.transport.tpcore._core import setup_tpcore_terms
 
 
 DEFAULT_RUN_CONFIG = Path("base_wombat/run.yml")
 DEFAULT_OUTPUT_DIR = Path("/tmp/wombat-tpcore-numba-profile")
 DEFAULT_DT_S = 600.0
 STAGE_PERF_STAGES = (
+    "python_copy_workspace_cross_terms",
+    "poles_plus_dq_init",
+    "calc_cross_terms",
+    "xadv_dao2",
+    "yadv_dao2",
     "ytp_horizontal_mass_flux",
     "xtp_horizontal_mass_flux",
     "fzppm_vertical",
+    "qckxyz_fill_finalize",
 )
 
 
@@ -40,17 +46,6 @@ def _init_level_kernel(q: np.ndarray, dq1: np.ndarray, delp1: np.ndarray, level:
             mass = delp1[level, j, i]
             for tracer in range(ntracer):
                 dq1[level, j, i, tracer] = q[level, j, i, tracer] * mass
-
-
-@njit(cache=False)
-def _update_q_level_kernel(q: np.ndarray, adx: np.ndarray, ady: np.ndarray, level: int) -> None:
-    nlat = q.shape[1]
-    nlon = q.shape[2]
-    ntracer = q.shape[3]
-    for j in range(nlat):
-        for i in range(nlon):
-            for tracer in range(ntracer):
-                q[level, j, i, tracer] += adx[j, i, tracer] + ady[j, i, tracer]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,12 +200,17 @@ def _run_staged_once(inputs: Any, setup: Any) -> dict[str, float]:
     nlev, nlat, nlon, ntracer = inputs.tracer_conc.shape
     q = np.ascontiguousarray(inputs.tracer_conc).copy()
     dq1 = np.empty_like(q)
-    prepass_workspace = nb._make_tpcore_prepass_numba_workspace(nlat, nlon, ntracer)
-    x_workspace = nb._make_xtp_numba_workspace(nlat, nlon, ntracer)
-    y_workspace = nb._make_ytp_numba_workspace(nlat, nlon, ntracer)
-    ua, va = _set_cross_terms(setup.cx, setup.cy)
-    jn, js = _set_jn_js(setup.cx)
-    qqu, qqv, adx, ady = prepass_workspace
+    workspace = nb._get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer)
+    nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
+    nb._set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
+    qqu = workspace.qqu
+    qqv = workspace.qqv
+    ua = workspace.ua
+    va = workspace.va
+    jn = workspace.jn
+    js = workspace.js
+    x_workspace = workspace.x_workspace
+    y_workspace = workspace.y_workspace
     dcx, fx, al_x, ar_x, a6_x, dc_x, qa_x = x_workspace
     dcy, al_y, ar_y, a6_y = y_workspace
     _add_time(times, "python_copy_workspace_cross_terms", t0)
@@ -228,16 +228,12 @@ def _run_staged_once(inputs: Any, setup: Any) -> dict[str, float]:
         _add_time(times, "calc_cross_terms", t)
 
         t = time.perf_counter()
-        nb._xadv_dao2_batch_numba_kernel(qqv, ua[level], int(jn[level]), int(js[level]), adx)
+        nb._xadv_dao2_apply_batch_numba_kernel(q[level], qqv, ua[level], int(jn[level]), int(js[level]))
         _add_time(times, "xadv_dao2", t)
 
         t = time.perf_counter()
-        nb._yadv_dao2_batch_numba_kernel(qqu, va[level], ady)
+        nb._yadv_dao2_apply_batch_numba_kernel(q[level], qqu, va[level])
         _add_time(times, "yadv_dao2", t)
-
-        t = time.perf_counter()
-        _update_q_level_kernel(q, adx, ady, level)
-        _add_time(times, "q_prepass_update", t)
 
         t = time.perf_counter()
         nb._xtp_batch_numba_kernel(
@@ -279,12 +275,10 @@ def _run_staged_once(inputs: Any, setup: Any) -> dict[str, float]:
     _add_time(times, "fzppm_vertical", t)
 
     t = time.perf_counter()
-    nb._qckxyz_batch_numba_kernel(dq1)
-    _add_time(times, "qckxyz_fill", t)
-
-    t = time.perf_counter()
+    if nb._qckxyz_needs_fill_numba_kernel(dq1):
+        nb._qckxyz_batch_numba_kernel(dq1)
     nb._finalize_tpcore_output_numba_kernel(dq1, setup.delp2_hpa)
-    _add_time(times, "finalize_output", t)
+    _add_time(times, "qckxyz_fill_finalize", t)
     times["checksum"] = float(np.mean(dq1[0, 0, 0, :]))
     return times
 
@@ -313,14 +307,21 @@ def _prepare_stage_state(inputs: Any, setup: Any) -> dict[str, Any]:
     nlev, nlat, nlon, ntracer = inputs.tracer_conc.shape
     q = np.ascontiguousarray(inputs.tracer_conc).copy()
     dq1 = np.empty_like(q)
+    q_for_x = np.empty_like(q)
+    q_for_y = np.empty_like(q)
     qqu_levels = np.empty_like(q)
     qqv_levels = np.empty_like(q)
-    prepass_workspace = nb._make_tpcore_prepass_numba_workspace(nlat, nlon, ntracer)
-    x_workspace = nb._make_xtp_numba_workspace(nlat, nlon, ntracer)
-    y_workspace = nb._make_ytp_numba_workspace(nlat, nlon, ntracer)
-    ua, va = _set_cross_terms(setup.cx, setup.cy)
-    jn, js = _set_jn_js(setup.cx)
-    qqu, qqv, adx, ady = prepass_workspace
+    workspace = nb._get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer)
+    nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
+    nb._set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
+    qqu = workspace.qqu
+    qqv = workspace.qqv
+    ua = workspace.ua
+    va = workspace.va
+    jn = workspace.jn
+    js = workspace.js
+    x_workspace = workspace.x_workspace
+    y_workspace = workspace.y_workspace
     dcx, fx, al_x, ar_x, a6_x, dc_x, qa_x = x_workspace
     dcy, al_y, ar_y, a6_y = y_workspace
 
@@ -332,9 +333,10 @@ def _prepare_stage_state(inputs: Any, setup: Any) -> dict[str, Any]:
         )
         qqu_levels[level] = qqu
         qqv_levels[level] = qqv
-        nb._xadv_dao2_batch_numba_kernel(qqv, ua[level], int(jn[level]), int(js[level]), adx)
-        nb._yadv_dao2_batch_numba_kernel(qqu, va[level], ady)
-        _update_q_level_kernel(q, adx, ady, level)
+        q_for_x[level] = q[level]
+        q_for_y[level] = q[level]
+        nb._xadv_dao2_apply_batch_numba_kernel(q[level], qqv, ua[level], int(jn[level]), int(js[level]))
+        nb._yadv_dao2_apply_batch_numba_kernel(q[level], qqu, va[level])
         nb._xtp_batch_numba_kernel(
             dq1[level],
             qqv,
@@ -366,24 +368,95 @@ def _prepare_stage_state(inputs: Any, setup: Any) -> dict[str, Any]:
         )
 
     return {
+        "inputs": inputs,
         "setup": setup,
         "q": q,
+        "q_for_x": q_for_x,
+        "q_for_y": q_for_y,
         "dq1": dq1,
+        "prepass_workspace": (qqu, qqv),
         "qqu_levels": qqu_levels,
         "qqv_levels": qqv_levels,
         "x_workspace": x_workspace,
         "y_workspace": y_workspace,
+        "ua": ua,
+        "va": va,
         "jn": jn,
         "js": js,
     }
 
 
 def _run_stage_perf_kernel(stage: str, state: dict[str, Any]) -> float:
+    inputs = state["inputs"]
     setup = state["setup"]
+    q = state["q"]
     dq1 = state["dq1"]
     nlev = dq1.shape[0]
+    nlat = dq1.shape[1]
+    nlon = dq1.shape[2]
+    ntracer = dq1.shape[3]
+    if stage == "python_copy_workspace_cross_terms":
+        q_work = np.ascontiguousarray(inputs.tracer_conc).copy()
+        dq1_work = np.empty_like(q_work)
+        workspace = nb._get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer)
+        nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
+        nb._set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
+        return float(
+            np.mean(q_work[0, 0, 0, :])
+            + 0.0 * dq1_work.size
+            + 0.0 * workspace.qqu.size
+            + 0.0 * workspace.x_workspace[0].size
+            + 0.0 * workspace.y_workspace[0].size
+            + 0.0 * workspace.ua[0, 0, 0]
+            + 0.0 * workspace.va[0, 0, 0]
+            + 0.0 * workspace.jn[0]
+            + 0.0 * workspace.js[0]
+        )
+
+    if stage == "poles_plus_dq_init":
+        for level in range(nlev):
+            nb._average_const_poles_batch_numba_kernel(q[level], setup.delp1_hpa[level], inputs.area_m2[:, 0])
+            _init_level_kernel(q, dq1, setup.delp1_hpa, level)
+        return float(np.mean(dq1[0, 0, 0, :]))
+
+    if stage == "calc_cross_terms":
+        qqu, qqv = state["prepass_workspace"]
+        for level in range(nlev):
+            nb._calc_advec_cross_terms_batch_numba_kernel(
+                q[level],
+                state["ua"][level],
+                state["va"][level],
+                int(state["jn"][level]),
+                int(state["js"][level]),
+                qqu,
+                qqv,
+            )
+        return float(np.mean(qqu[0, 0, :]) + np.mean(qqv[0, 0, :]))
+
+    if stage == "xadv_dao2":
+        for level in range(nlev):
+            nb._xadv_dao2_apply_batch_numba_kernel(
+                state["q_for_x"][level],
+                state["qqv_levels"][level],
+                state["ua"][level],
+                int(state["jn"][level]),
+                int(state["js"][level]),
+            )
+        return float(np.mean(state["q_for_x"][0, 0, 0, :]))
+
+    if stage == "yadv_dao2":
+        for level in range(nlev):
+            nb._yadv_dao2_apply_batch_numba_kernel(state["q_for_y"][level], state["qqu_levels"][level], state["va"][level])
+        return float(np.mean(state["q_for_y"][0, 0, 0, :]))
+
     if stage == "fzppm_vertical":
         nb._fzppm_batch_numba_kernel(setup.delp1_hpa, setup.vertical_mass_flux_hpa, dq1, state["q"])
+        return float(np.mean(dq1[0, 0, 0, :]))
+
+    if stage == "qckxyz_fill_finalize":
+        if nb._qckxyz_needs_fill_numba_kernel(dq1):
+            nb._qckxyz_batch_numba_kernel(dq1)
+        nb._finalize_tpcore_output_numba_kernel(dq1, setup.delp2_hpa)
         return float(np.mean(dq1[0, 0, 0, :]))
 
     if stage == "xtp_horizontal_mass_flux":
@@ -435,18 +508,25 @@ def _add_time(times: dict[str, float], name: str, start: float) -> None:
 def _inspect_codegen() -> list[dict[str, Any]]:
     kernels = [
         ("fused", nb._advect_tracers_fused_numba_kernel),
+        ("set_cross_terms", nb._set_cross_terms_numba_kernel),
+        ("set_jn_js", nb._set_jn_js_numba_kernel),
         ("average_poles", nb._average_const_poles_batch_numba_kernel),
         ("calc_cross_terms", nb._calc_advec_cross_terms_batch_numba_kernel),
         ("xadv_dao2", nb._xadv_dao2_batch_numba_kernel),
         ("yadv_dao2", nb._yadv_dao2_batch_numba_kernel),
+        ("xadv_dao2_apply", nb._xadv_dao2_apply_batch_numba_kernel),
+        ("yadv_dao2_apply", nb._yadv_dao2_apply_batch_numba_kernel),
         ("xtp", nb._xtp_batch_numba_kernel),
         ("ytp", nb._ytp_batch_numba_kernel),
         ("fzppm", nb._fzppm_batch_numba_kernel),
+        ("qckxyz_needs_fill", nb._qckxyz_needs_fill_numba_kernel),
         ("qckxyz", nb._qckxyz_batch_numba_kernel),
         ("finalize", nb._finalize_tpcore_output_numba_kernel),
     ]
     rows: list[dict[str, Any]] = []
     for name, fn in kernels:
+        if not fn.signatures:
+            continue
         sig = fn.signatures[0]
         asm = fn.inspect_asm(sig)
         llvm = fn.inspect_llvm(sig)

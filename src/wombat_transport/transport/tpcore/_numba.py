@@ -12,7 +12,6 @@ import os
 import numpy as np
 
 from wombat_transport.transport.tpcore.types import TpcoreSetup
-from wombat_transport.transport.tpcore._core import _set_cross_terms, _set_jn_js
 
 try:  # Optional acceleration dependency.
     from numba import njit
@@ -21,6 +20,32 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
 
 
 _NUMBA_AVAILABLE = njit is not None
+_TPCORE_NUMBA_WORKSPACE = None
+
+
+class _TpcoreNumbaWorkspace:
+    __slots__ = ("shape", "qqu", "qqv", "x_workspace", "y_workspace", "ua", "va", "jn", "js")
+
+    def __init__(self, nlev: int, nlat: int, nlon: int, ntracer: int) -> None:
+        self.shape = (nlev, nlat, nlon, ntracer)
+        self.qqu = np.empty((nlat, nlon, ntracer), dtype=np.float64)
+        self.qqv = np.empty((nlat, nlon, ntracer), dtype=np.float64)
+        self.x_workspace = _make_xtp_numba_workspace(nlat, nlon, ntracer)
+        self.y_workspace = _make_ytp_numba_workspace(nlat, nlon, ntracer)
+        self.ua = np.empty((nlev, nlat, nlon), dtype=np.float64)
+        self.va = np.empty((nlev, nlat, nlon), dtype=np.float64)
+        self.jn = np.empty(nlev, dtype=np.int64)
+        self.js = np.empty(nlev, dtype=np.int64)
+
+
+def _get_tpcore_numba_workspace(nlev: int, nlat: int, nlon: int, ntracer: int) -> _TpcoreNumbaWorkspace:
+    global _TPCORE_NUMBA_WORKSPACE
+    shape = (nlev, nlat, nlon, ntracer)
+    workspace = _TPCORE_NUMBA_WORKSPACE
+    if workspace is None or workspace.shape != shape:
+        workspace = _TpcoreNumbaWorkspace(nlev, nlat, nlon, ntracer)
+        _TPCORE_NUMBA_WORKSPACE = workspace
+    return workspace
 
 def _xtp_batch_numba(
     dq1: np.ndarray,
@@ -120,11 +145,9 @@ def _advect_tracers_fused_numba(
     nlev, nlat, nlon, ntracer = tracer_conc.shape
     q = np.ascontiguousarray(tracer_conc).copy()
     dq1 = np.empty_like(q)
-    prepass_workspace = _make_tpcore_prepass_numba_workspace(nlat, nlon, ntracer)
-    x_workspace = _make_xtp_numba_workspace(nlat, nlon, ntracer)
-    y_workspace = _make_ytp_numba_workspace(nlat, nlon, ntracer)
-    ua, va = _set_cross_terms(setup.cx, setup.cy)
-    jn, js = _set_jn_js(setup.cx)
+    workspace = _get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer)
+    _set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
+    _set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
     _advect_tracers_fused_numba_kernel(
         q,
         dq1,
@@ -138,15 +161,16 @@ def _advect_tracers_fused_numba(
         setup.cy,
         setup.geofac,
         setup.geofac_pc,
-        ua,
-        va,
-        jn,
-        js,
+        workspace.ua,
+        workspace.va,
+        workspace.jn,
+        workspace.js,
         area_m2[:, 0],
         bool(fill),
-        *prepass_workspace,
-        *x_workspace,
-        *y_workspace,
+        workspace.qqu,
+        workspace.qqv,
+        *workspace.x_workspace,
+        *workspace.y_workspace,
     )
     return dq1
 
@@ -190,6 +214,60 @@ def _fzppm_batch_numba(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np
 
 
 if njit is not None:
+
+    @njit(cache=True)
+    def _set_cross_terms_numba_kernel(cx: np.ndarray, cy: np.ndarray, ua: np.ndarray, va: np.ndarray) -> None:
+        nlev = cx.shape[0]
+        nlat = cx.shape[1]
+        nlon = cx.shape[2]
+        j1p = 2
+        j2p = nlat - 3
+        for level in range(nlev):
+            for j in range(nlat):
+                for i in range(nlon):
+                    ua[level, j, i] = 0.0
+                    va[level, j, i] = 0.0
+            for j in range(j1p, j2p + 1):
+                for i in range(nlon - 1):
+                    ua[level, j, i] = 0.5 * (cx[level, j, i] + cx[level, j, i + 1])
+                ua[level, j, nlon - 1] = 0.5 * (cx[level, j, nlon - 1] + cx[level, j, 0])
+            for j in range(1, nlat - 1):
+                for i in range(nlon):
+                    va[level, j, i] = 0.5 * (cy[level, j, i] + cy[level, j + 1, i])
+
+
+    @njit(cache=True)
+    def _set_jn_js_numba_kernel(cx: np.ndarray, jn: np.ndarray, js: np.ndarray) -> None:
+        nlev = cx.shape[0]
+        nlat = cx.shape[1]
+        nlon = cx.shape[2]
+        j1p = 2
+        j2p = nlat - 3
+        js0 = (nlat + 1) // 2 - 1
+        jn0 = nlat - (js0 + 1)
+        for level in range(nlev):
+            js_value = j1p
+            for j in range(min(nlat - 1, js0), max(0, j1p) - 1, -1):
+                found = False
+                for i in range(nlon):
+                    if abs(cx[level, j, i]) > 1.0:
+                        found = True
+                        break
+                if found:
+                    js_value = j
+                    break
+            jn_value = j2p
+            for j in range(max(0, jn0), min(nlat - 1, j2p) + 1):
+                found = False
+                for i in range(nlon):
+                    if abs(cx[level, j, i]) > 1.0:
+                        found = True
+                        break
+                if found:
+                    jn_value = j
+                    break
+            js[level] = js_value
+            jn[level] = jn_value
 
     @njit(cache=True)
     def _average_const_poles_batch_numba_kernel(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) -> None:
@@ -261,6 +339,23 @@ if njit is not None:
 
 
     @njit(cache=True)
+    def _qckxyz_needs_fill_numba_kernel(dq1: np.ndarray) -> bool:
+        nlev = dq1.shape[0]
+        nlat = dq1.shape[1]
+        nlon = dq1.shape[2]
+        ntracer = dq1.shape[3]
+        j1p = 2
+        j2p = nlat - 3
+        for k in range(nlev):
+            for j in range(j1p, j2p + 1):
+                for i in range(nlon):
+                    for tracer in range(ntracer):
+                        if dq1[k, j, i, tracer] < 0.0:
+                            return True
+        return False
+
+
+    @njit(cache=True)
     def _finalize_tpcore_output_numba_kernel(dq1: np.ndarray, delp2: np.ndarray) -> None:
         nlev = dq1.shape[0]
         nlat = dq1.shape[1]
@@ -284,7 +379,6 @@ if njit is not None:
                     dq1[lev, 1, lon, tracer] = dq1[lev, 0, lon, tracer]
                     dq1[lev, nlat - 2, lon, tracer] = dq1[lev, nlat - 1, lon, tracer]
 
-
     @njit(cache=True)
     def _advect_tracers_fused_numba_kernel(
         q: np.ndarray,
@@ -307,8 +401,6 @@ if njit is not None:
         fill: bool,
         qqu: np.ndarray,
         qqv: np.ndarray,
-        adx: np.ndarray,
-        ady: np.ndarray,
         dcx: np.ndarray,
         fx: np.ndarray,
         al_x: np.ndarray,
@@ -343,12 +435,8 @@ if njit is not None:
                 qqu,
                 qqv,
             )
-            _xadv_dao2_batch_numba_kernel(qqv, ua[level], int(jn[level]), int(js[level]), adx)
-            _yadv_dao2_batch_numba_kernel(qqu, va[level], ady)
-            for j in range(nlat):
-                for i in range(nlon):
-                    for tracer in range(ntracer):
-                        q[level, j, i, tracer] += adx[j, i, tracer] + ady[j, i, tracer]
+            _xadv_dao2_apply_batch_numba_kernel(q[level], qqv, ua[level], int(jn[level]), int(js[level]))
+            _yadv_dao2_apply_batch_numba_kernel(q[level], qqu, va[level])
 
             _xtp_batch_numba_kernel(
                 dq1[level],
@@ -382,7 +470,8 @@ if njit is not None:
 
         _fzppm_batch_numba_kernel(delp1, wz, dq1, q)
         if fill:
-            _qckxyz_batch_numba_kernel(dq1)
+            if _qckxyz_needs_fill_numba_kernel(dq1):
+                _qckxyz_batch_numba_kernel(dq1)
         _finalize_tpcore_output_numba_kernel(dq1, delp2)
 
 
@@ -604,6 +693,105 @@ if njit is not None:
                 ady[1, i, tracer] = south
                 ady[nlat - 2, i, tracer] = north
                 ady[nlat - 1, i, tracer] = north
+
+
+    @njit(cache=True)
+    def _xadv_dao2_apply_batch_numba_kernel(
+        q: np.ndarray,
+        qqv: np.ndarray,
+        ua: np.ndarray,
+        jn: int,
+        js: int,
+    ) -> None:
+        nlat = qqv.shape[0]
+        nlon = qqv.shape[1]
+        ntracer = qqv.shape[2]
+        j1p = 2
+        j2p = nlat - 3
+
+        for j in range(j1p, j2p + 1):
+            for i in range(nlon):
+                iu0 = int(np.rint(ua[j, i]))
+                ru = float(iu0) - ua[j, i]
+                iu = i - iu0
+                im1 = (iu - 1) % nlon
+                iu_mod = iu % nlon
+                ip1 = (iu + 1) % nlon
+                for tracer in range(ntracer):
+                    q_i = qqv[j, iu_mod, tracer]
+                    q_ip1 = qqv[j, ip1, tracer]
+                    q_im1 = qqv[j, im1, tracer]
+                    a1 = 0.5 * (q_ip1 + q_im1) - q_i
+                    b1 = 0.5 * (q_ip1 - q_im1)
+                    c1 = q_i - qqv[j, i, tracer]
+                    q[j, i, tracer] += ru * (a1 * ru + b1) + c1
+
+
+    @njit(cache=True)
+    def _yadv_dao2_apply_batch_numba_kernel(q: np.ndarray, qqu: np.ndarray, va: np.ndarray) -> None:
+        nlat = qqu.shape[0]
+        nlon = qqu.shape[1]
+        ntracer = qqu.shape[2]
+        j1p = 2
+        j2p = nlat - 3
+
+        for j in range(j1p, j2p + 1):
+            for i in range(nlon):
+                jv0 = int(np.rint(va[j, i]))
+                rv = float(jv0) - va[j, i]
+                jv = j - jv0
+                jm1 = jv - 1
+                jp1 = jv + 1
+                q_j_valid = jv >= 0 and jv < nlat
+                q_jm1_valid = jm1 >= 0 and jm1 < nlat
+                q_jp1_valid = jp1 >= 0 and jp1 < nlat
+                for tracer in range(ntracer):
+                    q_j = qqu[jv, i, tracer] if q_j_valid else 0.0
+                    q_jp1 = qqu[jp1, i, tracer] if q_jp1_valid else 0.0
+                    q_jm1 = qqu[jm1, i, tracer] if q_jm1_valid else 0.0
+                    a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+                    b1 = 0.5 * (q_jp1 - q_jm1)
+                    c1 = q_j - qqu[j, i, tracer]
+                    q[j, i, tracer] += rv * (a1 * rv + b1) + c1
+
+        for tracer in range(ntracer):
+            south = 0.0
+            north = 0.0
+            for i in range(nlon):
+                j = 1
+                jv0 = int(np.rint(va[j, i]))
+                rv = float(jv0) - va[j, i]
+                jv = j - jv0
+                jm1 = jv - 1
+                jp1 = jv + 1
+                q_j = qqu[jv, i, tracer] if jv >= 0 and jv < nlat else 0.0
+                q_jp1 = qqu[jp1, i, tracer] if jp1 >= 0 and jp1 < nlat else 0.0
+                q_jm1 = qqu[jm1, i, tracer] if jm1 >= 0 and jm1 < nlat else 0.0
+                a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+                b1 = 0.5 * (q_jp1 - q_jm1)
+                c1 = q_j - qqu[j, i, tracer]
+                south += rv * (a1 * rv + b1) + c1
+
+                j = nlat - 2
+                jv0 = int(np.rint(va[j, i]))
+                rv = float(jv0) - va[j, i]
+                jv = j - jv0
+                jm1 = jv - 1
+                jp1 = jv + 1
+                q_j = qqu[jv, i, tracer] if jv >= 0 and jv < nlat else 0.0
+                q_jp1 = qqu[jp1, i, tracer] if jp1 >= 0 and jp1 < nlat else 0.0
+                q_jm1 = qqu[jm1, i, tracer] if jm1 >= 0 and jm1 < nlat else 0.0
+                a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+                b1 = 0.5 * (q_jp1 - q_jm1)
+                c1 = q_j - qqu[j, i, tracer]
+                north += rv * (a1 * rv + b1) + c1
+            south /= float(nlon)
+            north /= float(nlon)
+            for i in range(nlon):
+                q[0, i, tracer] += south
+                q[1, i, tracer] += south
+                q[nlat - 2, i, tracer] += north
+                q[nlat - 1, i, tracer] += north
 
 
     @njit(cache=True)
@@ -1088,6 +1276,10 @@ else:
         raise RuntimeError("numba is not available")
 
 
+    def _qckxyz_needs_fill_numba_kernel(dq1: np.ndarray) -> bool:
+        raise RuntimeError("numba is not available")
+
+
     def _finalize_tpcore_output_numba_kernel(dq1: np.ndarray, delp2: np.ndarray) -> None:
         raise RuntimeError("numba is not available")
 
@@ -1113,8 +1305,6 @@ else:
         fill: bool,
         qqu: np.ndarray,
         qqv: np.ndarray,
-        adx: np.ndarray,
-        ady: np.ndarray,
         dcx: np.ndarray,
         fx: np.ndarray,
         al_x: np.ndarray,
