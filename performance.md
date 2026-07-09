@@ -3,8 +3,11 @@
 ## 2026-07-09 baseline
 
 This branch started with a single-thread performance attribution pass for the
-Numba transport path. `WOMBAT_TPCORE_NUMBA=all` is the current default and was
-used for these measurements.
+Numba transport path. At the time of the baseline run,
+`WOMBAT_TPCORE_NUMBA=all` selected the fully accelerated TPCORE path. That mode
+has since been replaced by a boolean switch; unset or truthy
+`WOMBAT_TPCORE_NUMBA` now enables the fused Numba path, and false-like values
+disable it.
 
 The benchmark scripts now support `--warmup`, defaulting to one untimed run per
 tracer count. This avoids timing first-call Numba compilation when collecting
@@ -98,6 +101,14 @@ TPCORE was converted to use a fused Numba non-trace path controlled by a boolean
 were removed; unset or truthy values enable Numba, and false-like values disable
 it.
 
+The code is now split into a `tpcore` package:
+
+- `src/wombat_transport/transport/tpcore/_core.py`: public API, setup, branch
+  analysis, and the pure NumPy/reference trace path.
+- `src/wombat_transport/transport/tpcore/_numba.py`: optional fused Numba
+  non-trace path and compiled helper kernels.
+- `src/wombat_transport/transport/tpcore/types.py`: TPCORE dataclasses.
+
 Standalone TPCORE best timed run after fusion:
 
 | Tracers | Previous optimized s | Fused s | Change |
@@ -128,3 +139,55 @@ NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
 ```
 
 Result: 33 passed, 41 deselected.
+
+After the package split, the focused tests were rerun with
+`PYTHONPYCACHEPREFIX=/tmp/wombat-pycache` because this linked worktree cannot
+write local `__pycache__` directories under the sandbox:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -m pytest \
+  tests/test_tpcore_scaling_benchmark.py \
+  tests/test_gc_harness.py \
+  -k 'tpcore and not fullgrid and not large_base and not residual_initial and not vdiff_after_tpcore'
+```
+
+Result: 33 passed, 41 deselected.
+
+The pure fallback smoke also passed:
+
+```bash
+WOMBAT_TPCORE_NUMBA=0 \
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -m pytest \
+  tests/test_gc_harness.py \
+  -k 'test_python_tpcore_matches_low_courant_oracle_tracer_step'
+```
+
+Result: 1 passed, 55 deselected.
+
+Import and benchmark smoke after the split:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -c 'from wombat_transport.transport import tpcore; print(tpcore._numba_tpcore_mode()); print(tpcore.run_tpcore_one_step.__module__)'
+```
+
+Output:
+
+```text
+1
+wombat_transport.transport.tpcore._core
+```
+
+One-tracer TPCORE benchmark smoke after the split completed in `0.0759 s`,
+consistent with the fused-path timing above.
