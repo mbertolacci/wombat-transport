@@ -213,3 +213,195 @@ The one-tracer total is effectively noise/regression at this scale, because mass
 diagnostics were not a large cost there. The many-tracer case is the target:
 overhead is now roughly flat with tracer count in this benchmark, and the step
 is dominated by the three transport operators again.
+
+## 2026-07-09 repeatable TPCORE Numba profiling
+
+`tools/profile_tpcore_numba.py` captures the profiling workflow used for the
+native TPCORE investigation. It runs a steady-state TPCORE benchmark, a staged
+Numba timing breakdown, LLVM/ASM inspection summaries, and optional delayed
+`perf stat`/`perf record` passes. With `--stage-perf`, it also attaches
+`perf stat` to isolated worker processes for selected TPCORE suboperators.
+
+Run it with a fresh Numba cache when codegen inspection matters; cached Numba
+functions can otherwise report empty LLVM/ASM inspection output:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache-profile \
+NUMBA_NUM_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+tools/profile_tpcore_numba.py \
+  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/base_wombat/run.yml \
+  --tracers 96 \
+  --repeat 5 \
+  --warmup 2 \
+  --stage-repeat 5 \
+  --perf-repeat 8 \
+  --output-dir /tmp/wombat-tpcore-profile
+```
+
+The `perf` pass requires host permissions such as
+`kernel.perf_event_paranoid=1`. Use `--skip-perf` to collect the benchmark,
+staged timing, and codegen summary without native sampling.
+
+To split hardware counters by suboperator, add `--stage-perf`. This currently
+profiles the top Numba stages (`ytp_horizontal_mass_flux`,
+`xtp_horizontal_mass_flux`, and `fzppm_vertical`) by running each stage in an
+isolated worker loop and attaching `perf stat -p` after Numba warmup:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache-profile \
+NUMBA_NUM_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+tools/profile_tpcore_numba.py \
+  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/base_wombat/run.yml \
+  --tracers 96 \
+  --repeat 3 \
+  --warmup 2 \
+  --stage-repeat 3 \
+  --skip-perf \
+  --stage-perf \
+  --stage-perf-iterations 10 \
+  --output-dir /tmp/wombat-tpcore-stage-profile
+```
+
+The stage perf counters are not exact whole-TPCORE attribution: each worker
+prepares representative arrays, repeats one stage, and measures that stage in
+isolation. They are intended to compare hardware bottlenecks between stages.
+
+## 2026-07-09 column-scratch FZPPM update
+
+The Numba vertical PPM kernel now processes one latitude/longitude column at a
+time with scratch arrays shaped `(nlev, ntracer)`, instead of row-wide scratch
+arrays shaped `(nlev, nlon, ntracer)`. The tracer dimension remains the inner
+contiguous loop. Synthetic TPCORE outputs for 1, 24, and 96 tracers matched the
+previous Numba output exactly.
+
+Standalone 96-tracer TPCORE improved from the native-profile baseline of about
+`1.16-1.18 s` best wall time to about `1.02-1.04 s` best wall time.
+
+Current repeatable profile output for 96 tracers:
+
+```text
+96 tracer TPCORE best wall: 1.022793 s
+mean wall: 1.0257691 s
+checksum: 0.0004048350081850619
+```
+
+Current staged Numba timing for 96 tracers:
+
+| Stage | Mean s | Percent |
+| --- | ---: | ---: |
+| `ytp_horizontal_mass_flux` | 0.256 | 26.1% |
+| `xtp_horizontal_mass_flux` | 0.171 | 17.5% |
+| `fzppm_vertical` | 0.150 | 15.3% |
+| `poles_plus_dq_init` | 0.068 | 6.9% |
+| `yadv_dao2` | 0.068 | 6.9% |
+| `copy/workspace/cross setup` | 0.066 | 6.8% |
+| `xadv_dao2` | 0.054 | 5.6% |
+| `calc_cross_terms` | 0.054 | 5.5% |
+| `qckxyz_fill` | 0.036 | 3.6% |
+| `q_prepass_update` | 0.032 | 3.3% |
+| `finalize_output` | 0.025 | 2.6% |
+
+Compared with the earlier staged profile, `fzppm_vertical` fell from about
+`0.311 s` to about `0.150 s`. The top TPCORE cost is now horizontal Y transport,
+then horizontal X transport.
+
+Current delayed `perf stat -d` counters for the 96-tracer benchmark:
+
+```text
+IPC: 1.55
+backend bound: 67.2%
+branch misses: 0.28%
+L1D load miss rate: 8.79%
+LLC load miss rate: 82.37%
+page faults: 30,468 over the delayed sampled region
+```
+
+Current delayed `perf record` DSO attribution on the core event:
+
+```text
+78.1%  Numba JIT code
+ 8.2%  kernel, mostly clear_page_erms
+ 6.7%  libc, mostly memset/memcpy
+ 4.2%  NumPy
+ 2.6%  Python
+```
+
+Current isolated stage `perf stat` counters for 96 tracers:
+
+| Stage | Task ms | IPC | Backend bound | Branch miss | L1D miss | LLC miss |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ytp_horizontal_mass_flux` | 2575 | 1.65 | 67.5% | 0.26% | 7.94% | 83.95% |
+| `xtp_horizontal_mass_flux` | 1695 | 2.42 | 51.2% | 0.25% | 3.27% | 92.00% |
+| `fzppm_vertical` | 1532 | 2.24 | 52.2% | 0.52% | 10.15% | 48.25% |
+
+This split makes `ytp_horizontal_mass_flux` the strongest next target: it is
+the largest staged cost and has whole-kernel-like backend/cache pressure. `xtp`
+has high IPC and low L1 miss rate despite being the second-largest stage, so it
+may be less immediately memory-locality limited. `fzppm` is no longer the top
+stage after the column-scratch rewrite, but its L1 miss rate remains visible.
+
+Codegen checks still show clean native Numba compilation and vector bodies in
+the main kernels. The FZPPM kernel still has NRT allocation references, but the
+allocations are now for column-sized scratch. Further gains are more likely to
+come from reducing horizontal transport memory traffic or hoisting/reusing
+wrapper-level workspaces across repeated transport steps than from more FZPPM
+scratch layout work.
+
+Focused verification after the column-scratch change:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+NUMBA_NUM_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -m pytest tests/test_tpcore_scaling_benchmark.py
+```
+
+Result: 18 passed.
+
+The fixture-backed focused transport checks were run from the original checkout
+with this branch on `PYTHONPATH`:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+NUMBA_NUM_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -m pytest tests/test_transport.py tests/test_transport_driver_scaling_benchmark.py
+```
+
+Result: 22 passed.
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+NUMBA_NUM_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -m pytest tests/test_gc_harness.py -k 'tpcore'
+```
+
+Result: 15 passed, 4 skipped, 37 deselected.
+
+Next candidate: focus first on `ytp_horizontal_mass_flux`, then `xtp` if the
+Y-path changes help. The first thing to inspect is whether Y transport's full
+`(nlat, nlon, ntracer)` work arrays can be made more local or reused without
+changing the validated GEOS-Chem semantics.
