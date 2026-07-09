@@ -13,6 +13,28 @@ meteorology:
   root: ../ExtData/GEOS_2x2.5/MERRA2
 emissions:
   source: hemco_diagnostics
+outputs:
+  expid: OutputDir/GEOSChem
+  collections:
+    Restart:
+      filename: ./Restarts/GEOSChem.Restart.%y4%m2%d2_%h2%n2z.nc4
+      frequency: 00000100 000000
+      duration: 00000100 000000
+      mode: instantaneous
+      fields:
+        - SpeciesRst_?ALL?
+        - Met_DELPDRY
+        - Met_PS1WET
+        - Met_PS1DRY
+        - Met_SPHU1
+        - Met_TMPU1
+    SpeciesConcThreeHourly:
+      template: "%y4%m2%d2_%h2%n2z.nc4"
+      frequency: 00000000 030000
+      duration: 00000001 000000
+      mode: time-averaged
+      fields:
+        - SpeciesConcVV_?ADV?
 diagnostics:
   species_conc_sample: ../base/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
   level_edge_sample: ../base/OutputDir/GEOSChem.LevelEdgeDiagsThreeHourly.20140901_0000z.nc4

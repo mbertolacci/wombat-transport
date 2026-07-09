@@ -108,6 +108,41 @@ def test_tracer_simulation_uses_configured_residual_emissions_source():
     assert result.emitted_mass_by_tracer[12] != 0.0
 
 
+def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
+    config = load_run_config(RESIDUAL_CONFIG)
+    outputs = {
+        "expid": str(tmp_path / "OutputDir" / "GEOSChem"),
+        "collections": {
+            "Restart": {
+                "filename": str(tmp_path / "Restarts" / "GEOSChem.Restart.%y4%m2%d2_%h2%n2z.nc4"),
+                "frequency": "00000000 001000",
+                "duration": "00000000 001000",
+                "mode": "instantaneous",
+                "fields": ["SpeciesRst_?ALL?", "Met_DELPDRY", "Met_PS1WET", "Met_PS1DRY", "Met_SPHU1", "Met_TMPU1"],
+            },
+            "SpeciesConcThreeHourly": {
+                "template": "%y4%m2%d2_%h2%n2z.nc4",
+                "frequency": "00000000 030000",
+                "duration": "00000001 000000",
+                "mode": "time-averaged",
+                "fields": ["SpeciesConcVV_?ADV?"],
+            },
+        },
+    }
+
+    run_tracer_simulation(replace(config, outputs=outputs), max_steps=1)
+
+    species_conc = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
+    restart = tmp_path / "Restarts" / "GEOSChem.Restart.20140901_0010z.nc4"
+    assert species_conc.exists()
+    assert restart.exists()
+    assert load_species_conc(species_conc).shape[-1] == 24
+    assert load_restart(restart, load_species_database(config.species_database)).shape[-1] == 24
+    with netCDF4.Dataset(restart) as dataset:
+        assert "Met_DELPDRY" in dataset.variables
+        assert "Met_PS1WET" in dataset.variables
+
+
 def test_invalid_hemco_fill_values_are_detected():
     config = load_run_config(RESIDUAL_CONFIG)
     invalid = config.root / "../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409052230.nc"

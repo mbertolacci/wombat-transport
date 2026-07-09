@@ -11,6 +11,7 @@ from wombat_transport.emissions import EmissionsOperator, apply_emissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
+from wombat_transport.output import HistoryOutputManager, OutputSnapshot
 from wombat_transport.run_config import (
     RunConfig,
     emissions_timestep_s,
@@ -70,6 +71,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
 
     configured_emissions = _load_emissions_operator(config, species, grid)
+    output_manager = HistoryOutputManager.from_run_config(config)
 
     forcing_cache = {}
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
@@ -111,7 +113,20 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         stage_masses.extend(transport_result.stage_masses)
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         transport_steps += 1
-        current += timedelta(seconds=transport_dt_s)
+        step_end = current + timedelta(seconds=transport_dt_s)
+        if output_manager is not None:
+            output_manager.record_step(
+                OutputSnapshot(
+                    timestamp=step_end,
+                    state=state,
+                    delp_dry_hpa=transport_result.delp_dry_hpa,
+                    forcing=forcing,
+                )
+            )
+        current = step_end
+
+    if output_manager is not None:
+        output_manager.close()
 
     return TracerSimulationResult(
         state=state,

@@ -30,6 +30,16 @@ from wombat_transport.io import (
     load_species_conc,
     write_restart_like,
 )
+from wombat_transport.output import (
+    HistoryInterval,
+    HistoryOutputManager,
+    OutputCollectionConfig,
+    OutputSnapshot,
+    expand_history_template,
+    parse_history_interval,
+    write_restart_collection,
+    write_species_conc_collection,
+)
 from wombat_transport.run_config import (
     RunConfig,
     emissions_timestep_s,
@@ -71,6 +81,10 @@ __all__ = [
     "EmissionOperatorConfiguration",
     "EmissionsOperator",
     "EmissionsStep",
+    "HistoryInterval",
+    "HistoryOutputManager",
+    "OutputCollectionConfig",
+    "OutputSnapshot",
     "PblHeightState",
     "RunConfig",
     "Species",
@@ -94,6 +108,7 @@ __all__ = [
     "dry_pressure_thickness_hpa",
     "emission_increment_vv",
     "emissions_timestep_s",
+    "expand_history_template",
     "initialize_tracers",
     "load_base_met",
     "load_hemco_emissions",
@@ -106,6 +121,7 @@ __all__ = [
     "meteorology_initial_time_index",
     "meteorology_root",
     "mix_full_pbl",
+    "parse_history_interval",
     "pjc_mass_flux_hpa",
     "public_surface_flux_to_transport",
     "public_tracer4_to_transport",
@@ -124,4 +140,6 @@ __all__ = [
     "simulation_end",
     "simulation_start",
     "write_restart_like",
+    "write_restart_collection",
+    "write_species_conc_collection",
 ]
