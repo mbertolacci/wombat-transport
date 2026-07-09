@@ -299,11 +299,6 @@ def _select_time_index(dataset: netCDF4.Dataset, timestamp: datetime, *, frequen
 
 
 def _select_dimension_index(dataset: netCDF4.Dataset, dimension: str, value: int) -> int:
-    if dimension in dataset.variables:
-        coordinate = np.asarray(dataset.variables[dimension][:])
-        matches = np.where(coordinate == value)[0]
-        if matches.size:
-            return int(matches[0])
     index = value - 1
     if index < 0 or index >= len(dataset.dimensions[dimension]):
         raise IndexError(f"{dimension}={value} is outside dimension length {len(dataset.dimensions[dimension])}")

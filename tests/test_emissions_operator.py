@@ -101,10 +101,17 @@ def test_multiple_entries_sum_and_species_order_follows_species_list(tmp_path):
     np.testing.assert_array_equal(emissions.data[0, -1, :, :, 1], np.full((2, 4), 5.0))
 
 
-def test_npft_selection_uses_coordinate_value(tmp_path):
+def test_npft_selection_uses_one_based_member_even_with_coordinate(tmp_path):
     grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
-    values = np.stack([np.full((2, 4), 10.0), np.full((2, 4), 20.0), np.full((2, 4), 30.0)])
-    _write_time_npft_file(tmp_path / "source.nc", [datetime(2014, 9, 1)], values[np.newaxis, ...], npft=[1, 4, 7])
+    values = np.stack(
+        [
+            np.full((2, 4), 10.0),
+            np.full((2, 4), 20.0),
+            np.full((2, 4), 30.0),
+            np.full((2, 4), 40.0),
+        ]
+    )
+    _write_time_npft_file(tmp_path / "source.nc", [datetime(2014, 9, 1)], values[np.newaxis, ...], npft=[1, 4, 7, 9])
     config_path = _write_config(
         tmp_path,
         fields=[
@@ -124,7 +131,7 @@ def test_npft_selection_uses_coordinate_value(tmp_path):
         datetime(2014, 9, 1)
     )
 
-    np.testing.assert_array_equal(emissions.data[0, -1, :, :, 0], np.full((2, 4), 20.0))
+    np.testing.assert_array_equal(emissions.data[0, -1, :, :, 0], np.full((2, 4), 40.0))
 
 
 def test_npft_selection_falls_back_to_one_based_index_without_coordinate(tmp_path):
