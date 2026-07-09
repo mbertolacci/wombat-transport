@@ -9,7 +9,7 @@ import re
 import netCDF4
 import numpy as np
 
-from wombat_transport.emissions import apply_emissions
+from wombat_transport.emissions import EmissionsOperator, apply_emissions
 from wombat_transport.fields import TracerField, public_tracer5_to_canonical
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers, load_hemco_emissions
@@ -141,7 +141,16 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     emissions_dt_s = float(_emissions_timestep_s(config))
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
 
-    diagnostics = discover_hemco_diagnostics(config)
+    emissions_source = str(config.emissions.get("source", "hemco_diagnostics"))
+    configured_emissions = None
+    diagnostics: tuple[HemcoDiagnosticFile, ...] = ()
+    if emissions_source == "configured_fields":
+        configured_emissions = _load_emissions_operator(config, species, grid)
+    elif emissions_source == "hemco_diagnostics":
+        diagnostics = discover_hemco_diagnostics(config)
+    else:
+        raise ValueError(f"unsupported emissions source {emissions_source}")
+
     emissions_cache: dict[Path, TracerField] = {}
     forcing_cache = {}
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
@@ -171,8 +180,12 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         elapsed_s = int(round((current - start).total_seconds()))
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
             emission_midpoint = current + timedelta(seconds=emissions_dt_s / 2.0)
-            diagnostic = _select_hemco_diagnostic(diagnostics, emission_midpoint)
-            emissions = _load_cached_emissions(diagnostic, emissions_cache, species)
+            if configured_emissions is None:
+                diagnostic = _select_hemco_diagnostic(diagnostics, emission_midpoint)
+                emissions = _load_cached_emissions(diagnostic, emissions_cache, species)
+            else:
+                diagnostic = HemcoDiagnosticFile(path=Path("configured_fields"), timestamp=emission_midpoint)
+                emissions = configured_emissions.evaluate(emission_midpoint)
             if has_invalid_emissions(emissions):
                 skipped.append(diagnostic)
             else:
@@ -200,6 +213,17 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         emissions_dt_s=emissions_dt_s,
         stage_masses=tuple(stage_masses),
         final_delp_dry_hpa=final_delp_dry_hpa,
+    )
+
+
+def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOperator:
+    if "config" not in config.emissions:
+        raise KeyError("emissions.config is required for configured_fields emissions")
+    return EmissionsOperator.from_yaml(
+        str(config.emissions["config"]),
+        root=config.root,
+        species=species,
+        grid=grid,
     )
 
 

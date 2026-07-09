@@ -15,6 +15,8 @@ from wombat_transport.fields import (
 )
 from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.emissions import (
+    EmissionOperatorConfiguration,
+    EmissionsOperator,
     apply_emissions,
     dry_air_mass_per_area,
     emission_increment_vv,
@@ -59,6 +61,8 @@ from wombat_transport.transport import (
 
 __all__ = [
     "FIXED_GRID",
+    "EmissionOperatorConfiguration",
+    "EmissionsOperator",
     "EmissionsReplayResult",
     "HemcoDiagnosticFile",
     "PblHeightState",

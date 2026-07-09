@@ -12,7 +12,8 @@ simulation:
 meteorology:
   root: ../ExtData/GEOS_2x2.5/MERRA2
 emissions:
-  source: hemco_diagnostics
+  source: configured_fields
+  config: emissions.yml
   glob: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.*.nc
   timestamp: midpoint
 diagnostics:

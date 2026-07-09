@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import subprocess
 import sys
 
@@ -8,7 +9,9 @@ import numpy as np
 import pytest
 
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
+from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import (
@@ -46,6 +49,29 @@ def test_discover_hemco_diagnostics_orders_configured_window():
     assert files[0].path.name == "HEMCO_diagnostics.201409010030.nc"
     assert files[-1].path.name == "HEMCO_diagnostics.201409052230.nc"
     assert [item.timestamp for item in files] == sorted(item.timestamp for item in files)
+
+
+def test_configured_residual_emissions_config_covers_expected_species():
+    config = load_run_config(RESIDUAL_CONFIG)
+    operator = _residual_emissions_operator(config)
+
+    assert len(operator.config.scales) == 32
+    assert len(operator.config.fields) == 23
+    assert "r0002p001s001" not in operator.emitted_species
+    assert operator.emitted_species[0] == "r0002p001s002"
+    assert operator.emitted_species[-1] == "r0002p001s024"
+
+
+def test_configured_residual_emissions_match_hemco_diagnostic_sample():
+    config = load_run_config(RESIDUAL_CONFIG)
+    operator = _residual_emissions_operator(config)
+    expected = load_hemco_emissions(config.root / config.diagnostics["hemco_sample"])
+
+    actual = operator.evaluate(datetime(2014, 9, 1, 0, 30))
+
+    assert actual.shape == expected.shape
+    assert actual.names == expected.names
+    np.testing.assert_allclose(actual.data, expected.data, rtol=2.0e-5, atol=1.0e-10)
 
 
 def test_emissions_replay_processes_prefix_and_accumulates_mass():
@@ -94,6 +120,23 @@ def test_tracer_simulation_couples_emissions_and_transport_on_geos_chem_schedule
     emissions = _load_hemco_emissions_for_species(result.processed_files[0].path, species)
     expected = 2.0 * emitted_mass_by_tracer_for_step(emissions, dt_s=1200.0)
     np.testing.assert_allclose(result.emitted_mass_by_tracer, expected)
+
+
+def test_tracer_simulation_uses_configured_residual_emissions_source():
+    config = load_run_config(RESIDUAL_CONFIG)
+
+    result = run_tracer_simulation(config, max_steps=1)
+
+    assert result.transport_steps == 1
+    assert result.emissions_steps == 1
+    assert len(result.discovered_files) == 0
+    assert len(result.processed_files) == 1
+    assert result.processed_files[0].path.name == "configured_fields"
+    assert result.processed_files[0].timestamp == datetime(2014, 9, 1, 0, 10)
+    assert np.isfinite(result.total_emitted_mass)
+    assert result.emitted_mass_by_tracer[0] == 0.0
+    assert result.emitted_mass_by_tracer[1] != 0.0
+    assert result.emitted_mass_by_tracer[12] != 0.0
 
 
 def test_invalid_hemco_fill_values_are_detected():
@@ -343,3 +386,14 @@ def test_run_cli_writes_restart_like_output(tmp_path):
     loaded = load_restart(output_path, load_species_database("base/species_database.yml"))
     assert loaded.names == ("CO2",)
     assert loaded.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
+
+
+def _residual_emissions_operator(config):
+    species = load_species_database(config.species_database)
+    grid = load_transport_grid(config.grid_template)
+    return EmissionsOperator.from_yaml(
+        str(config.emissions["config"]),
+        root=config.root,
+        species=species,
+        grid=grid,
+    )
