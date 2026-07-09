@@ -32,11 +32,8 @@ from wombat_transport.io import (
 )
 from wombat_transport.run_config import RunConfig, load_run_config
 from wombat_transport.runner import (
-    EmissionsReplayResult,
-    HemcoDiagnosticFile,
+    EmissionsStep,
     TracerSimulationResult,
-    discover_hemco_diagnostics,
-    run_emissions_replay,
     run_tracer_simulation,
 )
 from wombat_transport.species import Species, load_species_database
@@ -63,8 +60,7 @@ __all__ = [
     "FIXED_GRID",
     "EmissionOperatorConfiguration",
     "EmissionsOperator",
-    "EmissionsReplayResult",
-    "HemcoDiagnosticFile",
+    "EmissionsStep",
     "PblHeightState",
     "RunConfig",
     "Species",
@@ -82,7 +78,6 @@ __all__ = [
     "canonical_to_public_tracer5",
     "compare_to_time_slice",
     "compute_pbl_height",
-    "discover_hemco_diagnostics",
     "dry_air_mass_from_pressure",
     "dry_air_mass_per_area",
     "dry_pressure_edges_from_thickness_hpa",
@@ -102,7 +97,6 @@ __all__ = [
     "public_surface_flux_to_transport",
     "public_tracer4_to_transport",
     "public_tracer5_to_canonical",
-    "run_emissions_replay",
     "run_tracer_simulation",
     "run_transport_one_step",
     "run_transport_window",

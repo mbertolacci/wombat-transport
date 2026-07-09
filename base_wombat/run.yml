@@ -13,8 +13,6 @@ meteorology:
   root: ../ExtData/GEOS_2x2.5/MERRA2
 emissions:
   source: hemco_diagnostics
-  glob: ../base/OutputDir/HEMCO_diagnostics.*.nc
-  timestamp: midpoint
 diagnostics:
   species_conc_sample: ../base/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
   level_edge_sample: ../base/OutputDir/GEOSChem.LevelEdgeDiagsThreeHourly.20140901_0000z.nc4

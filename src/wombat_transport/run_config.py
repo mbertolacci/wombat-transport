@@ -17,7 +17,6 @@ class RunConfig:
     grid_template: Path
     output_dir: Path
     diagnostics: dict[str, str]
-    replay: dict[str, Any]
     comparison: dict[str, Any]
     transport: dict[str, Any]
     simulation: dict[str, Any]
@@ -50,7 +49,6 @@ def load_run_config(path: str | Path) -> RunConfig:
         grid_template=resolve(raw["grid_template"]),  # type: ignore[arg-type]
         output_dir=resolve(raw["output_dir"]),  # type: ignore[arg-type]
         diagnostics=dict(raw.get("diagnostics", {})),
-        replay=dict(raw.get("replay", {})),
         comparison=dict(raw.get("comparison", {})),
         transport=dict(raw.get("transport", {})),
         simulation=dict(raw.get("simulation", {})),

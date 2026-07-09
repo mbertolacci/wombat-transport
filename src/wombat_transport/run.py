@@ -11,7 +11,7 @@ from wombat_transport.compare import compare_to_time_slice, format_metrics
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers, load_species_conc, write_restart_like
 from wombat_transport.run_config import load_run_config
-from wombat_transport.runner import run_emissions_replay, run_tracer_simulation
+from wombat_transport.runner import run_tracer_simulation
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
     dry_pressure_edges_from_thickness_hpa,
@@ -25,15 +25,12 @@ CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run a Wombat transport prototype mode. Emissions replay uses "
-            "GEOS-Chem HEMCO diagnostic outputs as cached source terms, not raw HEMCO inputs."
-        )
+        description="Run a Wombat transport prototype mode."
     )
     parser.add_argument("run_config", type=Path)
     parser.add_argument(
         "--mode",
-        choices=["run", "init-only", "emissions-only", "transport-one-step", "transport-window"],
+        choices=["run", "init-only", "transport-one-step", "transport-window"],
         default="run",
     )
     parser.add_argument("--max-steps", type=int, default=None)
@@ -102,11 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         comparison_delp_dry_hpa = transport_result.average_delp_dry_hpa
         result = None
     else:
-        result = run_emissions_replay(config, max_steps=args.max_steps)
-        state = result.state
-        transport_result = None
-        comparison_state = state
-        comparison_delp_dry_hpa = None
+        raise AssertionError(f"unhandled mode {args.mode}")
 
     if args.write_output is not None:
         write_restart_like(args.write_output, state, config.grid_template)
@@ -118,11 +111,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.write_output is not None:
         print(f"wrote_output: {args.write_output}")
     if result is not None:
-        print(f"emissions_files_discovered: {len(result.discovered_files)}")
-        print(f"emissions_files_processed: {len(result.processed_files)}")
-        print(f"emissions_files_skipped: {len(result.skipped_files)}")
-        for diagnostic in result.skipped_files:
-            print(f"skipped_invalid_emissions: {diagnostic.path.name}")
         print(f"total_emitted_mass_kg: {result.total_emitted_mass:.8e}")
     if transport_result is not None:
         scalar_mass_error = None

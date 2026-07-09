@@ -2,17 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from glob import glob
 from pathlib import Path
-import re
 
-import netCDF4
 import numpy as np
 
 from wombat_transport.emissions import EmissionsOperator, apply_emissions
-from wombat_transport.fields import TracerField, public_tracer5_to_canonical
+from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
-from wombat_transport.io import initialize_tracers, load_hemco_emissions
+from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import RunConfig
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
@@ -22,36 +19,18 @@ from wombat_transport.transport import (
     run_transport_one_step,
 )
 
-HEMCO_DIAGNOSTIC_RE = re.compile(r"HEMCO_diagnostics\.(\d{12})\.nc$")
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
-FILE_TIME_FORMAT = "%Y%m%d%H%M"
 
 
 @dataclass(frozen=True)
-class HemcoDiagnosticFile:
-    path: Path
+class EmissionsStep:
     timestamp: datetime
-
-
-@dataclass(frozen=True)
-class EmissionsReplayResult:
-    state: TracerField
-    discovered_files: tuple[HemcoDiagnosticFile, ...]
-    processed_files: tuple[HemcoDiagnosticFile, ...]
-    skipped_files: tuple[HemcoDiagnosticFile, ...]
-    emitted_mass_by_tracer: np.ndarray
-
-    @property
-    def total_emitted_mass(self) -> float:
-        return float(np.sum(self.emitted_mass_by_tracer))
 
 
 @dataclass(frozen=True)
 class TracerSimulationResult:
     state: TracerField
-    discovered_files: tuple[HemcoDiagnosticFile, ...]
-    processed_files: tuple[HemcoDiagnosticFile, ...]
-    skipped_files: tuple[HemcoDiagnosticFile, ...]
+    emissions_processed: tuple[EmissionsStep, ...]
     emitted_mass_by_tracer: np.ndarray
     transport_steps: int
     emissions_steps: int
@@ -69,63 +48,6 @@ class TracerSimulationResult:
         return ("tpcore", "vdiff", "convection")
 
 
-def discover_hemco_diagnostics(config: RunConfig) -> tuple[HemcoDiagnosticFile, ...]:
-    pattern = _resolve_config_path(config.root, _hemco_glob(config))
-    start = _hemco_discovery_start(config)
-    end = _hemco_discovery_end(config)
-
-    files: list[HemcoDiagnosticFile] = []
-    for raw_path in glob(str(pattern)):
-        path = Path(raw_path)
-        timestamp = parse_hemco_timestamp(path)
-        if start <= timestamp <= end:
-            files.append(HemcoDiagnosticFile(path=path.resolve(), timestamp=timestamp))
-    return tuple(sorted(files, key=lambda item: item.timestamp))
-
-
-def parse_hemco_timestamp(path: str | Path) -> datetime:
-    match = HEMCO_DIAGNOSTIC_RE.search(Path(path).name)
-    if match is None:
-        raise ValueError(f"not a HEMCO diagnostic filename: {path}")
-    return datetime.strptime(match.group(1), FILE_TIME_FORMAT)
-
-
-def run_emissions_replay(config: RunConfig, *, max_steps: int | None = None) -> EmissionsReplayResult:
-    species = load_species_database(config.species_database)
-    state = initialize_tracers(
-        config.initial_restart,
-        config.species_database,
-        template_path=config.grid_template,
-    )
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        delp_dry_hpa = np.asarray(dataset.variables["Met_DELPDRY"][:])
-
-    discovered = discover_hemco_diagnostics(config)
-    selected = discovered if max_steps is None else discovered[:max_steps]
-    dt_s = float(config.replay.get("dt_s", 3600.0))
-    emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
-    processed: list[HemcoDiagnosticFile] = []
-    skipped: list[HemcoDiagnosticFile] = []
-
-    for diagnostic in selected:
-        emissions = load_hemco_emissions(diagnostic.path)
-        if has_invalid_emissions(emissions):
-            skipped.append(diagnostic)
-            continue
-
-        emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(emissions, dt_s)
-        state = apply_emissions(state, emissions, delp_dry_hpa, species, dt_s)
-        processed.append(diagnostic)
-
-    return EmissionsReplayResult(
-        state=state,
-        discovered_files=discovered,
-        processed_files=tuple(processed),
-        skipped_files=tuple(skipped),
-        emitted_mass_by_tracer=emitted_mass_by_tracer,
-    )
-
-
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
     species = load_species_database(config.species_database)
     state = initialize_tracers(
@@ -141,21 +63,14 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     emissions_dt_s = float(_emissions_timestep_s(config))
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
 
-    emissions_source = str(config.emissions.get("source", "hemco_diagnostics"))
-    configured_emissions = None
-    diagnostics: tuple[HemcoDiagnosticFile, ...] = ()
-    if emissions_source == "configured_fields":
-        configured_emissions = _load_emissions_operator(config, species, grid)
-    elif emissions_source == "hemco_diagnostics":
-        diagnostics = discover_hemco_diagnostics(config)
-    else:
-        raise ValueError(f"unsupported emissions source {emissions_source}")
+    emissions_source = str(config.emissions.get("source", "configured_fields"))
+    if emissions_source != "configured_fields":
+        raise ValueError(f"unsupported emissions source {emissions_source}; use configured_fields")
+    configured_emissions = _load_emissions_operator(config, species, grid)
 
-    emissions_cache: dict[Path, TracerField] = {}
     forcing_cache = {}
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
-    processed: list[HemcoDiagnosticFile] = []
-    skipped: list[HemcoDiagnosticFile] = []
+    emissions_processed: list[EmissionsStep] = []
     stage_masses: list[TransportStageMass] = []
     final_delp_dry_hpa = None
     transport_steps = 0
@@ -180,18 +95,12 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         elapsed_s = int(round((current - start).total_seconds()))
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
             emission_midpoint = current + timedelta(seconds=emissions_dt_s / 2.0)
-            if configured_emissions is None:
-                diagnostic = _select_hemco_diagnostic(diagnostics, emission_midpoint)
-                emissions = _load_cached_emissions(diagnostic, emissions_cache, species)
-            else:
-                diagnostic = HemcoDiagnosticFile(path=Path("configured_fields"), timestamp=emission_midpoint)
-                emissions = configured_emissions.evaluate(emission_midpoint)
+            emissions = configured_emissions.evaluate(emission_midpoint)
             if has_invalid_emissions(emissions):
-                skipped.append(diagnostic)
-            else:
-                emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(emissions, emissions_dt_s)
-                state = apply_emissions(state, emissions, delp_dry_hpa, species, emissions_dt_s)
-                processed.append(diagnostic)
+                raise ValueError(f"configured emissions contain invalid values at {emission_midpoint:%Y-%m-%d %H:%M}")
+            emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(emissions, emissions_dt_s)
+            state = apply_emissions(state, emissions, delp_dry_hpa, species, emissions_dt_s)
+            emissions_processed.append(EmissionsStep(timestamp=emission_midpoint))
             emissions_steps += 1
 
         transport_result = run_transport_one_step(state, forcing, grid, dt_s=transport_dt_s)
@@ -203,9 +112,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
 
     return TracerSimulationResult(
         state=state,
-        discovered_files=diagnostics,
-        processed_files=tuple(processed),
-        skipped_files=tuple(skipped),
+        emissions_processed=tuple(emissions_processed),
         emitted_mass_by_tracer=emitted_mass_by_tracer,
         transport_steps=transport_steps,
         emissions_steps=emissions_steps,
@@ -228,7 +135,7 @@ def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOpera
 
 
 def has_invalid_emissions(emissions: TracerField) -> bool:
-    """Return true when a HEMCO diagnostic contains fill values as data."""
+    """Return true when an emissions field contains fill values as data."""
 
     data = emissions.data
     return bool(np.any(~np.isfinite(data)) or np.any(np.abs(data) > 1.0e20))
@@ -247,24 +154,6 @@ def _resolve_config_path(root: Path, value: str) -> Path:
     return path
 
 
-def _hemco_glob(config: RunConfig) -> str:
-    if "glob" in config.emissions:
-        return str(config.emissions["glob"])
-    return str(config.replay["hemco_glob"])
-
-
-def _hemco_discovery_start(config: RunConfig) -> datetime:
-    if "start" in config.replay:
-        return datetime.strptime(config.replay["start"], CONFIG_TIME_FORMAT)
-    return _simulation_start(config)
-
-
-def _hemco_discovery_end(config: RunConfig) -> datetime:
-    if "end" in config.replay:
-        return datetime.strptime(config.replay["end"], CONFIG_TIME_FORMAT)
-    return _simulation_end(config)
-
-
 def _simulation_start(config: RunConfig) -> datetime:
     value = config.simulation.get("start", config.transport.get("start"))
     if value is None:
@@ -273,7 +162,7 @@ def _simulation_start(config: RunConfig) -> datetime:
 
 
 def _simulation_end(config: RunConfig) -> datetime:
-    value = config.simulation.get("end", config.replay.get("end"))
+    value = config.simulation.get("end")
     if value is None:
         raise KeyError("simulation.end is required")
     return datetime.strptime(str(value), CONFIG_TIME_FORMAT)
@@ -284,7 +173,7 @@ def _transport_timestep_s(config: RunConfig) -> float:
 
 
 def _emissions_timestep_s(config: RunConfig) -> float:
-    return float(config.simulation.get("emissions_timestep_s", config.replay.get("dt_s", _transport_timestep_s(config))))
+    return float(config.simulation.get("emissions_timestep_s", _transport_timestep_s(config)))
 
 
 def _meteorology_root(config: RunConfig) -> str:
@@ -309,76 +198,6 @@ def _is_time_for_emissions(elapsed_s: int, transport_dt_s: float, emissions_dt_s
     multiplier = emissions // transport
     center = max(multiplier // 2, 1)
     return elapsed_s % emissions == (center - 1) * transport
-
-
-def _select_hemco_diagnostic(
-    diagnostics: tuple[HemcoDiagnosticFile, ...],
-    valid_time: datetime,
-) -> HemcoDiagnosticFile:
-    if not diagnostics:
-        raise FileNotFoundError("no HEMCO diagnostic files were discovered")
-    if len(diagnostics) == 1:
-        return diagnostics[0]
-    nearest = min(diagnostics, key=lambda item: abs(item.timestamp - valid_time))
-    cadence = min(
-        abs(diagnostics[index + 1].timestamp - diagnostics[index].timestamp)
-        for index in range(len(diagnostics) - 1)
-    )
-    if abs(nearest.timestamp - valid_time) > cadence / 2:
-        raise FileNotFoundError(f"no HEMCO diagnostic is valid for {valid_time:%Y-%m-%d %H:%M}")
-    return nearest
-
-
-def _load_cached_emissions(
-    diagnostic: HemcoDiagnosticFile,
-    cache: dict[Path, TracerField],
-    species,
-) -> TracerField:
-    if diagnostic.path not in cache:
-        cache[diagnostic.path] = _load_hemco_emissions_for_species(diagnostic.path, species)
-    return cache[diagnostic.path]
-
-
-def _load_hemco_emissions_for_species(path: Path, species) -> TracerField:
-    try:
-        emissions = load_hemco_emissions(path)
-    except KeyError:
-        emissions = _load_total_hemco_emissions(path, species)
-    species_names = tuple(item.name for item in species)
-    if emissions.names != species_names:
-        raise ValueError(f"emission field names {emissions.names} do not match species order {species_names}")
-    return emissions
-
-
-def _load_total_hemco_emissions(path: Path, species) -> TracerField:
-    with netCDF4.Dataset(path) as dataset:
-        lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
-        lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
-        lev = np.asarray(dataset.variables["lev"][:], dtype=np.float64)
-        area = np.asarray(dataset.variables["AREA"][:], dtype=np.float64)
-        ntime = len(dataset.dimensions["time"])
-        nlev = lev.size
-        public = np.zeros((len(species), ntime, nlev, lat.size, lon.size), dtype=np.float64)
-        units: list[str] = []
-        for index, item in enumerate(species):
-            variable_name = f"Emis{item.name}_Total"
-            if variable_name not in dataset.variables:
-                raise KeyError(f"{path} is missing variable {variable_name}")
-            variable = dataset.variables[variable_name]
-            values = np.asarray(variable[:], dtype=np.float64)
-            if values.ndim == 3:
-                public[index, :, 0, :, :] = values
-            elif values.ndim == 4:
-                public[index, :, :, :, :] = values
-            else:
-                raise ValueError(f"{variable_name} must be 3-D or 4-D, found shape {values.shape}")
-            units.append(str(getattr(variable, "units", "")))
-    return TracerField(
-        names=tuple(item.name for item in species),
-        data=public_tracer5_to_canonical(public),
-        units=tuple(units),
-        coords={"lev": lev, "lat": lat, "lon": lon, "AREA": area},
-    )
 
 
 def _load_simulation_forcing(

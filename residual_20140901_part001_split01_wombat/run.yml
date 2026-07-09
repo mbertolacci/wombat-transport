@@ -14,17 +14,10 @@ meteorology:
 emissions:
   source: configured_fields
   config: emissions.yml
-  glob: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.*.nc
-  timestamp: midpoint
 diagnostics:
   species_conc_sample: ../residual_20140901_part001_split01/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4
   hemco_sample: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409010030.nc
   monthly_restart_sample: ../residual_20140901_part001_split01/Restarts/GEOSChem.Restart.20141001_0000z.nc4
-replay:
-  hemco_glob: ../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.*.nc
-  start: "2014-09-01 00:30"
-  end: "2014-09-05 22:30"
-  dt_s: 3600
 comparison:
   species_conc_sample: ../residual_20140901_part001_split01/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140904_0000z.nc4
   species_conc_time_index: -1

@@ -16,39 +16,14 @@ from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emiss
 from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import (
     _is_time_for_emissions,
-    _load_hemco_emissions_for_species,
     _validate_timestep_schedule,
-    discover_hemco_diagnostics,
-    emitted_mass_by_tracer_for_step,
     has_invalid_emissions,
-    parse_hemco_timestamp,
-    run_emissions_replay,
     run_tracer_simulation,
 )
 from wombat_transport.species import load_species_database
 
 BASE_CONFIG = "base_wombat/run.yml"
 RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
-
-
-def test_parse_hemco_timestamp_from_filename():
-    timestamp = parse_hemco_timestamp("HEMCO_diagnostics.201409010030.nc")
-
-    assert timestamp.year == 2014
-    assert timestamp.month == 9
-    assert timestamp.day == 1
-    assert timestamp.hour == 0
-    assert timestamp.minute == 30
-
-
-def test_discover_hemco_diagnostics_orders_configured_window():
-    config = load_run_config(RESIDUAL_CONFIG)
-    files = discover_hemco_diagnostics(config)
-
-    assert len(files) == 119
-    assert files[0].path.name == "HEMCO_diagnostics.201409010030.nc"
-    assert files[-1].path.name == "HEMCO_diagnostics.201409052230.nc"
-    assert [item.timestamp for item in files] == sorted(item.timestamp for item in files)
 
 
 def test_configured_residual_emissions_config_covers_expected_species():
@@ -74,20 +49,6 @@ def test_configured_residual_emissions_match_hemco_diagnostic_sample():
     np.testing.assert_allclose(actual.data, expected.data, rtol=2.0e-5, atol=1.0e-10)
 
 
-def test_emissions_replay_processes_prefix_and_accumulates_mass():
-    config = load_run_config(RESIDUAL_CONFIG)
-    result = run_emissions_replay(config, max_steps=2)
-
-    assert len(result.discovered_files) == 119
-    assert len(result.processed_files) == 2
-    assert result.state.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
-
-    expected = np.zeros(24)
-    for diagnostic in result.processed_files:
-        expected += emitted_mass_by_tracer_for_step(load_hemco_emissions(diagnostic.path), dt_s=3600.0)
-    np.testing.assert_allclose(result.emitted_mass_by_tracer, expected)
-
-
 def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():
     assert _is_time_for_emissions(0, 600.0, 1200.0)
     assert not _is_time_for_emissions(600, 600.0, 1200.0)
@@ -103,25 +64,6 @@ def test_emissions_timestep_must_be_transport_multiple():
         _validate_timestep_schedule(600.0, 1000.0)
 
 
-def test_tracer_simulation_couples_emissions_and_transport_on_geos_chem_schedule():
-    config = load_run_config(BASE_CONFIG)
-    species = load_species_database(config.species_database)
-
-    result = run_tracer_simulation(config, max_steps=3)
-
-    assert result.state.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
-    assert result.transport_steps == 3
-    assert result.emissions_steps == 2
-    assert len(result.processed_files) == 2
-    assert len(result.skipped_files) == 0
-    assert result.processed_files[0].path.name == "HEMCO_diagnostics.201409010030.nc"
-    assert result.processed_files[1].path.name == "HEMCO_diagnostics.201409010030.nc"
-
-    emissions = _load_hemco_emissions_for_species(result.processed_files[0].path, species)
-    expected = 2.0 * emitted_mass_by_tracer_for_step(emissions, dt_s=1200.0)
-    np.testing.assert_allclose(result.emitted_mass_by_tracer, expected)
-
-
 def test_tracer_simulation_uses_configured_residual_emissions_source():
     config = load_run_config(RESIDUAL_CONFIG)
 
@@ -129,10 +71,8 @@ def test_tracer_simulation_uses_configured_residual_emissions_source():
 
     assert result.transport_steps == 1
     assert result.emissions_steps == 1
-    assert len(result.discovered_files) == 0
-    assert len(result.processed_files) == 1
-    assert result.processed_files[0].path.name == "configured_fields"
-    assert result.processed_files[0].timestamp == datetime(2014, 9, 1, 0, 10)
+    assert len(result.emissions_processed) == 1
+    assert result.emissions_processed[0].timestamp == datetime(2014, 9, 1, 0, 10)
     assert np.isfinite(result.total_emitted_mass)
     assert result.emitted_mass_by_tracer[0] == 0.0
     assert result.emitted_mass_by_tracer[1] != 0.0
@@ -141,15 +81,16 @@ def test_tracer_simulation_uses_configured_residual_emissions_source():
 
 def test_invalid_hemco_fill_values_are_detected():
     config = load_run_config(RESIDUAL_CONFIG)
-    files = discover_hemco_diagnostics(config)
+    invalid = config.root / "../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409052230.nc"
+    valid = config.root / "../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409052130.nc"
 
-    assert has_invalid_emissions(load_hemco_emissions(files[-1].path))
-    assert not has_invalid_emissions(load_hemco_emissions(files[-2].path))
+    assert has_invalid_emissions(load_hemco_emissions(invalid))
+    assert not has_invalid_emissions(load_hemco_emissions(valid))
 
 
 def test_comparison_metrics_return_one_value_per_tracer():
     config = load_run_config(RESIDUAL_CONFIG)
-    result = run_emissions_replay(config, max_steps=1)
+    result = run_tracer_simulation(config, max_steps=1)
     reference = load_species_conc(config.root / config.comparison["species_conc_sample"])
 
     metrics = compare_to_time_slice(
@@ -218,61 +159,13 @@ def test_mass_metrics_match_controlled_uniform_perturbation():
     assert metrics.max_abs_column_error_kg[0] > 0.0
 
 
-def test_residual_full_replay_has_finite_mass_metrics_after_skipping_invalid_tail():
-    config = load_run_config(RESIDUAL_CONFIG)
-    species = load_species_database(config.species_database)
-    result = run_emissions_replay(config)
-    reference = load_species_conc(config.root / config.comparison["species_conc_sample"])
-    with netCDF4.Dataset(config.grid_template) as dataset:
-        delp = np.asarray(dataset.variables["Met_DELPDRY"][:])
-        area = np.asarray(dataset.variables["AREA"][:])
-
-    metrics = compare_to_time_slice(
-        result.state,
-        reference,
-        reference_time_index=int(config.comparison["species_conc_time_index"]),
-        species=species,
-        delp_dry_hpa=delp,
-        area_m2=area,
-    )
-
-    assert len(result.skipped_files) == 1
-    assert metrics.mass_error_kg is not None
-    assert np.all(np.isfinite(metrics.mass_error_kg))
-    assert np.all(np.isfinite(metrics.max_abs_column_error_kg))
-
-
-def test_run_cli_smoke_with_prefix():
+def test_run_cli_default_configured_coupled_run_smoke():
     completed = subprocess.run(
         [
             sys.executable,
             "-m",
             "wombat_transport.run",
             RESIDUAL_CONFIG,
-            "--mode",
-            "emissions-only",
-            "--max-steps",
-            "1",
-        ],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-
-    assert "emissions_files_discovered: 119" in completed.stdout
-    assert "emissions_files_processed: 1" in completed.stdout
-    assert "emissions_files_skipped: 0" in completed.stdout
-    assert "total_emitted_mass_kg:" in completed.stdout
-    assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
-
-
-def test_run_cli_default_coupled_run_smoke():
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "wombat_transport.run",
-            BASE_CONFIG,
             "--max-steps",
             "1",
         ],
@@ -286,7 +179,7 @@ def test_run_cli_default_coupled_run_smoke():
     assert "transport_steps: 1" in completed.stdout
     assert "emissions_steps: 1" in completed.stdout
     assert "emissions_dt_s: 1.20000000e+03" in completed.stdout
-    assert "emissions_files_processed: 1" in completed.stdout
+    assert "total_emitted_mass_kg:" in completed.stdout
 
 
 def test_run_cli_base_init_only_smoke():
