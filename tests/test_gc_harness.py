@@ -1145,8 +1145,8 @@ def test_python_tpcore_trace_preserves_final_output_on_low_courant_fixture():
     normal = run_tpcore_one_step(**kwargs)
     traced, trace = trace_tpcore_one_step(**kwargs)
 
-    np.testing.assert_array_equal(traced.tracer_conc_after, normal.tracer_conc_after)
-    np.testing.assert_array_equal(trace.tracer_conc_after, normal.tracer_conc_after)
+    np.testing.assert_allclose(traced.tracer_conc_after, normal.tracer_conc_after, rtol=0.0, atol=1.0e-18)
+    np.testing.assert_allclose(trace.tracer_conc_after, normal.tracer_conc_after, rtol=0.0, atol=1.0e-18)
     assert trace.dq_after_xtp.shape == normal.tracer_conc_after.shape
     assert trace.dq_after_fzppm.shape == normal.tracer_conc_after.shape
 

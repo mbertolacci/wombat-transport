@@ -90,3 +90,41 @@ The large GEOS-Chem fixture files are available in the original checkout, not
 copied into this sibling worktree. Benchmark commands therefore used the
 original checkout's `base_wombat/run.yml` so grid-template paths resolved to the
 real files.
+
+## 2026-07-09 fused TPCORE update
+
+TPCORE was converted to use a fused Numba non-trace path controlled by a boolean
+`WOMBAT_TPCORE_NUMBA` switch. The old per-axis `x`/`y`/`z`/`all` mode choices
+were removed; unset or truthy values enable Numba, and false-like values disable
+it.
+
+Standalone TPCORE best timed run after fusion:
+
+| Tracers | Previous optimized s | Fused s | Change |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.098 | 0.072 | -26.8% |
+| 24 | 0.343 | 0.284 | -17.2% |
+| 96 | 1.308 | 1.164 | -11.0% |
+| 256 | 3.638 | 3.376 | -7.2% |
+
+Driver benchmark best timed run after fusion:
+
+| Tracers | Previous total s | Fused total s | Total change | Previous TPCORE s | Fused TPCORE s | TPCORE change |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.181 | 0.158 | -12.8% | 0.098 | 0.072 | -26.6% |
+| 24 | 0.743 | 0.667 | -10.3% | 0.366 | 0.290 | -20.7% |
+| 96 | 2.643 | 2.406 | -9.0% | 1.395 | 1.161 | -16.7% |
+
+Focused TPCORE tests passed after the fused change:
+
+```bash
+PYTHONPATH=/home/mgnb/Projects/UWA/FluxInversion/wombat-transport-transport-performance/src \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache \
+/home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
+  -m pytest \
+  tests/test_tpcore_scaling_benchmark.py \
+  tests/test_gc_harness.py \
+  -k 'tpcore and not fullgrid and not large_base and not residual_initial and not vdiff_after_tpcore'
+```
+
+Result: 33 passed, 41 deselected.
