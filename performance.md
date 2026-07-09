@@ -191,3 +191,25 @@ wombat_transport.transport.tpcore._core
 
 One-tracer TPCORE benchmark smoke after the split completed in `0.0759 s`,
 consistent with the fused-path timing above.
+
+## 2026-07-09 mass diagnostics hoist
+
+The fused driver profile showed that most non-operator overhead at many tracer
+counts came from always-on scalar mass diagnostics. These diagnostics have been
+hoisted out of the normal transport path: `run_transport_one_step` and
+`run_transport_window` now return transport state only, while validation callers
+use trace output plus explicit mass-diagnostic helpers when they need budget
+checks.
+
+Driver benchmark best timed run after removing always-on mass diagnostics:
+
+| Tracers | Previous fused total s | No mass-diag total s | Total change | Previous overhead s | No mass-diag overhead s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.158 | 0.166 | +4.9% | 0.0249 | 0.0235 |
+| 24 | 0.667 | 0.538 | -19.4% | 0.1542 | 0.0229 |
+| 96 | 2.406 | 1.930 | -19.8% | 0.4973 | 0.0268 |
+
+The one-tracer total is effectively noise/regression at this scale, because mass
+diagnostics were not a large cost there. The many-tracer case is the target:
+overhead is now roughly flat with tracer count in this benchmark, and the step
+is dominated by the three transport operators again.

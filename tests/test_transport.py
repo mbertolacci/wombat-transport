@@ -22,6 +22,7 @@ from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
+    compute_transport_stage_masses,
     compute_pbl_height,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
@@ -278,7 +279,7 @@ def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
         raise AssertionError("run_vdiffdr_one_step accepted a malformed edge grid")
 
 
-def test_transport_one_step_conserves_residual_scalar_mass():
+def test_transport_one_step_runs_residual_operator_chain():
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
@@ -292,11 +293,9 @@ def test_transport_one_step_conserves_residual_scalar_mass():
 
     assert result.state.shape == field.shape
     assert result.transport_operators == ("tpcore", "vdiff", "convection")
-    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff", "convection")
     assert result.delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert np.all(np.isfinite(result.state.data))
-    np.testing.assert_allclose(result.final_scalar_mass, result.initial_scalar_mass, rtol=1e-13)
 
 
 def test_trace_transport_one_step_captures_operator_handoffs():
@@ -319,9 +318,13 @@ def test_trace_transport_one_step_captures_operator_handoffs():
     canonical_result = canonical_time_slice(trace.result.state.data)
     assert trace.convection_output.tracer_conc.shape == canonical_result.shape
     np.testing.assert_allclose(canonical_result, trace.convection_output.tracer_conc)
+    stage_masses = compute_transport_stage_masses(trace, field, grid.area_m2)
+    assert tuple(stage.operator for stage in stage_masses) == ("tpcore", "vdiff", "convection")
+    assert stage_masses[0].initial_scalar_mass.shape == (1,)
+    np.testing.assert_allclose(stage_masses[-1].final_scalar_mass, stage_masses[0].initial_scalar_mass, rtol=1e-13)
 
 
-def test_transport_window_accumulates_average_state_and_conserves_mass():
+def test_transport_window_accumulates_average_state():
     config = load_run_config(BASE_CONFIG)
     grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database)
@@ -336,12 +339,10 @@ def test_transport_window_accumulates_average_state_and_conserves_mass():
 
     assert result.steps == 2
     assert result.transport_operators == ("tpcore", "vdiff", "convection")
-    assert tuple(stage.operator for stage in result.stage_masses) == ("tpcore", "vdiff", "convection")
     assert result.state.shape == field.shape
     assert result.average_state.shape == field.shape
     assert result.average_delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert np.all(np.isfinite(result.average_state.data))
-    np.testing.assert_allclose(result.final_scalar_mass, result.initial_scalar_mass, rtol=1e-13)
 
 
 def test_transport_forcing_loads_convection_fields_on_target_grid():
