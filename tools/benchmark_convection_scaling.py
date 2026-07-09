@@ -115,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                 inputs,
                 tracer_count=tracer_count,
                 repeat=args.repeat,
+                warmup=args.warmup,
                 state_bytes=_tracer_state_bytes(tracer_count, grid_shape),
                 peak_bytes=_estimate_peak_bytes(tracer_count, grid_shape),
                 memory_limit=memory_limit,
@@ -136,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                     inputs,
                     tracer_count=tracer_count,
                     repeat=args.repeat,
+                    warmup=args.warmup,
                     state_bytes=state_bytes,
                     peak_bytes=peak_bytes,
                     memory_limit=memory_limit,
@@ -163,6 +165,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--counts", type=_positive_int, nargs="+", default=list(DEFAULT_COUNTS))
     parser.add_argument("--repeat", type=_positive_int, default=1)
+    parser.add_argument(
+        "--warmup",
+        type=_nonnegative_int,
+        default=1,
+        help="Untimed runs per tracer count before measurement. Defaults to 1 to exclude Numba compilation.",
+    )
     parser.add_argument("--dt-s", type=float, default=DEFAULT_DT_S)
     parser.add_argument(
         "--max-memory-gb",
@@ -180,6 +188,13 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
     return parsed
 
 
@@ -272,6 +287,7 @@ def _benchmark_inputs(
     *,
     tracer_count: int,
     repeat: int,
+    warmup: int,
     state_bytes: int,
     peak_bytes: int,
     memory_limit: int | None,
@@ -279,6 +295,27 @@ def _benchmark_inputs(
     active = (np.max(np.abs(inputs.cmfmc_kg_m2_s), axis=0) > 1.0e-14) | (
         np.max(np.abs(inputs.dtrain_kg_m2_s), axis=0) > 1.0e-14
     )
+    for _ in range(warmup):
+        result = run_cloud_convection_one_step(
+            tracer_conc=inputs.tracer_conc,
+            cmfmc_kg_m2_s=inputs.cmfmc_kg_m2_s,
+            dtrain_kg_m2_s=inputs.dtrain_kg_m2_s,
+            dqrcu_kg_kg_s=inputs.dqrcu_kg_kg_s,
+            reevapcn_kg_kg_s=inputs.reevapcn_kg_kg_s,
+            delp_dry_hpa=inputs.delp_dry_hpa,
+            delp_hpa=inputs.delp_hpa,
+            area_m2=inputs.area_m2,
+            bxheight_m=inputs.bxheight_m,
+            pficu_kg_m2_s=inputs.pficu_kg_m2_s,
+            pflcu_kg_m2_s=inputs.pflcu_kg_m2_s,
+            temperature_k=inputs.temperature_k,
+            precccon_mm_day=inputs.precccon_mm_day,
+            dt_s=inputs.dt_s,
+            reconstruct_conv_precip_flux=inputs.reconstruct_conv_precip_flux,
+        )
+        del result
+        gc.collect()
+
     elapsed_values: list[float] = []
     checksum = 0.0
     for _ in range(repeat):

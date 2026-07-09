@@ -135,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                 inputs,
                 tracer_count=tracer_count,
                 repeat=args.repeat,
+                warmup=args.warmup,
                 state_bytes=state_bytes,
                 peak_bytes=peak_bytes,
                 memory_limit=memory_limit,
@@ -157,6 +158,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--counts", type=_positive_int, nargs="+", default=list(DEFAULT_COUNTS))
     parser.add_argument("--repeat", type=_positive_int, default=1)
+    parser.add_argument(
+        "--warmup",
+        type=_nonnegative_int,
+        default=1,
+        help="Untimed runs per tracer count before measurement. Defaults to 1 to exclude Numba compilation.",
+    )
     parser.add_argument("--dt-s", type=float, default=DEFAULT_DT_S)
     parser.add_argument(
         "--max-memory-gb",
@@ -174,6 +181,13 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
     return parsed
 
 
@@ -249,10 +263,34 @@ def _benchmark_inputs(
     *,
     tracer_count: int,
     repeat: int,
+    warmup: int,
     state_bytes: int,
     peak_bytes: int,
     memory_limit: int | None,
 ) -> BenchmarkRow:
+    for _ in range(warmup):
+        state = run_vdiffdr_one_step(
+            tracer_conc=inputs.tracer_conc,
+            u_m_s=inputs.u_m_s,
+            v_m_s=inputs.v_m_s,
+            temperature_k=inputs.temperature_k,
+            specific_humidity_kg_kg=inputs.specific_humidity_kg_kg,
+            pmid_hpa=inputs.pmid_hpa,
+            pedge_hpa=inputs.pedge_hpa,
+            virtual_temperature_k=inputs.virtual_temperature_k,
+            bxheight_m=inputs.bxheight_m,
+            dry_air_mass_kg=inputs.dry_air_mass_kg,
+            pbl_top_m=inputs.pbl_top_m,
+            hflux_w_m2=inputs.hflux_w_m2,
+            eflux_w_m2=inputs.eflux_w_m2,
+            ustar_m_s=inputs.ustar_m_s,
+            area_m2=inputs.area_m2,
+            dt_s=inputs.dt_s,
+            surface_flux_kg_m2_s=inputs.surface_flux_kg_m2_s,
+        )
+        del state
+        gc.collect()
+
     elapsed_values: list[float] = []
     checksum = 0.0
     for _ in range(repeat):
