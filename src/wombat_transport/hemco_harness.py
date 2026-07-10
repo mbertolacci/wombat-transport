@@ -387,6 +387,7 @@ PBL dry deposition:  False
 
 def _write_hemco_grid_file(root: Path) -> None:
     ymid = " ".join(f"{value:g}" for value in TARGET_LAT)
+    yedge = " ".join(f"{value:g}" for value in _target_lat_edges(TARGET_LAT))
     (root / "HEMCO_sa_Grid.rc").write_text(
         f"""XMIN: -181.25
 XMAX:  178.75
@@ -395,6 +396,7 @@ YMAX:  90.0
 NX: {TARGET_LON.size}
 NY: {TARGET_LAT.size}
 NZ: 47
+YEDGE: {yedge}
 YMID: {ymid}
 """,
         encoding="utf-8",
@@ -623,12 +625,21 @@ def _cell_areas(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
 
 
 def _lat_bounds(lat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    bounds = _target_lat_edges(lat)
+    return bounds[:-1], bounds[1:]
+
+
+def _target_lat_edges(lat: np.ndarray) -> np.ndarray:
     midpoints = (lat[:-1] + lat[1:]) / 2.0
     bounds = np.empty(lat.size + 1, dtype=np.float64)
     bounds[1:-1] = midpoints
     bounds[0] = -90.0
     bounds[-1] = 90.0
-    return bounds[:-1], bounds[1:]
+    if np.isclose(lat[0], -89.5, rtol=0.0, atol=1.0e-12):
+        bounds[1] = -89.0
+    if np.isclose(lat[-1], 89.5, rtol=0.0, atol=1.0e-12):
+        bounds[-2] = 89.0
+    return bounds
 
 
 def _lon_bounds(lon: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
