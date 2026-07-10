@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import netCDF4
@@ -10,6 +11,7 @@ from wombat_transport.compare import compare_to_time_slice, format_metrics
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers, load_species_conc, write_restart_like
 from wombat_transport.run_config import (
+    logging_level,
     load_run_config,
     meteorology_initial_time_index,
     meteorology_root,
@@ -40,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_run_config(args.run_config)
+    _configure_logging(config)
     if args.mode == "run":
         result = run_tracer_simulation(config, max_steps=args.max_steps)
         state = result.state
@@ -175,6 +178,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pressure_edge_dry_mean_abs_error_hpa: {np.mean(edge_error):.8e}")
 
     return 0
+
+
+def _configure_logging(config) -> None:
+    level_name = logging_level(config).upper()
+    logging.basicConfig(
+        level=getattr(logging, level_name),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 if __name__ == "__main__":

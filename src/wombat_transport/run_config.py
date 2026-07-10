@@ -25,6 +25,7 @@ class RunConfig:
     meteorology: dict[str, Any]
     emissions: str | dict[str, Any]
     outputs: dict[str, Any]
+    logging: dict[str, Any]
     validation: dict[str, Any]
 
 
@@ -57,6 +58,7 @@ def load_run_config(path: str | Path) -> RunConfig:
         meteorology=dict(raw.get("meteorology", {})),
         emissions=raw.get("emissions", {}),
         outputs=dict(raw.get("outputs", {})),
+        logging=dict(raw.get("logging", {})),
         validation=dict(raw.get("validation", {})),
     )
 
@@ -98,3 +100,11 @@ def meteorology_root(config: RunConfig) -> Path:
 
 def meteorology_initial_time_index(config: RunConfig) -> int:
     return int(config.meteorology.get("initial_time_index", 0))
+
+
+def logging_level(config: RunConfig) -> str:
+    value = str(config.logging.get("level", "warning")).lower()
+    allowed = {"warning", "info", "debug"}
+    if value not in allowed:
+        raise ValueError(f"logging.level must be one of {', '.join(sorted(allowed))}, got {value!r}")
+    return value

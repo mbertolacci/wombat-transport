@@ -43,6 +43,7 @@ from wombat_transport.output import (
 from wombat_transport.run_config import (
     RunConfig,
     emissions_timestep_s,
+    logging_level,
     load_run_config,
     meteorology_initial_time_index,
     meteorology_root,
@@ -118,6 +119,7 @@ __all__ = [
     "load_species_database",
     "load_transport_forcing",
     "load_transport_grid",
+    "logging_level",
     "meteorology_initial_time_index",
     "meteorology_root",
     "mix_full_pbl",

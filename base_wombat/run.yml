@@ -13,6 +13,8 @@ meteorology:
   root: ../ExtData/GEOS_2x2.5/MERRA2
 emissions:
   source: hemco_diagnostics
+logging:
+  level: info
 outputs:
   expid: OutputDir/GEOSChem
   collections:

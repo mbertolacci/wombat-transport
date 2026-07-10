@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,9 @@ from wombat_transport.transport import (
     load_transport_forcing,
     run_transport_one_step,
 )
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class EmissionsStep:
@@ -56,12 +60,15 @@ class TracerSimulationResult:
 
 
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
+    logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
     species = load_species_database(config.species_database)
+    logger.debug("loaded_species count=%d", len(species))
     state = initialize_tracers(
         config.initial_restart,
         config.species_database,
         template_path=config.grid_template,
     )
+    logger.debug("initialized_tracers shape=%s", state.shape)
     grid = load_transport_grid(config.grid_template)
     met_root = meteorology_root(config)
     start = simulation_start(config)
@@ -71,7 +78,9 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
 
     configured_emissions = _load_emissions_operator(config, species, grid)
+    logger.debug("loaded_emissions_operator")
     output_manager = HistoryOutputManager.from_run_config(config)
+    logger.debug("output_manager enabled=%s", output_manager is not None)
 
     forcing_cache = {}
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
@@ -84,8 +93,11 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     current = start
     while current < end:
         if max_steps is not None and transport_steps >= max_steps:
+            logger.info("max_steps_stop steps=%d time=%s", transport_steps, current.isoformat())
             break
 
+        logger.info("transport_timestep step=%d time=%s", transport_steps + 1, current.isoformat())
+        logger.debug("loading_forcing step=%d time=%s", transport_steps + 1, current.isoformat())
         forcing = _load_simulation_forcing(
             forcing_cache,
             met_root,
@@ -96,10 +108,12 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             initial_met_time_index=meteorology_initial_time_index(config),
         )
         delp_dry_hpa = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, grid.hyai_hpa, grid.hybi)
+        logger.debug("computed_dry_pressure step=%d", transport_steps + 1)
 
         elapsed_s = int(round((current - start).total_seconds()))
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
             emission_midpoint = current + timedelta(seconds=emissions_dt_s / 2.0)
+            logger.debug("evaluating_emissions step=%d midpoint=%s", transport_steps + 1, emission_midpoint.isoformat())
             emissions = configured_emissions.evaluate(emission_midpoint)
             if has_invalid_emissions(emissions):
                 raise ValueError(f"configured emissions contain invalid values at {emission_midpoint:%Y-%m-%d %H:%M}")
@@ -107,14 +121,18 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             state = apply_emissions(state, emissions, delp_dry_hpa, species, emissions_dt_s)
             emissions_processed.append(EmissionsStep(timestamp=emission_midpoint))
             emissions_steps += 1
+            logger.debug("applied_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
 
+        logger.debug("running_transport step=%d", transport_steps + 1)
         transport_result = run_transport_one_step(state, forcing, grid, dt_s=transport_dt_s)
         state = transport_result.state
         stage_masses.extend(transport_result.stage_masses)
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         transport_steps += 1
+        logger.debug("completed_transport step=%d", transport_steps)
         step_end = current + timedelta(seconds=transport_dt_s)
         if output_manager is not None:
+            logger.debug("recording_outputs step=%d timestamp=%s", transport_steps, step_end.isoformat())
             output_manager.record_step(
                 OutputSnapshot(
                     timestamp=step_end,
@@ -126,8 +144,15 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         current = step_end
 
     if output_manager is not None:
+        logger.debug("closing_outputs")
         output_manager.close()
 
+    logger.info(
+        "simulation_complete transport_steps=%d emissions_steps=%d total_emitted_mass_kg=%.8e",
+        transport_steps,
+        emissions_steps,
+        float(np.sum(emitted_mass_by_tracer)),
+    )
     return TracerSimulationResult(
         state=state,
         emissions_processed=tuple(emissions_processed),
@@ -201,6 +226,9 @@ def _load_simulation_forcing(
     time_index = absolute_index % 8
     key = (datetime(timestamp.year, timestamp.month, timestamp.day), time_index)
     if key not in cache:
+        logger.debug("forcing_cache_miss date=%s time_index=%d", key[0].date().isoformat(), time_index)
         cache.clear()
         cache[key] = load_transport_forcing(met_root, key[0], grid, time_index=time_index)
+    else:
+        logger.debug("forcing_cache_hit date=%s time_index=%d", key[0].date().isoformat(), time_index)
     return cache[key]

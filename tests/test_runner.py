@@ -8,13 +8,14 @@ import sys
 import netCDF4
 import numpy as np
 import pytest
+import yaml
 
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
 from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
-from wombat_transport.run_config import load_run_config
+from wombat_transport.run_config import load_run_config, logging_level
 from wombat_transport.runner import (
     _is_time_for_emissions,
     _load_emissions_operator,
@@ -92,6 +93,16 @@ def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():
 def test_emissions_timestep_must_be_transport_multiple():
     with pytest.raises(ValueError, match="integer multiple"):
         _validate_timestep_schedule(600.0, 1000.0)
+
+
+def test_run_config_logging_level_defaults_and_validates():
+    config = load_run_config(RESIDUAL_CONFIG)
+
+    assert logging_level(config) == "info"
+    assert logging_level(replace(config, logging={})) == "warning"
+    assert logging_level(replace(config, logging={"level": "DEBUG"})) == "debug"
+    with pytest.raises(ValueError, match="logging.level"):
+        logging_level(replace(config, logging={"level": "trace"}))
 
 
 def test_simulation_forcing_cache_keeps_only_current_met_slice(monkeypatch):
@@ -286,6 +297,51 @@ def test_run_cli_default_configured_coupled_run_smoke():
     assert "total_emitted_mass_kg:" in completed.stdout
 
 
+def test_run_cli_logs_info_messages_to_stderr():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "wombat_transport.run",
+            RESIDUAL_CONFIG,
+            "--max-steps",
+            "1",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "mode: run" in completed.stdout
+    assert "INFO wombat_transport.runner simulation_start" in completed.stderr
+    assert "INFO wombat_transport.runner transport_timestep step=1" in completed.stderr
+    assert "DEBUG wombat_transport.runner" not in completed.stderr
+
+
+def test_run_cli_debug_logging_includes_runner_substeps(tmp_path):
+    config_path = _write_temp_residual_run_config(tmp_path, log_level="debug")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "wombat_transport.run",
+            config_path,
+            "--max-steps",
+            "1",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "mode: run" in completed.stdout
+    assert "DEBUG wombat_transport.runner loading_forcing step=1" in completed.stderr
+    assert "DEBUG wombat_transport.runner evaluating_emissions step=1" in completed.stderr
+    assert "DEBUG wombat_transport.runner running_transport step=1" in completed.stderr
+    assert "DEBUG wombat_transport.runner output_manager enabled=False" in completed.stderr
+
+
 def test_run_cli_base_init_only_smoke():
     completed = subprocess.run(
         [
@@ -389,3 +445,25 @@ def _residual_emissions_operator(config):
     species = load_species_database(config.species_database)
     grid = load_transport_grid(config.grid_template)
     return _load_emissions_operator(config, species, grid)
+
+
+def _write_temp_residual_run_config(tmp_path, *, log_level: str):
+    config = load_run_config(RESIDUAL_CONFIG)
+    raw = {
+        "name": "logging_smoke",
+        "source_run_dir": str(config.source_run_dir),
+        "species_database": str(config.species_database),
+        "initial_restart": None,
+        "grid_template": str(config.grid_template),
+        "output_dir": str(tmp_path / "OutputDir"),
+        "simulation": config.simulation,
+        "meteorology": {"root": str(config.root / config.meteorology["root"])},
+        "emissions": str(config.root / config.emissions),
+        "logging": {"level": log_level},
+        "outputs": {},
+        "diagnostics": {},
+        "comparison": {},
+    }
+    path = tmp_path / "run.yml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return path
