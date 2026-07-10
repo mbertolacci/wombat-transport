@@ -1018,3 +1018,28 @@ dominant:
 
 The hot path is now more evenly distributed across the flux arithmetic,
 temporary `delq` write, clamp, and final store.
+
+## 2026-07-10 Convection current-value and scalar hoists
+
+Two follow-up Profila-driven ideas were tested against the retained
+`delq_work` + hoisted-`entrains` kernel:
+
+1. Hoist repeated `cmfmc_all[level, col]` loads into a level-local scalar.
+2. Cache each tracer's current `q_all[level, col, tracer]` value in a small
+   `(ntracer,)` workspace during the `delq` compute loop, then reuse that value
+   in the final clamp/write loop.
+
+The full 2x2 experiment showed both changes help, and they are additive.
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s | 192 tracer best s |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline `delq_work` + hoisted `entrains` | 0.048 | 0.166 | 0.167 | 0.326 |
+| Scalar hoists only | 0.048 | 0.156 | 0.157 | 0.304 |
+| Current-value workspace only | 0.039 | 0.130 | 0.131 | 0.258 |
+| Scalar hoists + current-value workspace | 0.037 | 0.122 | 0.124 | 0.241 |
+
+The retained variant adds one more small per-tracer workspace, but removes
+repeated full-grid `q_all[level, col, tracer]` loads from the hottest branch.
+This is a large convection-kernel win at the target large tracer counts.
+A confirmation run of the retained combined variant gave best times of
+`0.037`, `0.126`, and `0.239 s` for 24, 96, and 192 tracers respectively.

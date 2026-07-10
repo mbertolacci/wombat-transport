@@ -551,6 +551,7 @@ if njit is not None:
         qc = np.empty(ntracer, dtype=np.float64)
         qb_num = np.empty(ntracer, dtype=np.float64)
         delq_work = np.empty(ntracer, dtype=np.float64)
+        current_work = np.empty(ntracer, dtype=np.float64)
 
         for col in range(ncol):
             active = False
@@ -625,7 +626,8 @@ if njit is not None:
                         cmfmc_below = cmfmc_all[level + 1, col]
 
                     if cmfmc_below > _TINYNUM:
-                        cmout = cmfmc_all[level, col] + dtrain_all[level, col]
+                        cmfmc_current = cmfmc_all[level, col]
+                        cmout = cmfmc_current + dtrain_all[level, col]
                         entrn = cmout - cmfmc_below
                         entrains = entrn >= 0.0 and cmout > 0.0
                         tendency_scale = internal_dt_s / bmass_all[level, col]
@@ -633,45 +635,50 @@ if njit is not None:
                         if entrains:
                             for tracer in range(ntracer):
                                 qc_pres = qc[tracer]
+                                current = q_all[level, col, tracer]
                                 qc_next = (
-                                    cmfmc_below * qc_pres + entrn * q_all[level, col, tracer]
+                                    cmfmc_below * qc_pres + entrn * current
                                 ) / cmout
 
                                 delq = cmfmc_below * qc_pres
-                                temp = -(cmfmc_all[level, col] * qc_next)
+                                temp = -(cmfmc_current * qc_next)
                                 delq += temp
                                 qc[tracer] = qc_next
 
-                                upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                upward = cmfmc_current * q_all[level - 1, col, tracer]
                                 delq += upward
-                                delq -= cmfmc_below * q_all[level, col, tracer]
+                                delq -= cmfmc_below * current
+                                current_work[tracer] = current
                                 delq_work[tracer] = delq * tendency_scale
                         else:
                             for tracer in range(ntracer):
                                 qc_pres = qc[tracer]
+                                current = q_all[level, col, tracer]
                                 delq = cmfmc_below * qc_pres
-                                temp = -(cmfmc_all[level, col] * qc_pres)
+                                temp = -(cmfmc_current * qc_pres)
                                 delq += temp
 
-                                upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                upward = cmfmc_current * q_all[level - 1, col, tracer]
                                 delq += upward
-                                delq -= cmfmc_below * q_all[level, col, tracer]
+                                delq -= cmfmc_below * current
+                                current_work[tracer] = current
                                 delq_work[tracer] = delq * tendency_scale
 
                         for tracer in range(ntracer):
-                            current = q_all[level, col, tracer]
+                            current = current_work[tracer]
                             delq = delq_work[tracer]
                             if current + delq < 0.0:
                                 delq = -current
                             q_all[level, col, tracer] = current + delq
                     else:
-                        has_current_flux = cmfmc_all[level, col] > _TINYNUM
+                        cmfmc_current = cmfmc_all[level, col]
+                        has_current_flux = cmfmc_current > _TINYNUM
                         tendency_scale = internal_dt_s / bmass_all[level, col]
                         for tracer in range(ntracer):
                             qc[tracer] = q_all[level, col, tracer]
                             if has_current_flux:
-                                delq = -(cmfmc_all[level, col] * qc[tracer])
-                                delq += cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                delq = -(cmfmc_current * qc[tracer])
+                                delq += cmfmc_current * q_all[level - 1, col, tracer]
                                 delq *= tendency_scale
                                 current = q_all[level, col, tracer]
                                 if current + delq < 0.0:
