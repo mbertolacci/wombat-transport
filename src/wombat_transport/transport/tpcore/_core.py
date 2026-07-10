@@ -242,9 +242,7 @@ def setup_tpcore_terms(
     dpi_t = _calc_divergence(x_tpcore, y_tpcore, geofac, geofac_pc)
     dps_ctm = np.sum(dpi_t, axis=0)
     wz_t = _calc_vertical_mass_flux(dbk, dps_ctm, dpi_t)
-    delp2_t = dap[:, np.newaxis, np.newaxis] + dbk[:, np.newaxis, np.newaxis] * (
-        p1[np.newaxis, :, :] + dps_ctm[np.newaxis, :, :]
-    )
+    delp2_t = dap[:, np.newaxis, np.newaxis] + dbk[:, np.newaxis, np.newaxis] * p2[np.newaxis, :, :]
     ps = ak[0] + np.sum(delp2_t, axis=0)
 
     return TpcoreSetup(

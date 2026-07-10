@@ -173,6 +173,7 @@ contains
     call put_var_4d(ncid, 'dq_after_fill_hpa', dq_after_fill_hpa)
     call put_var_4d(ncid, 'tracer_conc_after', tracer_conc_after)
     call check(nf90_close(ncid), 'close trace')
+    enabled = .false.
   end subroutine Tpcore_Trace_Write
 
   subroutine def_var_2d(ncid, name, lon_dim, lat_dim, varid)

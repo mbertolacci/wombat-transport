@@ -36,6 +36,7 @@ from wombat_transport.transport.driver import TransportStepDiagnostics, trace_tr
 BOUNDARIES = (
     "step_start",
     "before_do_transport",
+    "before_tpcore_fvdas",
     "after_do_transport",
     "after_setup_wetscav",
     "after_compute_pbl_height",
@@ -70,6 +71,19 @@ def main() -> int:
     parser.add_argument("run_config", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--steps", type=int, default=18)
+    parser.add_argument(
+        "--snapshot-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for full-grid tracer concentration snapshots.",
+    )
+    parser.add_argument(
+        "--snapshot-step",
+        action="append",
+        type=int,
+        default=[],
+        help="0-based transport step to snapshot. May be repeated.",
+    )
     parser.add_argument(
         "--column",
         action="append",
@@ -154,7 +168,19 @@ def main() -> int:
             surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             dry_air_mass_kg=dry_air_mass,
         )
-        records.extend(_records_for_step(step, current, state, trace, columns, emissions_was_refreshed=emissions_was_refreshed))
+        if args.snapshot_dir is not None and step in set(args.snapshot_step):
+            _write_snapshots_for_step(args.snapshot_dir, step, state, trace, forcing.dry_surface_pressure_hpa[0])
+        records.extend(
+            _records_for_step(
+                step,
+                current,
+                state,
+                trace,
+                columns,
+                emissions_was_refreshed=emissions_was_refreshed,
+                tpcore_p2_hpa=forcing.dry_surface_pressure_hpa[0],
+            )
+        )
         state = trace.result.state
         dry_air_mass = trace.result.dry_air_mass_kg
 
@@ -225,10 +251,22 @@ def _records_for_step(
     columns: TraceColumns,
     *,
     emissions_was_refreshed: bool,
+    tpcore_p2_hpa: np.ndarray,
 ) -> list[dict[str, np.ndarray | datetime | int | str]]:
     records = [
         _record(step, timestamp, "step_start", canonical_time_slice(initial_state.data), columns),
         _record(step, timestamp, "before_do_transport", canonical_time_slice(initial_state.data), columns),
+        _record(
+            step,
+            timestamp,
+            "before_tpcore_fvdas",
+            canonical_time_slice(initial_state.data),
+            columns,
+            p_tp1_hpa=_tpcore_initial_surface_pressure_hpa(trace.tpcore_state),
+            p_tp2_hpa=tpcore_p2_hpa,
+            xmass_hpa=trace.tpcore_state.xmass_hpa,
+            ymass_hpa=trace.tpcore_state.ymass_hpa,
+        ),
         _record(step, timestamp, "after_do_transport", trace.tpcore_state.tracer_conc_after, columns),
         _record(step, timestamp, "after_setup_wetscav", trace.tpcore_state.tracer_conc_after, columns),
         _record(
@@ -328,6 +366,72 @@ def _records_for_step(
     return records
 
 
+def _write_snapshots_for_step(
+    snapshot_dir: Path,
+    step: int,
+    initial_state,
+    trace: TransportStepDiagnostics,
+    tpcore_p2_hpa: np.ndarray,
+) -> None:
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshots = {
+        "step_start": canonical_time_slice(initial_state.data),
+        "before_do_transport": canonical_time_slice(initial_state.data),
+        "before_tpcore_fvdas": canonical_time_slice(initial_state.data),
+        "after_do_transport": trace.tpcore_state.tracer_conc_after,
+        "after_setup_wetscav": trace.tpcore_state.tracer_conc_after,
+        "after_compute_pbl_height": trace.tpcore_state.tracer_conc_after,
+        "after_compute_sflx_for_vdiff": trace.vdiff_input.tracer_conc,
+        "before_do_mixing": trace.vdiff_input.tracer_conc,
+        "before_do_vdiff": trace.vdiff_input.tracer_conc,
+        "after_do_vdiff": trace.vdiff_output.tracer_conc,
+        "before_do_tend": trace.vdiff_output.tracer_conc,
+        "after_do_tend": trace.vdiff_output.tracer_conc,
+        "after_do_mixing": trace.vdiff_output.tracer_conc,
+        "before_do_convection": trace.convection_input.tracer_conc,
+        "after_do_convection": trace.convection_output.tracer_conc,
+        "after_history_record": canonical_time_slice(trace.result.state.data),
+    }
+    for boundary, tracer_top in snapshots.items():
+        _write_snapshot(snapshot_dir / f"{boundary}_{step:06d}.bin", tracer_top)
+    _write_tpcore_input_snapshot(
+        snapshot_dir / f"before_tpcore_fvdas_inputs_{step:06d}.bin",
+        _tpcore_initial_surface_pressure_hpa(trace.tpcore_state),
+        tpcore_p2_hpa,
+        trace.tpcore_state.xmass_hpa,
+        trace.tpcore_state.ymass_hpa,
+    )
+
+
+def _write_snapshot(path: Path, tracer_top: np.ndarray) -> None:
+    array = np.asarray(tracer_top, dtype=np.float64)
+    if array.ndim != 4:
+        raise ValueError(f"expected tracer field (lev_top, lat, lon, tracer), got {array.shape}")
+    lon_lat_lev_tracer = np.transpose(array[::-1, :, :, :], (2, 1, 0, 3))
+    dims = np.asarray(lon_lat_lev_tracer.shape, dtype=np.int32)
+    with path.open("wb") as handle:
+        dims.tofile(handle)
+        np.asarray(lon_lat_lev_tracer, dtype="<f8").ravel(order="F").tofile(handle)
+
+
+def _write_tpcore_input_snapshot(
+    path: Path,
+    p_tp1_hpa: np.ndarray,
+    p_tp2_hpa: np.ndarray,
+    xmass_hpa: np.ndarray,
+    ymass_hpa: np.ndarray,
+) -> None:
+    p1 = np.transpose(np.asarray(p_tp1_hpa, dtype=np.float64), (1, 0))
+    p2 = np.transpose(np.asarray(p_tp2_hpa, dtype=np.float64), (1, 0))
+    xmass = np.transpose(np.asarray(xmass_hpa, dtype=np.float64)[::-1], (2, 1, 0))
+    ymass = np.transpose(np.asarray(ymass_hpa, dtype=np.float64)[::-1], (2, 1, 0))
+    dims = np.asarray((p1.shape[0], p1.shape[1], xmass.shape[2]), dtype=np.int32)
+    with path.open("wb") as handle:
+        dims.tofile(handle)
+        for values in (p1, p2, xmass, ymass):
+            np.asarray(values, dtype="<f8").ravel(order="F").tofile(handle)
+
+
 def _vdiff_input_trace_fields(vdiff_input) -> dict[str, np.ndarray]:
     return {
         "u_m_s": vdiff_input.u_m_s,
@@ -340,6 +444,11 @@ def _vdiff_input_trace_fields(vdiff_input) -> dict[str, np.ndarray]:
         "eflux_w_m2": vdiff_input.eflux_w_m2,
         "ustar_m_s": vdiff_input.ustar_m_s,
     }
+
+
+def _tpcore_initial_surface_pressure_hpa(tpcore_state) -> np.ndarray:
+    top_edge = tpcore_state.surface_pressure_hpa - np.sum(tpcore_state.delp2_hpa, axis=0)
+    return top_edge + np.sum(tpcore_state.delp1_hpa, axis=0)
 
 
 def _surfaceward_edge_by_bottom_level(pedge_top: np.ndarray) -> np.ndarray:
@@ -478,6 +587,10 @@ def _write_trace(
             "hflux_w_m2",
             "eflux_w_m2",
             "ustar_m_s",
+            "p_tp1_hpa",
+            "p_tp2_hpa",
+            "xmass_hpa",
+            "ymass_hpa",
         ):
             if any(name in item for item in records):
                 shape = _field_shape(records, name)

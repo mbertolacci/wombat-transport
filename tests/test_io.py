@@ -41,7 +41,7 @@ def test_base_restart_initializes_from_restart_variable():
 
     assert initialized.names == ("CO2",)
     assert initialized.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
-    np.testing.assert_array_equal(initialized.data, direct.data)
+    np.testing.assert_array_equal(initialized.data, direct.data.astype(np.float32).astype(np.float64))
     assert not np.all(initialized.data == 0.000355)
 
 
@@ -54,7 +54,7 @@ def test_residual_missing_restart_initializes_from_background():
 
     assert len(initialized.names) == 24
     assert initialized.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
-    assert np.all(initialized.data == 0.0004)
+    assert np.all(initialized.data == np.float32(0.0004).astype(np.float64))
 
 
 def test_residual_monthly_restart_stacks_in_species_order():

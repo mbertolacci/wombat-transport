@@ -109,10 +109,10 @@ def initialize_tracers(
             var_name = f"SpeciesRst_{item.name}"
             if restart_dataset is not None and var_name in restart_dataset.variables:
                 variable = restart_dataset.variables[var_name]
-                data[..., index] = np.asarray(variable[:, ::-1, :, :], dtype=np.float64)
+                data[..., index] = _geos_chem_initial_vv(np.asarray(variable[:, ::-1, :, :], dtype=np.float64))
                 units.append(str(getattr(variable, "units", "")))
             else:
-                data[..., index].fill(item.background_vv)
+                data[..., index].fill(_geos_chem_initial_vv(item.background_vv))
                 units.append("mol mol-1 dry")
     finally:
         if restart_dataset is not None:
@@ -124,6 +124,12 @@ def initialize_tracers(
         units=tuple(units),
         coords=coords,
     )
+
+
+def _geos_chem_initial_vv(values) -> np.ndarray | np.float32:
+    """Mirror GEOS-Chem restart/background initialization precision."""
+
+    return np.asarray(values, dtype=np.float32).astype(np.float64)
 
 
 def _load_tracer_variables(

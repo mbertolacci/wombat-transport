@@ -167,6 +167,23 @@ MIXING_INSERTIONS = (
 )
 
 
+TRANSPORT_INSERTIONS = (
+    (
+        "    USE TPCORE_FVDAS_MOD,   ONLY : TPCORE_FVDAS\n",
+        "    USE TPCORE_FVDAS_MOD,   ONLY : TPCORE_FVDAS\n"
+        "    USE Wombat_Main_Loop_Trace_Mod, ONLY : WBT_Trace_Tpcore_Input\n",
+    ),
+    (
+        "    CALL DO_PJC_PFIX( State_Grid,  D_DYN, P_TP1, P_TP2, &\n"
+        "                      State_Met%U, State_Met%V, XMASS, YMASS )\n",
+        "    CALL DO_PJC_PFIX( State_Grid,  D_DYN, P_TP1, P_TP2, &\n"
+        "                      State_Met%U, State_Met%V, XMASS, YMASS )\n"
+        "    CALL WBT_Trace_Tpcore_Input( 'before_tpcore_fvdas', State_Chm, State_Grid, State_Met, &\n"
+        "                                  P_TP1, P_TP2, XMASS, YMASS )\n",
+    ),
+)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate GEOS-Chem main-loop trace instrumentation sources.")
     parser.add_argument("--gc-source", type=Path, default=DEFAULT_GC_SOURCE)
@@ -187,8 +204,10 @@ def main() -> int:
 
     main_source = args.gc_source / "Interfaces/GCClassic/main.F90"
     mixing_source = args.gc_source / "GeosCore/mixing_mod.F90"
+    transport_source = args.gc_source / "GeosCore/transport_mod.F90"
     main_target = output_dir / "main.F90"
     mixing_target = output_dir / "mixing_mod.F90"
+    transport_target = output_dir / "transport_mod.F90"
     module_target = output_dir / "wombat_main_loop_trace_mod.F90"
 
     main_text = _replace_once(
@@ -205,11 +224,16 @@ def main() -> int:
     for needle, replacement in MIXING_INSERTIONS:
         mixing_text = _replace_once(mixing_text, needle, replacement)
     mixing_target.write_text(mixing_text, encoding="utf-8")
+    transport_text = transport_source.read_text(encoding="utf-8")
+    for needle, replacement in TRANSPORT_INSERTIONS:
+        transport_text = _replace_once(transport_text, needle, replacement)
+    transport_target.write_text(transport_text, encoding="utf-8")
     module_target.write_text(_trace_module(columns, args.max_tracers), encoding="utf-8")
 
     print(f"wrote_main_loop_trace_sources: {output_dir}")
     print(f"instrumented_main: {main_target}")
     print(f"instrumented_mixing: {mixing_target}")
+    print(f"instrumented_transport: {transport_target}")
     print(f"trace_module: {module_target}")
     return 0
 
@@ -239,9 +263,10 @@ MODULE Wombat_Main_Loop_Trace_Mod
   USE State_Chm_Mod,  ONLY : ChmState
   USE State_Grid_Mod, ONLY : GrdState
   USE State_Met_Mod,  ONLY : MetState
+  USE Tpcore_Trace_Mod, ONLY : Tpcore_Trace_Init, Tpcore_Trace_Write
   IMPLICIT NONE
   PRIVATE
-  PUBLIC :: WBT_Trace_Main_Loop, WBT_Trace_Do_Tend
+  PUBLIC :: WBT_Trace_Main_Loop, WBT_Trace_Do_Tend, WBT_Trace_Tpcore_Input
 
   INTEGER, PARAMETER :: N_TRACE_COLS = {len(columns)}
   INTEGER, PARAMETER :: MAX_TRACE_TRACERS = {max_tracers}
@@ -251,6 +276,16 @@ MODULE Wombat_Main_Loop_Trace_Mod
   LOGICAL, SAVE :: IsInitialized = .FALSE.
   INTEGER, SAVE :: TraceUnit = -1
   INTEGER, SAVE :: CallIndex = 0
+  CHARACTER(LEN=512), SAVE :: SnapshotDir = ''
+  CHARACTER(LEN=512), SAVE :: TpcoreTracePath = ''
+  INTEGER, PARAMETER :: MAX_SNAPSHOT_STEPS = 128
+  INTEGER, PARAMETER :: MAX_SNAPSHOT_LABELS = 64
+  INTEGER, SAVE :: NSnapshotSteps = 0
+  INTEGER, SAVE :: SnapshotSteps(MAX_SNAPSHOT_STEPS) = -1
+  CHARACTER(LEN=64), SAVE :: SnapshotLabels(MAX_SNAPSHOT_LABELS) = ''
+  INTEGER, SAVE :: SnapshotLabelCounts(MAX_SNAPSHOT_LABELS) = 0
+  INTEGER, SAVE :: NSnapshotLabels = 0
+  LOGICAL, SAVE :: TpcoreTraceInitialized = .FALSE.
 
 CONTAINS
 
@@ -259,11 +294,12 @@ CONTAINS
     TYPE(ChmState),   INTENT(IN) :: State_Chm
     TYPE(GrdState),   INTENT(IN) :: State_Grid
     TYPE(MetState),   INTENT(IN) :: State_Met
-    INTEGER :: C, I, J, L, T, NTracer, SpeciesId
+    INTEGER :: C, I, J, L, T, NTracer, SpeciesId, Occurrence
     CHARACTER(LEN=31) :: SpeciesName
 
     IF ( .NOT. IsInitialized ) CALL Init_Trace()
     CallIndex = CallIndex + 1
+    Occurrence = Next_Label_Occurrence( Label )
     NTracer = MIN( State_Chm%nAdvect, MAX_TRACE_TRACERS )
 
     DO C = 1, N_TRACE_COLS
@@ -275,7 +311,7 @@ CONTAINS
              SpeciesId = State_Chm%Map_Advect(T)
              SpeciesName = ''
              IF ( SpeciesId > 0 ) SpeciesName = State_Chm%SpcData(SpeciesId)%Info%Name
-             WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",22(ES24.16,","),ES24.16)' ) &
+             WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",26(ES24.16,","),ES24.16)' ) &
                   CallIndex, TRIM(Label), I, J, L, T, TRIM(SpeciesName), &
                   Trace_Conc(State_Chm, SpeciesId, I, J, L), Trace_AD(State_Met, I, J, L), &
                   Trace_3D(State_Met%DELP_DRY, I, J, L), Trace_3D(State_Met%BXHEIGHT, I, J, L), &
@@ -288,11 +324,13 @@ CONTAINS
                   Trace_3D(State_Met%PMID, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L), &
                   Trace_3D(State_Met%PEDGE, I, J, L + 1), Trace_3D(State_Met%TV, I, J, L), &
                   Trace_2D(State_Met%HFLUX, I, J), Trace_2D(State_Met%EFLUX, I, J), &
-                  Trace_2D(State_Met%USTAR, I, J)
+                  Trace_2D(State_Met%USTAR, I, J), FILL, FILL, FILL, FILL
           ENDDO
        ENDDO
     ENDDO
     FLUSH( TraceUnit )
+    CALL Maybe_Write_Snapshot( Label, Occurrence, State_Chm, State_Grid )
+    IF ( TRIM(Label) == 'after_do_transport' ) CALL Tpcore_Trace_Write()
   END SUBROUTINE WBT_Trace_Main_Loop
 
   SUBROUTINE WBT_Trace_Do_Tend( Label, State_Chm, State_Grid, State_Met, AdvIndex, SpeciesId, I, J, L, &
@@ -312,7 +350,7 @@ CONTAINS
     IF ( SpeciesId > 0 ) SpeciesName = State_Chm%SpcData(SpeciesId)%Info%Name
 !$OMP CRITICAL(WBT_TRACE_WRITE)
     CallIndex = CallIndex + 1
-    WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",22(ES24.16,","),ES24.16)' ) &
+    WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",26(ES24.16,","),ES24.16)' ) &
          CallIndex, TRIM(Label), I, J, L, AdvIndex, TRIM(SpeciesName), &
          ConcAfter, Trace_AD(State_Met, I, J, L), Trace_3D(State_Met%DELP_DRY, I, J, L), &
          Trace_3D(State_Met%BXHEIGHT, I, J, L), REAL(EmisTop, fp), REAL(PblTop, fp), &
@@ -323,8 +361,8 @@ CONTAINS
          Trace_3D(State_Met%PMID, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L), &
          Trace_3D(State_Met%PEDGE, I, J, L + 1), Trace_3D(State_Met%TV, I, J, L), &
          Trace_2D(State_Met%HFLUX, I, J), Trace_2D(State_Met%EFLUX, I, J), &
-         Trace_2D(State_Met%USTAR, I, J)
-    WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",22(ES24.16,","),ES24.16)' ) &
+         Trace_2D(State_Met%USTAR, I, J), FILL, FILL, FILL, FILL
+    WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",26(ES24.16,","),ES24.16)' ) &
          CallIndex, 'do_tend_meta', I, J, L, AdvIndex, TRIM(SpeciesName), &
          MERGE( 1.0_fp, 0.0_fp, EmisSpec ), MERGE( 1.0_fp, 0.0_fp, Found ), Ts, REAL(EmisTop, fp), &
          REAL(PblTop, fp), ConcAfter - ConcBefore, HcoFlux, AppliedFlux, ConcBefore, ConcAfter, &
@@ -333,13 +371,60 @@ CONTAINS
          Trace_3D(State_Met%V, I, J, L), Trace_3D(State_Met%PMID, I, J, L), &
          Trace_3D(State_Met%PEDGE, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L + 1), &
          Trace_3D(State_Met%TV, I, J, L), Trace_2D(State_Met%HFLUX, I, J), &
-         Trace_2D(State_Met%EFLUX, I, J), Trace_2D(State_Met%USTAR, I, J)
+         Trace_2D(State_Met%EFLUX, I, J), Trace_2D(State_Met%USTAR, I, J), FILL, FILL, FILL, FILL
     FLUSH( TraceUnit )
 !$OMP END CRITICAL(WBT_TRACE_WRITE)
   END SUBROUTINE WBT_Trace_Do_Tend
 
+  SUBROUTINE WBT_Trace_Tpcore_Input( Label, State_Chm, State_Grid, State_Met, P_TP1, P_TP2, XMASS, YMASS )
+    CHARACTER(LEN=*), INTENT(IN) :: Label
+    TYPE(ChmState),   INTENT(IN) :: State_Chm
+    TYPE(GrdState),   INTENT(IN) :: State_Grid
+    TYPE(MetState),   INTENT(IN) :: State_Met
+    REAL(fp),         INTENT(IN) :: P_TP1(:,:), P_TP2(:,:), XMASS(:,:,:), YMASS(:,:,:)
+    INTEGER :: C, I, J, L, T, NTracer, SpeciesId, Occurrence
+    CHARACTER(LEN=31) :: SpeciesName
+
+    IF ( .NOT. IsInitialized ) CALL Init_Trace()
+    CallIndex = CallIndex + 1
+    Occurrence = Next_Label_Occurrence( Label )
+    NTracer = MIN( State_Chm%nAdvect, MAX_TRACE_TRACERS )
+
+    DO C = 1, N_TRACE_COLS
+       I = TRACE_I(C)
+       J = TRACE_J(C)
+       IF ( I < 1 .OR. I > State_Grid%NX .OR. J < 1 .OR. J > State_Grid%NY ) CYCLE
+       DO L = 1, State_Grid%NZ
+          DO T = 1, NTracer
+             SpeciesId = State_Chm%Map_Advect(T)
+             SpeciesName = ''
+             IF ( SpeciesId > 0 ) SpeciesName = State_Chm%SpcData(SpeciesId)%Info%Name
+             WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",26(ES24.16,","),ES24.16)' ) &
+                  CallIndex, TRIM(Label), I, J, L, T, TRIM(SpeciesName), &
+                  Trace_Conc(State_Chm, SpeciesId, I, J, L), Trace_AD(State_Met, I, J, L), &
+                  Trace_3D(State_Met%DELP_DRY, I, J, L), Trace_3D(State_Met%BXHEIGHT, I, J, L), &
+                  Trace_2D(State_Met%PBL_TOP_L, I, J), Trace_2D(State_Met%PBL_TOP_m, I, J), &
+                  Trace_SurfaceFlux(State_Chm, I, J, T), Trace_3D(State_Met%SPHU, I, J, L), &
+                  Trace_3D(State_Met%T, I, J, L), Trace_3D(State_Met%CMFMC, I, J, L), &
+                  Trace_3D(State_Met%DTRAIN, I, J, L), Trace_3D(State_Met%DQRCU, I, J, L), &
+                  Trace_3D(State_Met%REEVAPCN, I, J, L), Trace_3D(State_Met%PFICU, I, J, L), &
+                  Trace_3D(State_Met%U, I, J, L), Trace_3D(State_Met%V, I, J, L), &
+                  Trace_3D(State_Met%PMID, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L), &
+                  Trace_3D(State_Met%PEDGE, I, J, L + 1), Trace_3D(State_Met%TV, I, J, L), &
+                  Trace_2D(State_Met%HFLUX, I, J), Trace_2D(State_Met%EFLUX, I, J), &
+                  Trace_2D(State_Met%USTAR, I, J), P_TP1(I,J), P_TP2(I,J), XMASS(I,J,L), YMASS(I,J,L)
+          ENDDO
+       ENDDO
+    ENDDO
+    FLUSH( TraceUnit )
+    CALL Maybe_Write_Snapshot( Label, Occurrence, State_Chm, State_Grid )
+    CALL Maybe_Write_Tpcore_Input_Snapshot( Label, Occurrence, P_TP1, P_TP2, XMASS, YMASS )
+    CALL Maybe_Init_Tpcore_Trace( State_Chm, State_Grid, NTracer )
+  END SUBROUTINE WBT_Trace_Tpcore_Input
+
   SUBROUTINE Init_Trace()
     CHARACTER(LEN=512) :: Path
+    CHARACTER(LEN=1024) :: Steps
     INTEGER :: Status
     CALL GET_ENVIRONMENT_VARIABLE( 'WOMBAT_GC_TRACE_CSV', Path, STATUS=Status )
     IF ( Status /= 0 .OR. LEN_TRIM(Path) == 0 ) Path = 'wombat_gc_main_loop_trace.csv'
@@ -348,9 +433,135 @@ CONTAINS
          'call_index,boundary,i,j,l,tracer,tracer_name,tracer_conc,ad_kg,delp_dry_hpa,bxheight_m' // &
          ',pbl_top_l,pbl_top_m,surface_flux_kg_m2_s,sphu_g_kg,temperature_k,cmfmc_kg_m2_s' // &
          ',dtrain_kg_m2_s,dqrcu_kg_kg_s,reevapcn_kg_kg_s,pficu_kg_m2_s' // &
-         ',u_m_s,v_m_s,pmid_hpa,pedge_lower_hpa,pedge_upper_hpa,tv_k,hflux_w_m2,eflux_w_m2,ustar_m_s'
+         ',u_m_s,v_m_s,pmid_hpa,pedge_lower_hpa,pedge_upper_hpa,tv_k,hflux_w_m2,eflux_w_m2,ustar_m_s' // &
+         ',p_tp1_hpa,p_tp2_hpa,xmass_hpa,ymass_hpa'
+    CALL GET_ENVIRONMENT_VARIABLE( 'WOMBAT_GC_SNAPSHOT_DIR', SnapshotDir, STATUS=Status )
+    IF ( Status /= 0 ) SnapshotDir = ''
+    CALL GET_ENVIRONMENT_VARIABLE( 'WOMBAT_GC_TPCORE_TRACE_NC', TpcoreTracePath, STATUS=Status )
+    IF ( Status /= 0 ) TpcoreTracePath = ''
+    CALL GET_ENVIRONMENT_VARIABLE( 'WOMBAT_GC_SNAPSHOT_STEPS', Steps, STATUS=Status )
+    IF ( Status == 0 .AND. LEN_TRIM(Steps) > 0 ) CALL Parse_Snapshot_Steps( Steps )
     IsInitialized = .TRUE.
   END SUBROUTINE Init_Trace
+
+  SUBROUTINE Parse_Snapshot_Steps( Text )
+    CHARACTER(LEN=*), INTENT(IN) :: Text
+    INTEGER :: Start, Comma, Value, Status
+    CHARACTER(LEN=32) :: Token
+
+    NSnapshotSteps = 0
+    Start = 1
+    DO WHILE ( Start <= LEN_TRIM(Text) .AND. NSnapshotSteps < MAX_SNAPSHOT_STEPS )
+       Comma = INDEX( Text(Start:), ',' )
+       IF ( Comma == 0 ) THEN
+          Token = ADJUSTL( Text(Start:) )
+          Start = LEN_TRIM(Text) + 1
+       ELSE
+          Token = ADJUSTL( Text(Start:Start+Comma-2) )
+          Start = Start + Comma
+       ENDIF
+       IF ( LEN_TRIM(Token) == 0 ) CYCLE
+       READ( Token, *, IOSTAT=Status ) Value
+       IF ( Status == 0 .AND. Value >= 0 ) THEN
+          NSnapshotSteps = NSnapshotSteps + 1
+          SnapshotSteps(NSnapshotSteps) = Value
+       ENDIF
+    ENDDO
+  END SUBROUTINE Parse_Snapshot_Steps
+
+  INTEGER FUNCTION Next_Label_Occurrence( Label )
+    CHARACTER(LEN=*), INTENT(IN) :: Label
+    INTEGER :: N
+    DO N = 1, NSnapshotLabels
+       IF ( TRIM(SnapshotLabels(N)) == TRIM(Label) ) THEN
+          Next_Label_Occurrence = SnapshotLabelCounts(N)
+          SnapshotLabelCounts(N) = SnapshotLabelCounts(N) + 1
+          RETURN
+       ENDIF
+    ENDDO
+    IF ( NSnapshotLabels < MAX_SNAPSHOT_LABELS ) THEN
+       NSnapshotLabels = NSnapshotLabels + 1
+       SnapshotLabels(NSnapshotLabels) = Label
+       SnapshotLabelCounts(NSnapshotLabels) = 1
+    ENDIF
+    Next_Label_Occurrence = 0
+  END FUNCTION Next_Label_Occurrence
+
+  LOGICAL FUNCTION Should_Write_Snapshot( Occurrence )
+    INTEGER, INTENT(IN) :: Occurrence
+    INTEGER :: N
+    Should_Write_Snapshot = .FALSE.
+    IF ( LEN_TRIM(SnapshotDir) == 0 .OR. NSnapshotSteps == 0 ) RETURN
+    DO N = 1, NSnapshotSteps
+       IF ( SnapshotSteps(N) == Occurrence ) THEN
+          Should_Write_Snapshot = .TRUE.
+          RETURN
+       ENDIF
+    ENDDO
+  END FUNCTION Should_Write_Snapshot
+
+  SUBROUTINE Maybe_Write_Snapshot( Label, Occurrence, State_Chm, State_Grid )
+    CHARACTER(LEN=*), INTENT(IN) :: Label
+    INTEGER,          INTENT(IN) :: Occurrence
+    TYPE(ChmState),   INTENT(IN) :: State_Chm
+    TYPE(GrdState),   INTENT(IN) :: State_Grid
+    INTEGER :: I, J, L, T, Unit, NTracer, SpeciesId
+    CHARACTER(LEN=1024) :: Path
+    REAL(fp), ALLOCATABLE :: Snapshot(:,:,:,:)
+
+    IF ( .NOT. Should_Write_Snapshot( Occurrence ) ) RETURN
+    NTracer = MIN( State_Chm%nAdvect, MAX_TRACE_TRACERS )
+    IF ( NTracer <= 0 ) RETURN
+    ALLOCATE( Snapshot(State_Grid%NX, State_Grid%NY, State_Grid%NZ, NTracer) )
+    Snapshot = FILL
+    DO T = 1, NTracer
+       SpeciesId = State_Chm%Map_Advect(T)
+       IF ( SpeciesId <= 0 ) CYCLE
+       IF ( .NOT. ASSOCIATED( State_Chm%Species(SpeciesId)%Conc ) ) CYCLE
+       DO L = 1, State_Grid%NZ
+          DO J = 1, State_Grid%NY
+             DO I = 1, State_Grid%NX
+                Snapshot(I,J,L,T) = State_Chm%Species(SpeciesId)%Conc(I,J,L)
+             ENDDO
+          ENDDO
+       ENDDO
+    ENDDO
+
+    WRITE( Path, '(A,"/",A,"_",I6.6,".bin")' ) TRIM(SnapshotDir), TRIM(Label), Occurrence
+    OPEN( NEWUNIT=Unit, FILE=TRIM(Path), STATUS='REPLACE', ACCESS='STREAM', FORM='UNFORMATTED' )
+    WRITE( Unit ) State_Grid%NX, State_Grid%NY, State_Grid%NZ, NTracer
+    WRITE( Unit ) Snapshot
+    CLOSE( Unit )
+    DEALLOCATE( Snapshot )
+  END SUBROUTINE Maybe_Write_Snapshot
+
+  SUBROUTINE Maybe_Write_Tpcore_Input_Snapshot( Label, Occurrence, P_TP1, P_TP2, XMASS, YMASS )
+    CHARACTER(LEN=*), INTENT(IN) :: Label
+    INTEGER,          INTENT(IN) :: Occurrence
+    REAL(fp),         INTENT(IN) :: P_TP1(:,:), P_TP2(:,:), XMASS(:,:,:), YMASS(:,:,:)
+    INTEGER :: Unit
+    CHARACTER(LEN=1024) :: Path
+
+    IF ( .NOT. Should_Write_Snapshot( Occurrence ) ) RETURN
+    WRITE( Path, '(A,"/",A,"_inputs_",I6.6,".bin")' ) TRIM(SnapshotDir), TRIM(Label), Occurrence
+    OPEN( NEWUNIT=Unit, FILE=TRIM(Path), STATUS='REPLACE', ACCESS='STREAM', FORM='UNFORMATTED' )
+    WRITE( Unit ) SIZE(P_TP1, 1), SIZE(P_TP1, 2), SIZE(XMASS, 3)
+    WRITE( Unit ) P_TP1
+    WRITE( Unit ) P_TP2
+    WRITE( Unit ) XMASS
+    WRITE( Unit ) YMASS
+    CLOSE( Unit )
+  END SUBROUTINE Maybe_Write_Tpcore_Input_Snapshot
+
+  SUBROUTINE Maybe_Init_Tpcore_Trace( State_Chm, State_Grid, NTracer )
+    TYPE(ChmState), INTENT(IN) :: State_Chm
+    TYPE(GrdState), INTENT(IN) :: State_Grid
+    INTEGER,        INTENT(IN) :: NTracer
+    IF ( TpcoreTraceInitialized ) RETURN
+    TpcoreTraceInitialized = .TRUE.
+    IF ( LEN_TRIM(TpcoreTracePath) == 0 .OR. NTracer <= 0 ) RETURN
+    CALL Tpcore_Trace_Init( TRIM(TpcoreTracePath), State_Grid%NX, State_Grid%NY, State_Grid%NZ, NTracer, 600.0_fp )
+  END SUBROUTINE Maybe_Init_Tpcore_Trace
 
   LOGICAL FUNCTION Should_Trace( I, J, T )
     INTEGER, INTENT(IN) :: I, J, T
