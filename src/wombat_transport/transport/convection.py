@@ -15,6 +15,37 @@ G0_100 = 100.0 / 9.80665
 _TINYNUM = 1.0e-14
 _MAX_GROUP_TRACER_BYTES = 1024**3
 _NUMBA_AVAILABLE = njit is not None
+_EMPTY_FLOAT64 = np.empty(0, dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class _ConvectionLightWorkspace:
+    tracer_out: np.ndarray
+    bmass: np.ndarray
+
+
+_CONVECTION_LIGHT_WORKSPACE: _ConvectionLightWorkspace | None = None
+
+
+def _get_convection_light_workspace(
+    nlev: int,
+    nlat: int,
+    nlon: int,
+    ntracer: int,
+) -> _ConvectionLightWorkspace:
+    global _CONVECTION_LIGHT_WORKSPACE
+    existing = _CONVECTION_LIGHT_WORKSPACE
+    if (
+        existing is not None
+        and existing.tracer_out.shape == (nlev, nlat, nlon, ntracer)
+        and existing.bmass.shape == (nlev, nlat, nlon)
+    ):
+        return existing
+    _CONVECTION_LIGHT_WORKSPACE = _ConvectionLightWorkspace(
+        tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
+        bmass=np.empty((nlev, nlat, nlon), dtype=np.float64),
+    )
+    return _CONVECTION_LIGHT_WORKSPACE
 
 
 @dataclass(frozen=True)
@@ -49,6 +80,7 @@ def run_cloud_convection_one_step(
     dt_s: float = 600.0,
     reconstruct_conv_precip_flux: bool = False,
     diagnostics: bool = True,
+    reuse_output: bool = False,
 ) -> ConvectionResult:
     """Port GEOS-Chem ``DO_CLOUD_CONVECTION`` for transport-only tracers.
 
@@ -101,10 +133,17 @@ def run_cloud_convection_one_step(
 
     internal_steps = max(int(dt_s) // 300, 1)
     internal_dt = float(dt_s) / float(internal_steps)
-    bmass = delp_dry * G0_100
-    tracer_after_top = np.ascontiguousarray(tracer).copy()
-    diag14_top = np.zeros_like(tracer_after_top) if diagnostics else np.empty((0,), dtype=np.float64)
-    initial_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else np.empty(0, dtype=np.float64)
+    if diagnostics or not reuse_output:
+        bmass = delp_dry * G0_100
+        tracer_after_top = np.ascontiguousarray(tracer).copy()
+    else:
+        workspace = _get_convection_light_workspace(nlev, nlat, nlon, ntracer)
+        bmass = workspace.bmass
+        tracer_after_top = workspace.tracer_out
+        np.multiply(delp_dry, G0_100, out=bmass)
+        np.copyto(tracer_after_top, tracer)
+    diag14_top = np.zeros_like(tracer_after_top) if diagnostics else _EMPTY_FLOAT64
+    initial_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else _EMPTY_FLOAT64
     negative_before = int(np.count_nonzero(tracer_after_top < 0.0)) if diagnostics else 0
 
     _convect_active_columns_top(
@@ -124,7 +163,7 @@ def run_cloud_convection_one_step(
         internal_dt_s=internal_dt,
     )
 
-    final_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else np.empty(0, dtype=np.float64)
+    final_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else _EMPTY_FLOAT64
     return ConvectionResult(
         tracer_conc=tracer_after_top,
         diag14_mass_flux=diag14_top,
@@ -164,6 +203,22 @@ def _convect_active_columns_top(
     delp_d = delp_dry.reshape(nlev, ncol)
     bm = bmass.reshape(nlev, ncol)
     area = area_m2.reshape(ncol)
+
+    if _numba_convection_enabled() and not diagnostics:
+        _convect_fullgrid_top_numba(
+            q,
+            cmf,
+            detrain,
+            delp,
+            delp_d,
+            bm,
+            dqrcu_met.reshape(nlev, ncol),
+            reevapcn_met.reshape(nlev, ncol),
+            reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
+            internal_steps=internal_steps,
+            internal_dt_s=internal_dt_s,
+        )
+        return
 
     active = (np.max(np.abs(cmf), axis=0) > _TINYNUM) | (np.max(np.abs(detrain), axis=0) > _TINYNUM)
     if not np.any(active):
@@ -395,6 +450,37 @@ def _numba_convection_enabled() -> bool:
     return _numba_convection_mode() not in {"0", "false", "no", "off", "none"}
 
 
+def _convect_fullgrid_top_numba(
+    q_all: np.ndarray,
+    cmfmc_all: np.ndarray,
+    dtrain_all: np.ndarray,
+    delp_hpa_all: np.ndarray,
+    delp_dry_all: np.ndarray,
+    bmass_all: np.ndarray,
+    dqrcu_met_all: np.ndarray,
+    reevapcn_met_all: np.ndarray,
+    *,
+    reconstruct_conv_precip_flux: bool,
+    internal_steps: int,
+    internal_dt_s: float,
+) -> None:
+    if not _NUMBA_AVAILABLE:
+        raise RuntimeError("numba is not available")
+    _convect_fullgrid_top_numba_kernel(
+        q_all,
+        cmfmc_all,
+        dtrain_all,
+        delp_hpa_all,
+        delp_dry_all,
+        bmass_all,
+        dqrcu_met_all,
+        reevapcn_met_all,
+        reconstruct_conv_precip_flux,
+        internal_steps,
+        internal_dt_s,
+    )
+
+
 def _convect_column_group_top_numba(
     q_all: np.ndarray,
     diag_all: np.ndarray,
@@ -443,6 +529,140 @@ def _convect_column_group_top_numba(
 
 
 if njit is not None:
+
+    @njit(cache=True)
+    def _convect_fullgrid_top_numba_kernel(
+        q_all: np.ndarray,
+        cmfmc_all: np.ndarray,
+        dtrain_all: np.ndarray,
+        delp_hpa_all: np.ndarray,
+        delp_dry_all: np.ndarray,
+        bmass_all: np.ndarray,
+        dqrcu_met_all: np.ndarray,
+        reevapcn_met_all: np.ndarray,
+        reconstruct_conv_precip_flux: bool,
+        internal_steps: int,
+        internal_dt_s: float,
+    ) -> None:
+        nlev = q_all.shape[0]
+        ncol = q_all.shape[1]
+        ntracer = q_all.shape[2]
+        bottom_index = nlev - 1
+        qc = np.empty(ntracer, dtype=np.float64)
+        qb_num = np.empty(ntracer, dtype=np.float64)
+
+        for col in range(ncol):
+            active = False
+            for level in range(nlev):
+                cmfmc_value = cmfmc_all[level, col]
+                dtrain_value = dtrain_all[level, col]
+                if (
+                    cmfmc_value > _TINYNUM
+                    or cmfmc_value < -_TINYNUM
+                    or dtrain_value > _TINYNUM
+                    or dtrain_value < -_TINYNUM
+                ):
+                    active = True
+                    break
+            if not active:
+                continue
+
+            cloud_base = bottom_index
+            for level in range(bottom_index, -1, -1):
+                dqrcu_value = 0.0
+                if reconstruct_conv_precip_flux:
+                    if level == 0:
+                        dqrcu_value = dqrcu_met_all[level, col] + reevapcn_met_all[level, col]
+                    elif level < bottom_index:
+                        dqrcu_value = dqrcu_met_all[level, col] + (
+                            reevapcn_met_all[level, col] * delp_hpa_all[level, col]
+                            - reevapcn_met_all[level - 1, col] * delp_hpa_all[level - 1, col]
+                        ) / delp_hpa_all[level, col]
+                else:
+                    dqrcu_value = dqrcu_met_all[level, col]
+                if dqrcu_value > 0.0:
+                    cloud_base = level
+                    break
+
+            for step in range(internal_steps):
+                _ = step
+                for tracer in range(ntracer):
+                    qc[tracer] = q_all[cloud_base, col, tracer]
+
+                if cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM:
+                    denominator = 0.0
+                    mass_below_base = 0.0
+                    for level in range(cloud_base + 1, nlev):
+                        denominator += delp_dry_all[level, col]
+                        mass_below_base += bmass_all[level, col]
+                    if denominator <= 0.0:
+                        raise ValueError("dry pressure below cloud base must be positive")
+
+                    cmfmc_base = cmfmc_all[cloud_base + 1, col]
+                    denom_qc = mass_below_base + cmfmc_base * internal_dt_s
+                    for tracer in range(ntracer):
+                        qb_num[tracer] = 0.0
+                    for level in range(cloud_base + 1, nlev):
+                        delp_dry = delp_dry_all[level, col]
+                        for tracer in range(ntracer):
+                            qb_num[tracer] += q_all[level, col, tracer] * delp_dry
+                    for tracer in range(ntracer):
+                        qb = qb_num[tracer] / denominator
+                        plume = (
+                            mass_below_base * qb
+                            + cmfmc_base * q_all[cloud_base, col, tracer] * internal_dt_s
+                        ) / denom_qc
+                        qc[tracer] = plume
+                    for level in range(cloud_base + 1, nlev):
+                        for tracer in range(ntracer):
+                            q_all[level, col, tracer] = qc[tracer]
+
+                for level in range(cloud_base, 0, -1):
+                    if level == bottom_index:
+                        cmfmc_below = 0.0
+                    else:
+                        cmfmc_below = cmfmc_all[level + 1, col]
+
+                    if cmfmc_below > _TINYNUM:
+                        cmout = cmfmc_all[level, col] + dtrain_all[level, col]
+                        entrn = cmout - cmfmc_below
+                        entrains = entrn >= 0.0 and cmout > 0.0
+                        tendency_scale = internal_dt_s / bmass_all[level, col]
+
+                        for tracer in range(ntracer):
+                            qc_pres = qc[tracer]
+                            qc_next = qc_pres
+                            if entrains:
+                                qc_next = (
+                                    cmfmc_below * qc_pres + entrn * q_all[level, col, tracer]
+                                ) / cmout
+
+                            delq = cmfmc_below * qc_pres
+                            temp = -(cmfmc_all[level, col] * qc_next)
+                            delq += temp
+                            qc[tracer] = qc_next
+
+                            upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                            delq += upward
+                            delq -= cmfmc_below * q_all[level, col, tracer]
+                            delq *= tendency_scale
+                            current = q_all[level, col, tracer]
+                            if current + delq < 0.0:
+                                delq = -current
+                            q_all[level, col, tracer] = current + delq
+                    else:
+                        has_current_flux = cmfmc_all[level, col] > _TINYNUM
+                        tendency_scale = internal_dt_s / bmass_all[level, col]
+                        for tracer in range(ntracer):
+                            qc[tracer] = q_all[level, col, tracer]
+                            if has_current_flux:
+                                delq = -(cmfmc_all[level, col] * qc[tracer])
+                                delq += cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                delq *= tendency_scale
+                                current = q_all[level, col, tracer]
+                                if current + delq < 0.0:
+                                    delq = -current
+                                q_all[level, col, tracer] = current + delq
 
     @njit(cache=True)
     def _convect_column_group_top_numba_kernel(
@@ -555,6 +775,21 @@ if njit is not None:
                                 q_all[level, col, tracer] = current + delq
 
 else:
+
+    def _convect_fullgrid_top_numba_kernel(
+        q_all: np.ndarray,
+        cmfmc_all: np.ndarray,
+        dtrain_all: np.ndarray,
+        delp_hpa_all: np.ndarray,
+        delp_dry_all: np.ndarray,
+        bmass_all: np.ndarray,
+        dqrcu_met_all: np.ndarray,
+        reevapcn_met_all: np.ndarray,
+        reconstruct_conv_precip_flux: bool,
+        internal_steps: int,
+        internal_dt_s: float,
+    ) -> None:
+        raise RuntimeError("numba is not available")
 
     def _convect_column_group_top_numba_kernel(
         q_all: np.ndarray,

@@ -681,6 +681,7 @@ def _run_convection_input(state: ConvectionInputState, *, diagnostics: bool = Fa
         precccon_mm_day=state.precccon_mm_day,
         dt_s=state.dt_s,
         diagnostics=diagnostics,
+        reuse_output=not diagnostics,
     )
 
 

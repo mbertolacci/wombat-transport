@@ -593,13 +593,20 @@ def test_convection_diagnostics_light_preserves_tracer_update(tmp_path):
 
     full = run_cloud_convection_one_step(**kwargs, diagnostics=True)
     light = run_cloud_convection_one_step(**kwargs, diagnostics=False)
+    reused = run_cloud_convection_one_step(**kwargs, diagnostics=False, reuse_output=True)
 
     np.testing.assert_array_equal(light.tracer_conc, full.tracer_conc)
+    np.testing.assert_array_equal(reused.tracer_conc, full.tracer_conc)
     assert light.diag14_mass_flux.shape == (0,)
     assert light.initial_tracer_mass.shape == (0,)
     assert light.final_tracer_mass.shape == (0,)
     assert light.negative_count_before == 0
     assert light.negative_count_after == 0
+    assert reused.diag14_mass_flux.shape == (0,)
+    assert reused.initial_tracer_mass.shape == (0,)
+    assert reused.final_tracer_mass.shape == (0,)
+    assert reused.negative_count_before == 0
+    assert reused.negative_count_after == 0
 
 
 def test_convection_vectorized_batches_mixed_cloud_bases_and_inactive_columns():

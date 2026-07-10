@@ -917,3 +917,56 @@ Current end-to-end driver benchmark after the convection change:
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 24 | 0.398 | 0.236 | 0.059 | 0.063 | 0.023 |
 | 96 | 1.214 | 0.797 | 0.163 | 0.212 | 0.026 |
+
+## 2026-07-09 Convection workspace and fused light kernel
+
+Two follow-up convection experiments were retained.
+
+First, the diagnostics-light driver/benchmark path now opts into reusable
+output workspace. Direct operator calls keep `reuse_output=False` by default so
+the public-safe behavior still returns a fresh output array; the transport
+driver uses `reuse_output=True` because it consumes the result immediately. The
+workspace reuses the tracer output and dry-air-mass arrays, replacing repeated
+large allocation with `copyto`/`multiply(..., out=...)`.
+
+Second, the diagnostics-light Numba path now bypasses Python-side active-column
+and cloud-base grouping. A fused full-grid Numba kernel scans active columns,
+derives each column's cloud base, and runs the convection update in one compiled
+pass. Full diagnostics and the pure Python fallback keep the existing grouped
+implementation for oracle/debug behavior.
+
+Full-vs-light validation for the synthetic 24- and 96-tracer inputs:
+
+```text
+24 tracer_max_abs 0.0 checksum 0.0004012190050963058
+96 tracer_max_abs 0.0 checksum 0.00040481900509630625
+```
+
+Standalone benchmark progression:
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s | 192 tracer best s |
+| --- | ---: | ---: | ---: | ---: |
+| Diagnostics-light, fresh output | 0.065 | 0.216 | 0.218 | 0.419 |
+| Reusable output workspace | 0.056 | 0.181 | 0.182 | 0.351 |
+| Fused full-grid light Numba kernel | 0.048 | 0.173 | 0.173 | 0.334 |
+
+Manual 96-tracer timing split after both retained changes:
+
+| Region | Best s | Mean s |
+| --- | ---: | ---: |
+| output copy + dry-air-mass setup | 0.019 | 0.019 |
+| fused Numba convection kernel | 0.152 | 0.153 |
+| total measured hot path | 0.172 | 0.173 |
+
+Current end-to-end driver benchmark:
+
+| Tracers | Best total s | TPCORE s | VDIFF s | Convection s | Overhead s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 0.382 | 0.234 | 0.060 | 0.049 | 0.024 |
+| 96 | 1.182 | 0.808 | 0.160 | 0.174 | 0.024 |
+
+At this point convection is mostly the compiled kernel plus an unavoidable input
+copy unless the broader driver becomes explicitly in-place/double-buffered. The
+next useful convection work should profile the fused kernel itself, with likely
+targets being active/cloud-base scans, repeated below-base plume setup, and
+branch structure inside the per-column vertical loop.
