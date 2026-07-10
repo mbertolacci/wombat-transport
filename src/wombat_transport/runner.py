@@ -24,6 +24,8 @@ from wombat_transport.run_config import (
 )
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
+    dry_air_mass_from_pressure,
+    dry_pressure_thickness_from_surface_hpa,
     load_transport_forcing_for_step,
     prune_forcing_record_cache,
     run_transport_one_step,
@@ -81,6 +83,16 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     logger.debug("output_manager enabled=%s", output_manager is not None)
 
     forcing_cache = {}
+    first_forcing = _load_simulation_forcing(
+        forcing_cache,
+        met_root,
+        start,
+        grid,
+        start,
+        transport_dt_s=transport_dt_s,
+        initial_met_time_index=meteorology_initial_time_index(config),
+    )
+    dry_air_mass = _initial_dry_air_mass(config, first_forcing, grid)
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
     emissions_processed: list[EmissionsStep] = []
     final_delp_dry_hpa = None
@@ -125,8 +137,10 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             grid,
             dt_s=transport_dt_s,
             active_emissions=active_emissions,
+            dry_air_mass_kg=dry_air_mass,
         )
         state = transport_result.state
+        dry_air_mass = transport_result.dry_air_mass_kg
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         transport_steps += 1
         logger.debug("completed_transport step=%d", transport_steps)
@@ -172,6 +186,15 @@ def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOpera
         raw: dict[str, Any] = dict(config.emissions)
         return EmissionsOperator.from_mapping(raw, root=config.root, species=species, grid=grid)
     raise TypeError("emissions must be a path string or an inline emissions mapping")
+
+
+def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:
+    delp = dry_pressure_thickness_from_surface_hpa(
+        forcing.dry_surface_pressure_start_hpa,
+        grid.hyai_hpa,
+        grid.hybi,
+    )
+    return dry_air_mass_from_pressure(delp, grid.area_m2)
 
 
 def has_invalid_emissions(emissions: TracerField) -> bool:

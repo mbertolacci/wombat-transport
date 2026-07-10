@@ -644,17 +644,23 @@ def _write_restart_met_field(
     if field == "Met_PS1DRY":
         variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
-        variable[:] = np.sum(snapshot.delp_dry_hpa, axis=1)
+        dry_surface_pressure = getattr(snapshot.forcing, "restart_dry_surface_pressure_hpa", None)
+        if dry_surface_pressure is None:
+            dry_surface_pressure = np.sum(snapshot.delp_dry_hpa, axis=1)
+        variable[:] = dry_surface_pressure
         return
     if field == "Met_PS1WET":
         variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
-        surface_pressure = getattr(
-            snapshot.forcing,
-            "restart_surface_pressure_pa",
-            snapshot.forcing.surface_pressure_pa,
-        )
-        variable[:] = surface_pressure / 100.0
+        wet_surface_pressure = getattr(snapshot.forcing, "restart_wet_surface_pressure_hpa", None)
+        if wet_surface_pressure is None:
+            surface_pressure = getattr(
+                snapshot.forcing,
+                "restart_surface_pressure_pa",
+                snapshot.forcing.surface_pressure_pa,
+            )
+            wet_surface_pressure = surface_pressure / 100.0
+        variable[:] = wet_surface_pressure
         return
     if field == "Met_SPHU1":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)

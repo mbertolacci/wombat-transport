@@ -9,6 +9,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.grid import TransportGrid
+from wombat_transport.transport.pressure import dry_surface_pressure_hpa, wet_surface_pressure_hpa
 
 from wombat_transport.io import FIXED_GRID
 
@@ -119,6 +120,12 @@ class TransportForcing:
     surface_pressure_start_pa: np.ndarray
     surface_pressure_pa: np.ndarray
     restart_surface_pressure_pa: np.ndarray
+    wet_surface_pressure_start_hpa: np.ndarray
+    wet_surface_pressure_hpa: np.ndarray
+    restart_wet_surface_pressure_hpa: np.ndarray
+    dry_surface_pressure_start_hpa: np.ndarray
+    dry_surface_pressure_hpa: np.ndarray
+    restart_dry_surface_pressure_hpa: np.ndarray
     specific_humidity_kg_kg: np.ndarray
     restart_specific_humidity_kg_kg: np.ndarray
     temperature_k: np.ndarray
@@ -201,6 +208,9 @@ def load_transport_forcing(
         surface_pressure_start=i3.surface_pressure,
         surface_pressure_end=i3.surface_pressure,
         restart_surface_pressure=i3.surface_pressure,
+        dry_surface_pressure_start=dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi),
+        dry_surface_pressure_end=dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi),
+        restart_dry_surface_pressure=dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi),
         specific_humidity=i3.qv,
         restart_specific_humidity=i3.qv,
         temperature=i3.temperature,
@@ -259,12 +269,23 @@ def load_transport_forcing_for_step(
     start_fraction = seconds_into_i3_window / 10800.0
     end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
     midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
+    dry_surface_start_endpoint = dry_surface_pressure_hpa(i3_start.surface_pressure, i3_start.qv, grid.hyai_hpa, grid.hybi)
+    dry_surface_end_endpoint = dry_surface_pressure_hpa(i3_end.surface_pressure, i3_end.qv, grid.hyai_hpa, grid.hybi)
+    restart_dry_surface = dry_surface_pressure_hpa(
+        i3_restart.surface_pressure,
+        i3_restart.qv,
+        grid.hyai_hpa,
+        grid.hybi,
+    )
     return _assemble_transport_forcing(
         a1,
         a3,
         surface_pressure_start=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, start_fraction),
         surface_pressure_end=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, end_fraction),
         restart_surface_pressure=i3_restart.surface_pressure,
+        dry_surface_pressure_start=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, start_fraction),
+        dry_surface_pressure_end=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, end_fraction),
+        restart_dry_surface_pressure=restart_dry_surface,
         specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
         restart_specific_humidity=i3_restart.qv,
         temperature=_interpolate(i3_start.temperature, i3_end.temperature, midpoint_fraction),
@@ -290,6 +311,9 @@ def _assemble_transport_forcing(
     surface_pressure_start: np.ndarray,
     surface_pressure_end: np.ndarray,
     restart_surface_pressure: np.ndarray,
+    dry_surface_pressure_start: np.ndarray,
+    dry_surface_pressure_end: np.ndarray,
+    restart_dry_surface_pressure: np.ndarray,
     specific_humidity: np.ndarray,
     restart_specific_humidity: np.ndarray,
     temperature: np.ndarray,
@@ -299,6 +323,9 @@ def _assemble_transport_forcing(
     vertical_mapping: str,
 ) -> TransportForcing:
 
+    wet_surface_pressure_start = wet_surface_pressure_hpa(surface_pressure_start)
+    wet_surface_pressure_end = wet_surface_pressure_hpa(surface_pressure_end)
+    restart_wet_surface_pressure = wet_surface_pressure_hpa(restart_surface_pressure)
     return TransportForcing(
         u_m_s=a3.u,
         v_m_s=a3.v,
@@ -306,6 +333,12 @@ def _assemble_transport_forcing(
         surface_pressure_start_pa=surface_pressure_start,
         surface_pressure_pa=surface_pressure_end,
         restart_surface_pressure_pa=restart_surface_pressure,
+        wet_surface_pressure_start_hpa=wet_surface_pressure_start,
+        wet_surface_pressure_hpa=wet_surface_pressure_end,
+        restart_wet_surface_pressure_hpa=restart_wet_surface_pressure,
+        dry_surface_pressure_start_hpa=dry_surface_pressure_start,
+        dry_surface_pressure_hpa=dry_surface_pressure_end,
+        restart_dry_surface_pressure_hpa=restart_dry_surface_pressure,
         specific_humidity_kg_kg=specific_humidity,
         restart_specific_humidity_kg_kg=restart_specific_humidity,
         temperature_k=temperature,

@@ -20,6 +20,44 @@ def dry_pressure_thickness_hpa(surface_pressure_pa: np.ndarray, hyai_hpa: np.nda
     edges = pressure_edges_hpa(surface_pressure_pa, hyai_hpa, hybi)
     return np.abs(edges[:, :-1, :, :] - edges[:, 1:, :, :])
 
+def dry_surface_pressure_hpa(
+    wet_surface_pressure_pa: np.ndarray,
+    specific_humidity_kg_kg: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+) -> np.ndarray:
+    """Compute GEOS-Chem-style dry surface pressure from wet pressure and humidity."""
+
+    wet_edges = pressure_edges_hpa(wet_surface_pressure_pa, hyai_hpa, hybi)
+    wet_delta = wet_edges[:, :-1, :, :] - wet_edges[:, 1:, :, :]
+    sphu = np.asarray(specific_humidity_kg_kg, dtype=np.float64)
+    if sphu.shape != wet_delta.shape:
+        raise ValueError(f"specific humidity shape {sphu.shape} does not match wet pressure layers {wet_delta.shape}")
+    dry_ps = float(np.asarray(hyai_hpa, dtype=np.float64)[-1]) + np.sum(wet_delta * (1.0 - sphu), axis=1)
+    wet_ps = np.asarray(wet_surface_pressure_pa, dtype=np.float64) / 100.0
+    dry_ps = np.where(dry_ps < 0.0, wet_ps, dry_ps)
+    return _average_poles_2d(dry_ps)
+
+def wet_surface_pressure_hpa(wet_surface_pressure_pa: np.ndarray) -> np.ndarray:
+    """Return wet surface pressure in hPa with GEOS-Chem polar averaging."""
+
+    return _average_poles_2d(np.asarray(wet_surface_pressure_pa, dtype=np.float64) / 100.0)
+
+def dry_pressure_thickness_from_surface_hpa(
+    dry_surface_pressure_hpa: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+) -> np.ndarray:
+    """Return GEOS-Chem dry pressure thickness from dry surface pressure in hPa."""
+
+    ps = np.asarray(dry_surface_pressure_hpa, dtype=np.float64)
+    hyai = np.asarray(hyai_hpa, dtype=np.float64)
+    hybi = np.asarray(hybi, dtype=np.float64)
+    edges = hyai[np.newaxis, :, np.newaxis, np.newaxis] + hybi[np.newaxis, :, np.newaxis, np.newaxis] * ps[
+        :, np.newaxis, :, :
+    ]
+    return edges[:, :-1, :, :] - edges[:, 1:, :, :]
+
 def dry_air_mass_from_pressure(delp_dry_hpa: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
     """Convert dry pressure thickness to grid-box dry air mass in kg."""
 
@@ -57,3 +95,11 @@ def _meridional_pressure_flux_to_mass_kg(
     else:
         source_area[1:, :] = area_m2[1:, :]
     return np.asarray(pressure_flux_hpa, dtype=np.float64) * 100.0 / G0_M_PER_S2 * source_area[np.newaxis, np.newaxis, :, :]
+
+def _average_poles_2d(field: np.ndarray) -> np.ndarray:
+    averaged = np.asarray(field, dtype=np.float64).copy()
+    if averaged.ndim != 3:
+        raise ValueError(f"surface pressure must have shape (time, lat, lon), found {averaged.shape}")
+    averaged[:, 0, :] = np.mean(averaged[:, 0:1, :], axis=2)
+    averaged[:, -1, :] = np.mean(averaged[:, -1:, :], axis=2)
+    return averaged

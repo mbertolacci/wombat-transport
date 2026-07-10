@@ -140,6 +140,8 @@ def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):
     forcing = SimpleNamespace(
         surface_pressure_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 101000.0),
         restart_surface_pressure_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 101100.0),
+        restart_wet_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1011.0),
+        restart_dry_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1009.0),
         specific_humidity_kg_kg=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 0.002),
         restart_specific_humidity_kg_kg=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 0.005),
         temperature_k=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 280.0),
@@ -171,7 +173,7 @@ def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):
         assert dataset.variables["Met_PS1DRY"].shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
         assert dataset.variables["Met_PS1DRY"].chunking() == [1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
         assert dataset.variables["Met_PS1WET"].shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
-        np.testing.assert_allclose(dataset.variables["Met_PS1DRY"][:], 470.0)
+        np.testing.assert_allclose(dataset.variables["Met_PS1DRY"][:], 1009.0)
         np.testing.assert_allclose(dataset.variables["Met_PS1WET"][:], 1011.0)
         np.testing.assert_allclose(dataset.variables["Met_SPHU1"][:], 0.005)
         np.testing.assert_allclose(dataset.variables["Met_TMPU1"][:], 281.0)

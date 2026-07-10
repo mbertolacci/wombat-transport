@@ -70,7 +70,9 @@ from wombat_transport.transport import (
     compute_pbl_height,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
+    dry_pressure_thickness_from_surface_hpa,
     dry_pressure_thickness_hpa,
+    dry_surface_pressure_hpa,
     load_transport_forcing,
     load_transport_forcing_for_step,
     mix_full_pbl,
@@ -78,6 +80,7 @@ from wombat_transport.transport import (
     run_transport_one_step,
     run_transport_window,
     run_vdiffdr_one_step,
+    wet_surface_pressure_hpa,
 )
 
 __all__ = [
@@ -111,7 +114,9 @@ __all__ = [
     "compute_pbl_height",
     "dry_air_mass_from_pressure",
     "dry_pressure_edges_from_thickness_hpa",
+    "dry_pressure_thickness_from_surface_hpa",
     "dry_pressure_thickness_hpa",
+    "dry_surface_pressure_hpa",
     "emissions_timestep_s",
     "expand_history_template",
     "initialize_tracers",
@@ -139,6 +144,7 @@ __all__ = [
     "run_transport_one_step",
     "run_transport_window",
     "run_vdiffdr_one_step",
+    "wet_surface_pressure_hpa",
     "top_field3_to_bottom",
     "transport_tracer_to_canonical",
     "transport_tracer_to_public4",

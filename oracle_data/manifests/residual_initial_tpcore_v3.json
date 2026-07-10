@@ -1,0 +1,33 @@
+{
+  "fixture_id": "residual_initial_tpcore_v3",
+  "description": "Full-grid 24-tracer residual-run initial-condition PJC plus canonical TPCORE oracle using GEOS-Chem-style dry surface pressure inputs.",
+  "files": [
+    {
+      "name": "transport_step_input.nc",
+      "sha256": null,
+      "size_bytes": null,
+      "url": null
+    },
+    {
+      "name": "transport_step_output.nc",
+      "sha256": null,
+      "size_bytes": null,
+      "url": null
+    }
+  ],
+  "source": {
+    "run_config": "residual_20140901_part001_split01_wombat/run.yml",
+    "time_index": 0,
+    "tracer_time_index": 0,
+    "max_tracers": 24,
+    "dt_s": 600.0,
+    "grid": {
+      "lev": 47,
+      "lat": 91,
+      "lon": 144
+    },
+    "tracer_source": "residual species initialized from Background_VV where restart variables are absent",
+    "pressure_source": "dry surface pressure reconstructed from MERRA2 wet PS and SPHU"
+  },
+  "status": "oracle coverage fixture for the 24-tracer residual initial-condition TPCORE path with canonical lev-lat-lon-tracer layout and dry-pressure transport inputs"
+}

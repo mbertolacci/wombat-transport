@@ -37,8 +37,11 @@ from wombat_transport.transport.pjc import pjc_mass_flux_hpa
 from wombat_transport.transport.pressure import (
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
+    dry_pressure_thickness_from_surface_hpa,
     dry_pressure_thickness_hpa,
+    dry_surface_pressure_hpa,
     pressure_edges_hpa,
+    wet_surface_pressure_hpa,
 )
 from wombat_transport.transport.tpcore import (
     TpcoreBranchReport,
@@ -78,7 +81,9 @@ __all__ = [
     "compute_pbl_height",
     "dry_air_mass_from_pressure",
     "dry_pressure_edges_from_thickness_hpa",
+    "dry_pressure_thickness_from_surface_hpa",
     "dry_pressure_thickness_hpa",
+    "dry_surface_pressure_hpa",
     "load_transport_forcing",
     "load_transport_forcing_for_step",
     "prune_forcing_record_cache",
@@ -96,4 +101,5 @@ __all__ = [
     "setup_tpcore_terms",
     "trace_tpcore_one_step",
     "validate_tpcore_branch_support",
+    "wet_surface_pressure_hpa",
 ]

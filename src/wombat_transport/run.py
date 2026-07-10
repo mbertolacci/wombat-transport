@@ -19,6 +19,7 @@ from wombat_transport.run_config import (
     transport_timestep_s,
 )
 from wombat_transport.runner import run_tracer_simulation
+from wombat_transport.runner import _initial_dry_air_mass
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
     dry_pressure_edges_from_thickness_hpa,
@@ -79,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             forcing,
             grid,
             dt_s=transport_timestep_s(config),
+            dry_air_mass_kg=_initial_dry_air_mass(config, forcing, grid),
         )
         state = transport_result.state
         comparison_state = state

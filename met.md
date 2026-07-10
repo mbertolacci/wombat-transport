@@ -163,26 +163,21 @@ should not treat `+30minute` or `+90minute` as interpolation instructions.
 
 ## Current Wombat Behavior
 
-`load_transport_forcing` currently accepts one `time_index` and uses it for
-almost all met files. The runner advances that index every 3 hours:
+`load_transport_forcing_for_step` maintains separate A1, A3, and I3 clocks for
+the runner.
 
-```text
-met_step = floor(elapsed_seconds / 10800)
-time_index = initial_met_time_index + met_step
-```
-
-Consequences:
-
-- A3 selection is broadly aligned with GEOS-Chem for runs starting on a 3-hour
-  boundary.
-- I3 selection is not enough for parity because Wombat reads one instantaneous
-  record and holds it for the full 3-hour window. GEOS-Chem interpolates between
-  bracketing I3 endpoints every 600 s.
-- A1 PBL fields are currently wrong after the first 3-hour window:
-  - at model `03:00`, Wombat uses A1 `time_index=1`, i.e. the `01:30` record;
-  - GEOS-Chem uses the `03:30` record.
-- `PRECCON` is special-cased as `time_index * 3`, so it is aligned at 3-hour
-  boundaries, but GEOS-Chem updates it hourly with the rest of A1.
+- A1 fields are read hourly and held for that hour.
+- A3 fields are read every 3 hours and held for that 3-hour window.
+- I3 wet pressure is interpolated to the end of the dynamic timestep.
+- I3 temperature and humidity are interpolated to the midpoint of the dynamic
+  timestep.
+- Dry surface pressure is computed from I3 wet endpoint pressure and endpoint
+  humidity, polar averaged, and then interpolated to the dynamic timestep end.
+- Transport dry pressure thickness is computed from interpolated dry surface
+  pressure, matching the GEOS-Chem `DELP_DRY` transport convention.
+- If an initial restart has `Met_DELPDRY`, the runner uses it for the initial
+  dry-air mass; otherwise it initializes dry-air mass from computed dry surface
+  pressure.
 
 ## Behavior We Need
 
@@ -206,6 +201,6 @@ For the current fixed-grid transport target:
    - `PRECCON` should be converted to `mm day-1` when matching GEOS-Chem
      convection inputs.
 
-The highest-priority parity fix is I3 interpolation, because it changes pressure
-and dry-air mass every dynamic step. The next visible fix is A1 hourly cadence,
-especially for PBL mixing inputs.
+These notes intentionally cover only the met fields currently used by the
+transport-only runner. Additional GEOS-Chem `AIRQNT` diagnostics should be ported
+only when they become operator inputs or comparison targets.

@@ -25,7 +25,7 @@ from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
-    dry_pressure_thickness_hpa,
+    dry_pressure_thickness_from_surface_hpa,
 )
 from wombat_transport.transport.tpcore import (
     TpcoreState,
@@ -124,16 +124,15 @@ def run_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
     active_emissions: TracerField | None = None,
+    dry_air_mass_kg: np.ndarray | None = None,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
-    surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
-    delp = dry_pressure_thickness_hpa(
-        forcing.surface_pressure_start_pa,
-        grid.hyai_hpa,
-        grid.hybi,
+    dry_air_mass = (
+        _dry_air_mass_from_forcing_start(forcing, grid)
+        if dry_air_mass_kg is None
+        else np.asarray(dry_air_mass_kg, dtype=np.float64)
     )
-    dry_air_mass = dry_air_mass_from_pressure(delp, grid.area_m2)
     return _run_tpcore_one_step_from_mass(
         tracer_field,
         forcing,
@@ -141,8 +140,8 @@ def run_transport_one_step(
         grid.area_m2,
         grid.hyai_hpa,
         grid.hybi,
-        p2_hpa=surface_pressure_hpa,
-        p1_hpa=surface_pressure_hpa,
+        p2_hpa=forcing.dry_surface_pressure_hpa[0],
+        p1_hpa=None if dry_air_mass_kg is not None else forcing.dry_surface_pressure_start_hpa[0],
         dt_s=dt_s,
         active_emissions=active_emissions,
     )
@@ -156,16 +155,15 @@ def trace_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
     active_emissions: TracerField | None = None,
+    dry_air_mass_kg: np.ndarray | None = None,
 ) -> TransportStepDiagnostics:
     """Run one transport step and retain exact operator handoff arrays."""
 
-    surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
-    delp = dry_pressure_thickness_hpa(
-        forcing.surface_pressure_start_pa,
-        grid.hyai_hpa,
-        grid.hybi,
+    dry_air_mass = (
+        _dry_air_mass_from_forcing_start(forcing, grid)
+        if dry_air_mass_kg is None
+        else np.asarray(dry_air_mass_kg, dtype=np.float64)
     )
-    dry_air_mass = dry_air_mass_from_pressure(delp, grid.area_m2)
     return _trace_tpcore_one_step_from_mass(
         tracer_field,
         forcing,
@@ -173,8 +171,8 @@ def trace_transport_one_step(
         grid.area_m2,
         grid.hyai_hpa,
         grid.hybi,
-        p2_hpa=surface_pressure_hpa,
-        p1_hpa=surface_pressure_hpa,
+        p2_hpa=forcing.dry_surface_pressure_hpa[0],
+        p1_hpa=None if dry_air_mass_kg is not None else forcing.dry_surface_pressure_start_hpa[0],
         dt_s=dt_s,
         active_emissions=active_emissions,
     )
@@ -246,14 +244,7 @@ def run_transport_window(
         dt_s=dt_s,
         initial_met_time_index=initial_met_time_index,
     )
-    dry_air_mass = dry_air_mass_from_pressure(
-        dry_pressure_thickness_hpa(
-            first_forcing.surface_pressure_start_pa,
-            grid.hyai_hpa,
-            grid.hybi,
-        ),
-        grid.area_m2,
-    )
+    dry_air_mass = _dry_air_mass_from_forcing_start(first_forcing, grid)
 
     for step in range(steps):
         forcing = _load_window_forcing(
@@ -321,7 +312,7 @@ def _run_transport_one_step_with_mass(
     active_emissions: TracerField | None = None,
 ) -> TransportStepResult:
     p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
-    p2_hpa = forcing.surface_pressure_pa[0] / 100.0
+    p2_hpa = forcing.dry_surface_pressure_hpa[0]
     return _run_tpcore_one_step_from_mass(
         tracer_field,
         forcing,
@@ -766,6 +757,14 @@ def _format_tpcore_branch_preflight_error(report) -> str:
         f"max_abs_cy={report.max_abs_cy:.8e}, has_large_cx={report.has_large_cx}, "
         f"has_large_cy={report.has_large_cy}, needs_fxppm={report.needs_fxppm}"
     )
+
+def _dry_air_mass_from_forcing_start(forcing: TransportForcing, grid: TransportGrid) -> np.ndarray:
+    delp = dry_pressure_thickness_from_surface_hpa(
+        forcing.dry_surface_pressure_start_hpa,
+        grid.hyai_hpa,
+        grid.hybi,
+    )
+    return dry_air_mass_from_pressure(delp, grid.area_m2)
 
 def _load_window_forcing(
     cache: ForcingRecordCache,

@@ -174,12 +174,19 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
     state_inputs = []
 
     def fake_load_forcing(*args, **kwargs):
-        return object()
+        return SimpleNamespace(
+            dry_surface_pressure_start_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1000.0),
+            dry_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1000.0),
+        )
 
-    def fake_run_transport_one_step(tracer_field, forcing, grid, *, dt_s, active_emissions=None):
+    def fake_run_transport_one_step(tracer_field, forcing, grid, *, dt_s, active_emissions=None, dry_air_mass_kg=None):
         state_inputs.append(tracer_field.data.copy())
         active_emissions_seen.append(active_emissions)
-        return SimpleNamespace(state=tracer_field, delp_dry_hpa=np.zeros(tracer_field.data.shape[:-1]))
+        return SimpleNamespace(
+            state=tracer_field,
+            dry_air_mass_kg=dry_air_mass_kg,
+            delp_dry_hpa=np.zeros(tracer_field.data.shape[:-1]),
+        )
 
     monkeypatch.setattr("wombat_transport.runner._load_simulation_forcing", fake_load_forcing)
     monkeypatch.setattr("wombat_transport.runner.run_transport_one_step", fake_run_transport_one_step)

@@ -29,12 +29,15 @@ from wombat_transport.transport import (
     compute_pbl_height,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
+    dry_pressure_thickness_from_surface_hpa,
     dry_pressure_thickness_hpa,
+    dry_surface_pressure_hpa,
     load_transport_forcing,
     mix_full_pbl,
     run_transport_one_step,
     run_transport_window,
     trace_transport_one_step,
+    wet_surface_pressure_hpa,
     _map_met_levels_to_47,
     load_transport_forcing_for_step,
 )
@@ -62,6 +65,9 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert forcing.surface_pressure_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.surface_pressure_start_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.restart_surface_pressure_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.dry_surface_pressure_start_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.dry_surface_pressure_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.restart_dry_surface_pressure_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.pbl_height_m.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.sensible_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.latent_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
@@ -75,7 +81,7 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
 
 def test_transport_forcing_for_step_uses_geos_chem_cadences(monkeypatch):
     calls = []
-    grid = SimpleNamespace(lat_deg=np.array([0.0]), lon_deg=np.array([0.0]))
+    grid = _fake_grid()
 
     def fake_a1(met_root, timestamp, grid, time_index, cache):
         calls.append(("A1", timestamp, time_index))
@@ -120,7 +126,7 @@ def test_transport_forcing_for_step_uses_geos_chem_cadences(monkeypatch):
 
 
 def test_transport_forcing_for_step_interpolates_i3_like_geos_chem(monkeypatch):
-    grid = SimpleNamespace(lat_deg=np.array([0.0]), lon_deg=np.array([0.0]))
+    grid = _fake_grid()
 
     monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_fields", lambda *args: _fake_a1_fields(0.0))
     monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_fields", lambda *args: _fake_a3_fields(0.0))
@@ -237,6 +243,15 @@ def _fake_i3_fields(value: float):
     return SimpleNamespace(surface_pressure=data2, qv=data3, temperature=data3, path=Path("I3.nc4"))
 
 
+def _fake_grid():
+    return SimpleNamespace(
+        lat_deg=np.array([0.0]),
+        lon_deg=np.array([0.0]),
+        hyai_hpa=np.array([0.0, 0.0]),
+        hybi=np.array([1.0, 0.0]),
+    )
+
+
 def test_met_level_mapping_returns_47_level_inputs_unchanged():
     data = np.arange(1 * 47 * 2 * 3, dtype=np.float64).reshape(1, 47, 2, 3)
 
@@ -260,6 +275,26 @@ def test_met_level_mapping_collapses_72_levels_with_pressure_weights():
         np.testing.assert_allclose(mapped[:, target_level, :, :], expected, rtol=1e-14)
 
 
+def test_dry_surface_pressure_reconstructs_geos_chem_style_column():
+    wet_ps = np.array([[[100000.0, 90000.0], [80000.0, 70000.0], [60000.0, 50000.0]]])
+    q = np.full((1, 2, 3, 2), 0.01)
+    hyai = np.array([0.0, 0.0, 0.0])
+    hybi = np.array([1.0, 0.5, 0.0])
+
+    dry_ps = dry_surface_pressure_hpa(wet_ps, q, hyai, hybi)
+    delp = dry_pressure_thickness_from_surface_hpa(dry_ps, hyai, hybi)
+    expected = wet_ps / 100.0 * 0.99
+    expected[:, 0, :] = np.mean(expected[:, 0:1, :], axis=2)
+    expected[:, -1, :] = np.mean(expected[:, -1:, :], axis=2)
+    expected_wet = wet_ps / 100.0
+    expected_wet[:, 0, :] = np.mean(expected_wet[:, 0:1, :], axis=2)
+    expected_wet[:, -1, :] = np.mean(expected_wet[:, -1:, :], axis=2)
+
+    np.testing.assert_allclose(dry_ps, expected)
+    np.testing.assert_allclose(np.sum(delp, axis=1), dry_ps)
+    np.testing.assert_allclose(wet_surface_pressure_hpa(wet_ps), expected_wet)
+
+
 def test_pressure_bookkeeping_returns_positive_dry_air_mass():
     config = load_run_config(BASE_CONFIG)
     forcing = _load_forcing(config)
@@ -268,13 +303,14 @@ def test_pressure_bookkeeping_returns_positive_dry_air_mass():
         hybi = np.asarray(dataset.variables["hybi"][:])
         area = np.asarray(dataset.variables["AREA"][:])
 
-    delp = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, hyai, hybi)
+    delp = dry_pressure_thickness_from_surface_hpa(forcing.dry_surface_pressure_hpa, hyai, hybi)
     dry_air_mass = dry_air_mass_from_pressure(delp, area)
 
     assert delp.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert dry_air_mass.shape == delp.shape
     assert np.all(delp > 0.0)
     assert np.all(dry_air_mass > 0.0)
+    assert np.all(forcing.dry_surface_pressure_hpa <= forcing.wet_surface_pressure_hpa)
 
 
 def test_dry_pressure_edges_from_thickness_reconstructs_bottom_to_top_edges():

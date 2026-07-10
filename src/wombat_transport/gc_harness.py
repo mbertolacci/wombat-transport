@@ -92,12 +92,12 @@ HISTORY_HARNESS_OUTPUT_NAME = "OutputDir/GEOSChem.SpeciesConcThreeHourly.2014090
 HISTORY_FIXTURE_SCENARIOS = ("default", "six_hour_groups")
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
-BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v2"
-RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v2"
+BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v3"
+RESIDUAL_INITIAL_TPCORE_FIXTURE_ID = "residual_initial_tpcore_v3"
 FULLGRID_SYNTHETIC_LOW_COURANT_TPCORE_FIXTURE_ID = "fullgrid_synthetic_low_courant_tpcore_v2"
-BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID = "base_initial_transport_chain_v2"
-BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID = "base_initial_vdiff_after_tpcore_v2"
-BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID = "base_initial_convection_fullgrid_v2"
+BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID = "base_initial_transport_chain_v3"
+BASE_INITIAL_VDIFF_AFTER_TPCORE_FIXTURE_ID = "base_initial_vdiff_after_tpcore_v3"
+BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID = "base_initial_convection_fullgrid_v3"
 LARGE_ORACLE_FIXTURE_IDS = (
     BASE_INITIAL_TPCORE_FIXTURE_ID,
     RESIDUAL_INITIAL_TPCORE_FIXTURE_ID,
@@ -435,8 +435,8 @@ def write_pjc_input_from_config(
         grid,
         time_index=time_index,
     )
-    p1_hpa = forcing.surface_pressure_pa[0] / 100.0
-    p2_hpa = p1_hpa.copy()
+    p1_hpa = forcing.dry_surface_pressure_start_hpa[0]
+    p2_hpa = forcing.dry_surface_pressure_hpa[0]
     return write_pjc_input(
         output_path,
         lat_deg=forcing.lat_deg,

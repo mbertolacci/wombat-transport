@@ -18,6 +18,7 @@ from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport import driver as driver_mod
 from wombat_transport.transport.forcing import MERRA2_72_TO_47_MAPPING, TransportForcing
+from wombat_transport.transport.pressure import dry_surface_pressure_hpa, wet_surface_pressure_hpa
 
 
 DEFAULT_COUNTS = (1, 24, 96, 256, 512)
@@ -258,6 +259,13 @@ def _build_synthetic_driver_inputs(run_config_path: Path, ntracer: int, *, dt_s:
     surface_pressure_pa = surface_pressure_hpa[np.newaxis, ...] * 100.0
     specific_humidity = qv[np.newaxis, ...]
     temperature = temperature[np.newaxis, ...]
+    wet_surface_pressure = wet_surface_pressure_hpa(surface_pressure_pa)
+    dry_surface_pressure = dry_surface_pressure_hpa(
+        surface_pressure_pa,
+        specific_humidity,
+        grid.hyai_hpa,
+        grid.hybi,
+    )
     forcing = TransportForcing(
         u_m_s=u[np.newaxis, ...],
         v_m_s=v[np.newaxis, ...],
@@ -265,6 +273,12 @@ def _build_synthetic_driver_inputs(run_config_path: Path, ntracer: int, *, dt_s:
         surface_pressure_start_pa=surface_pressure_pa,
         surface_pressure_pa=surface_pressure_pa,
         restart_surface_pressure_pa=surface_pressure_pa,
+        wet_surface_pressure_start_hpa=wet_surface_pressure,
+        wet_surface_pressure_hpa=wet_surface_pressure,
+        restart_wet_surface_pressure_hpa=wet_surface_pressure,
+        dry_surface_pressure_start_hpa=dry_surface_pressure,
+        dry_surface_pressure_hpa=dry_surface_pressure,
+        restart_dry_surface_pressure_hpa=dry_surface_pressure,
         specific_humidity_kg_kg=specific_humidity,
         restart_specific_humidity_kg_kg=specific_humidity,
         temperature_k=temperature,
