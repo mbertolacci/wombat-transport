@@ -179,9 +179,19 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
             dry_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1000.0),
         )
 
-    def fake_run_transport_one_step(tracer_field, forcing, grid, *, dt_s, active_emissions=None, dry_air_mass_kg=None):
+    def fake_run_transport_one_step(
+        tracer_field,
+        forcing,
+        grid,
+        *,
+        dt_s,
+        active_emissions=None,
+        surface_flux_to_vmr_factor=None,
+        dry_air_mass_kg=None,
+    ):
         state_inputs.append(tracer_field.data.copy())
         active_emissions_seen.append(active_emissions)
+        assert surface_flux_to_vmr_factor is not None
         return SimpleNamespace(
             state=tracer_field,
             dry_air_mass_kg=dry_air_mass_kg,

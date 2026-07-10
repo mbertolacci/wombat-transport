@@ -562,6 +562,35 @@ def test_trace_transport_one_step_passes_active_surface_emissions_to_vdiff():
     np.testing.assert_array_equal(trace.vdiff_input.surface_flux_kg_m2_s, expected_surface_flux)
 
 
+def test_trace_transport_one_step_scales_active_surface_emissions_for_vdiff_solver():
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
+    field = TracerField(
+        names=field.names[:1],
+        data=field.data[..., :1],
+        units=field.units[:1],
+        coords=field.coords,
+    )
+    emissions_data = np.zeros_like(field.data)
+    raw_surface_flux = np.full((FIXED_GRID["lat"], FIXED_GRID["lon"], 1), 1.0e-12)
+    emissions_data[0, -1, :, :, :] = raw_surface_flux
+    emissions = TracerField(names=field.names, data=emissions_data, units=("kg/m2/s",), coords=field.coords)
+    factor = np.array([0.25], dtype=np.float64)
+
+    trace = trace_transport_one_step(
+        field,
+        _load_forcing(config, grid=grid),
+        grid,
+        dt_s=600.0,
+        active_emissions=emissions,
+        surface_flux_to_vmr_factor=factor,
+    )
+
+    np.testing.assert_array_equal(trace.vdiff_input.surface_flux_kg_m2_s, raw_surface_flux)
+    np.testing.assert_array_equal(trace.vdiff_input.surface_flux_for_vdiff, raw_surface_flux * factor)
+
+
 def test_active_emissions_rejects_vertically_distributed_flux_until_supported():
     tracer = TracerField(
         names=("CO2",),

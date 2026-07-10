@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from wombat_transport.constants import AIRMW_G_PER_MOL
 from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
@@ -68,6 +69,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         config.species_database,
         template_path=config.grid_template,
     )
+    surface_flux_to_vmr_factor = _surface_flux_to_vmr_factor(state, species)
     logger.debug("initialized_tracers shape=%s", state.shape)
     grid = load_transport_grid(config.grid_template)
     met_root = meteorology_root(config)
@@ -137,6 +139,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             grid,
             dt_s=transport_dt_s,
             active_emissions=active_emissions,
+            surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             dry_air_mass_kg=dry_air_mass,
         )
         state = transport_result.state
@@ -186,6 +189,16 @@ def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOpera
         raw: dict[str, Any] = dict(config.emissions)
         return EmissionsOperator.from_mapping(raw, root=config.root, species=species, grid=grid)
     raise TypeError("emissions must be a path string or an inline emissions mapping")
+
+
+def _surface_flux_to_vmr_factor(state: TracerField, species) -> np.ndarray:
+    species_by_name = {item.name: item for item in species}
+    factors = []
+    for name in state.names:
+        if name not in species_by_name:
+            raise ValueError(f"tracer {name!r} is missing from the species database")
+        factors.append(AIRMW_G_PER_MOL / species_by_name[name].molecular_weight_g)
+    return np.asarray(factors, dtype=np.float64)
 
 
 def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:

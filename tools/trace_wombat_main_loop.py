@@ -9,6 +9,7 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
+from wombat_transport.constants import AIRMW_G_PER_MOL
 from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import canonical_time_slice
 from wombat_transport.grid import load_transport_grid
@@ -92,6 +93,7 @@ def main() -> int:
             coords=state.coords,
         )
         species = species[:count]
+    surface_flux_to_vmr_factor = _surface_flux_to_vmr_factor(state.names, species)
 
     columns = _resolve_columns(args.column, grid.lat_deg, grid.lon_deg)
     met_root = meteorology_root(config)
@@ -149,6 +151,7 @@ def main() -> int:
             grid,
             dt_s=transport_dt_s,
             active_emissions=active_emissions,
+            surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             dry_air_mass_kg=dry_air_mass,
         )
         records.extend(_records_for_step(step, current, state, trace, columns, emissions_was_refreshed=emissions_was_refreshed))
@@ -186,6 +189,11 @@ def _load_emissions_operator(config, species, grid) -> EmissionsOperator:
     if isinstance(config.emissions, str):
         return EmissionsOperator.from_yaml(config.emissions, root=config.root, species=species, grid=grid)
     return EmissionsOperator.from_mapping(dict(config.emissions), root=config.root, species=species, grid=grid)
+
+
+def _surface_flux_to_vmr_factor(names: tuple[str, ...], species) -> np.ndarray:
+    species_by_name = {item.name: item for item in species}
+    return np.asarray([AIRMW_G_PER_MOL / species_by_name[name].molecular_weight_g for name in names], dtype=np.float64)
 
 
 def _resolve_columns(raw_columns: list[str], lat: np.ndarray, lon: np.ndarray) -> TraceColumns:

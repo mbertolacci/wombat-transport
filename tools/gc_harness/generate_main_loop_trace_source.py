@@ -110,7 +110,17 @@ MIXING_INSERTIONS = (
     (
         "    USE TIME_MOD,             ONLY : GET_TS_DYN, GET_TS_CONV, GET_TS_CHEM\n",
         "    USE TIME_MOD,             ONLY : GET_TS_DYN, GET_TS_CONV, GET_TS_CHEM\n"
-        "    USE Wombat_Main_Loop_Trace_Mod, ONLY : WBT_Trace_Main_Loop\n",
+        "    USE Wombat_Main_Loop_Trace_Mod, ONLY : WBT_Trace_Main_Loop, WBT_Trace_Do_Tend\n",
+    ),
+    (
+        "    REAL(fp)                :: TS, TMP, FRQ, RKT, FRAC, FLUX, AREA_M2\n",
+        "    REAL(fp)                :: TS, TMP, FRQ, RKT, FRAC, FLUX, AREA_M2\n"
+        "    REAL(fp)                :: WBT_CONC_BEFORE\n",
+    ),
+    (
+        "!$OMP PRIVATE( FRQ,      RKT,          FRAC,       FLUX,     Area_m2      ) &\n",
+        "!$OMP PRIVATE( FRQ,      RKT,          FRAC,       FLUX,     Area_m2      ) &\n"
+        "!$OMP PRIVATE( WBT_CONC_BEFORE                                           ) &\n",
     ),
     (
         "       CALL Do_Vdiff( Input_Opt,  State_Chm, State_Diag,                     &\n"
@@ -127,6 +137,32 @@ MIXING_INSERTIONS = (
         "    CALL DO_TEND( Input_Opt, State_Chm,  State_Diag, &\n"
         "                  State_Grid, State_Met, OnlyAbovePBL, RC )\n"
         "    CALL WBT_Trace_Main_Loop( 'after_do_tend', State_Chm, State_Grid, State_Met )\n",
+    ),
+    (
+        "                ! Add emissions (if any)\n"
+        "                ! Bug fix: allow negative fluxes. (ckeller, 4/12/17)\n"
+        "                !IF ( FND .AND. (TMP > 0.0_fp) ) THEN\n"
+        "                IF ( FND ) THEN\n",
+        "                ! Add emissions (if any)\n"
+        "                WBT_CONC_BEFORE = State_Chm%Species(N)%Conc(I,J,L)\n"
+        "                FLUX = 0.0_fp\n"
+        "                ! Bug fix: allow negative fluxes. (ckeller, 4/12/17)\n"
+        "                !IF ( FND .AND. (TMP > 0.0_fp) ) THEN\n"
+        "                IF ( FND ) THEN\n",
+    ),
+    (
+        "                   ! Add to species array\n"
+        "                   State_Chm%Species(N)%Conc(I,J,L) = &\n"
+        "                         State_Chm%Species(N)%Conc(I,J,L) + FLUX\n"
+        "                ENDIF\n",
+        "                   ! Add to species array\n"
+        "                   State_Chm%Species(N)%Conc(I,J,L) = &\n"
+        "                         State_Chm%Species(N)%Conc(I,J,L) + FLUX\n"
+        "                ENDIF\n"
+        "                CALL WBT_Trace_Do_Tend( 'do_tend_emis', State_Chm, State_Grid, State_Met, &\n"
+        "                                       NA, N, I, J, L, EmisSpec, FND, TMP, FLUX, &\n"
+        "                                       WBT_CONC_BEFORE, State_Chm%Species(N)%Conc(I,J,L), &\n"
+        "                                       TS, EMIS_TOP, PBL_TOP )\n",
     ),
 )
 
@@ -205,7 +241,7 @@ MODULE Wombat_Main_Loop_Trace_Mod
   USE State_Met_Mod,  ONLY : MetState
   IMPLICIT NONE
   PRIVATE
-  PUBLIC :: WBT_Trace_Main_Loop
+  PUBLIC :: WBT_Trace_Main_Loop, WBT_Trace_Do_Tend
 
   INTEGER, PARAMETER :: N_TRACE_COLS = {len(columns)}
   INTEGER, PARAMETER :: MAX_TRACE_TRACERS = {max_tracers}
@@ -239,7 +275,7 @@ CONTAINS
              SpeciesId = State_Chm%Map_Advect(T)
              SpeciesName = ''
              IF ( SpeciesId > 0 ) SpeciesName = State_Chm%SpcData(SpeciesId)%Info%Name
-             WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",13(ES24.16,","),ES24.16)' ) &
+             WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",22(ES24.16,","),ES24.16)' ) &
                   CallIndex, TRIM(Label), I, J, L, T, TRIM(SpeciesName), &
                   Trace_Conc(State_Chm, SpeciesId, I, J, L), Trace_AD(State_Met, I, J, L), &
                   Trace_3D(State_Met%DELP_DRY, I, J, L), Trace_3D(State_Met%BXHEIGHT, I, J, L), &
@@ -247,12 +283,60 @@ CONTAINS
                   Trace_SurfaceFlux(State_Chm, I, J, T), Trace_3D(State_Met%SPHU, I, J, L), &
                   Trace_3D(State_Met%T, I, J, L), Trace_3D(State_Met%CMFMC, I, J, L), &
                   Trace_3D(State_Met%DTRAIN, I, J, L), Trace_3D(State_Met%DQRCU, I, J, L), &
-                  Trace_3D(State_Met%REEVAPCN, I, J, L), Trace_3D(State_Met%PFICU, I, J, L)
+                  Trace_3D(State_Met%REEVAPCN, I, J, L), Trace_3D(State_Met%PFICU, I, J, L), &
+                  Trace_3D(State_Met%U, I, J, L), Trace_3D(State_Met%V, I, J, L), &
+                  Trace_3D(State_Met%PMID, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L), &
+                  Trace_3D(State_Met%PEDGE, I, J, L + 1), Trace_3D(State_Met%TV, I, J, L), &
+                  Trace_2D(State_Met%HFLUX, I, J), Trace_2D(State_Met%EFLUX, I, J), &
+                  Trace_2D(State_Met%USTAR, I, J)
           ENDDO
        ENDDO
     ENDDO
     FLUSH( TraceUnit )
   END SUBROUTINE WBT_Trace_Main_Loop
+
+  SUBROUTINE WBT_Trace_Do_Tend( Label, State_Chm, State_Grid, State_Met, AdvIndex, SpeciesId, I, J, L, &
+                                EmisSpec, Found, HcoFlux, AppliedFlux, ConcBefore, ConcAfter, Ts, EmisTop, PblTop )
+    CHARACTER(LEN=*), INTENT(IN) :: Label
+    TYPE(ChmState),   INTENT(IN) :: State_Chm
+    TYPE(GrdState),   INTENT(IN) :: State_Grid
+    TYPE(MetState),   INTENT(IN) :: State_Met
+    INTEGER,          INTENT(IN) :: AdvIndex, SpeciesId, I, J, L, EmisTop, PblTop
+    LOGICAL,          INTENT(IN) :: EmisSpec, Found
+    REAL(fp),         INTENT(IN) :: HcoFlux, AppliedFlux, ConcBefore, ConcAfter, Ts
+    CHARACTER(LEN=31) :: SpeciesName
+
+    IF ( .NOT. IsInitialized ) CALL Init_Trace()
+    IF ( .NOT. Should_Trace( I, J, AdvIndex ) ) RETURN
+    SpeciesName = ''
+    IF ( SpeciesId > 0 ) SpeciesName = State_Chm%SpcData(SpeciesId)%Info%Name
+!$OMP CRITICAL(WBT_TRACE_WRITE)
+    CallIndex = CallIndex + 1
+    WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",22(ES24.16,","),ES24.16)' ) &
+         CallIndex, TRIM(Label), I, J, L, AdvIndex, TRIM(SpeciesName), &
+         ConcAfter, Trace_AD(State_Met, I, J, L), Trace_3D(State_Met%DELP_DRY, I, J, L), &
+         Trace_3D(State_Met%BXHEIGHT, I, J, L), REAL(EmisTop, fp), REAL(PblTop, fp), &
+         Trace_SurfaceFlux(State_Chm, I, J, AdvIndex), Trace_3D(State_Met%SPHU, I, J, L), &
+         Trace_3D(State_Met%T, I, J, L), Trace_3D(State_Met%CMFMC, I, J, L), &
+         HcoFlux, AppliedFlux, ConcBefore, ConcAfter, &
+         Trace_3D(State_Met%U, I, J, L), Trace_3D(State_Met%V, I, J, L), &
+         Trace_3D(State_Met%PMID, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L), &
+         Trace_3D(State_Met%PEDGE, I, J, L + 1), Trace_3D(State_Met%TV, I, J, L), &
+         Trace_2D(State_Met%HFLUX, I, J), Trace_2D(State_Met%EFLUX, I, J), &
+         Trace_2D(State_Met%USTAR, I, J)
+    WRITE( TraceUnit, '(I0,",",A,",",I0,",",I0,",",I0,",",I0,",",A,",",22(ES24.16,","),ES24.16)' ) &
+         CallIndex, 'do_tend_meta', I, J, L, AdvIndex, TRIM(SpeciesName), &
+         MERGE( 1.0_fp, 0.0_fp, EmisSpec ), MERGE( 1.0_fp, 0.0_fp, Found ), Ts, REAL(EmisTop, fp), &
+         REAL(PblTop, fp), ConcAfter - ConcBefore, HcoFlux, AppliedFlux, ConcBefore, ConcAfter, &
+         Trace_AD(State_Met, I, J, L), Trace_3D(State_Met%DELP_DRY, I, J, L), Trace_3D(State_Met%BXHEIGHT, I, J, L), &
+         Trace_SurfaceFlux(State_Chm, I, J, AdvIndex), Trace_3D(State_Met%U, I, J, L), &
+         Trace_3D(State_Met%V, I, J, L), Trace_3D(State_Met%PMID, I, J, L), &
+         Trace_3D(State_Met%PEDGE, I, J, L), Trace_3D(State_Met%PEDGE, I, J, L + 1), &
+         Trace_3D(State_Met%TV, I, J, L), Trace_2D(State_Met%HFLUX, I, J), &
+         Trace_2D(State_Met%EFLUX, I, J), Trace_2D(State_Met%USTAR, I, J)
+    FLUSH( TraceUnit )
+!$OMP END CRITICAL(WBT_TRACE_WRITE)
+  END SUBROUTINE WBT_Trace_Do_Tend
 
   SUBROUTINE Init_Trace()
     CHARACTER(LEN=512) :: Path
@@ -263,9 +347,23 @@ CONTAINS
     WRITE( TraceUnit, '(A)' ) &
          'call_index,boundary,i,j,l,tracer,tracer_name,tracer_conc,ad_kg,delp_dry_hpa,bxheight_m' // &
          ',pbl_top_l,pbl_top_m,surface_flux_kg_m2_s,sphu_g_kg,temperature_k,cmfmc_kg_m2_s' // &
-         ',dtrain_kg_m2_s,dqrcu_kg_kg_s,reevapcn_kg_kg_s,pficu_kg_m2_s'
+         ',dtrain_kg_m2_s,dqrcu_kg_kg_s,reevapcn_kg_kg_s,pficu_kg_m2_s' // &
+         ',u_m_s,v_m_s,pmid_hpa,pedge_lower_hpa,pedge_upper_hpa,tv_k,hflux_w_m2,eflux_w_m2,ustar_m_s'
     IsInitialized = .TRUE.
   END SUBROUTINE Init_Trace
+
+  LOGICAL FUNCTION Should_Trace( I, J, T )
+    INTEGER, INTENT(IN) :: I, J, T
+    INTEGER :: C
+    Should_Trace = .FALSE.
+    IF ( T < 1 .OR. T > MAX_TRACE_TRACERS ) RETURN
+    DO C = 1, N_TRACE_COLS
+       IF ( I == TRACE_I(C) .AND. J == TRACE_J(C) ) THEN
+          Should_Trace = .TRUE.
+          RETURN
+       ENDIF
+    ENDDO
+  END FUNCTION Should_Trace
 
   REAL(fp) FUNCTION Trace_Conc( State_Chm, SpeciesId, I, J, L )
     TYPE(ChmState), INTENT(IN) :: State_Chm

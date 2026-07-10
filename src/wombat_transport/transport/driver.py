@@ -74,6 +74,7 @@ class VdiffInputState:
     ustar_m_s: np.ndarray
     area_m2: np.ndarray
     surface_flux_kg_m2_s: np.ndarray
+    surface_flux_for_vdiff: np.ndarray
     dt_s: float
 
 
@@ -125,6 +126,7 @@ def run_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
@@ -145,6 +147,7 @@ def run_transport_one_step(
         p1_hpa=None if dry_air_mass_kg is not None else forcing.dry_surface_pressure_start_hpa[0],
         dt_s=dt_s,
         active_emissions=active_emissions,
+        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
 
 
@@ -156,6 +159,7 @@ def trace_transport_one_step(
     dt_s: float = 600.0,
     max_courant: float = 0.95,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
 ) -> TransportStepDiagnostics:
     """Run one transport step and retain exact operator handoff arrays."""
@@ -176,6 +180,7 @@ def trace_transport_one_step(
         p1_hpa=None if dry_air_mass_kg is not None else forcing.dry_surface_pressure_start_hpa[0],
         dt_s=dt_s,
         active_emissions=active_emissions,
+        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
 
 
@@ -311,6 +316,7 @@ def _run_transport_one_step_with_mass(
     dt_s: float,
     max_courant: float,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> TransportStepResult:
     p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
     p2_hpa = forcing.dry_surface_pressure_hpa[0]
@@ -325,6 +331,7 @@ def _run_transport_one_step_with_mass(
         p1_hpa=p1_hpa,
         dt_s=dt_s,
         active_emissions=active_emissions,
+        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
 
 
@@ -340,6 +347,7 @@ def _run_tpcore_one_step_from_mass(
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> TransportStepResult:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -398,6 +406,7 @@ def _run_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         active_emissions=active_emissions,
+        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
     vdiff = _run_vdiff_input(vdiff_input, diagnostics=False)
     state = TracerField(
@@ -447,6 +456,7 @@ def _trace_tpcore_one_step_from_mass(
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> TransportStepDiagnostics:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -505,6 +515,7 @@ def _trace_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         active_emissions=active_emissions,
+        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
     vdiff = _run_vdiff_input(vdiff_input, diagnostics=True)
     state = TracerField(
@@ -562,6 +573,7 @@ def _run_vdiff_after_tpcore(
     top_edge_hpa: float,
     dt_s: float,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
 ):
     return _run_vdiff_input(
         _build_vdiff_input_after_tpcore(
@@ -575,6 +587,7 @@ def _run_vdiff_after_tpcore(
             top_edge_hpa=top_edge_hpa,
             dt_s=dt_s,
             active_emissions=active_emissions,
+            surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
         ),
         diagnostics=False,
     )
@@ -592,6 +605,7 @@ def _build_vdiff_input_after_tpcore(
     top_edge_hpa: float,
     dt_s: float,
     active_emissions: TracerField | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> VdiffInputState:
     pedge = pressure_edges_hpa(forcing.surface_pressure_pa, hyai_hpa, hybi)[0]
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
@@ -605,6 +619,11 @@ def _build_vdiff_input_after_tpcore(
         active_emissions,
         nlat=tracer_field.data.shape[2],
         nlon=tracer_field.data.shape[3],
+        ntracer=ntracer,
+    )
+    surface_flux_for_vdiff = _scale_surface_flux_for_vdiff(
+        surface_flux,
+        surface_flux_to_vmr_factor,
         ntracer=ntracer,
     )
     return VdiffInputState(
@@ -625,7 +644,22 @@ def _build_vdiff_input_after_tpcore(
         area_m2=area,
         dt_s=dt_s,
         surface_flux_kg_m2_s=surface_flux,
+        surface_flux_for_vdiff=surface_flux_for_vdiff,
     )
+
+
+def _scale_surface_flux_for_vdiff(
+    surface_flux: np.ndarray,
+    surface_flux_to_vmr_factor: np.ndarray | None,
+    *,
+    ntracer: int,
+) -> np.ndarray:
+    if surface_flux_to_vmr_factor is None:
+        return surface_flux
+    factor = np.asarray(surface_flux_to_vmr_factor, dtype=np.float64)
+    if factor.shape != (ntracer,):
+        raise ValueError(f"surface_flux_to_vmr_factor shape {factor.shape} does not match {(ntracer,)}")
+    return np.ascontiguousarray(surface_flux * factor[np.newaxis, np.newaxis, :])
 
 
 def _surface_flux_from_active_emissions(
@@ -672,7 +706,7 @@ def _run_vdiff_input(state: VdiffInputState, *, diagnostics: bool = False) -> Vd
         ustar_m_s=state.ustar_m_s,
         area_m2=state.area_m2,
         dt_s=state.dt_s,
-        surface_flux_kg_m2_s=state.surface_flux_kg_m2_s,
+        surface_flux_kg_m2_s=state.surface_flux_for_vdiff,
         diagnostics=diagnostics,
     )
 
