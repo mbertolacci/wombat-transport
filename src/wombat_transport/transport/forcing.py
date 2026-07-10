@@ -208,9 +208,15 @@ def load_transport_forcing(
         surface_pressure_start=i3.surface_pressure,
         surface_pressure_end=i3.surface_pressure,
         restart_surface_pressure=i3.surface_pressure,
-        dry_surface_pressure_start=dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi),
-        dry_surface_pressure_end=dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi),
-        restart_dry_surface_pressure=dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi),
+        dry_surface_pressure_start=dry_surface_pressure_hpa(
+            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
+        ),
+        dry_surface_pressure_end=dry_surface_pressure_hpa(
+            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
+        ),
+        restart_dry_surface_pressure=dry_surface_pressure_hpa(
+            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
+        ),
         specific_humidity=i3.qv,
         restart_specific_humidity=i3.qv,
         temperature=i3.temperature,
@@ -269,13 +275,26 @@ def load_transport_forcing_for_step(
     start_fraction = seconds_into_i3_window / 10800.0
     end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
     midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
-    dry_surface_start_endpoint = dry_surface_pressure_hpa(i3_start.surface_pressure, i3_start.qv, grid.hyai_hpa, grid.hybi)
-    dry_surface_end_endpoint = dry_surface_pressure_hpa(i3_end.surface_pressure, i3_end.qv, grid.hyai_hpa, grid.hybi)
+    dry_surface_start_endpoint = dry_surface_pressure_hpa(
+        i3_start.surface_pressure,
+        i3_start.qv,
+        grid.hyai_hpa,
+        grid.hybi,
+        area_m2=grid.area_m2,
+    )
+    dry_surface_end_endpoint = dry_surface_pressure_hpa(
+        i3_end.surface_pressure,
+        i3_end.qv,
+        grid.hyai_hpa,
+        grid.hybi,
+        area_m2=grid.area_m2,
+    )
     restart_dry_surface = dry_surface_pressure_hpa(
         i3_restart.surface_pressure,
         i3_restart.qv,
         grid.hyai_hpa,
         grid.hybi,
+        area_m2=grid.area_m2,
     )
     return _assemble_transport_forcing(
         a1,
@@ -323,9 +342,9 @@ def _assemble_transport_forcing(
     vertical_mapping: str,
 ) -> TransportForcing:
 
-    wet_surface_pressure_start = wet_surface_pressure_hpa(surface_pressure_start)
-    wet_surface_pressure_end = wet_surface_pressure_hpa(surface_pressure_end)
-    restart_wet_surface_pressure = wet_surface_pressure_hpa(restart_surface_pressure)
+    wet_surface_pressure_start = wet_surface_pressure_hpa(surface_pressure_start, area_m2=grid.area_m2)
+    wet_surface_pressure_end = wet_surface_pressure_hpa(surface_pressure_end, area_m2=grid.area_m2)
+    restart_wet_surface_pressure = wet_surface_pressure_hpa(restart_surface_pressure, area_m2=grid.area_m2)
     return TransportForcing(
         u_m_s=a3.u,
         v_m_s=a3.v,

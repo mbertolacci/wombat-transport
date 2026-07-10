@@ -27,6 +27,11 @@ from wombat_transport.gc_harness import (
     TRANSPORT_OUTPUT_VERSION,
     CONVECTION_INPUT_VERSION,
     CONVECTION_OUTPUT_VERSION,
+    DRY_PRESSURE_INPUT_VERSION,
+    DRY_PRESSURE_OUTPUT_VERSION,
+    DRY_PRESSURE_SNAPSHOT_INPUT_NAME,
+    DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME,
+    DRY_PRESSURE_SNAPSHOT_VERSION,
     HISTORY_HARNESS_OUTPUT_NAME,
     VDIFF_INPUT_VERSION,
     VDIFF_OUTPUT_VERSION,
@@ -35,6 +40,7 @@ from wombat_transport.gc_harness import (
     check_large_oracle_fixture,
     compare_history_harness_output,
     compare_history_harness_to_wombat,
+    compare_dry_pressure_output,
     compare_tpcore_trace_files,
     compare_pjc_output,
     compare_large_oracle_fixture,
@@ -44,22 +50,27 @@ from wombat_transport.gc_harness import (
     compare_transport_chain_handoffs,
     compare_vdiff_output,
     format_convection_comparison,
+    format_dry_pressure_comparison,
     format_history_harness_comparison,
     format_history_harness_wombat_comparison,
     format_large_oracle_fixture_check,
     format_vdiff_comparison,
     read_convection_output,
+    read_dry_pressure_output,
     large_oracle_fixture_paths,
     history_harness_scenario_config,
     read_vdiff_output,
     read_transport_step_output,
     write_python_convection_output,
+    write_python_dry_pressure_output,
     write_python_tpcore_trace,
     write_python_vdiff_output,
     run_history_harness,
+    run_operator_harness,
     run_pjc_harness,
     write_history_harness_run_directory,
     write_synthetic_convection_input,
+    write_synthetic_dry_pressure_input,
     write_real_convection_input_from_config,
     sha256_file,
     write_synthetic_tpcore_branch_input,
@@ -89,9 +100,11 @@ VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v2"
 VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v2"
 VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v2"
 CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v2"
+DRY_PRESSURE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dry_pressure_synthetic_v1"
 HISTORY_DEFAULT_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "history_default_v1"
 HISTORY_SIX_HOUR_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "history_six_hour_groups_v1"
 HISTORY_HARNESS_EXE = Path("tools/gc_harness/build/history_harness")
+DRY_PRESSURE_HARNESS_EXE = Path("tools/gc_harness/build/dry_pressure_harness")
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -231,6 +244,43 @@ def test_history_harness_fixture_metadata_records_generation_contract():
     assert metadata["version"] == "history-harness-v1"
     assert metadata["scenario"] == "default"
     assert metadata["output"]["name"] == Path(HISTORY_HARNESS_OUTPUT_NAME).name
+
+
+def test_dry_pressure_fixture_matches_wombat_pressure_bookkeeping(tmp_path):
+    input_path = DRY_PRESSURE_FIXTURE_DIR / DRY_PRESSURE_SNAPSHOT_INPUT_NAME
+    output_path = DRY_PRESSURE_FIXTURE_DIR / DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME
+    metadata = json.loads((DRY_PRESSURE_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).read_text(encoding="utf-8"))
+
+    comparison = compare_dry_pressure_output(
+        input_path,
+        output_path,
+        python_output_path=tmp_path / "python_dry_pressure_output.nc",
+    )
+
+    assert metadata["version"] == DRY_PRESSURE_SNAPSHOT_VERSION
+    assert metadata["input"]["name"] == DRY_PRESSURE_SNAPSHOT_INPUT_NAME
+    assert metadata["output"]["harness"] == DRY_PRESSURE_OUTPUT_VERSION
+    assert comparison.ps1_wet_max_abs_error_hpa < 1.0e-12
+    assert comparison.ps2_wet_max_abs_error_hpa < 1.0e-12
+    assert comparison.ps1_dry_max_abs_error_hpa < 1.0e-12
+    assert comparison.ps2_dry_max_abs_error_hpa < 1.0e-12
+    assert comparison.psc2_dry_max_abs_error_hpa < 1.0e-12
+    assert comparison.delp_dry_max_abs_error_hpa < 1.0e-12
+    assert comparison.specific_humidity_max_abs_error < 1.0e-15
+    assert comparison.temperature_max_abs_error < 1.0e-12
+
+
+@pytest.mark.skipif(not DRY_PRESSURE_HARNESS_EXE.exists(), reason="GEOS-Chem dry-pressure harness executable is not built")
+def test_dry_pressure_harness_optional_geos_chem_compare(tmp_path):
+    input_path = write_synthetic_dry_pressure_input(tmp_path / DRY_PRESSURE_SNAPSHOT_INPUT_NAME)
+    output_path = tmp_path / DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME
+
+    run_operator_harness(DRY_PRESSURE_HARNESS_EXE, input_path, output_path)
+    comparison = compare_dry_pressure_output(input_path, output_path)
+
+    assert comparison.ps1_dry_max_abs_error_hpa < 1.0e-12
+    assert comparison.ps2_dry_max_abs_error_hpa < 1.0e-12
+    assert comparison.delp_dry_max_abs_error_hpa < 1.0e-12
 
 
 def test_large_oracle_fixture_check_reports_missing_payloads(tmp_path):
@@ -491,6 +541,39 @@ def test_write_synthetic_vdiff_input_can_exercise_negative_clipping(tmp_path):
         tracer = np.asarray(dataset.variables["tracer_conc"][:])
         assert dataset.scenario == "negative_clipping"
         assert np.count_nonzero(tracer < 0.0) == 2
+
+
+def test_write_synthetic_dry_pressure_input_records_fixture_contract(tmp_path):
+    input_path = write_synthetic_dry_pressure_input(tmp_path / DRY_PRESSURE_SNAPSHOT_INPUT_NAME)
+
+    with netCDF4.Dataset(input_path) as dataset:
+        assert dataset.harness == DRY_PRESSURE_INPUT_VERSION
+        assert dataset.ntime0_s == 0
+        assert dataset.ntime1_s == 3600
+        assert dataset.ntdt_s == 600
+        assert dataset.dimensions["lev"].size == 47
+        assert dataset.dimensions["ilev"].size == 48
+        assert dataset.dimensions["lat"].size == 7
+        assert dataset.dimensions["lon"].size == 8
+        assert dataset.variables["ps1_wet_hpa"].shape == (7, 8)
+        assert dataset.variables["sphu1_kg_kg"].shape == (47, 7, 8)
+
+
+def test_python_dry_pressure_output_roundtrips_through_comparison_contract(tmp_path):
+    input_path = write_synthetic_dry_pressure_input(tmp_path / DRY_PRESSURE_SNAPSHOT_INPUT_NAME)
+    output_path = write_python_dry_pressure_output(input_path, tmp_path / DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME)
+
+    output = read_dry_pressure_output(output_path)
+    assert output.delp_dry_hpa.shape == (47, 7, 8)
+    assert output.ps1_wet_hpa.shape == (7, 8)
+    assert output.ps1_dry_hpa.shape == (7, 8)
+    assert np.all(output.delp_dry_hpa > 0.0)
+    np.testing.assert_allclose(output.ps1_wet_hpa[0, :], output.ps1_wet_hpa[1, :])
+    np.testing.assert_allclose(output.ps1_wet_hpa[-1, :], output.ps1_wet_hpa[-2, :])
+
+    comparison = compare_dry_pressure_output(input_path, output_path)
+    assert comparison.delp_dry_max_abs_error_hpa == 0.0
+    assert "delp_dry_max_abs_error_hpa,0.00000000e+00" in format_dry_pressure_comparison(comparison)
 
 
 def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):

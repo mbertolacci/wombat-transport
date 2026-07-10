@@ -39,18 +39,21 @@ from wombat_transport.transport import (
     MERRA2_FILENAME,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
+    dry_pressure_thickness_from_surface_hpa,
     dry_pressure_thickness_hpa,
+    dry_surface_pressure_hpa,
     load_transport_forcing,
     pjc_mass_flux_hpa,
     run_cloud_convection_one_step,
     run_vdiffdr_one_step,
+    wet_surface_pressure_hpa,
     _map_met_levels_to_47,
 )
 from wombat_transport.transport.driver import _build_convection_input_after_vdiff
 from wombat_transport.transport.driver import _build_vdiff_input_after_tpcore
 from wombat_transport.transport.driver import compute_transport_stage_masses
 from wombat_transport.transport.driver import trace_transport_one_step
-from wombat_transport.transport.forcing import _map_met_edges_to_48
+from wombat_transport.transport.forcing import _load_i3_fields, _map_met_edges_to_48, _record_day_and_index
 from wombat_transport.transport.pbl import ZVIR
 from wombat_transport.transport.tpcore import (
     analyze_tpcore_branches,
@@ -70,6 +73,9 @@ VDIFF_INPUT_VERSION = "vdiffdr-input-v2"
 VDIFF_OUTPUT_VERSION = "vdiffdr-output-v2"
 CONVECTION_INPUT_VERSION = "convection-input-v2"
 CONVECTION_OUTPUT_VERSION = "convection-output-v2"
+DRY_PRESSURE_INPUT_VERSION = "dry-pressure-input-v1"
+DRY_PRESSURE_OUTPUT_VERSION = "dry-pressure-output-v1"
+DRY_PRESSURE_SNAPSHOT_VERSION = "dry-pressure-snapshot-v1"
 HISTORY_HARNESS_VERSION = "history-harness-v1"
 HISTORY_WOMBAT_OUTPUT_VERSION = "history-wombat-output-v1"
 TPCORE_TRACE_VERSION = "tpcore-trace-v2"
@@ -82,6 +88,8 @@ VDIFF_SNAPSHOT_INPUT_NAME = "vdiff_input.nc"
 VDIFF_SNAPSHOT_OUTPUT_NAME = "vdiff_output.nc"
 CONVECTION_SNAPSHOT_INPUT_NAME = "convection_input.nc"
 CONVECTION_SNAPSHOT_OUTPUT_NAME = "convection_output.nc"
+DRY_PRESSURE_SNAPSHOT_INPUT_NAME = "dry_pressure_input.nc"
+DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME = "dry_pressure_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
 VDIFF_SCENARIOS = ("zero_surface_flux", "nonzero_surface_flux", "negative_clipping")
@@ -300,6 +308,33 @@ class ConvectionOutput:
     final_tracer_mass: np.ndarray
     internal_steps: int
     internal_dt_s: float
+
+
+@dataclass(frozen=True)
+class DryPressureOutput:
+    ps1_wet_hpa: np.ndarray
+    ps2_wet_hpa: np.ndarray
+    ps1_dry_hpa: np.ndarray
+    ps2_dry_hpa: np.ndarray
+    psc2_wet_hpa: np.ndarray
+    psc2_dry_hpa: np.ndarray
+    delp_dry_hpa: np.ndarray
+    specific_humidity_kg_kg: np.ndarray
+    temperature_k: np.ndarray
+
+
+@dataclass(frozen=True)
+class DryPressureComparison:
+    ps1_wet_max_abs_error_hpa: float
+    ps2_wet_max_abs_error_hpa: float
+    ps1_dry_max_abs_error_hpa: float
+    ps2_dry_max_abs_error_hpa: float
+    psc2_wet_max_abs_error_hpa: float
+    psc2_dry_max_abs_error_hpa: float
+    delp_dry_max_abs_error_hpa: float
+    delp_dry_mean_abs_error_hpa: float
+    specific_humidity_max_abs_error: float
+    temperature_max_abs_error: float
 
 
 @dataclass(frozen=True)
@@ -548,6 +583,92 @@ def write_fullgrid_synthetic_tpcore_input_from_config(
     tracer = tracer + 1.5e-8 * lat_wave + 7.5e-9 * lon_wave
     names = tuple(f"fullgrid_synthetic_{index + 1:02d}" for index in range(ntracer))
     return append_transport_step_tracers(path, tracer, tracer_names=names)
+
+
+def write_dry_pressure_input_from_config(
+    run_config_path: str | Path,
+    output_path: str | Path,
+    *,
+    step_index: int = 0,
+    dt_s: float | None = None,
+) -> Path:
+    """Write raw I3 endpoint fields for the GEOS-Chem dry-pressure harness."""
+
+    config = load_run_config(run_config_path)
+    fixture_dt_s = transport_timestep_s(config) if dt_s is None else float(dt_s)
+    if fixture_dt_s <= 0:
+        raise ValueError("dt_s must be positive")
+    if step_index < 0:
+        raise ValueError("step_index must be nonnegative")
+
+    grid = load_transport_grid(config.grid_template)
+    start = simulation_start(config)
+    start_day = datetime(start.year, start.month, start.day)
+    met_root = meteorology_root(config)
+    elapsed_s = float(step_index) * fixture_dt_s
+    initial_i3 = meteorology_initial_time_index(config)
+    i3_start_index = initial_i3 + int(elapsed_s // 10800.0)
+    i3_end_index = i3_start_index + 1
+    seconds_into_i3_window = int(elapsed_s % 10800.0)
+    i3_start_day, i3_start_time_index = _record_day_and_index(start_day, i3_start_index, 8)
+    i3_end_day, i3_end_time_index = _record_day_and_index(start_day, i3_end_index, 8)
+    i3_start = _load_i3_fields(met_root, i3_start_day, grid, i3_start_time_index, None)
+    i3_end = _load_i3_fields(met_root, i3_end_day, grid, i3_end_time_index, None)
+    return write_dry_pressure_input(
+        output_path,
+        lat_deg=grid.lat_deg,
+        lon_deg=grid.lon_deg,
+        area_m2=grid.area_m2,
+        hyai_hpa=grid.hyai_hpa,
+        hybi=grid.hybi,
+        ps1_wet_hpa=i3_start.surface_pressure[0] / 100.0,
+        ps2_wet_hpa=i3_end.surface_pressure[0] / 100.0,
+        sphu1_kg_kg=i3_start.qv[0],
+        sphu2_kg_kg=i3_end.qv[0],
+        tmpu1_k=i3_start.temperature[0],
+        tmpu2_k=i3_end.temperature[0],
+        ntime0_s=0,
+        ntime1_s=seconds_into_i3_window,
+        ntdt_s=int(fixture_dt_s),
+    )
+
+
+def write_synthetic_dry_pressure_input(path: str | Path, *, ntime1_s: int = 3600, ntdt_s: int = 600) -> Path:
+    """Write a compact deterministic dry-pressure oracle input."""
+
+    lat = np.array([-89.5, -60.0, -30.0, 0.0, 30.0, 60.0, 89.5], dtype=np.float64)
+    lon = np.arange(8, dtype=np.float64) * 45.0
+    area = _spherical_band_area(lat, lon.size)
+    nlev = GEOS_47_AP_HPA.size - 1
+    lev = np.arange(nlev, dtype=np.float64)[:, np.newaxis, np.newaxis]
+    lat_term = np.sin(np.deg2rad(lat))[np.newaxis, :, np.newaxis]
+    lon_term = np.cos(np.deg2rad(lon))[np.newaxis, np.newaxis, :]
+    lat_2d = lat_term[0]
+    lon_2d = lon_term[0]
+
+    ps1 = 970.0 + 18.0 * np.cos(np.deg2rad(lat))[:, np.newaxis] ** 2 + 1.7 * lon_2d
+    ps2 = ps1 + 1.4 + 0.8 * np.sin(np.deg2rad(lon))[np.newaxis, :] - 0.35 * lat_2d
+    q1 = 0.012 * np.exp(-lev / 17.0) * (1.0 + 0.04 * lat_term + 0.01 * lon_term)
+    q2 = q1 * 0.985 + 1.0e-5 * np.cos((lev + 1.0) / nlev * np.pi)
+    tmp1 = 289.0 - 0.55 * lev + 1.1 * lat_term + 0.2 * lon_term
+    tmp2 = tmp1 + 0.4 - 0.03 * lat_term
+    return write_dry_pressure_input(
+        path,
+        lat_deg=lat,
+        lon_deg=lon,
+        area_m2=area,
+        hyai_hpa=GEOS_47_AP_HPA,
+        hybi=GEOS_47_BP,
+        ps1_wet_hpa=ps1,
+        ps2_wet_hpa=ps2,
+        sphu1_kg_kg=q1,
+        sphu2_kg_kg=q2,
+        tmpu1_k=tmp1,
+        tmpu2_k=tmp2,
+        ntime0_s=0,
+        ntime1_s=ntime1_s,
+        ntdt_s=ntdt_s,
+    )
 
 
 def write_synthetic_pjc_snapshot_input(path: str | Path, *, dt_s: float = 600.0) -> Path:
@@ -2234,6 +2355,64 @@ def write_pjc_input(
     return path
 
 
+def write_dry_pressure_input(
+    path: str | Path,
+    *,
+    lat_deg: np.ndarray,
+    lon_deg: np.ndarray,
+    area_m2: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+    ps1_wet_hpa: np.ndarray,
+    ps2_wet_hpa: np.ndarray,
+    sphu1_kg_kg: np.ndarray,
+    sphu2_kg_kg: np.ndarray,
+    tmpu1_k: np.ndarray,
+    tmpu2_k: np.ndarray,
+    ntime0_s: int,
+    ntime1_s: int,
+    ntdt_s: int,
+) -> Path:
+    """Write a NetCDF fixture for the GEOS-Chem dry-pressure harness."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lat = np.asarray(lat_deg, dtype=np.float64)
+    lon = np.asarray(lon_deg, dtype=np.float64)
+    hyai = np.asarray(hyai_hpa, dtype=np.float64)
+    hybi_arr = np.asarray(hybi, dtype=np.float64)
+    area = np.asarray(area_m2, dtype=np.float64)
+    ps1 = np.asarray(ps1_wet_hpa, dtype=np.float64)
+    ps2 = np.asarray(ps2_wet_hpa, dtype=np.float64)
+    q1 = np.asarray(sphu1_kg_kg, dtype=np.float64)
+    q2 = np.asarray(sphu2_kg_kg, dtype=np.float64)
+    t1 = np.asarray(tmpu1_k, dtype=np.float64)
+    t2 = np.asarray(tmpu2_k, dtype=np.float64)
+    _assert_dry_pressure_shapes(lat, lon, area, hyai, hybi_arr, ps1, ps2, q1, q2, t1, t2)
+
+    with netCDF4.Dataset(path, "w") as dataset:
+        dataset.createDimension("lon", lon.size)
+        dataset.createDimension("lat", lat.size)
+        dataset.createDimension("lev", hyai.size - 1)
+        dataset.createDimension("ilev", hyai.size)
+        dataset.harness = DRY_PRESSURE_INPUT_VERSION
+        dataset.ntime0_s = int(ntime0_s)
+        dataset.ntime1_s = int(ntime1_s)
+        dataset.ntdt_s = int(ntdt_s)
+        dataset.createVariable("lon", "f8", ("lon",))[:] = lon
+        dataset.createVariable("lat", "f8", ("lat",))[:] = lat
+        dataset.createVariable("hyai", "f8", ("ilev",))[:] = hyai
+        dataset.createVariable("hybi", "f8", ("ilev",))[:] = hybi_arr
+        dataset.createVariable("area_m2", "f8", ("lat", "lon"))[:] = area
+        dataset.createVariable("ps1_wet_hpa", "f8", ("lat", "lon"))[:] = ps1
+        dataset.createVariable("ps2_wet_hpa", "f8", ("lat", "lon"))[:] = ps2
+        dataset.createVariable("sphu1_kg_kg", "f8", ("lev", "lat", "lon"))[:] = q1
+        dataset.createVariable("sphu2_kg_kg", "f8", ("lev", "lat", "lon"))[:] = q2
+        dataset.createVariable("tmpu1_k", "f8", ("lev", "lat", "lon"))[:] = t1
+        dataset.createVariable("tmpu2_k", "f8", ("lev", "lat", "lon"))[:] = t2
+    return path
+
+
 def append_transport_step_tracers(
     path: str | Path,
     tracer_conc: np.ndarray,
@@ -2310,6 +2489,144 @@ def read_vdiff_output(path: str | Path) -> VdiffOutput:
             initial_tracer_mass=np.asarray(dataset.variables["initial_tracer_mass"][:], dtype=np.float64),
             final_tracer_mass=np.asarray(dataset.variables["final_tracer_mass"][:], dtype=np.float64),
         )
+
+
+def read_dry_pressure_output(path: str | Path) -> DryPressureOutput:
+    with netCDF4.Dataset(path) as dataset:
+        if getattr(dataset, "harness", "") != DRY_PRESSURE_OUTPUT_VERSION:
+            raise ValueError(f"{path} is not a {DRY_PRESSURE_OUTPUT_VERSION} file")
+        return DryPressureOutput(
+            ps1_wet_hpa=np.asarray(dataset.variables["ps1_wet_hpa"][:], dtype=np.float64),
+            ps2_wet_hpa=np.asarray(dataset.variables["ps2_wet_hpa"][:], dtype=np.float64),
+            ps1_dry_hpa=np.asarray(dataset.variables["ps1_dry_hpa"][:], dtype=np.float64),
+            ps2_dry_hpa=np.asarray(dataset.variables["ps2_dry_hpa"][:], dtype=np.float64),
+            psc2_wet_hpa=np.asarray(dataset.variables["psc2_wet_hpa"][:], dtype=np.float64),
+            psc2_dry_hpa=np.asarray(dataset.variables["psc2_dry_hpa"][:], dtype=np.float64),
+            delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
+            specific_humidity_kg_kg=np.asarray(dataset.variables["specific_humidity_kg_kg"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+        )
+
+
+def write_python_dry_pressure_output(input_path: str | Path, output_path: str | Path) -> Path:
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != DRY_PRESSURE_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {DRY_PRESSURE_INPUT_VERSION} file")
+        hyai = np.asarray(dataset.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        ps1_wet_raw = np.asarray(dataset.variables["ps1_wet_hpa"][:], dtype=np.float64)
+        ps2_wet_raw = np.asarray(dataset.variables["ps2_wet_hpa"][:], dtype=np.float64)
+        q1 = np.asarray(dataset.variables["sphu1_kg_kg"][:], dtype=np.float64)
+        q2 = np.asarray(dataset.variables["sphu2_kg_kg"][:], dtype=np.float64)
+        t1 = np.asarray(dataset.variables["tmpu1_k"][:], dtype=np.float64)
+        t2 = np.asarray(dataset.variables["tmpu2_k"][:], dtype=np.float64)
+        ntime0_s = int(dataset.ntime0_s)
+        ntime1_s = int(dataset.ntime1_s)
+        ntdt_s = int(dataset.ntdt_s)
+
+    ps1_wet = wet_surface_pressure_hpa(ps1_wet_raw[np.newaxis, :, :] * 100.0, area_m2=area)[0]
+    ps2_wet = wet_surface_pressure_hpa(ps2_wet_raw[np.newaxis, :, :] * 100.0, area_m2=area)[0]
+    ps1_dry = dry_surface_pressure_hpa(ps1_wet_raw[np.newaxis, :, :] * 100.0, q1[np.newaxis, :, :, :], hyai, hybi, area_m2=area)[
+        0
+    ]
+    ps2_dry = dry_surface_pressure_hpa(ps2_wet_raw[np.newaxis, :, :] * 100.0, q2[np.newaxis, :, :, :], hyai, hybi, area_m2=area)[
+        0
+    ]
+    tm = (float(ntime1_s) + float(ntdt_s) / 2.0 - float(ntime0_s)) / 10800.0
+    tc2 = (float(ntime1_s) + float(ntdt_s) - float(ntime0_s)) / 10800.0
+    if tm > 1.0:
+        tm -= 1.0
+        tc2 -= 1.0
+    psc2_wet = ps1_wet + (ps2_wet - ps1_wet) * tc2
+    psc2_dry = ps1_dry + (ps2_dry - ps1_dry) * tc2
+    sphu = q1 + (q2 - q1) * tm
+    temperature = t1 + (t2 - t1) * tm
+    delp_dry = dry_pressure_thickness_from_surface_hpa(psc2_dry[np.newaxis, :, :], hyai, hybi)[0][::-1]
+
+    return write_dry_pressure_output(
+        output_path,
+        DryPressureOutput(
+            ps1_wet_hpa=ps1_wet,
+            ps2_wet_hpa=ps2_wet,
+            ps1_dry_hpa=ps1_dry,
+            ps2_dry_hpa=ps2_dry,
+            psc2_wet_hpa=psc2_wet,
+            psc2_dry_hpa=psc2_dry,
+            delp_dry_hpa=delp_dry,
+            specific_humidity_kg_kg=sphu,
+            temperature_k=temperature,
+        ),
+    )
+
+
+def write_dry_pressure_output(path: str | Path, output: DryPressureOutput) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    nlev, nlat, nlon = output.delp_dry_hpa.shape
+    with netCDF4.Dataset(path, "w") as dataset:
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        dataset.harness = DRY_PRESSURE_OUTPUT_VERSION
+        dataset.createVariable("ps1_wet_hpa", "f8", ("lat", "lon"))[:] = output.ps1_wet_hpa
+        dataset.createVariable("ps2_wet_hpa", "f8", ("lat", "lon"))[:] = output.ps2_wet_hpa
+        dataset.createVariable("ps1_dry_hpa", "f8", ("lat", "lon"))[:] = output.ps1_dry_hpa
+        dataset.createVariable("ps2_dry_hpa", "f8", ("lat", "lon"))[:] = output.ps2_dry_hpa
+        dataset.createVariable("psc2_wet_hpa", "f8", ("lat", "lon"))[:] = output.psc2_wet_hpa
+        dataset.createVariable("psc2_dry_hpa", "f8", ("lat", "lon"))[:] = output.psc2_dry_hpa
+        dataset.createVariable("delp_dry_hpa", "f8", ("lev", "lat", "lon"))[:] = output.delp_dry_hpa
+        dataset.createVariable("specific_humidity_kg_kg", "f8", ("lev", "lat", "lon"))[:] = (
+            output.specific_humidity_kg_kg
+        )
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = output.temperature_k
+    return path
+
+
+def compare_dry_pressure_output(
+    input_path: str | Path,
+    expected_output_path: str | Path,
+    *,
+    python_output_path: str | Path | None = None,
+) -> DryPressureComparison:
+    output_path = Path(expected_output_path)
+    python_path = Path(python_output_path) if python_output_path is not None else output_path.with_name(f"python_{output_path.name}")
+    write_python_dry_pressure_output(input_path, python_path)
+    expected = read_dry_pressure_output(output_path)
+    actual = read_dry_pressure_output(python_path)
+    delp_error = np.abs(actual.delp_dry_hpa - expected.delp_dry_hpa)
+    return DryPressureComparison(
+        ps1_wet_max_abs_error_hpa=float(np.max(np.abs(actual.ps1_wet_hpa - expected.ps1_wet_hpa))),
+        ps2_wet_max_abs_error_hpa=float(np.max(np.abs(actual.ps2_wet_hpa - expected.ps2_wet_hpa))),
+        ps1_dry_max_abs_error_hpa=float(np.max(np.abs(actual.ps1_dry_hpa - expected.ps1_dry_hpa))),
+        ps2_dry_max_abs_error_hpa=float(np.max(np.abs(actual.ps2_dry_hpa - expected.ps2_dry_hpa))),
+        psc2_wet_max_abs_error_hpa=float(np.max(np.abs(actual.psc2_wet_hpa - expected.psc2_wet_hpa))),
+        psc2_dry_max_abs_error_hpa=float(np.max(np.abs(actual.psc2_dry_hpa - expected.psc2_dry_hpa))),
+        delp_dry_max_abs_error_hpa=float(np.max(delp_error)),
+        delp_dry_mean_abs_error_hpa=float(np.mean(delp_error)),
+        specific_humidity_max_abs_error=float(
+            np.max(np.abs(actual.specific_humidity_kg_kg - expected.specific_humidity_kg_kg))
+        ),
+        temperature_max_abs_error=float(np.max(np.abs(actual.temperature_k - expected.temperature_k))),
+    )
+
+
+def format_dry_pressure_comparison(comparison: DryPressureComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"ps1_wet_max_abs_error_hpa,{comparison.ps1_wet_max_abs_error_hpa:.8e}",
+            f"ps2_wet_max_abs_error_hpa,{comparison.ps2_wet_max_abs_error_hpa:.8e}",
+            f"ps1_dry_max_abs_error_hpa,{comparison.ps1_dry_max_abs_error_hpa:.8e}",
+            f"ps2_dry_max_abs_error_hpa,{comparison.ps2_dry_max_abs_error_hpa:.8e}",
+            f"psc2_wet_max_abs_error_hpa,{comparison.psc2_wet_max_abs_error_hpa:.8e}",
+            f"psc2_dry_max_abs_error_hpa,{comparison.psc2_dry_max_abs_error_hpa:.8e}",
+            f"delp_dry_max_abs_error_hpa,{comparison.delp_dry_max_abs_error_hpa:.8e}",
+            f"delp_dry_mean_abs_error_hpa,{comparison.delp_dry_mean_abs_error_hpa:.8e}",
+            f"specific_humidity_max_abs_error,{comparison.specific_humidity_max_abs_error:.8e}",
+            f"temperature_max_abs_error,{comparison.temperature_max_abs_error:.8e}",
+        ]
+    )
 
 
 def write_python_vdiff_output(input_path: str | Path, output_path: str | Path) -> Path:
@@ -4286,6 +4603,38 @@ def _assert_pjc_shapes(
     expected_3d = (nlev, lat.size, lon.size)
     if u.shape != expected_3d or v.shape != expected_3d:
         raise ValueError(f"u_m_s and v_m_s must have shape {expected_3d}")
+
+
+def _assert_dry_pressure_shapes(
+    lat: np.ndarray,
+    lon: np.ndarray,
+    area: np.ndarray,
+    hyai: np.ndarray,
+    hybi: np.ndarray,
+    ps1: np.ndarray,
+    ps2: np.ndarray,
+    q1: np.ndarray,
+    q2: np.ndarray,
+    t1: np.ndarray,
+    t2: np.ndarray,
+) -> None:
+    nlev = hyai.size - 1
+    horizontal = (lat.size, lon.size)
+    expected_3d = (nlev, lat.size, lon.size)
+    if hybi.shape != hyai.shape:
+        raise ValueError("hyai and hybi must have matching edge dimensions")
+    if area.shape != horizontal:
+        raise ValueError(f"area_m2 must have shape {horizontal}, found {area.shape}")
+    if ps1.shape != horizontal or ps2.shape != horizontal:
+        raise ValueError("ps1_wet_hpa and ps2_wet_hpa must have shape (lat, lon)")
+    for name, value in (
+        ("sphu1_kg_kg", q1),
+        ("sphu2_kg_kg", q2),
+        ("tmpu1_k", t1),
+        ("tmpu2_k", t2),
+    ):
+        if value.shape != expected_3d:
+            raise ValueError(f"{name} must have shape {expected_3d}, found {value.shape}")
 
 
 def _resolve_config_value(root: Path, value: str) -> Path:

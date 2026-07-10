@@ -25,23 +25,24 @@ def dry_surface_pressure_hpa(
     specific_humidity_kg_kg: np.ndarray,
     hyai_hpa: np.ndarray,
     hybi: np.ndarray,
+    area_m2: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Compute GEOS-Chem-style dry surface pressure from wet pressure and humidity."""
+    """Compute GEOS-Chem-style dry surface pressure from canonical humidity."""
 
     wet_edges = pressure_edges_hpa(wet_surface_pressure_pa, hyai_hpa, hybi)
     wet_delta = wet_edges[:, :-1, :, :] - wet_edges[:, 1:, :, :]
     sphu = np.asarray(specific_humidity_kg_kg, dtype=np.float64)
     if sphu.shape != wet_delta.shape:
         raise ValueError(f"specific humidity shape {sphu.shape} does not match wet pressure layers {wet_delta.shape}")
-    dry_ps = float(np.asarray(hyai_hpa, dtype=np.float64)[-1]) + np.sum(wet_delta * (1.0 - sphu), axis=1)
+    dry_ps = float(np.asarray(hyai_hpa, dtype=np.float64)[-1]) + np.sum(wet_delta * (1.0 - sphu[:, ::-1, :, :]), axis=1)
     wet_ps = np.asarray(wet_surface_pressure_pa, dtype=np.float64) / 100.0
     dry_ps = np.where(dry_ps < 0.0, wet_ps, dry_ps)
-    return _average_poles_2d(dry_ps)
+    return average_geos_chem_poles_2d(dry_ps, area_m2=area_m2)
 
-def wet_surface_pressure_hpa(wet_surface_pressure_pa: np.ndarray) -> np.ndarray:
+def wet_surface_pressure_hpa(wet_surface_pressure_pa: np.ndarray, area_m2: np.ndarray | None = None) -> np.ndarray:
     """Return wet surface pressure in hPa with GEOS-Chem polar averaging."""
 
-    return _average_poles_2d(np.asarray(wet_surface_pressure_pa, dtype=np.float64) / 100.0)
+    return average_geos_chem_poles_2d(np.asarray(wet_surface_pressure_pa, dtype=np.float64) / 100.0, area_m2=area_m2)
 
 def dry_pressure_thickness_from_surface_hpa(
     dry_surface_pressure_hpa: np.ndarray,
@@ -96,10 +97,25 @@ def _meridional_pressure_flux_to_mass_kg(
         source_area[1:, :] = area_m2[1:, :]
     return np.asarray(pressure_flux_hpa, dtype=np.float64) * 100.0 / G0_M_PER_S2 * source_area[np.newaxis, np.newaxis, :, :]
 
-def _average_poles_2d(field: np.ndarray) -> np.ndarray:
+def average_geos_chem_poles_2d(field: np.ndarray, area_m2: np.ndarray | None = None) -> np.ndarray:
     averaged = np.asarray(field, dtype=np.float64).copy()
     if averaged.ndim != 3:
         raise ValueError(f"surface pressure must have shape (time, lat, lon), found {averaged.shape}")
-    averaged[:, 0, :] = np.mean(averaged[:, 0:1, :], axis=2)
-    averaged[:, -1, :] = np.mean(averaged[:, -1:, :], axis=2)
+    if averaged.shape[1] < 4:
+        return averaged
+    if area_m2 is None:
+        area = np.ones(averaged.shape[1:], dtype=np.float64)
+    else:
+        area = np.asarray(area_m2, dtype=np.float64)
+        if area.shape != averaged.shape[1:]:
+            raise ValueError(f"area_m2 shape {area.shape} does not match surface field shape {averaged.shape[1:]}")
+
+    south_area = area[0:2, :]
+    north_area = area[-2:, :]
+    south = np.sum(averaged[:, 0:2, :] * south_area[np.newaxis, :, :], axis=(1, 2)) / np.sum(south_area)
+    north = np.sum(averaged[:, -2:, :] * north_area[np.newaxis, :, :], axis=(1, 2)) / np.sum(north_area)
+    averaged[:, 0, :] = south[:, np.newaxis]
+    averaged[:, 1, :] = south[:, np.newaxis]
+    averaged[:, -2, :] = north[:, np.newaxis]
+    averaged[:, -1, :] = north[:, np.newaxis]
     return averaged

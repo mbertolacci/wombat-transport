@@ -247,6 +247,7 @@ def _fake_grid():
     return SimpleNamespace(
         lat_deg=np.array([0.0]),
         lon_deg=np.array([0.0]),
+        area_m2=np.array([[1.0]]),
         hyai_hpa=np.array([0.0, 0.0]),
         hybi=np.array([1.0, 0.0]),
     )
@@ -284,11 +285,7 @@ def test_dry_surface_pressure_reconstructs_geos_chem_style_column():
     dry_ps = dry_surface_pressure_hpa(wet_ps, q, hyai, hybi)
     delp = dry_pressure_thickness_from_surface_hpa(dry_ps, hyai, hybi)
     expected = wet_ps / 100.0 * 0.99
-    expected[:, 0, :] = np.mean(expected[:, 0:1, :], axis=2)
-    expected[:, -1, :] = np.mean(expected[:, -1:, :], axis=2)
     expected_wet = wet_ps / 100.0
-    expected_wet[:, 0, :] = np.mean(expected_wet[:, 0:1, :], axis=2)
-    expected_wet[:, -1, :] = np.mean(expected_wet[:, -1:, :], axis=2)
 
     np.testing.assert_allclose(dry_ps, expected)
     np.testing.assert_allclose(np.sum(delp, axis=1), dry_ps)

@@ -1,0 +1,19 @@
+{
+  "generator": {
+    "executable": "tools/gc_harness/build/dry_pressure_harness"
+  },
+  "input": {
+    "harness": "dry-pressure-input-v1",
+    "name": "dry_pressure_input.nc",
+    "sha256": "57c49f05f02783cc15e18c7654b7a354d2c1cda0c750db4f24b97484b554854b",
+    "size_bytes": 100390
+  },
+  "output": {
+    "harness": "dry-pressure-output-v1",
+    "name": "dry_pressure_output.nc",
+    "sha256": "ba94c88e6c7a0362c767c93d6a916b51809cd275330787a3730781581d97a9dc",
+    "size_bytes": 66428
+  },
+  "scenario": "synthetic",
+  "version": "dry-pressure-snapshot-v1"
+}
