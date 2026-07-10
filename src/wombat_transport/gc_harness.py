@@ -62,6 +62,7 @@ VDIFF_INPUT_VERSION = "vdiffdr-input-v2"
 VDIFF_OUTPUT_VERSION = "vdiffdr-output-v2"
 CONVECTION_INPUT_VERSION = "convection-input-v2"
 CONVECTION_OUTPUT_VERSION = "convection-output-v2"
+HISTORY_HARNESS_VERSION = "history-harness-v1"
 TPCORE_TRACE_VERSION = "tpcore-trace-v2"
 TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v2"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
@@ -78,6 +79,7 @@ VDIFF_SCENARIOS = ("zero_surface_flux", "nonzero_surface_flux", "negative_clippi
 CONVECTION_SCENARIOS = ("no_cloud", "active_cloud", "multi_tracer")
 REAL_CONVECTION_MODES = ("sampled-columns", "full-grid")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
+HISTORY_HARNESS_OUTPUT_NAME = "OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
 BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v2"
@@ -381,6 +383,18 @@ class LargeOracleFixtureCheck:
     @property
     def is_available(self) -> bool:
         return not self.missing_files and not self.checksum_failures and not self.unchecked_files
+
+
+@dataclass(frozen=True)
+class HistoryHarnessComparison:
+    output_path: Path
+    n_records: int
+    n_tracers: int
+    max_abs_error: float
+    max_time_error_min: float
+    first_record_expected: float
+    first_record_actual: float
+    boundary_included_in_previous: bool
 
 
 def write_pjc_input_from_config(
@@ -2949,6 +2963,199 @@ def run_operator_harness(executable: str | Path, input_path: str | Path, output_
     subprocess.run([str(executable), str(input_path), str(output_path)], check=True)
 
 
+def write_history_harness_run_directory(
+    work_dir: str | Path,
+    *,
+    ntracer: int = 2,
+    frequency: str = "00000000 030000",
+    duration: str = "00000001 000000",
+    acc_interval: str | None = None,
+) -> Path:
+    if ntracer < 1:
+        raise ValueError("ntracer must be positive")
+    run_dir = Path(work_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "OutputDir").mkdir(exist_ok=True)
+    (run_dir / "HISTORY.rc").write_text(
+        _history_harness_history_rc(frequency=frequency, duration=duration, acc_interval=acc_interval),
+        encoding="utf-8",
+    )
+    (run_dir / "species_database.yml").write_text(_history_harness_species_database(ntracer), encoding="utf-8")
+    (run_dir / "geoschem_config.yml").write_text(_history_harness_geoschem_config(ntracer), encoding="utf-8")
+    return run_dir
+
+
+def run_history_harness(
+    executable: str | Path,
+    work_dir: str | Path,
+    *,
+    ntracer: int = 2,
+    nsteps: int = 144,
+    dt_s: int = 600,
+    frequency: str = "00000000 030000",
+    duration: str = "00000001 000000",
+    acc_interval: str | None = None,
+) -> Path:
+    executable_path = Path(executable)
+    if not executable_path.exists():
+        raise FileNotFoundError(
+            f"GEOS-Chem HISTORY harness executable not found: {executable_path}. "
+            "Build tools/gc_harness/history_harness.F90 first."
+        )
+    run_dir = write_history_harness_run_directory(
+        work_dir,
+        ntracer=ntracer,
+        frequency=frequency,
+        duration=duration,
+        acc_interval=acc_interval,
+    )
+    output_path = run_dir / HISTORY_HARNESS_OUTPUT_NAME
+    if output_path.exists():
+        output_path.unlink()
+    subprocess.run(
+        [str(executable_path.resolve()), "HISTORY.rc", "species_database.yml", str(nsteps), str(int(dt_s))],
+        cwd=run_dir,
+        check=True,
+    )
+    if not output_path.exists():
+        raise FileNotFoundError(f"HISTORY harness did not produce expected output {output_path}")
+    return output_path
+
+
+def compare_history_harness_output(
+    output_path: str | Path,
+    *,
+    ntracer: int = 2,
+    nsteps: int = 144,
+    dt_s: int = 600,
+    frequency_s: int = 10800,
+    acc_interval_s: int | None = None,
+) -> HistoryHarnessComparison:
+    path = Path(output_path)
+    update_s = int(acc_interval_s or dt_s)
+    if frequency_s % update_s != 0:
+        raise ValueError("frequency_s must be an integer multiple of the update interval")
+    if update_s % dt_s != 0:
+        raise ValueError("update interval must be an integer multiple of dt_s")
+    steps_per_frequency = frequency_s // dt_s
+    update_stride = update_s // dt_s
+    expected_records = nsteps // steps_per_frequency
+    max_abs = 0.0
+    first_expected = np.nan
+    first_actual = np.nan
+    with netCDF4.Dataset(path) as dataset:
+        times = np.asarray(dataset.variables["time"][:], dtype=np.float64)
+        expected_times = np.arange(expected_records, dtype=np.float64) * (frequency_s / 60.0)
+        if times.size != expected_records:
+            raise ValueError(f"expected {expected_records} time records, found {times.size}")
+        max_time = float(np.max(np.abs(times - expected_times))) if times.size else 0.0
+        for tracer_index in range(1, ntracer + 1):
+            name = f"SpeciesConcVV_hist_{tracer_index:03d}"
+            if name not in dataset.variables:
+                raise ValueError(f"missing HISTORY output variable {name}")
+            values = np.asarray(dataset.variables[name][:], dtype=np.float64)
+            expected = _history_harness_expected_values(
+                tracer_index=tracer_index,
+                n_records=expected_records,
+                steps_per_frequency=steps_per_frequency,
+                update_stride=update_stride,
+            )
+            max_abs = max(max_abs, float(np.max(np.abs(values - expected[:, None, None, None]))))
+            if tracer_index == 1:
+                first_expected = float(expected[0])
+                first_actual = float(values[0, 0, 0, 0])
+    return HistoryHarnessComparison(
+        output_path=path,
+        n_records=expected_records,
+        n_tracers=ntracer,
+        max_abs_error=max_abs,
+        max_time_error_min=max_time,
+        first_record_expected=first_expected,
+        first_record_actual=first_actual,
+        boundary_included_in_previous=abs(first_actual - first_expected) < 1.0e-10,
+    )
+
+
+def _history_harness_expected_values(
+    *,
+    tracer_index: int,
+    n_records: int,
+    steps_per_frequency: int,
+    update_stride: int,
+) -> np.ndarray:
+    expected = np.empty(n_records, dtype=np.float64)
+    for record in range(n_records):
+        start = record * steps_per_frequency + update_stride
+        stop = (record + 1) * steps_per_frequency
+        steps = np.arange(start, stop + 1, update_stride, dtype=np.float64)
+        expected[record] = float(tracer_index * 1000) + float(np.mean(steps))
+    return expected
+
+
+def _history_harness_history_rc(*, frequency: str, duration: str, acc_interval: str | None) -> str:
+    acc_line = f"SpeciesConcThreeHourly.acc_interval: {acc_interval},\n" if acc_interval else ""
+    return (
+        "EXPID: OutputDir/GEOSChem\n\n"
+        "COLLECTIONS: 'SpeciesConcThreeHourly',\n"
+        "::\n"
+        "SpeciesConcThreeHourly.template: '%y4%m2%d2_%h2%n2z.nc4',\n"
+        "SpeciesConcThreeHourly.format: 'CFIO',\n"
+        f"SpeciesConcThreeHourly.frequency: {frequency},\n"
+        f"SpeciesConcThreeHourly.duration: {duration},\n"
+        f"{acc_line}"
+        "SpeciesConcThreeHourly.mode: 'time-averaged',\n"
+        "SpeciesConcThreeHourly.fields: 'SpeciesConcVV_?ADV?', 'GIGCchem',\n"
+        "::\n"
+    )
+
+
+def _history_interval_seconds(value: str) -> int:
+    pieces = value.split()
+    if len(pieces) != 2:
+        raise ValueError(f"invalid HISTORY interval {value!r}")
+    date, clock = pieces
+    if len(date) != 8 or len(clock) != 6 or not date.isdigit() or not clock.isdigit():
+        raise ValueError(f"invalid HISTORY interval {value!r}")
+    days = int(date[6:8])
+    hours = int(clock[0:2])
+    minutes = int(clock[2:4])
+    seconds = int(clock[4:6])
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _history_harness_species_database(ntracer: int) -> str:
+    chunks = []
+    for tracer_index in range(1, ntracer + 1):
+        name = f"hist_{tracer_index:03d}"
+        chunks.append(
+            f"{name}:\n"
+            f"  Formula: {name}\n"
+            "  Is_Gas: true\n"
+            "  MW_g: 28.97\n"
+            "  Src_Mode: HEMCO\n"
+            "  Is_Tracer: true\n"
+            "  Background_VV: 0.0\n"
+            f"  FullName: HISTORY harness tracer {tracer_index}\n"
+        )
+    return "\n".join(chunks)
+
+
+def _history_harness_geoschem_config(ntracer: int) -> str:
+    species = ", ".join(f"hist_{tracer_index:03d}" for tracer_index in range(1, ntracer + 1))
+    return (
+        "simulation:\n"
+        "  name: TransportTracers\n"
+        "  debug_printout: false\n"
+        "operations:\n"
+        "  dry_deposition:\n"
+        "    diag_alt_above_sfc_in_m: 10\n"
+        "  rrtmg_rad_transfer_model:\n"
+        "    aod_wavelengths_in_nm: [550]\n"
+        "  transport:\n"
+        f"    transported_species: {species}\n"
+    )
+
+
 def _load_large_oracle_definition(path: Path) -> dict[str, object]:
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
@@ -3366,6 +3573,22 @@ def format_large_oracle_fixture_check(check: LargeOracleFixtureCheck) -> str:
     return "\n".join(rows)
 
 
+def format_history_harness_comparison(comparison: HistoryHarnessComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"output_path,{comparison.output_path}",
+            f"n_records,{comparison.n_records}",
+            f"n_tracers,{comparison.n_tracers}",
+            f"max_abs_error,{comparison.max_abs_error:.8e}",
+            f"max_time_error_min,{comparison.max_time_error_min:.8e}",
+            f"first_record_expected,{comparison.first_record_expected:.8e}",
+            f"first_record_actual,{comparison.first_record_actual:.8e}",
+            f"boundary_included_in_previous,{comparison.boundary_included_in_previous}",
+        ]
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare and compare GEOS-Chem operator harness fixtures.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -3435,6 +3658,31 @@ def main(argv: list[str] | None = None) -> int:
     compare_convection_parser = subparsers.add_parser("compare-convection-output")
     compare_convection_parser.add_argument("input", type=Path)
     compare_convection_parser.add_argument("output", type=Path)
+
+    write_history_parser = subparsers.add_parser("write-history-harness")
+    write_history_parser.add_argument("work_dir", type=Path)
+    write_history_parser.add_argument("--ntracer", type=int, default=2)
+    write_history_parser.add_argument("--frequency", default="00000000 030000")
+    write_history_parser.add_argument("--duration", default="00000001 000000")
+    write_history_parser.add_argument("--acc-interval", default=None)
+
+    history_parser = subparsers.add_parser("history-harness")
+    history_parser.add_argument("work_dir", type=Path)
+    history_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/history_harness"))
+    history_parser.add_argument("--ntracer", type=int, default=2)
+    history_parser.add_argument("--nsteps", type=int, default=144)
+    history_parser.add_argument("--dt-s", type=int, default=600)
+    history_parser.add_argument("--frequency", default="00000000 030000")
+    history_parser.add_argument("--duration", default="00000001 000000")
+    history_parser.add_argument("--acc-interval", default=None)
+
+    compare_history_parser = subparsers.add_parser("compare-history-harness-output")
+    compare_history_parser.add_argument("output", type=Path)
+    compare_history_parser.add_argument("--ntracer", type=int, default=2)
+    compare_history_parser.add_argument("--nsteps", type=int, default=144)
+    compare_history_parser.add_argument("--dt-s", type=int, default=600)
+    compare_history_parser.add_argument("--frequency-s", type=int, default=10800)
+    compare_history_parser.add_argument("--acc-interval-s", type=int, default=None)
 
     compare_python_tpcore_parser = subparsers.add_parser("compare-python-tpcore-output")
     compare_python_tpcore_parser.add_argument("input", type=Path)
@@ -3589,6 +3837,54 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare-convection-output":
         print(format_convection_comparison(compare_convection_output(args.input, args.output)))
+        return 0
+    if args.command == "write-history-harness":
+        path = write_history_harness_run_directory(
+            args.work_dir,
+            ntracer=args.ntracer,
+            frequency=args.frequency,
+            duration=args.duration,
+            acc_interval=args.acc_interval,
+        )
+        print(f"wrote_history_harness: {path}")
+        return 0
+    if args.command == "history-harness":
+        path = run_history_harness(
+            args.executable,
+            args.work_dir,
+            ntracer=args.ntracer,
+            nsteps=args.nsteps,
+            dt_s=args.dt_s,
+            frequency=args.frequency,
+            duration=args.duration,
+            acc_interval=args.acc_interval,
+        )
+        print(
+            format_history_harness_comparison(
+                compare_history_harness_output(
+                    path,
+                    ntracer=args.ntracer,
+                    nsteps=args.nsteps,
+                    dt_s=args.dt_s,
+                    frequency_s=_history_interval_seconds(args.frequency),
+                    acc_interval_s=_history_interval_seconds(args.acc_interval) if args.acc_interval else None,
+                )
+            )
+        )
+        return 0
+    if args.command == "compare-history-harness-output":
+        print(
+            format_history_harness_comparison(
+                compare_history_harness_output(
+                    args.output,
+                    ntracer=args.ntracer,
+                    nsteps=args.nsteps,
+                    dt_s=args.dt_s,
+                    frequency_s=args.frequency_s,
+                    acc_interval_s=args.acc_interval_s,
+                )
+            )
+        )
         return 0
     if args.command == "compare-python-tpcore-output":
         print(format_python_tpcore_comparison(compare_python_tpcore_output(args.input, args.output)))

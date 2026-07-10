@@ -27,11 +27,13 @@ from wombat_transport.gc_harness import (
     TRANSPORT_OUTPUT_VERSION,
     CONVECTION_INPUT_VERSION,
     CONVECTION_OUTPUT_VERSION,
+    HISTORY_HARNESS_OUTPUT_NAME,
     VDIFF_INPUT_VERSION,
     VDIFF_OUTPUT_VERSION,
     append_transport_step_tracers,
     attribute_python_tpcore_error,
     check_large_oracle_fixture,
+    compare_history_harness_output,
     compare_tpcore_trace_files,
     compare_pjc_output,
     compare_large_oracle_fixture,
@@ -41,6 +43,7 @@ from wombat_transport.gc_harness import (
     compare_transport_chain_handoffs,
     compare_vdiff_output,
     format_convection_comparison,
+    format_history_harness_comparison,
     format_large_oracle_fixture_check,
     format_vdiff_comparison,
     read_convection_output,
@@ -50,7 +53,9 @@ from wombat_transport.gc_harness import (
     write_python_convection_output,
     write_python_tpcore_trace,
     write_python_vdiff_output,
+    run_history_harness,
     run_pjc_harness,
+    write_history_harness_run_directory,
     write_synthetic_convection_input,
     write_real_convection_input_from_config,
     sha256_file,
@@ -81,6 +86,7 @@ VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v2"
 VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v2"
 VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v2"
 CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v2"
+HISTORY_HARNESS_EXE = Path("tools/gc_harness/build/history_harness")
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -107,6 +113,69 @@ def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
     assert check.missing_files == ()
     assert check.checksum_failures == ()
     assert check.unchecked_files == ()
+
+
+def test_history_harness_run_directory_contains_minimal_history_config(tmp_path):
+    run_dir = write_history_harness_run_directory(
+        tmp_path / "history",
+        ntracer=3,
+        acc_interval="00000000 010000",
+    )
+
+    history = (run_dir / "HISTORY.rc").read_text(encoding="utf-8")
+    species = (run_dir / "species_database.yml").read_text(encoding="utf-8")
+    config = (run_dir / "geoschem_config.yml").read_text(encoding="utf-8")
+
+    assert "SpeciesConcThreeHourly.fields: 'SpeciesConcVV_?ADV?'" in history
+    assert "SpeciesConcThreeHourly.acc_interval: 00000000 010000" in history
+    assert "hist_001:" in species
+    assert "hist_003:" in species
+    assert "MW_g: 28.97" in species
+    assert "name: TransportTracers" in config
+    assert "aod_wavelengths_in_nm: [550]" in config
+    assert "transported_species: hist_001, hist_002, hist_003" in config
+
+
+def test_history_harness_compare_reconstructs_default_window(tmp_path):
+    output_path = tmp_path / HISTORY_HARNESS_OUTPUT_NAME
+    output_path.parent.mkdir(parents=True)
+    with netCDF4.Dataset(output_path, "w") as dataset:
+        dataset.createDimension("time", 8)
+        dataset.createDimension("lev", 1)
+        dataset.createDimension("lat", 1)
+        dataset.createDimension("lon", 1)
+        time = dataset.createVariable("time", "f8", ("time",))
+        time[:] = np.arange(8) * 180.0
+        for tracer_index in range(1, 3):
+            variable = dataset.createVariable(
+                f"SpeciesConcVV_hist_{tracer_index:03d}",
+                "f8",
+                ("time", "lev", "lat", "lon"),
+            )
+            expected = np.array([tracer_index * 1000 + np.mean(np.arange(i * 18 + 1, (i + 1) * 18 + 1)) for i in range(8)])
+            variable[:] = expected[:, None, None, None]
+
+    comparison = compare_history_harness_output(output_path, ntracer=2)
+
+    assert comparison.max_abs_error == 0.0
+    assert comparison.max_time_error_min == 0.0
+    assert comparison.first_record_expected == 1009.5
+    assert comparison.first_record_actual == 1009.5
+    assert comparison.boundary_included_in_previous
+    assert "max_abs_error,0.00000000e+00" in format_history_harness_comparison(comparison)
+
+
+@pytest.mark.skipif(not HISTORY_HARNESS_EXE.exists(), reason="GEOS-Chem HISTORY harness executable is not built")
+def test_history_harness_optional_geos_chem_compare(tmp_path):
+    output = run_history_harness(HISTORY_HARNESS_EXE, tmp_path / "history", ntracer=2)
+    comparison = compare_history_harness_output(output, ntracer=2)
+
+    assert comparison.n_records == 8
+    assert comparison.n_tracers == 2
+    assert comparison.max_abs_error < 1.0e-10
+    assert comparison.max_time_error_min == 0.0
+    assert comparison.first_record_expected == 1009.5
+    assert comparison.boundary_included_in_previous
 
 
 def test_large_oracle_fixture_check_reports_missing_payloads(tmp_path):
