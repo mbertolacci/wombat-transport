@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from wombat_transport.constants import AIRMW_G_PER_MOL, H2OMW_G_PER_MOL
 from wombat_transport.fields import (
     TracerField,
     canonical_time_slice,
@@ -20,13 +21,14 @@ from wombat_transport.transport.forcing import (
     prune_forcing_record_cache,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
-from wombat_transport.transport.pbl import RD_J_PER_KG_K, ZVIR, G0_M_PER_S2, VdiffDrResult, run_vdiffdr_one_step
+from wombat_transport.transport.pbl import RD_J_PER_KG_K, G0_M_PER_S2, VdiffDrResult, run_vdiffdr_one_step
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
     pressure_edges_hpa,
+    pressure_edges_from_surface_hpa,
 )
 from wombat_transport.transport.tpcore import (
     TpcoreState,
@@ -607,11 +609,11 @@ def _build_vdiff_input_after_tpcore(
     active_emissions: TracerField | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> VdiffInputState:
-    pedge = pressure_edges_hpa(forcing.surface_pressure_pa, hyai_hpa, hybi)[0]
+    pedge = pressure_edges_from_surface_hpa(forcing.wet_surface_pressure_hpa, hyai_hpa, hybi)[0]
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
     sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
-    virtual_temperature = temperature * (1.0 + ZVIR * sphu)
+    virtual_temperature = _virtual_temperature_k(temperature, sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     ntracer = len(tracer_field.names)
     surface_flux = _surface_flux_from_active_emissions(
@@ -748,7 +750,7 @@ def _build_convection_input_after_vdiff(
     dt_s: float,
     specific_humidity_top: np.ndarray | None = None,
 ) -> ConvectionInputState:
-    pedge = pressure_edges_hpa(forcing.surface_pressure_pa, hyai_hpa, hybi)[0]
+    pedge = pressure_edges_from_surface_hpa(forcing.wet_surface_pressure_hpa, hyai_hpa, hybi)[0]
     temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
     if specific_humidity_top is None:
         sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
@@ -757,7 +759,7 @@ def _build_convection_input_after_vdiff(
         if sphu_top.shape != temperature.shape:
             raise ValueError(f"specific_humidity_top shape {sphu_top.shape} does not match temperature {temperature.shape}")
         sphu = sphu_top[::-1]
-    virtual_temperature = temperature * (1.0 + ZVIR * sphu)
+    virtual_temperature = _virtual_temperature_k(temperature, sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     delp = np.asarray(delp_dry_hpa[0], dtype=np.float64)
     return ConvectionInputState(
@@ -812,6 +814,14 @@ def _hydrostatic_box_height_m(pedge_hpa: np.ndarray, virtual_temperature_k: np.n
     pedge = np.asarray(pedge_hpa, dtype=np.float64)
     tv = np.asarray(virtual_temperature_k, dtype=np.float64)
     return (RD_J_PER_KG_K / G0_M_PER_S2) * tv * np.log(pedge[:-1] / pedge[1:])
+
+
+def _virtual_temperature_k(temperature_k: np.ndarray, specific_humidity_kg_kg: np.ndarray) -> np.ndarray:
+    temperature = np.asarray(temperature_k, dtype=np.float64)
+    sphu = np.asarray(specific_humidity_kg_kg, dtype=np.float64)
+    water_vapor_vv_dry = AIRMW_G_PER_MOL * sphu / (H2OMW_G_PER_MOL * (1.0 - sphu))
+    xh2o = water_vapor_vv_dry / (1.0 + water_vapor_vv_dry)
+    return temperature / (1.0 - xh2o * (1.0 - H2OMW_G_PER_MOL / AIRMW_G_PER_MOL))
 
 
 def _tpcore_vertical_flux_edges(vertical_flux_hpa: np.ndarray) -> np.ndarray:

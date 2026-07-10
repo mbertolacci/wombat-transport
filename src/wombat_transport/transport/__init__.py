@@ -40,6 +40,7 @@ from wombat_transport.transport.pressure import (
     dry_pressure_thickness_from_surface_hpa,
     dry_pressure_thickness_hpa,
     dry_surface_pressure_hpa,
+    pressure_edges_from_surface_hpa,
     pressure_edges_hpa,
     wet_surface_pressure_hpa,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "load_transport_grid",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",
+    "pressure_edges_from_surface_hpa",
     "pressure_edges_hpa",
     "run_transport_one_step",
     "run_transport_window",

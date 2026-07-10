@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2
+from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2, H2OMW_G_PER_MOL
 from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.forcing import TransportForcing
+from wombat_transport.transport.pressure import pressure_edges_from_surface_hpa
 
-H2OMW_G_PER_MOL = 18.016
 RD_J_PER_KG_K = 287.0
 
 
@@ -50,7 +50,7 @@ def airqnt_diagnostics_from_fields(
 ) -> AirQuantityDiagnostics:
     """Compute AIRQNT diagnostics from bottom-order met fields."""
 
-    wet_edges = _pressure_edges_from_surface_hpa(
+    wet_edges = pressure_edges_from_surface_hpa(
         np.asarray(wet_surface_pressure_hpa, dtype=np.float64)[np.newaxis, :, :],
         grid.hyai_hpa,
         grid.hybi,
@@ -77,12 +77,3 @@ def airqnt_diagnostics_from_fields(
         water_vapor_volume_mixing_ratio=avgw,
         box_height_m=bxheight,
     )
-
-
-def _pressure_edges_from_surface_hpa(surface_pressure_hpa: np.ndarray, hyai_hpa: np.ndarray, hybi: np.ndarray) -> np.ndarray:
-    ps = np.asarray(surface_pressure_hpa, dtype=np.float64)
-    hyai = np.asarray(hyai_hpa, dtype=np.float64)
-    hyb = np.asarray(hybi, dtype=np.float64)
-    return hyai[np.newaxis, :, np.newaxis, np.newaxis] + hyb[np.newaxis, :, np.newaxis, np.newaxis] * ps[
-        :, np.newaxis, :, :
-    ]

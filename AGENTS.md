@@ -86,6 +86,12 @@ Keep the first Python implementation correctness-oriented. Match GEOS-Chem
 field ordering, units, pressure/mass bookkeeping, operator sequencing, and
 restart conventions before adding optional acceleration.
 
+Treat any difference beyond expected floating-point roundoff as meaningful
+until proven otherwise. Do not dismiss small-looking discrepancies merely
+because they seem unlikely to matter physically; the goal is GEOS-Chem parity,
+and any accepted tolerance or intentional deviation must be explained and
+documented with the relevant comparison evidence.
+
 `tools/gc_harness/` contains the first GEOS-Chem-backed operator harness. It
 is intentionally full-state-shaped but narrow: it can populate the grid state
 and array inputs needed by `DO_PJC_PFIX`, and can also populate minimal

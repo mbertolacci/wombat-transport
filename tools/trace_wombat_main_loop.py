@@ -261,6 +261,7 @@ def _records_for_step(
             sphu=trace.vdiff_input.specific_humidity_kg_kg,
             temperature=trace.vdiff_input.temperature_k,
             pbl_top_m=trace.vdiff_input.pbl_top_m,
+            **_vdiff_input_trace_fields(trace.vdiff_input),
         ),
         _record(
             step,
@@ -275,6 +276,7 @@ def _records_for_step(
             sphu=trace.vdiff_input.specific_humidity_kg_kg,
             temperature=trace.vdiff_input.temperature_k,
             pbl_top_m=trace.vdiff_input.pbl_top_m,
+            **_vdiff_input_trace_fields(trace.vdiff_input),
         ),
         _record(
             step,
@@ -287,6 +289,7 @@ def _records_for_step(
             sphu=trace.vdiff_output.specific_humidity_kg_kg,
             temperature=trace.vdiff_input.temperature_k,
             pbl_top_m=trace.vdiff_input.pbl_top_m,
+            **_vdiff_input_trace_fields(trace.vdiff_input),
         ),
         _record(step, timestamp, "before_do_tend", trace.vdiff_output.tracer_conc, columns),
         _record(step, timestamp, "after_do_tend", trace.vdiff_output.tracer_conc, columns),
@@ -323,6 +326,30 @@ def _records_for_step(
             ),
         )
     return records
+
+
+def _vdiff_input_trace_fields(vdiff_input) -> dict[str, np.ndarray]:
+    return {
+        "u_m_s": vdiff_input.u_m_s,
+        "v_m_s": vdiff_input.v_m_s,
+        "pmid_hpa": vdiff_input.pmid_hpa,
+        "pedge_lower_hpa": _surfaceward_edge_by_bottom_level(vdiff_input.pedge_hpa),
+        "pedge_upper_hpa": _topward_edge_by_bottom_level(vdiff_input.pedge_hpa),
+        "tv_k": vdiff_input.virtual_temperature_k,
+        "hflux_w_m2": vdiff_input.hflux_w_m2,
+        "eflux_w_m2": vdiff_input.eflux_w_m2,
+        "ustar_m_s": vdiff_input.ustar_m_s,
+    }
+
+
+def _surfaceward_edge_by_bottom_level(pedge_top: np.ndarray) -> np.ndarray:
+    edge = np.asarray(pedge_top, dtype=np.float64)
+    return np.ascontiguousarray(edge[1:])
+
+
+def _topward_edge_by_bottom_level(pedge_top: np.ndarray) -> np.ndarray:
+    edge = np.asarray(pedge_top, dtype=np.float64)
+    return np.ascontiguousarray(edge[:-1])
 
 
 def _record(
@@ -442,6 +469,15 @@ def _write_trace(
             "pficu",
             "pflcu",
             "precccon",
+            "u_m_s",
+            "v_m_s",
+            "pmid_hpa",
+            "pedge_lower_hpa",
+            "pedge_upper_hpa",
+            "tv_k",
+            "hflux_w_m2",
+            "eflux_w_m2",
+            "ustar_m_s",
         ):
             if any(name in item for item in records):
                 shape = _field_shape(records, name)

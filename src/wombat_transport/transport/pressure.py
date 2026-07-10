@@ -7,7 +7,12 @@ from wombat_transport.constants import G0_M_PER_S2
 def pressure_edges_hpa(surface_pressure_pa: np.ndarray, hyai_hpa: np.ndarray, hybi: np.ndarray) -> np.ndarray:
     """Compute hybrid pressure edges in hPa from surface pressure in Pa."""
 
-    ps_hpa = np.asarray(surface_pressure_pa, dtype=np.float64) / 100.0
+    return pressure_edges_from_surface_hpa(np.asarray(surface_pressure_pa, dtype=np.float64) / 100.0, hyai_hpa, hybi)
+
+def pressure_edges_from_surface_hpa(surface_pressure_hpa: np.ndarray, hyai_hpa: np.ndarray, hybi: np.ndarray) -> np.ndarray:
+    """Compute hybrid pressure edges in hPa from surface pressure in hPa."""
+
+    ps_hpa = np.asarray(surface_pressure_hpa, dtype=np.float64)
     hyai = np.asarray(hyai_hpa, dtype=np.float64)
     hybi = np.asarray(hybi, dtype=np.float64)
     return hyai[np.newaxis, :, np.newaxis, np.newaxis] + (
