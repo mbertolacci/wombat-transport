@@ -39,7 +39,7 @@ from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
 )
-from wombat_transport.transport.driver import _load_window_forcing
+from wombat_transport.transport.driver import _load_window_forcing, _surface_flux_from_active_emissions
 
 BASE_CONFIG = "base_wombat/run.yml"
 RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
@@ -370,6 +370,45 @@ def test_trace_transport_one_step_captures_operator_handoffs():
     assert tuple(stage.operator for stage in stage_masses) == ("tpcore", "vdiff", "convection")
     assert stage_masses[0].initial_scalar_mass.shape == (1,)
     np.testing.assert_allclose(stage_masses[-1].final_scalar_mass, stage_masses[0].initial_scalar_mass, rtol=1e-13)
+
+
+def test_trace_transport_one_step_passes_active_surface_emissions_to_vdiff():
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
+    field = TracerField(
+        names=field.names[:1],
+        data=field.data[..., :1],
+        units=field.units[:1],
+        coords=field.coords,
+    )
+    emissions_data = np.zeros_like(field.data)
+    expected_surface_flux = np.full((FIXED_GRID["lat"], FIXED_GRID["lon"], 1), 1.0e-12)
+    emissions_data[0, -1, :, :, :] = expected_surface_flux
+    emissions = TracerField(names=field.names, data=emissions_data, units=("kg/m2/s",), coords=field.coords)
+
+    trace = trace_transport_one_step(field, _load_forcing(config, grid=grid), grid, dt_s=600.0, active_emissions=emissions)
+
+    np.testing.assert_array_equal(trace.vdiff_input.surface_flux_kg_m2_s, expected_surface_flux)
+
+
+def test_active_emissions_rejects_vertically_distributed_flux_until_supported():
+    tracer = TracerField(
+        names=("CO2",),
+        data=np.zeros((1, 3, 2, 2, 1), dtype=np.float64),
+        units=("mol mol-1 dry",),
+        coords={},
+    )
+    emissions_data = np.zeros_like(tracer.data)
+    emissions_data[0, 1, 0, 0, 0] = 1.0e-12
+    emissions = TracerField(names=tracer.names, data=emissions_data, units=("kg/m2/s",), coords={})
+
+    try:
+        _surface_flux_from_active_emissions(tracer, emissions, nlat=2, nlon=2, ntracer=1)
+    except ValueError as exc:
+        assert "vertically distributed emissions are not yet supported" in str(exc)
+    else:
+        raise AssertionError("vertically distributed emissions were accepted")
 
 
 def test_transport_window_accumulates_average_state():

@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from wombat_transport.emissions import EmissionsOperator, apply_emissions
+from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
@@ -24,7 +24,6 @@ from wombat_transport.run_config import (
 )
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
-    dry_pressure_thickness_hpa,
     load_transport_forcing,
     run_transport_one_step,
 )
@@ -86,6 +85,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     final_delp_dry_hpa = None
     transport_steps = 0
     emissions_steps = 0
+    active_emissions: TracerField | None = None
 
     current = start
     while current < end:
@@ -104,9 +104,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             transport_dt_s=transport_dt_s,
             initial_met_time_index=meteorology_initial_time_index(config),
         )
-        delp_dry_hpa = dry_pressure_thickness_hpa(forcing.surface_pressure_pa, grid.hyai_hpa, grid.hybi)
-        logger.debug("computed_dry_pressure step=%d", transport_steps + 1)
-
         elapsed_s = int(round((current - start).total_seconds()))
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
             emission_midpoint = current + timedelta(seconds=emissions_dt_s / 2.0)
@@ -115,13 +112,19 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             if has_invalid_emissions(emissions):
                 raise ValueError(f"configured emissions contain invalid values at {emission_midpoint:%Y-%m-%d %H:%M}")
             emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(emissions, emissions_dt_s)
-            state = apply_emissions(state, emissions, delp_dry_hpa, species, emissions_dt_s)
+            active_emissions = emissions
             emissions_processed.append(EmissionsStep(timestamp=emission_midpoint))
             emissions_steps += 1
-            logger.debug("applied_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
+            logger.debug("refreshed_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
 
         logger.debug("running_transport step=%d", transport_steps + 1)
-        transport_result = run_transport_one_step(state, forcing, grid, dt_s=transport_dt_s)
+        transport_result = run_transport_one_step(
+            state,
+            forcing,
+            grid,
+            dt_s=transport_dt_s,
+            active_emissions=active_emissions,
+        )
         state = transport_result.state
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         transport_steps += 1

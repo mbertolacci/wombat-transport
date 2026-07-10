@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 import subprocess
 import sys
 
@@ -157,6 +158,33 @@ def test_tracer_simulation_uses_configured_residual_emissions_source():
     assert result.emitted_mass_by_tracer[0] == 0.0
     assert result.emitted_mass_by_tracer[1] != 0.0
     assert result.emitted_mass_by_tracer[12] != 0.0
+
+
+def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeypatch):
+    config = replace(load_run_config(RESIDUAL_CONFIG), outputs={})
+    initial = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
+    active_emissions_seen = []
+    state_inputs = []
+
+    def fake_load_forcing(*args, **kwargs):
+        return object()
+
+    def fake_run_transport_one_step(tracer_field, forcing, grid, *, dt_s, active_emissions=None):
+        state_inputs.append(tracer_field.data.copy())
+        active_emissions_seen.append(active_emissions)
+        return SimpleNamespace(state=tracer_field, delp_dry_hpa=np.zeros(tracer_field.data.shape[:-1]))
+
+    monkeypatch.setattr("wombat_transport.runner._load_simulation_forcing", fake_load_forcing)
+    monkeypatch.setattr("wombat_transport.runner.run_transport_one_step", fake_run_transport_one_step)
+
+    result = run_tracer_simulation(config, max_steps=2)
+
+    assert result.emissions_steps == 1
+    assert len(active_emissions_seen) == 2
+    assert active_emissions_seen[0] is not None
+    assert active_emissions_seen[0] is active_emissions_seen[1]
+    np.testing.assert_array_equal(state_inputs[0], initial.data)
+    np.testing.assert_array_equal(state_inputs[1], initial.data)
 
 
 def test_tracer_simulation_writes_configured_history_outputs(tmp_path):

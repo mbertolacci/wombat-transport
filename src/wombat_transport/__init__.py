@@ -17,9 +17,6 @@ from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.emissions import (
     EmissionOperatorConfiguration,
     EmissionsOperator,
-    apply_emissions,
-    dry_air_mass_per_area,
-    emission_increment_vv,
 )
 from wombat_transport.io import (
     FIXED_GRID,
@@ -106,17 +103,14 @@ __all__ = [
     "TransportWindowResult",
     "VdiffDrResult",
     "compute_transport_stage_masses",
-    "apply_emissions",
     "bottom_field3_to_top",
     "canonical_time_slice",
     "canonical_to_public_tracer5",
     "compare_to_time_slice",
     "compute_pbl_height",
     "dry_air_mass_from_pressure",
-    "dry_air_mass_per_area",
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
-    "emission_increment_vv",
     "emissions_timestep_s",
     "expand_history_template",
     "initialize_tracers",

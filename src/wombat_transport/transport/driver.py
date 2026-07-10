@@ -118,6 +118,7 @@ def run_transport_one_step(
     *,
     dt_s: float = 600.0,
     max_courant: float = 0.95,
+    active_emissions: TracerField | None = None,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
@@ -138,6 +139,7 @@ def run_transport_one_step(
         p2_hpa=surface_pressure_hpa,
         p1_hpa=surface_pressure_hpa,
         dt_s=dt_s,
+        active_emissions=active_emissions,
     )
 
 
@@ -148,6 +150,7 @@ def trace_transport_one_step(
     *,
     dt_s: float = 600.0,
     max_courant: float = 0.95,
+    active_emissions: TracerField | None = None,
 ) -> TransportStepDiagnostics:
     """Run one transport step and retain exact operator handoff arrays."""
 
@@ -168,6 +171,7 @@ def trace_transport_one_step(
         p2_hpa=surface_pressure_hpa,
         p1_hpa=surface_pressure_hpa,
         dt_s=dt_s,
+        active_emissions=active_emissions,
     )
 
 
@@ -309,6 +313,7 @@ def _run_transport_one_step_with_mass(
     *,
     dt_s: float,
     max_courant: float,
+    active_emissions: TracerField | None = None,
 ) -> TransportStepResult:
     p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
     p2_hpa = forcing.surface_pressure_pa[0] / 100.0
@@ -322,6 +327,7 @@ def _run_transport_one_step_with_mass(
         p2_hpa=p2_hpa,
         p1_hpa=p1_hpa,
         dt_s=dt_s,
+        active_emissions=active_emissions,
     )
 
 
@@ -336,6 +342,7 @@ def _run_tpcore_one_step_from_mass(
     p2_hpa: np.ndarray,
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
+    active_emissions: TracerField | None = None,
 ) -> TransportStepResult:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -387,6 +394,7 @@ def _run_tpcore_one_step_from_mass(
         area,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
+        active_emissions=active_emissions,
     )
     vdiff = _run_vdiff_input(vdiff_input, diagnostics=False)
     state = TracerField(
@@ -432,6 +440,7 @@ def _trace_tpcore_one_step_from_mass(
     p2_hpa: np.ndarray,
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
+    active_emissions: TracerField | None = None,
 ) -> TransportStepDiagnostics:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -483,6 +492,7 @@ def _trace_tpcore_one_step_from_mass(
         area,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
+        active_emissions=active_emissions,
     )
     vdiff = _run_vdiff_input(vdiff_input, diagnostics=True)
     state = TracerField(
@@ -534,6 +544,7 @@ def _run_vdiff_after_tpcore(
     *,
     top_edge_hpa: float,
     dt_s: float,
+    active_emissions: TracerField | None = None,
 ):
     return _run_vdiff_input(
         _build_vdiff_input_after_tpcore(
@@ -544,6 +555,7 @@ def _run_vdiff_after_tpcore(
             area,
             top_edge_hpa=top_edge_hpa,
             dt_s=dt_s,
+            active_emissions=active_emissions,
         ),
         diagnostics=False,
     )
@@ -558,6 +570,7 @@ def _build_vdiff_input_after_tpcore(
     *,
     top_edge_hpa: float,
     dt_s: float,
+    active_emissions: TracerField | None = None,
 ) -> VdiffInputState:
     pedge = dry_pressure_edges_from_thickness_hpa(delp_dry_hpa, top_edge_hpa=top_edge_hpa)[0]
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
@@ -566,6 +579,13 @@ def _build_vdiff_input_after_tpcore(
     virtual_temperature = temperature * (1.0 + ZVIR * sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     ntracer = len(tracer_field.names)
+    surface_flux = _surface_flux_from_active_emissions(
+        tracer_field,
+        active_emissions,
+        nlat=tracer_field.data.shape[2],
+        nlon=tracer_field.data.shape[3],
+        ntracer=ntracer,
+    )
     return VdiffInputState(
         tracer_conc=canonical_time_slice(tracer_field.data),
         u_m_s=np.asarray(forcing.u_m_s[0], dtype=np.float64)[::-1],
@@ -583,8 +603,34 @@ def _build_vdiff_input_after_tpcore(
         ustar_m_s=np.asarray(forcing.friction_velocity_m_s[0], dtype=np.float64),
         area_m2=area,
         dt_s=dt_s,
-        surface_flux_kg_m2_s=np.zeros((tracer_field.data.shape[2], tracer_field.data.shape[3], ntracer), dtype=np.float64),
+        surface_flux_kg_m2_s=surface_flux,
     )
+
+
+def _surface_flux_from_active_emissions(
+    tracer_field: TracerField,
+    active_emissions: TracerField | None,
+    *,
+    nlat: int,
+    nlon: int,
+    ntracer: int,
+) -> np.ndarray:
+    if active_emissions is None:
+        return np.zeros((nlat, nlon, ntracer), dtype=np.float64)
+    if active_emissions.names != tracer_field.names:
+        raise ValueError("active emissions names do not match tracer field names")
+    if active_emissions.data.shape != tracer_field.data.shape:
+        raise ValueError(
+            f"active emissions shape {active_emissions.data.shape} does not match tracer field shape {tracer_field.data.shape}"
+        )
+
+    data = np.asarray(active_emissions.data, dtype=np.float64)
+    if data.shape[0] != 1:
+        raise ValueError(f"active emissions must contain one time slice, found shape {data.shape}")
+    above_surface = data[:, :-1, :, :, :]
+    if np.any(above_surface != 0.0):
+        raise ValueError("vertically distributed emissions are not yet supported for non-local PBL mixing")
+    return np.ascontiguousarray(data[0, -1, :, :, :])
 
 
 def _run_vdiff_input(state: VdiffInputState, *, diagnostics: bool = False) -> VdiffDrResult:
