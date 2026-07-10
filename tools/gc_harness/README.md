@@ -188,6 +188,46 @@ the oracle trace is absent, it falls back to final-field attribution by level,
 latitude, longitude, Courant bins, vertical mass-flux bins, and initial
 tracer-gradient bins.
 
+## Main-Loop Trace Scaffold
+
+When full-run drift appears despite one-step operator parity, use the
+main-loop trace scaffold to compare the high-level GEOS-Chem Classic workflow
+against Wombat at the same boundary names and selected columns.
+
+Write the Wombat-side trace:
+
+```bash
+python tools/trace_wombat_main_loop.py \
+  base_noemis_wombat/run.yml \
+  tools/gc_harness/work/wombat_main_loop_trace.nc \
+  --steps 18 --max-tracers 1
+```
+
+Generate instrumented GEOS-Chem source copies:
+
+```bash
+python tools/gc_harness/generate_main_loop_trace_source.py \
+  --output-dir tools/gc_harness/build/main_loop_trace
+```
+
+The generator writes instrumented copies of `main.F90` and `mixing_mod.F90`
+plus `wombat_main_loop_trace_mod.F90`. Build those into a disposable
+GEOS-Chem Classic executable, run with `WOMBAT_GC_TRACE_CSV` pointing at an
+ignored CSV path, then compare:
+
+```bash
+WOMBAT_GC_TRACE_CSV=tools/gc_harness/work/gc_main_loop_trace.csv ./gcclassic
+
+python tools/compare_main_loop_traces.py \
+  tools/gc_harness/work/wombat_main_loop_trace.nc \
+  tools/gc_harness/work/gc_main_loop_trace.csv
+```
+
+The default traced columns are the first-day `SpeciesConc` hotspot columns
+identified in the base no-emissions comparison. Pass repeated
+`--column-index I,J` values to the generator to trace different 1-based
+GEOS-Chem grid columns.
+
 ## Build Sketch
 
 `build_pjc_pfix_harness.sh` links against the existing `base/build` tree. The

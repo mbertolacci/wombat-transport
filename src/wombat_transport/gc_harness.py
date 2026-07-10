@@ -14,6 +14,7 @@ from urllib.request import urlretrieve
 import netCDF4
 import numpy as np
 
+from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2
 from wombat_transport.fields import (
     TracerField,
     canonical_time_slice,
@@ -76,6 +77,8 @@ CONVECTION_OUTPUT_VERSION = "convection-output-v2"
 DRY_PRESSURE_INPUT_VERSION = "dry-pressure-input-v1"
 DRY_PRESSURE_OUTPUT_VERSION = "dry-pressure-output-v1"
 DRY_PRESSURE_SNAPSHOT_VERSION = "dry-pressure-snapshot-v1"
+MET_AIRQNT_OUTPUT_VERSION = "met-airqnt-output-v1"
+MET_AIRQNT_SNAPSHOT_VERSION = "met-airqnt-snapshot-v1"
 HISTORY_HARNESS_VERSION = "history-harness-v1"
 HISTORY_WOMBAT_OUTPUT_VERSION = "history-wombat-output-v1"
 TPCORE_TRACE_VERSION = "tpcore-trace-v2"
@@ -90,6 +93,8 @@ CONVECTION_SNAPSHOT_INPUT_NAME = "convection_input.nc"
 CONVECTION_SNAPSHOT_OUTPUT_NAME = "convection_output.nc"
 DRY_PRESSURE_SNAPSHOT_INPUT_NAME = "dry_pressure_input.nc"
 DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME = "dry_pressure_output.nc"
+MET_AIRQNT_SNAPSHOT_INPUT_NAME = "met_airqnt_input.nc"
+MET_AIRQNT_SNAPSHOT_OUTPUT_NAME = "met_airqnt_output.nc"
 SNAPSHOT_METADATA_NAME = "metadata.json"
 TPCORE_BRANCH_SCENARIOS = ("x_fxppm_low_courant", "x_large_courant_polar")
 VDIFF_SCENARIOS = ("zero_surface_flux", "nonzero_surface_flux", "negative_clipping")
@@ -324,6 +329,29 @@ class DryPressureOutput:
 
 
 @dataclass(frozen=True)
+class MetAirQntOutput:
+    ps1_wet_hpa: np.ndarray
+    ps2_wet_hpa: np.ndarray
+    ps1_dry_hpa: np.ndarray
+    ps2_dry_hpa: np.ndarray
+    psc2_wet_hpa: np.ndarray
+    psc2_dry_hpa: np.ndarray
+    wet_pressure_edges_hpa: np.ndarray
+    wet_pressure_mid_hpa: np.ndarray
+    wet_pressure_thickness_hpa: np.ndarray
+    dry_partial_pressure_edges_hpa: np.ndarray
+    dry_partial_pressure_mid_hpa: np.ndarray
+    delp_dry_hpa: np.ndarray
+    specific_humidity_kg_kg: np.ndarray
+    temperature_k: np.ndarray
+    water_vapor_vv_dry: np.ndarray
+    virtual_temperature_k: np.ndarray
+    bxheight_m: np.ndarray
+    dry_air_mass_kg: np.ndarray
+    air_volume_m3: np.ndarray
+
+
+@dataclass(frozen=True)
 class DryPressureComparison:
     ps1_wet_max_abs_error_hpa: float
     ps2_wet_max_abs_error_hpa: float
@@ -335,6 +363,12 @@ class DryPressureComparison:
     delp_dry_mean_abs_error_hpa: float
     specific_humidity_max_abs_error: float
     temperature_max_abs_error: float
+
+
+@dataclass(frozen=True)
+class MetAirQntComparison:
+    max_abs_errors: dict[str, float]
+    mean_abs_errors: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -1685,6 +1719,8 @@ def _write_chain_vdiff_input(
         dry_mass[np.newaxis, :, :, :],
         delp,
         area,
+        hyai_hpa=hyai,
+        hybi=hybi,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
     )
@@ -1766,8 +1802,11 @@ def _write_chain_convection_input(
         forcing,
         delp,
         area,
+        hyai_hpa=hyai,
+        hybi=hybi,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
+        specific_humidity_top=vdiff.specific_humidity_after,
     )
     return _write_convection_input_file(
         output_path,
@@ -2508,6 +2547,39 @@ def read_dry_pressure_output(path: str | Path) -> DryPressureOutput:
         )
 
 
+def read_met_airqnt_output(path: str | Path) -> MetAirQntOutput:
+    with netCDF4.Dataset(path) as dataset:
+        if getattr(dataset, "harness", "") != MET_AIRQNT_OUTPUT_VERSION:
+            raise ValueError(f"{path} is not a {MET_AIRQNT_OUTPUT_VERSION} file")
+        return MetAirQntOutput(
+            ps1_wet_hpa=np.asarray(dataset.variables["ps1_wet_hpa"][:], dtype=np.float64),
+            ps2_wet_hpa=np.asarray(dataset.variables["ps2_wet_hpa"][:], dtype=np.float64),
+            ps1_dry_hpa=np.asarray(dataset.variables["ps1_dry_hpa"][:], dtype=np.float64),
+            ps2_dry_hpa=np.asarray(dataset.variables["ps2_dry_hpa"][:], dtype=np.float64),
+            psc2_wet_hpa=np.asarray(dataset.variables["psc2_wet_hpa"][:], dtype=np.float64),
+            psc2_dry_hpa=np.asarray(dataset.variables["psc2_dry_hpa"][:], dtype=np.float64),
+            wet_pressure_edges_hpa=np.asarray(dataset.variables["wet_pressure_edges_hpa"][:], dtype=np.float64),
+            wet_pressure_mid_hpa=np.asarray(dataset.variables["wet_pressure_mid_hpa"][:], dtype=np.float64),
+            wet_pressure_thickness_hpa=np.asarray(
+                dataset.variables["wet_pressure_thickness_hpa"][:], dtype=np.float64
+            ),
+            dry_partial_pressure_edges_hpa=np.asarray(
+                dataset.variables["dry_partial_pressure_edges_hpa"][:], dtype=np.float64
+            ),
+            dry_partial_pressure_mid_hpa=np.asarray(
+                dataset.variables["dry_partial_pressure_mid_hpa"][:], dtype=np.float64
+            ),
+            delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
+            specific_humidity_kg_kg=np.asarray(dataset.variables["specific_humidity_kg_kg"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            water_vapor_vv_dry=np.asarray(dataset.variables["water_vapor_vv_dry"][:], dtype=np.float64),
+            virtual_temperature_k=np.asarray(dataset.variables["virtual_temperature_k"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            dry_air_mass_kg=np.asarray(dataset.variables["dry_air_mass_kg"][:], dtype=np.float64),
+            air_volume_m3=np.asarray(dataset.variables["air_volume_m3"][:], dtype=np.float64),
+        )
+
+
 def write_python_dry_pressure_output(input_path: str | Path, output_path: str | Path) -> Path:
     with netCDF4.Dataset(input_path) as dataset:
         if getattr(dataset, "harness", "") != DRY_PRESSURE_INPUT_VERSION:
@@ -2542,7 +2614,7 @@ def write_python_dry_pressure_output(input_path: str | Path, output_path: str | 
     psc2_dry = ps1_dry + (ps2_dry - ps1_dry) * tc2
     sphu = q1 + (q2 - q1) * tm
     temperature = t1 + (t2 - t1) * tm
-    delp_dry = dry_pressure_thickness_from_surface_hpa(psc2_dry[np.newaxis, :, :], hyai, hybi)[0][::-1]
+    delp_dry = dry_pressure_thickness_from_surface_hpa(psc2_dry[np.newaxis, :, :], hyai, hybi)[0]
 
     return write_dry_pressure_output(
         output_path,
@@ -2558,6 +2630,90 @@ def write_python_dry_pressure_output(input_path: str | Path, output_path: str | 
             temperature_k=temperature,
         ),
     )
+
+
+def write_python_met_airqnt_output(input_path: str | Path, output_path: str | Path) -> Path:
+    with netCDF4.Dataset(input_path) as dataset:
+        if getattr(dataset, "harness", "") != DRY_PRESSURE_INPUT_VERSION:
+            raise ValueError(f"{input_path} is not a {DRY_PRESSURE_INPUT_VERSION} file")
+        hyai = np.asarray(dataset.variables["hyai"][:], dtype=np.float64)
+        hybi = np.asarray(dataset.variables["hybi"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        ps1_wet_raw = np.asarray(dataset.variables["ps1_wet_hpa"][:], dtype=np.float64)
+        ps2_wet_raw = np.asarray(dataset.variables["ps2_wet_hpa"][:], dtype=np.float64)
+        q1 = np.asarray(dataset.variables["sphu1_kg_kg"][:], dtype=np.float64)
+        q2 = np.asarray(dataset.variables["sphu2_kg_kg"][:], dtype=np.float64)
+        t1 = np.asarray(dataset.variables["tmpu1_k"][:], dtype=np.float64)
+        t2 = np.asarray(dataset.variables["tmpu2_k"][:], dtype=np.float64)
+        ntime0_s = int(dataset.ntime0_s)
+        ntime1_s = int(dataset.ntime1_s)
+        ntdt_s = int(dataset.ntdt_s)
+
+    ps1_wet = wet_surface_pressure_hpa(ps1_wet_raw[np.newaxis, :, :] * 100.0, area_m2=area)[0]
+    ps2_wet = wet_surface_pressure_hpa(ps2_wet_raw[np.newaxis, :, :] * 100.0, area_m2=area)[0]
+    ps1_dry = dry_surface_pressure_hpa(ps1_wet_raw[np.newaxis, :, :] * 100.0, q1[np.newaxis, :, :, :], hyai, hybi, area_m2=area)[
+        0
+    ]
+    ps2_dry = dry_surface_pressure_hpa(ps2_wet_raw[np.newaxis, :, :] * 100.0, q2[np.newaxis, :, :, :], hyai, hybi, area_m2=area)[
+        0
+    ]
+    tm = (float(ntime1_s) + float(ntdt_s) / 2.0 - float(ntime0_s)) / 10800.0
+    tc2 = (float(ntime1_s) + float(ntdt_s) - float(ntime0_s)) / 10800.0
+    if tm > 1.0:
+        tm -= 1.0
+        tc2 -= 1.0
+
+    psc2_wet = ps1_wet + (ps2_wet - ps1_wet) * tc2
+    psc2_dry = ps1_dry + (ps2_dry - ps1_dry) * tc2
+    sphu = q1 + (q2 - q1) * tm
+    temperature = t1 + (t2 - t1) * tm
+
+    wet_edges = _hybrid_pressure_edges_from_surface_hpa(psc2_wet, hyai, hybi)
+    wet_pressure_thickness = wet_edges[:-1] - wet_edges[1:]
+    wet_pressure_mid = 0.5 * (wet_edges[:-1] + wet_edges[1:])
+    delp_dry = dry_pressure_thickness_from_surface_hpa(psc2_dry[np.newaxis, :, :], hyai, hybi)[0]
+    water_vapor_vv_dry = AIRMW_G_PER_MOL * sphu / (18.016 * (1.0 - sphu))
+    xh2o = water_vapor_vv_dry / (1.0 + water_vapor_vv_dry)
+    virtual_temperature = temperature / (1.0 - xh2o * (1.0 - 18.016 / AIRMW_G_PER_MOL))
+    bxheight = (287.0 / G0_M_PER_S2) * virtual_temperature * np.log(wet_edges[:-1] / wet_edges[1:])
+    dry_partial_edges = np.empty_like(wet_edges)
+    dry_partial_edges[:-1] = wet_edges[:-1] * (1.0 - xh2o)
+    dry_partial_edges[-1] = wet_edges[-1] * (1.0 - xh2o[-1])
+    dry_partial_mid = wet_pressure_mid * (1.0 - xh2o)
+    dry_air_mass = delp_dry * 100.0 / G0_M_PER_S2 * area[np.newaxis, :, :]
+    air_volume = bxheight * area[np.newaxis, :, :]
+
+    return write_met_airqnt_output(
+        output_path,
+        MetAirQntOutput(
+            ps1_wet_hpa=ps1_wet,
+            ps2_wet_hpa=ps2_wet,
+            ps1_dry_hpa=ps1_dry,
+            ps2_dry_hpa=ps2_dry,
+            psc2_wet_hpa=psc2_wet,
+            psc2_dry_hpa=psc2_dry,
+            wet_pressure_edges_hpa=wet_edges,
+            wet_pressure_mid_hpa=wet_pressure_mid,
+            wet_pressure_thickness_hpa=wet_pressure_thickness,
+            dry_partial_pressure_edges_hpa=dry_partial_edges,
+            dry_partial_pressure_mid_hpa=dry_partial_mid,
+            delp_dry_hpa=delp_dry,
+            specific_humidity_kg_kg=sphu,
+            temperature_k=temperature,
+            water_vapor_vv_dry=water_vapor_vv_dry,
+            virtual_temperature_k=virtual_temperature,
+            bxheight_m=bxheight,
+            dry_air_mass_kg=dry_air_mass,
+            air_volume_m3=air_volume,
+        ),
+    )
+
+
+def _hybrid_pressure_edges_from_surface_hpa(surface_pressure_hpa: np.ndarray, hyai_hpa: np.ndarray, hybi: np.ndarray) -> np.ndarray:
+    ps = np.asarray(surface_pressure_hpa, dtype=np.float64)
+    hyai = np.asarray(hyai_hpa, dtype=np.float64)
+    hyb = np.asarray(hybi, dtype=np.float64)
+    return hyai[:, np.newaxis, np.newaxis] + hyb[:, np.newaxis, np.newaxis] * ps[np.newaxis, :, :]
 
 
 def write_dry_pressure_output(path: str | Path, output: DryPressureOutput) -> Path:
@@ -2580,6 +2736,46 @@ def write_dry_pressure_output(path: str | Path, output: DryPressureOutput) -> Pa
             output.specific_humidity_kg_kg
         )
         dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = output.temperature_k
+    return path
+
+
+def write_met_airqnt_output(path: str | Path, output: MetAirQntOutput) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    nlev, nlat, nlon = output.delp_dry_hpa.shape
+    with netCDF4.Dataset(path, "w") as dataset:
+        dataset.createDimension("lev", nlev)
+        dataset.createDimension("ilev", nlev + 1)
+        dataset.createDimension("lat", nlat)
+        dataset.createDimension("lon", nlon)
+        dataset.harness = MET_AIRQNT_OUTPUT_VERSION
+        dataset.createVariable("ps1_wet_hpa", "f8", ("lat", "lon"))[:] = output.ps1_wet_hpa
+        dataset.createVariable("ps2_wet_hpa", "f8", ("lat", "lon"))[:] = output.ps2_wet_hpa
+        dataset.createVariable("ps1_dry_hpa", "f8", ("lat", "lon"))[:] = output.ps1_dry_hpa
+        dataset.createVariable("ps2_dry_hpa", "f8", ("lat", "lon"))[:] = output.ps2_dry_hpa
+        dataset.createVariable("psc2_wet_hpa", "f8", ("lat", "lon"))[:] = output.psc2_wet_hpa
+        dataset.createVariable("psc2_dry_hpa", "f8", ("lat", "lon"))[:] = output.psc2_dry_hpa
+        dataset.createVariable("wet_pressure_edges_hpa", "f8", ("ilev", "lat", "lon"))[:] = output.wet_pressure_edges_hpa
+        dataset.createVariable("wet_pressure_mid_hpa", "f8", ("lev", "lat", "lon"))[:] = output.wet_pressure_mid_hpa
+        dataset.createVariable("wet_pressure_thickness_hpa", "f8", ("lev", "lat", "lon"))[:] = (
+            output.wet_pressure_thickness_hpa
+        )
+        dataset.createVariable("dry_partial_pressure_edges_hpa", "f8", ("ilev", "lat", "lon"))[:] = (
+            output.dry_partial_pressure_edges_hpa
+        )
+        dataset.createVariable("dry_partial_pressure_mid_hpa", "f8", ("lev", "lat", "lon"))[:] = (
+            output.dry_partial_pressure_mid_hpa
+        )
+        dataset.createVariable("delp_dry_hpa", "f8", ("lev", "lat", "lon"))[:] = output.delp_dry_hpa
+        dataset.createVariable("specific_humidity_kg_kg", "f8", ("lev", "lat", "lon"))[:] = (
+            output.specific_humidity_kg_kg
+        )
+        dataset.createVariable("temperature_k", "f8", ("lev", "lat", "lon"))[:] = output.temperature_k
+        dataset.createVariable("water_vapor_vv_dry", "f8", ("lev", "lat", "lon"))[:] = output.water_vapor_vv_dry
+        dataset.createVariable("virtual_temperature_k", "f8", ("lev", "lat", "lon"))[:] = output.virtual_temperature_k
+        dataset.createVariable("bxheight_m", "f8", ("lev", "lat", "lon"))[:] = output.bxheight_m
+        dataset.createVariable("dry_air_mass_kg", "f8", ("lev", "lat", "lon"))[:] = output.dry_air_mass_kg
+        dataset.createVariable("air_volume_m3", "f8", ("lev", "lat", "lon"))[:] = output.air_volume_m3
     return path
 
 
@@ -2609,6 +2805,35 @@ def compare_dry_pressure_output(
         ),
         temperature_max_abs_error=float(np.max(np.abs(actual.temperature_k - expected.temperature_k))),
     )
+
+
+def compare_met_airqnt_output(
+    input_path: str | Path,
+    expected_output_path: str | Path,
+    *,
+    python_output_path: str | Path | None = None,
+) -> MetAirQntComparison:
+    output_path = Path(expected_output_path)
+    python_path = Path(python_output_path) if python_output_path is not None else output_path.with_name(f"python_{output_path.name}")
+    write_python_met_airqnt_output(input_path, python_path)
+    expected = read_met_airqnt_output(output_path)
+    actual = read_met_airqnt_output(python_path)
+    max_abs: dict[str, float] = {}
+    mean_abs: dict[str, float] = {}
+    for name in MetAirQntOutput.__dataclass_fields__:
+        expected_values = getattr(expected, name)
+        actual_values = getattr(actual, name)
+        error = np.abs(actual_values - expected_values)
+        max_abs[name] = float(np.max(error))
+        mean_abs[name] = float(np.mean(error))
+    return MetAirQntComparison(max_abs_errors=max_abs, mean_abs_errors=mean_abs)
+
+
+def format_met_airqnt_comparison(comparison: MetAirQntComparison) -> str:
+    rows = ["field,max_abs,mean_abs"]
+    for name in comparison.max_abs_errors:
+        rows.append(f"{name},{comparison.max_abs_errors[name]:.8e},{comparison.mean_abs_errors[name]:.8e}")
+    return "\n".join(rows)
 
 
 def format_dry_pressure_comparison(comparison: DryPressureComparison) -> str:

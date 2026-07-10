@@ -1,0 +1,14 @@
+{
+  "input": {
+    "name": "met_airqnt_input.nc",
+    "sha256": "57c49f05f02783cc15e18c7654b7a354d2c1cda0c750db4f24b97484b554854b",
+    "size": 100390
+  },
+  "output": {
+    "harness": "met-airqnt-output-v1",
+    "name": "met_airqnt_output.nc",
+    "sha256": "3839e2eae7d9389383e43bce388c21be754200df114cccd19c119385eb3e4817",
+    "size": 278512
+  },
+  "version": "met-airqnt-snapshot-v1"
+}

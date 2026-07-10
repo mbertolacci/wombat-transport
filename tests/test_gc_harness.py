@@ -32,6 +32,10 @@ from wombat_transport.gc_harness import (
     DRY_PRESSURE_SNAPSHOT_INPUT_NAME,
     DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME,
     DRY_PRESSURE_SNAPSHOT_VERSION,
+    MET_AIRQNT_OUTPUT_VERSION,
+    MET_AIRQNT_SNAPSHOT_INPUT_NAME,
+    MET_AIRQNT_SNAPSHOT_OUTPUT_NAME,
+    MET_AIRQNT_SNAPSHOT_VERSION,
     HISTORY_HARNESS_OUTPUT_NAME,
     VDIFF_INPUT_VERSION,
     VDIFF_OUTPUT_VERSION,
@@ -41,6 +45,7 @@ from wombat_transport.gc_harness import (
     compare_history_harness_output,
     compare_history_harness_to_wombat,
     compare_dry_pressure_output,
+    compare_met_airqnt_output,
     compare_tpcore_trace_files,
     compare_pjc_output,
     compare_large_oracle_fixture,
@@ -51,18 +56,21 @@ from wombat_transport.gc_harness import (
     compare_vdiff_output,
     format_convection_comparison,
     format_dry_pressure_comparison,
+    format_met_airqnt_comparison,
     format_history_harness_comparison,
     format_history_harness_wombat_comparison,
     format_large_oracle_fixture_check,
     format_vdiff_comparison,
     read_convection_output,
     read_dry_pressure_output,
+    read_met_airqnt_output,
     large_oracle_fixture_paths,
     history_harness_scenario_config,
     read_vdiff_output,
     read_transport_step_output,
     write_python_convection_output,
     write_python_dry_pressure_output,
+    write_python_met_airqnt_output,
     write_python_tpcore_trace,
     write_python_vdiff_output,
     run_history_harness,
@@ -101,10 +109,12 @@ VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_non
 VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v2"
 CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v2"
 DRY_PRESSURE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "dry_pressure_synthetic_v1"
+MET_AIRQNT_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "met_airqnt_synthetic_v1"
 HISTORY_DEFAULT_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "history_default_v1"
 HISTORY_SIX_HOUR_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "history_six_hour_groups_v1"
 HISTORY_HARNESS_EXE = Path("tools/gc_harness/build/history_harness")
 DRY_PRESSURE_HARNESS_EXE = Path("tools/gc_harness/build/dry_pressure_harness")
+MET_AIRQNT_HARNESS_EXE = Path("tools/gc_harness/build/met_airqnt_harness")
 
 
 def test_large_oracle_fixture_check_verifies_cached_payloads(tmp_path):
@@ -270,6 +280,33 @@ def test_dry_pressure_fixture_matches_wombat_pressure_bookkeeping(tmp_path):
     assert comparison.temperature_max_abs_error < 1.0e-12
 
 
+def test_met_airqnt_fixture_matches_wombat_air_quantity_bookkeeping(tmp_path):
+    input_path = MET_AIRQNT_FIXTURE_DIR / MET_AIRQNT_SNAPSHOT_INPUT_NAME
+    output_path = MET_AIRQNT_FIXTURE_DIR / MET_AIRQNT_SNAPSHOT_OUTPUT_NAME
+    metadata = json.loads((MET_AIRQNT_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).read_text(encoding="utf-8"))
+
+    comparison = compare_met_airqnt_output(
+        input_path,
+        output_path,
+        python_output_path=tmp_path / "python_met_airqnt_output.nc",
+    )
+
+    assert metadata["version"] == MET_AIRQNT_SNAPSHOT_VERSION
+    assert metadata["input"]["name"] == MET_AIRQNT_SNAPSHOT_INPUT_NAME
+    assert metadata["output"]["harness"] == MET_AIRQNT_OUTPUT_VERSION
+    assert comparison.max_abs_errors["psc2_dry_hpa"] < 1.0e-12
+    assert comparison.max_abs_errors["wet_pressure_edges_hpa"] < 1.0e-12
+    assert comparison.max_abs_errors["wet_pressure_thickness_hpa"] < 1.0e-12
+    assert comparison.max_abs_errors["dry_partial_pressure_edges_hpa"] < 1.0e-12
+    assert comparison.max_abs_errors["delp_dry_hpa"] < 1.0e-12
+    assert comparison.max_abs_errors["specific_humidity_kg_kg"] < 1.0e-15
+    assert comparison.max_abs_errors["temperature_k"] < 1.0e-12
+    assert comparison.max_abs_errors["virtual_temperature_k"] < 1.0e-12
+    assert comparison.max_abs_errors["bxheight_m"] < 1.0e-9
+    assert comparison.max_abs_errors["dry_air_mass_kg"] < 100.0
+    assert "bxheight_m" in format_met_airqnt_comparison(comparison)
+
+
 @pytest.mark.skipif(not DRY_PRESSURE_HARNESS_EXE.exists(), reason="GEOS-Chem dry-pressure harness executable is not built")
 def test_dry_pressure_harness_optional_geos_chem_compare(tmp_path):
     input_path = write_synthetic_dry_pressure_input(tmp_path / DRY_PRESSURE_SNAPSHOT_INPUT_NAME)
@@ -281,6 +318,19 @@ def test_dry_pressure_harness_optional_geos_chem_compare(tmp_path):
     assert comparison.ps1_dry_max_abs_error_hpa < 1.0e-12
     assert comparison.ps2_dry_max_abs_error_hpa < 1.0e-12
     assert comparison.delp_dry_max_abs_error_hpa < 1.0e-12
+
+
+@pytest.mark.skipif(not MET_AIRQNT_HARNESS_EXE.exists(), reason="GEOS-Chem AIRQNT harness executable is not built")
+def test_met_airqnt_harness_optional_geos_chem_compare(tmp_path):
+    input_path = write_synthetic_dry_pressure_input(tmp_path / MET_AIRQNT_SNAPSHOT_INPUT_NAME)
+    output_path = tmp_path / MET_AIRQNT_SNAPSHOT_OUTPUT_NAME
+
+    run_operator_harness(MET_AIRQNT_HARNESS_EXE, input_path, output_path)
+    comparison = compare_met_airqnt_output(input_path, output_path)
+
+    assert comparison.max_abs_errors["delp_dry_hpa"] < 1.0e-12
+    assert comparison.max_abs_errors["bxheight_m"] < 1.0e-9
+    assert comparison.max_abs_errors["dry_air_mass_kg"] < 100.0
 
 
 def test_large_oracle_fixture_check_reports_missing_payloads(tmp_path):
@@ -574,6 +624,23 @@ def test_python_dry_pressure_output_roundtrips_through_comparison_contract(tmp_p
     comparison = compare_dry_pressure_output(input_path, output_path)
     assert comparison.delp_dry_max_abs_error_hpa == 0.0
     assert "delp_dry_max_abs_error_hpa,0.00000000e+00" in format_dry_pressure_comparison(comparison)
+
+
+def test_python_met_airqnt_output_roundtrips_through_comparison_contract(tmp_path):
+    input_path = write_synthetic_dry_pressure_input(tmp_path / MET_AIRQNT_SNAPSHOT_INPUT_NAME)
+    output_path = write_python_met_airqnt_output(input_path, tmp_path / MET_AIRQNT_SNAPSHOT_OUTPUT_NAME)
+
+    output = read_met_airqnt_output(output_path)
+    assert output.wet_pressure_edges_hpa.shape == (48, 7, 8)
+    assert output.delp_dry_hpa.shape == (47, 7, 8)
+    assert output.bxheight_m.shape == (47, 7, 8)
+    assert output.dry_air_mass_kg.shape == (47, 7, 8)
+    assert np.all(output.wet_pressure_thickness_hpa > 0.0)
+    assert np.all(output.bxheight_m > 0.0)
+
+    comparison = compare_met_airqnt_output(input_path, output_path)
+    assert comparison.max_abs_errors["delp_dry_hpa"] == 0.0
+    assert comparison.max_abs_errors["bxheight_m"] == 0.0
 
 
 def test_python_vdiff_output_roundtrips_through_comparison_contract(tmp_path):

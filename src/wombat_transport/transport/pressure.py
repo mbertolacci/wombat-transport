@@ -34,7 +34,7 @@ def dry_surface_pressure_hpa(
     sphu = np.asarray(specific_humidity_kg_kg, dtype=np.float64)
     if sphu.shape != wet_delta.shape:
         raise ValueError(f"specific humidity shape {sphu.shape} does not match wet pressure layers {wet_delta.shape}")
-    dry_ps = float(np.asarray(hyai_hpa, dtype=np.float64)[-1]) + np.sum(wet_delta * (1.0 - sphu[:, ::-1, :, :]), axis=1)
+    dry_ps = float(np.asarray(hyai_hpa, dtype=np.float64)[-1]) + np.sum(wet_delta * (1.0 - sphu), axis=1)
     wet_ps = np.asarray(wet_surface_pressure_pa, dtype=np.float64) / 100.0
     dry_ps = np.where(dry_ps < 0.0, wet_ps, dry_ps)
     return average_geos_chem_poles_2d(dry_ps, area_m2=area_m2)

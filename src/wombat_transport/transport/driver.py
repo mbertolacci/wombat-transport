@@ -26,6 +26,7 @@ from wombat_transport.transport.pressure import (
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
+    pressure_edges_hpa,
 )
 from wombat_transport.transport.tpcore import (
     TpcoreState,
@@ -392,6 +393,8 @@ def _run_tpcore_one_step_from_mass(
         next_dry_air_mass,
         next_delp,
         area,
+        hyai_hpa=hyai,
+        hybi=hybi,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         active_emissions=active_emissions,
@@ -408,6 +411,8 @@ def _run_tpcore_one_step_from_mass(
         forcing,
         next_delp,
         area,
+        hyai_hpa=hyai,
+        hybi=hybi,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
@@ -495,6 +500,8 @@ def _trace_tpcore_one_step_from_mass(
         next_dry_air_mass,
         next_delp,
         area,
+        hyai_hpa=hyai,
+        hybi=hybi,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         active_emissions=active_emissions,
@@ -511,6 +518,8 @@ def _trace_tpcore_one_step_from_mass(
         forcing,
         next_delp,
         area,
+        hyai_hpa=hyai,
+        hybi=hybi,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
@@ -547,6 +556,8 @@ def _run_vdiff_after_tpcore(
     dry_air_mass: np.ndarray,
     delp_dry_hpa: np.ndarray,
     area: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
     *,
     top_edge_hpa: float,
     dt_s: float,
@@ -559,6 +570,8 @@ def _run_vdiff_after_tpcore(
             dry_air_mass,
             delp_dry_hpa,
             area,
+            hyai_hpa,
+            hybi,
             top_edge_hpa=top_edge_hpa,
             dt_s=dt_s,
             active_emissions=active_emissions,
@@ -573,12 +586,14 @@ def _build_vdiff_input_after_tpcore(
     dry_air_mass: np.ndarray,
     delp_dry_hpa: np.ndarray,
     area: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
     *,
     top_edge_hpa: float,
     dt_s: float,
     active_emissions: TracerField | None = None,
 ) -> VdiffInputState:
-    pedge = dry_pressure_edges_from_thickness_hpa(delp_dry_hpa, top_edge_hpa=top_edge_hpa)[0]
+    pedge = pressure_edges_hpa(forcing.surface_pressure_pa, hyai_hpa, hybi)[0]
     pmid = 0.5 * (pedge[:-1] + pedge[1:])
     temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
     sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
@@ -667,6 +682,8 @@ def _run_convection_after_vdiff(
     forcing: TransportForcing,
     delp_dry_hpa: np.ndarray,
     area: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
     *,
     top_edge_hpa: float,
     dt_s: float,
@@ -677,6 +694,8 @@ def _run_convection_after_vdiff(
             forcing,
             delp_dry_hpa,
             area,
+            hyai_hpa,
+            hybi,
             top_edge_hpa=top_edge_hpa,
             dt_s=dt_s,
         )
@@ -688,12 +707,14 @@ def _build_convection_input_after_vdiff(
     forcing: TransportForcing,
     delp_dry_hpa: np.ndarray,
     area: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
     *,
     top_edge_hpa: float,
     dt_s: float,
     specific_humidity_top: np.ndarray | None = None,
 ) -> ConvectionInputState:
-    pedge = dry_pressure_edges_from_thickness_hpa(delp_dry_hpa, top_edge_hpa=top_edge_hpa)[0]
+    pedge = pressure_edges_hpa(forcing.surface_pressure_pa, hyai_hpa, hybi)[0]
     temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
     if specific_humidity_top is None:
         sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)

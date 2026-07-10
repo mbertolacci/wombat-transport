@@ -12,6 +12,7 @@ from wombat_transport.fields import TracerField
 from wombat_transport.fields import (
     canonical_time_slice,
 )
+from wombat_transport.grid import geos_chem_grid_cell_area_m2
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import (
@@ -165,6 +166,20 @@ def test_load_transport_grid_reads_template_metadata():
     assert grid.lon_deg.shape == (FIXED_GRID["lon"],)
     assert grid.lev.shape == (FIXED_GRID["lev"],)
     assert np.all(grid.area_m2 > 0.0)
+
+
+def test_load_transport_grid_uses_geos_chem_area_formula():
+    config = load_run_config(BASE_CONFIG)
+
+    grid = load_transport_grid(config.grid_template)
+    with netCDF4.Dataset(config.grid_template) as dataset:
+        template_area = np.asarray(dataset.variables["AREA"][:], dtype=np.float64)
+
+    expected = geos_chem_grid_cell_area_m2(grid.lat_deg, grid.lon_deg)
+    np.testing.assert_allclose(grid.area_m2, expected, rtol=0.0, atol=0.0)
+    assert not np.allclose(grid.area_m2, template_area, rtol=0.0, atol=1.0)
+    np.testing.assert_allclose(grid.area_m2[45, 0], 6.18185596759564e10)
+    np.testing.assert_allclose(grid.area_m2[0, 0], 2.697411986535481e8)
 
 
 def test_transport_forcing_accepts_preloaded_grid():
