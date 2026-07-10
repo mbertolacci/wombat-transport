@@ -147,9 +147,9 @@ contains
     type(MetState), intent(inout) :: met
     call get_var_1d(ncid, 'lon', lon)
     call get_var_1d(ncid, 'lat', lat)
-    call get_var_2d(ncid, 'area_m2', area)
-    call get_var_4d(ncid, 'tracer_conc', tracer)
-    call get_var_3d(ncid, 'surface_flux_kg_m2_s', sflux)
+      call get_var_2d(ncid, 'area_m2', area)
+      call get_var_4d(ncid, 'tracer_conc', tracer)
+      call get_tracer_surface_var(ncid, 'surface_flux_kg_m2_s', sflux)
     call get_var_3d(ncid, 'u_m_s', met%U)
     call get_var_3d(ncid, 'v_m_s', met%V)
     call get_var_3d(ncid, 'temperature_k', met%T)
@@ -183,15 +183,15 @@ contains
     enddo
     call check(nf90_create(path, nf90_clobber, ncid), 'create output')
     call check(nf90_def_dim(ncid, 'lon', size(tracer,1), lon_dim), 'def lon')
-    call check(nf90_def_dim(ncid, 'lat', size(tracer,2), lat_dim), 'def lat')
-    call check(nf90_def_dim(ncid, 'lev', size(tracer,3), lev_dim), 'def lev')
-    call check(nf90_def_dim(ncid, 'ilev', size(kvh,3), ilev_dim), 'def ilev')
-    call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
-    call check(nf90_put_att(ncid, nf90_global, 'harness', 'vdiffdr-output-v1'), 'put harness')
-    call check(nf90_put_att(ncid, nf90_global, 'negative_count_before_clip', count(tracer0 < 0.0_fp)), 'put neg before')
-    call check(nf90_put_att(ncid, nf90_global, 'negative_count_after_clip', count(tracer < 0.0_fp)), 'put neg after')
-    call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, &
-         (/ lon_dim, lat_dim, lev_dim, tracer_dim /), tracer_id), 'def tracer')
+      call check(nf90_def_dim(ncid, 'lat', size(tracer,2), lat_dim), 'def lat')
+      call check(nf90_def_dim(ncid, 'lev', size(tracer,3), lev_dim), 'def lev')
+      call check(nf90_def_dim(ncid, 'ilev', size(kvh,3), ilev_dim), 'def ilev')
+      call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
+      call check(nf90_put_att(ncid, nf90_global, 'harness', 'vdiffdr-output-v2'), 'put harness')
+      call check(nf90_put_att(ncid, nf90_global, 'negative_count_before_clip', count(tracer0 < 0.0_fp)), 'put neg before')
+      call check(nf90_put_att(ncid, nf90_global, 'negative_count_after_clip', count(tracer < 0.0_fp)), 'put neg after')
+      call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, &
+           (/ tracer_dim, lon_dim, lat_dim, lev_dim /), tracer_id), 'def tracer')
     call check(nf90_def_var(ncid, 'specific_humidity_after', nf90_double, &
          (/ lon_dim, lat_dim, lev_dim /), sphu_id), 'def sphu')
     call check(nf90_def_var(ncid, 'kvh_m2_s', nf90_double, (/ lon_dim, lat_dim, ilev_dim /), kvh_id), 'def kvh')
@@ -202,10 +202,10 @@ contains
     call check(nf90_def_var(ncid, 'initial_tracer_mass', nf90_double, (/ tracer_dim /), mass0_id), 'def mass0')
     call check(nf90_def_var(ncid, 'final_tracer_mass', nf90_double, (/ tracer_dim /), mass1_id), 'def mass1')
     call check(nf90_enddef(ncid), 'enddef output')
-    call check(nf90_put_var(ncid, tracer_id, tracer), 'put tracer')
-    call check(nf90_put_var(ncid, sphu_id, met%SPHU * 1.0e-3_fp), 'put sphu')
-    call check(nf90_put_var(ncid, kvh_id, kvh), 'put kvh')
-    call check(nf90_put_var(ncid, kvm_id, kvm), 'put kvm')
+      call put_var_4d_canonical(ncid, tracer_id, tracer, 'put tracer')
+      call put_var_3d_vertical_reversed(ncid, sphu_id, met%SPHU * 1.0e-3_fp, 'put sphu')
+      call put_var_3d_vertical_reversed(ncid, kvh_id, kvh, 'put kvh')
+      call put_var_3d_vertical_reversed(ncid, kvm_id, kvm, 'put kvm')
     call check(nf90_put_var(ncid, pbl_id, met%PBL_TOP_m), 'put pbl')
     call check(nf90_put_var(ncid, tpert_id, tpert), 'put tpert')
     call check(nf90_put_var(ncid, qpert_id, qpert), 'put qpert')
@@ -240,23 +240,64 @@ contains
     call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
   end subroutine get_var_2d
 
-  subroutine get_var_3d(ncid, name, values)
-    integer, intent(in) :: ncid
-    character(len=*), intent(in) :: name
-    real(fp), intent(out) :: values(:,:,:)
-    integer :: varid
-    call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
-    call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
-  end subroutine get_var_3d
+    subroutine get_var_3d(ncid, name, values)
+      integer, intent(in) :: ncid
+      character(len=*), intent(in) :: name
+      real(fp), intent(out) :: values(:,:,:)
+      integer :: varid
+      call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
+      call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
+      values = values(:,:,size(values,3):1:-1)
+    end subroutine get_var_3d
 
-  subroutine get_var_4d(ncid, name, values)
-    integer, intent(in) :: ncid
-    character(len=*), intent(in) :: name
-    real(fp), intent(out) :: values(:,:,:,:)
-    integer :: varid
-    call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
-    call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
-  end subroutine get_var_4d
+    subroutine get_var_4d(ncid, name, values)
+      integer, intent(in) :: ncid
+      character(len=*), intent(in) :: name
+      real(fp), intent(out) :: values(:,:,:,:)
+      integer :: varid
+      real(fp), allocatable :: canonical(:,:,:,:)
+      integer :: n
+      call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
+      allocate(canonical(size(values,4), size(values,1), size(values,2), size(values,3)))
+      call check(nf90_get_var(ncid, varid, canonical), 'get var '//trim(name))
+      do n = 1, size(values,4)
+         values(:,:,:,n) = canonical(n,:,:,size(values,3):1:-1)
+      enddo
+    end subroutine get_var_4d
+
+    subroutine get_tracer_surface_var(ncid, name, values)
+      integer, intent(in) :: ncid
+      character(len=*), intent(in) :: name
+      real(fp), intent(out) :: values(:,:,:)
+      integer :: varid, n
+      real(fp), allocatable :: canonical(:,:,:)
+      call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
+      allocate(canonical(size(values,3), size(values,1), size(values,2)))
+      call check(nf90_get_var(ncid, varid, canonical), 'get var '//trim(name))
+      do n = 1, size(values,3)
+         values(:,:,n) = canonical(n,:,:)
+      enddo
+    end subroutine get_tracer_surface_var
+
+    subroutine put_var_4d_canonical(ncid, varid, values, context)
+      integer, intent(in) :: ncid, varid
+      real(fp), intent(in) :: values(:,:,:,:)
+      character(len=*), intent(in) :: context
+      real(fp), allocatable :: canonical(:,:,:,:)
+      integer :: n
+      allocate(canonical(size(values,4), size(values,1), size(values,2), size(values,3)))
+      do n = 1, size(values,4)
+         canonical(n,:,:,:) = values(:,:,size(values,3):1:-1,n)
+      enddo
+      call check(nf90_put_var(ncid, varid, canonical), context)
+    end subroutine put_var_4d_canonical
+
+    subroutine put_var_3d_vertical_reversed(ncid, varid, values, context)
+      integer, intent(in) :: ncid, varid
+      real(fp), intent(in) :: values(:,:,:)
+      character(len=*), intent(in) :: context
+      call check(nf90_put_var(ncid, varid, values(:,:,size(values,3):1:-1)), context)
+    end subroutine put_var_3d_vertical_reversed
 
   subroutine check(status, context)
     integer, intent(in) :: status

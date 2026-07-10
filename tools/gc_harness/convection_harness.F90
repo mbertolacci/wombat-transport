@@ -211,23 +211,23 @@ contains
     enddo
     call check(nf90_create(path, nf90_clobber, ncid), 'create output')
     call check(nf90_def_dim(ncid, 'lon', size(tracer,1), lon_dim), 'def lon')
-    call check(nf90_def_dim(ncid, 'lat', size(tracer,2), lat_dim), 'def lat')
-    call check(nf90_def_dim(ncid, 'lev', size(tracer,3), lev_dim), 'def lev')
-    call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
-    call check(nf90_put_att(ncid, nf90_global, 'harness', 'convection-output-v1'), 'put harness')
+      call check(nf90_def_dim(ncid, 'lat', size(tracer,2), lat_dim), 'def lat')
+      call check(nf90_def_dim(ncid, 'lev', size(tracer,3), lev_dim), 'def lev')
+      call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
+      call check(nf90_put_att(ncid, nf90_global, 'harness', 'convection-output-v2'), 'put harness')
     call check(nf90_put_att(ncid, nf90_global, 'negative_count_before', count(tracer0 < 0.0_fp)), 'put neg before')
     call check(nf90_put_att(ncid, nf90_global, 'negative_count_after', count(tracer < 0.0_fp)), 'put neg after')
-    call check(nf90_put_att(ncid, nf90_global, 'internal_steps', max(int(dt_s) / 300, 1)), 'put steps')
-    call check(nf90_put_att(ncid, nf90_global, 'internal_dt_s', dt_s / real(max(int(dt_s) / 300, 1), fp)), 'put idt')
-    call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, &
-         (/ lon_dim, lat_dim, lev_dim, tracer_dim /), tracer_id), 'def tracer')
-    call check(nf90_def_var(ncid, 'diag14_mass_flux', nf90_double, &
-         (/ lon_dim, lat_dim, lev_dim, tracer_dim /), diag_id), 'def diag')
+      call check(nf90_put_att(ncid, nf90_global, 'internal_steps', max(int(dt_s) / 300, 1)), 'put steps')
+      call check(nf90_put_att(ncid, nf90_global, 'internal_dt_s', dt_s / real(max(int(dt_s) / 300, 1), fp)), 'put idt')
+      call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, &
+           (/ tracer_dim, lon_dim, lat_dim, lev_dim /), tracer_id), 'def tracer')
+      call check(nf90_def_var(ncid, 'diag14_mass_flux', nf90_double, &
+           (/ tracer_dim, lon_dim, lat_dim, lev_dim /), diag_id), 'def diag')
     call check(nf90_def_var(ncid, 'initial_tracer_mass', nf90_double, (/ tracer_dim /), mass0_id), 'def mass0')
     call check(nf90_def_var(ncid, 'final_tracer_mass', nf90_double, (/ tracer_dim /), mass1_id), 'def mass1')
     call check(nf90_enddef(ncid), 'enddef output')
-    call check(nf90_put_var(ncid, tracer_id, tracer), 'put tracer')
-    call check(nf90_put_var(ncid, diag_id, diag14), 'put diag')
+      call put_var_4d_canonical(ncid, tracer_id, tracer, 'put tracer')
+      call put_var_4d_canonical(ncid, diag_id, diag14, 'put diag')
     call check(nf90_put_var(ncid, mass0_id, mass0), 'put mass0')
     call check(nf90_put_var(ncid, mass1_id, mass1), 'put mass1')
     call check(nf90_close(ncid), 'close output')
@@ -259,23 +259,43 @@ contains
     call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
   end subroutine get_var_2d
 
-  subroutine get_var_3d(ncid, name, values)
-    integer, intent(in) :: ncid
-    character(len=*), intent(in) :: name
-    real(fp), intent(out) :: values(:,:,:)
-    integer :: varid
-    call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
-    call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
-  end subroutine get_var_3d
+    subroutine get_var_3d(ncid, name, values)
+      integer, intent(in) :: ncid
+      character(len=*), intent(in) :: name
+      real(fp), intent(out) :: values(:,:,:)
+      integer :: varid
+      call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
+      call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
+      values = values(:,:,size(values,3):1:-1)
+    end subroutine get_var_3d
 
-  subroutine get_var_4d(ncid, name, values)
-    integer, intent(in) :: ncid
-    character(len=*), intent(in) :: name
-    real(fp), intent(out) :: values(:,:,:,:)
-    integer :: varid
-    call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
-    call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
-  end subroutine get_var_4d
+    subroutine get_var_4d(ncid, name, values)
+      integer, intent(in) :: ncid
+      character(len=*), intent(in) :: name
+      real(fp), intent(out) :: values(:,:,:,:)
+      integer :: varid
+      real(fp), allocatable :: canonical(:,:,:,:)
+      integer :: n
+      call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
+      allocate(canonical(size(values,4), size(values,1), size(values,2), size(values,3)))
+      call check(nf90_get_var(ncid, varid, canonical), 'get var '//trim(name))
+      do n = 1, size(values,4)
+         values(:,:,:,n) = canonical(n,:,:,size(values,3):1:-1)
+      enddo
+    end subroutine get_var_4d
+
+    subroutine put_var_4d_canonical(ncid, varid, values, context)
+      integer, intent(in) :: ncid, varid
+      real(fp), intent(in) :: values(:,:,:,:)
+      character(len=*), intent(in) :: context
+      real(fp), allocatable :: canonical(:,:,:,:)
+      integer :: n
+      allocate(canonical(size(values,4), size(values,1), size(values,2), size(values,3)))
+      do n = 1, size(values,4)
+         canonical(n,:,:,:) = values(:,:,size(values,3):1:-1,n)
+      enddo
+      call check(nf90_put_var(ncid, varid, canonical), context)
+    end subroutine put_var_4d_canonical
 
   subroutine check(status, label)
     integer, intent(in) :: status

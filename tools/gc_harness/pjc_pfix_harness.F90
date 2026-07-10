@@ -238,37 +238,37 @@ contains
     call check(nf90_get_att(ncid, nf90_global, 'dt_s', dt_s), 'read dt_s')
   end subroutine read_fixture
 
-  subroutine write_output(path, xmass, ymass, has_tracers, tracer, ps)
-    character(len=*), intent(in) :: path
-    real(fp), intent(in) :: xmass(:,:,:), ymass(:,:,:)
-    logical, intent(in) :: has_tracers
-    real(fp), intent(in) :: tracer(:,:,:,:), ps(:,:)
-    integer :: ncid, lon_dim, lat_dim, lev_dim, tracer_dim
-    integer :: x_id, y_id, tracer_id, ps_id
-    call check(nf90_create(path, nf90_clobber, ncid), 'create output')
-    call check(nf90_def_dim(ncid, 'lon', size(xmass,1), lon_dim), 'def lon')
-    call check(nf90_def_dim(ncid, 'lat', size(xmass,2), lat_dim), 'def lat')
-    call check(nf90_def_dim(ncid, 'lev', size(xmass,3), lev_dim), 'def lev')
-    if (has_tracers) then
-       call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
-       call check(nf90_put_att(ncid, nf90_global, 'harness', 'transport-step-output-v1'), 'put harness')
-    else
-       call check(nf90_put_att(ncid, nf90_global, 'harness', 'pjc-pfix-output-v1'), 'put harness')
-    endif
-    call check(nf90_def_var(ncid, 'xmass_hpa', nf90_double, (/ lon_dim, lat_dim, lev_dim /), x_id), 'def xmass')
-    call check(nf90_def_var(ncid, 'ymass_hpa', nf90_double, (/ lon_dim, lat_dim, lev_dim /), y_id), 'def ymass')
-    if (has_tracers) then
-       call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, (/ lon_dim, lat_dim, lev_dim, tracer_dim /), &
-                               tracer_id), 'def tracer_conc_after')
-       call check(nf90_def_var(ncid, 'surface_pressure_hpa', nf90_double, (/ lon_dim, lat_dim /), ps_id), 'def ps')
-    endif
-    call check(nf90_enddef(ncid), 'enddef')
-    call check(nf90_put_var(ncid, x_id, xmass), 'write xmass')
-    call check(nf90_put_var(ncid, y_id, ymass), 'write ymass')
-    if (has_tracers) then
-       call check(nf90_put_var(ncid, tracer_id, tracer), 'write tracer_conc_after')
-       call check(nf90_put_var(ncid, ps_id, ps), 'write ps')
-    endif
+    subroutine write_output(path, xmass, ymass, has_tracers, tracer, ps)
+      character(len=*), intent(in) :: path
+      real(fp), intent(in) :: xmass(:,:,:), ymass(:,:,:)
+      logical, intent(in) :: has_tracers
+      real(fp), intent(in) :: tracer(:,:,:,:), ps(:,:)
+      integer :: ncid, lon_dim, lat_dim, lev_dim, tracer_dim
+      integer :: x_id, y_id, tracer_id, ps_id
+      call check(nf90_create(path, nf90_clobber, ncid), 'create output')
+      call check(nf90_def_dim(ncid, 'lon', size(xmass,1), lon_dim), 'def lon')
+      call check(nf90_def_dim(ncid, 'lat', size(xmass,2), lat_dim), 'def lat')
+      call check(nf90_def_dim(ncid, 'lev', size(xmass,3), lev_dim), 'def lev')
+      if (has_tracers) then
+         call check(nf90_def_dim(ncid, 'tracer', size(tracer,4), tracer_dim), 'def tracer')
+         call check(nf90_put_att(ncid, nf90_global, 'harness', 'transport-step-output-v2'), 'put harness')
+      else
+         call check(nf90_put_att(ncid, nf90_global, 'harness', 'pjc-pfix-output-v1'), 'put harness')
+      endif
+      call check(nf90_def_var(ncid, 'xmass_hpa', nf90_double, (/ lon_dim, lat_dim, lev_dim /), x_id), 'def xmass')
+      call check(nf90_def_var(ncid, 'ymass_hpa', nf90_double, (/ lon_dim, lat_dim, lev_dim /), y_id), 'def ymass')
+      if (has_tracers) then
+         call check(nf90_def_var(ncid, 'tracer_conc_after', nf90_double, (/ tracer_dim, lon_dim, lat_dim, lev_dim /), &
+                                 tracer_id), 'def tracer_conc_after')
+         call check(nf90_def_var(ncid, 'surface_pressure_hpa', nf90_double, (/ lon_dim, lat_dim /), ps_id), 'def ps')
+      endif
+      call check(nf90_enddef(ncid), 'enddef')
+      call put_var_3d_vertical_reversed(ncid, x_id, xmass, 'write xmass')
+      call put_var_3d_vertical_reversed(ncid, y_id, ymass, 'write ymass')
+      if (has_tracers) then
+         call put_var_4d_canonical(ncid, tracer_id, tracer, 'write tracer_conc_after')
+         call check(nf90_put_var(ncid, ps_id, ps), 'write ps')
+      endif
     call check(nf90_close(ncid), 'close output')
   end subroutine write_output
 
@@ -319,14 +319,40 @@ contains
     call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
   end subroutine get_var_3d
 
-  subroutine get_var_4d(ncid, name, values)
-    integer, intent(in) :: ncid
-    character(len=*), intent(in) :: name
-    real(fp), intent(out) :: values(:,:,:,:)
-    integer :: varid
-    call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
-    call check(nf90_get_var(ncid, varid, values), 'get var '//trim(name))
-  end subroutine get_var_4d
+    subroutine get_var_4d(ncid, name, values)
+      integer, intent(in) :: ncid
+      character(len=*), intent(in) :: name
+      real(fp), intent(out) :: values(:,:,:,:)
+      integer :: varid
+      real(fp), allocatable :: canonical(:,:,:,:)
+      integer :: n
+      call check(nf90_inq_varid(ncid, name, varid), 'inq var '//trim(name))
+      allocate(canonical(size(values,4), size(values,1), size(values,2), size(values,3)))
+      call check(nf90_get_var(ncid, varid, canonical), 'get var '//trim(name))
+      do n = 1, size(values,4)
+         values(:,:,:,n) = canonical(n,:,:,size(values,3):1:-1)
+      enddo
+    end subroutine get_var_4d
+
+    subroutine put_var_3d_vertical_reversed(ncid, varid, values, context)
+      integer, intent(in) :: ncid, varid
+      real(fp), intent(in) :: values(:,:,:)
+      character(len=*), intent(in) :: context
+      call check(nf90_put_var(ncid, varid, values(:,:,size(values,3):1:-1)), context)
+    end subroutine put_var_3d_vertical_reversed
+
+    subroutine put_var_4d_canonical(ncid, varid, values, context)
+      integer, intent(in) :: ncid, varid
+      real(fp), intent(in) :: values(:,:,:,:)
+      character(len=*), intent(in) :: context
+      real(fp), allocatable :: canonical(:,:,:,:)
+      integer :: n
+      allocate(canonical(size(values,4), size(values,1), size(values,2), size(values,3)))
+      do n = 1, size(values,4)
+         canonical(n,:,:,:) = values(:,:,size(values,3):1:-1,n)
+      enddo
+      call check(nf90_put_var(ncid, varid, canonical), context)
+    end subroutine put_var_4d_canonical
 
   subroutine check(status, context)
     integer, intent(in) :: status
