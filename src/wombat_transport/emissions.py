@@ -189,6 +189,7 @@ class EmissionsOperator:
 
         lat_regridded = lat_weights @ values
         lat_regridded /= lat_denominator[:, np.newaxis]
+        _average_regridded_polar_rows(lat_regridded, source_lat, self.grid.lat_deg, source_lon)
         regridded = lat_regridded @ lon_weights.T
         regridded /= lon_denominator[np.newaxis, :]
         return np.ascontiguousarray(regridded)
@@ -301,6 +302,46 @@ def _longitude_overlap_weights(source_lon: np.ndarray, target_lon: np.ndarray) -
     return weights
 
 
+def _average_regridded_polar_rows(
+    lat_regridded: np.ndarray,
+    source_lat: np.ndarray,
+    target_lat: np.ndarray,
+    source_lon: np.ndarray,
+) -> None:
+    source_low, source_high = _noncyclic_bounds(source_lat, lower=-90.0, upper=90.0)
+    target_low, target_high = _noncyclic_bounds(target_lat, lower=-90.0, upper=90.0)
+    lon_widths = _longitude_cell_widths(source_lon)
+    if (
+        source_lat[0] <= -89.0
+        and target_lat[0] <= -89.0
+        and np.isclose(source_low[0], -90.0, rtol=0.0, atol=1.0e-12)
+        and np.isclose(target_low[0], -90.0, rtol=0.0, atol=1.0e-12)
+    ):
+        lat_regridded[0, :] = np.average(lat_regridded[0, :], weights=lon_widths)
+    if (
+        source_lat[-1] >= 89.0
+        and target_lat[-1] >= 89.0
+        and np.isclose(source_high[-1], 90.0, rtol=0.0, atol=1.0e-12)
+        and np.isclose(target_high[-1], 90.0, rtol=0.0, atol=1.0e-12)
+    ):
+        lat_regridded[-1, :] = np.average(lat_regridded[-1, :], weights=lon_widths)
+
+
+def _longitude_cell_widths(lon: np.ndarray) -> np.ndarray:
+    source = np.asarray(lon, dtype=np.float64)
+    order = np.argsort((source + 360.0) % 360.0)
+    sorted_source = ((source + 360.0) % 360.0)[order]
+    step = float(np.median(np.diff(sorted_source)))
+    low = sorted_source - step / 2.0
+    high = sorted_source + step / 2.0
+    low[0] = 0.0
+    high[-1] = 360.0
+    widths_sorted = high - low
+    widths = np.empty_like(widths_sorted)
+    widths[order] = widths_sorted
+    return widths
+
+
 def _noncyclic_bounds(centers: np.ndarray, *, lower: float, upper: float) -> tuple[np.ndarray, np.ndarray]:
     values = np.asarray(centers, dtype=np.float64)
     if values.ndim != 1 or values.size < 2:
@@ -310,4 +351,8 @@ def _noncyclic_bounds(centers: np.ndarray, *, lower: float, upper: float) -> tup
     bounds[1:-1] = midpoints
     bounds[0] = max(lower, values[0] - (midpoints[0] - values[0]))
     bounds[-1] = min(upper, values[-1] + (values[-1] - midpoints[-1]))
+    if np.isclose(values[0], lower + 0.5, rtol=0.0, atol=1.0e-12):
+        bounds[1] = lower + 1.0
+    if np.isclose(values[-1], upper - 0.5, rtol=0.0, atol=1.0e-12):
+        bounds[-2] = upper - 1.0
     return bounds[:-1], bounds[1:]

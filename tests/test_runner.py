@@ -78,7 +78,7 @@ def test_configured_residual_emissions_match_hemco_diagnostic_sample():
 
     assert actual.shape == expected.shape
     assert actual.names == expected.names
-    np.testing.assert_allclose(actual.data, expected.data, rtol=2.0e-5, atol=1.0e-10)
+    np.testing.assert_allclose(actual.data, expected.data, rtol=2.0e-5, atol=3.0e-13)
 
 
 def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():

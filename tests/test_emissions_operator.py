@@ -257,6 +257,32 @@ def test_regridding_preserves_area_weighted_flux_mass(tmp_path):
     )
 
 
+def test_regridding_averages_polar_cap_longitudes_like_hemco(tmp_path):
+    target_lat = np.array([-89.5, 0.0, 89.5])
+    target_lon = np.arange(8, dtype=np.float64) * 45.0 + 22.5
+    source_lat = np.array([-89.5, 0.0, 89.5])
+    source_lon = np.arange(4, dtype=np.float64) * 90.0 + 45.0
+    grid = _grid(lat=target_lat, lon=target_lon, nlev=1)
+    source_values = np.array(
+        [
+            [1.0, 3.0, 5.0, 7.0],
+            [10.0, 20.0, 30.0, 40.0],
+            [-8.0, -4.0, 4.0, 8.0],
+        ],
+        dtype=np.float64,
+    )
+    _write_xy_file(tmp_path / "source.nc", source_values, lat=source_lat, lon=source_lon)
+    config_path = _write_config(tmp_path, fields=[_field("field_a", "A", "source.nc")])
+
+    emissions = EmissionsOperator.from_yaml(config_path, root=tmp_path, species=_species("A"), grid=grid).evaluate(
+        datetime(2014, 9, 1)
+    )
+
+    target_values = emissions.data[0, -1, :, :, 0]
+    np.testing.assert_array_equal(target_values[0], np.full(target_lon.size, np.mean(source_values[0])))
+    np.testing.assert_array_equal(target_values[-1], np.full(target_lon.size, np.mean(source_values[-1])))
+
+
 def _species(*names: str) -> list[Species]:
     return [Species(name=name, molecular_weight_g=44.0, background_vv=0.0, full_name=name) for name in names]
 
