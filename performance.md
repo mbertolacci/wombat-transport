@@ -970,3 +970,51 @@ copy unless the broader driver becomes explicitly in-place/double-buffered. The
 next useful convection work should profile the fused kernel itself, with likely
 targets being active/cloud-base scans, repeated below-base plume setup, and
 branch structure inside the per-column vertical loop.
+
+## 2026-07-10 Convection delq split and entrainment hoist
+
+Profila on the fused diagnostics-light kernel showed the dominant cost in the
+`cmfmc_below > _TINYNUM` per-tracer update, especially the clamp/write sequence:
+
+```text
+if current + delq < 0.0        18.6%
+q_all[...] = current + delq    22.8%
+```
+
+Three variants were tried:
+
+1. Compute per-tracer `delq` into a small `(ntracer,)` workspace, then run a
+   second tracer loop for clamp/write.
+2. Hoist `entrains` outside the tracer loop, but keep the immediate clamp/write.
+3. Keep the `delq` workspace and also hoist `entrains` outside the tracer loop,
+   using separate entraining and non-entraining compute loops.
+
+Variant 1 was neutral/slightly noisy. Variant 2 was clean and best at 24 tracers,
+but slower than variant 3 at 96 and 192 tracers. Variant 3 was retained because
+large tracer counts are the target workload.
+
+Standalone benchmark progression:
+
+| Variant | 24 tracer best s | 96 tracer best s | 96 tracer mean s | 192 tracer best s |
+| --- | ---: | ---: | ---: | ---: |
+| Fused full-grid light Numba kernel | 0.048 | 0.173 | 0.182 | 0.335 |
+| Split `delq` workspace, no hoist | 0.049 | 0.172 | 0.173 | 0.333 |
+| Hoisted `entrains`, no `delq` workspace | 0.047 | 0.170 | 0.171 | 0.331 |
+| Split `delq` workspace, hoisted `entrains` | 0.048 | 0.167 | 0.168 | 0.326 |
+
+Full-vs-light validation remained bitwise identical for 24 and 96 tracers.
+
+Profila after the retained variant showed the clamp/write block was much less
+dominant:
+
+| Region | Approx samples |
+| --- | ---: |
+| entraining `q_all[level, col, tracer]` read in plume update | 4.8% |
+| `upward = cmfmc * q_all[level - 1, ...]` | 5.0% |
+| `delq -= cmfmc_below * q_all[level, ...]` | 7.9% |
+| `delq_work[tracer] = delq * tendency_scale` | 6.4% |
+| clamp check | 8.0% |
+| final store | 8.5% |
+
+The hot path is now more evenly distributed across the flux arithmetic,
+temporary `delq` write, clamp, and final store.

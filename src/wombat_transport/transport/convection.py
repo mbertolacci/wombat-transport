@@ -550,6 +550,7 @@ if njit is not None:
         bottom_index = nlev - 1
         qc = np.empty(ntracer, dtype=np.float64)
         qb_num = np.empty(ntracer, dtype=np.float64)
+        delq_work = np.empty(ntracer, dtype=np.float64)
 
         for col in range(ncol):
             active = False
@@ -629,24 +630,37 @@ if njit is not None:
                         entrains = entrn >= 0.0 and cmout > 0.0
                         tendency_scale = internal_dt_s / bmass_all[level, col]
 
-                        for tracer in range(ntracer):
-                            qc_pres = qc[tracer]
-                            qc_next = qc_pres
-                            if entrains:
+                        if entrains:
+                            for tracer in range(ntracer):
+                                qc_pres = qc[tracer]
                                 qc_next = (
                                     cmfmc_below * qc_pres + entrn * q_all[level, col, tracer]
                                 ) / cmout
 
-                            delq = cmfmc_below * qc_pres
-                            temp = -(cmfmc_all[level, col] * qc_next)
-                            delq += temp
-                            qc[tracer] = qc_next
+                                delq = cmfmc_below * qc_pres
+                                temp = -(cmfmc_all[level, col] * qc_next)
+                                delq += temp
+                                qc[tracer] = qc_next
 
-                            upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
-                            delq += upward
-                            delq -= cmfmc_below * q_all[level, col, tracer]
-                            delq *= tendency_scale
+                                upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                delq += upward
+                                delq -= cmfmc_below * q_all[level, col, tracer]
+                                delq_work[tracer] = delq * tendency_scale
+                        else:
+                            for tracer in range(ntracer):
+                                qc_pres = qc[tracer]
+                                delq = cmfmc_below * qc_pres
+                                temp = -(cmfmc_all[level, col] * qc_pres)
+                                delq += temp
+
+                                upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
+                                delq += upward
+                                delq -= cmfmc_below * q_all[level, col, tracer]
+                                delq_work[tracer] = delq * tendency_scale
+
+                        for tracer in range(ntracer):
                             current = q_all[level, col, tracer]
+                            delq = delq_work[tracer]
                             if current + delq < 0.0:
                                 delq = -current
                             q_all[level, col, tracer] = current + delq
