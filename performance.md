@@ -1043,3 +1043,10 @@ repeated full-grid `q_all[level, col, tracer]` loads from the hottest branch.
 This is a large convection-kernel win at the target large tracer counts.
 A confirmation run of the retained combined variant gave best times of
 `0.037`, `0.126`, and `0.239 s` for 24, 96, and 192 tracers respectively.
+
+One final simplification was tested: keep the scalar hoists and local `current`
+load, but remove `current_work`/`delq_work` and immediately clamp/write inside
+the compute loop. This was rejected. It regressed to `0.048`, `0.169`, and
+`0.329 s` best times for 24, 96, and 192 tracers, suggesting the split
+compute-then-clamp loops are materially better for generated code even though
+the temporary workspace stores appear in Profila.
