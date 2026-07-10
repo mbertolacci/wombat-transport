@@ -738,5 +738,6 @@ def _load_window_forcing(
     time_index = absolute_index % 8
     key = (datetime(timestamp.year, timestamp.month, timestamp.day), time_index)
     if key not in cache:
+        cache.clear()
         cache[key] = load_transport_forcing(met_root, key[0], grid, time_index=time_index)
     return cache[key]

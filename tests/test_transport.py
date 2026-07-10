@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import netCDF4
 import numpy as np
 
@@ -35,6 +37,7 @@ from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
 )
+from wombat_transport.transport.driver import _load_window_forcing
 
 BASE_CONFIG = "base_wombat/run.yml"
 RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
@@ -85,6 +88,29 @@ def test_transport_forcing_accepts_preloaded_grid():
 
     np.testing.assert_array_equal(forcing.lat_deg, grid.lat_deg)
     np.testing.assert_array_equal(forcing.lon_deg, grid.lon_deg)
+
+
+def test_transport_window_forcing_cache_keeps_only_current_met_slice(monkeypatch):
+    calls = []
+
+    def fake_load_transport_forcing(met_root, timestamp, grid, *, time_index=0):
+        forcing = object()
+        calls.append((timestamp, time_index, forcing))
+        return forcing
+
+    monkeypatch.setattr("wombat_transport.transport.driver.load_transport_forcing", fake_load_transport_forcing)
+    cache = {}
+    start = simulation_start(load_run_config(BASE_CONFIG))
+
+    first = _load_window_forcing(cache, "met", start, None, step=0, dt_s=600.0, initial_met_time_index=0)
+    same = _load_window_forcing(cache, "met", start, None, step=17, dt_s=600.0, initial_met_time_index=0)
+    next_met = _load_window_forcing(cache, "met", start, None, step=18, dt_s=600.0, initial_met_time_index=0)
+
+    assert same is first
+    assert next_met is not first
+    assert len(calls) == 2
+    assert len(cache) == 1
+    assert list(cache) == [(datetime(2014, 9, 1), 1)]
 
 
 def test_met_level_mapping_returns_47_level_inputs_unchanged():

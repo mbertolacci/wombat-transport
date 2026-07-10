@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 import subprocess
 import sys
 
@@ -18,6 +18,7 @@ from wombat_transport.run_config import load_run_config
 from wombat_transport.runner import (
     _is_time_for_emissions,
     _load_emissions_operator,
+    _load_simulation_forcing,
     _validate_timestep_schedule,
     has_invalid_emissions,
     run_tracer_simulation,
@@ -91,6 +92,45 @@ def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():
 def test_emissions_timestep_must_be_transport_multiple():
     with pytest.raises(ValueError, match="integer multiple"):
         _validate_timestep_schedule(600.0, 1000.0)
+
+
+def test_simulation_forcing_cache_keeps_only_current_met_slice(monkeypatch):
+    calls = []
+
+    def fake_load_transport_forcing(met_root, timestamp, grid, *, time_index=0):
+        forcing = object()
+        calls.append((timestamp, time_index, forcing))
+        return forcing
+
+    monkeypatch.setattr("wombat_transport.runner.load_transport_forcing", fake_load_transport_forcing)
+    cache = {}
+    start = datetime(2014, 9, 1)
+
+    first = _load_simulation_forcing(cache, "met", start, None, start, transport_dt_s=600.0, initial_met_time_index=0)
+    same = _load_simulation_forcing(
+        cache,
+        "met",
+        start,
+        None,
+        start + timedelta(minutes=10),
+        transport_dt_s=600.0,
+        initial_met_time_index=0,
+    )
+    next_met = _load_simulation_forcing(
+        cache,
+        "met",
+        start,
+        None,
+        start + timedelta(hours=3),
+        transport_dt_s=600.0,
+        initial_met_time_index=0,
+    )
+
+    assert same is first
+    assert next_met is not first
+    assert len(calls) == 2
+    assert len(cache) == 1
+    assert list(cache) == [(datetime(2014, 9, 1), 1)]
 
 
 def test_tracer_simulation_uses_configured_residual_emissions_source():
