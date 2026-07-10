@@ -40,7 +40,7 @@ from wombat_transport.transport import (
 )
 from wombat_transport.transport.driver import _build_convection_input_after_vdiff
 from wombat_transport.transport.driver import _build_vdiff_input_after_tpcore
-from wombat_transport.transport.driver import run_transport_one_step
+from wombat_transport.transport.driver import compute_transport_stage_masses
 from wombat_transport.transport.driver import trace_transport_one_step
 from wombat_transport.transport.forcing import _map_met_edges_to_48
 from wombat_transport.transport.pbl import ZVIR
@@ -1898,7 +1898,13 @@ def compare_transport_chain_oracle_fixture(
         units=tuple("mol mol-1 dry" for _ in tracer_names),
         coords={},
     )
-    result = run_transport_one_step(field, forcing, grid, dt_s=dt_s)
+    trace = trace_transport_one_step(field, forcing, grid, dt_s=dt_s)
+    result = trace.result
+    stage_masses = compute_transport_stage_masses(trace, field, area)
+    initial_scalar_mass = stage_masses[0].initial_scalar_mass
+    tpcore_scalar_mass = stage_masses[0].final_scalar_mass
+    vdiff_scalar_mass = stage_masses[1].final_scalar_mass
+    convection_scalar_mass = stage_masses[2].final_scalar_mass
     with netCDF4.Dataset(paths.output_path) as dataset:
         expected_tracer = np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64)
         expected_tpcore_tracer = np.asarray(dataset.variables["tpcore_tracer_conc_after"][:], dtype=np.float64)
@@ -1915,7 +1921,7 @@ def compare_transport_chain_oracle_fixture(
     common_oracle_tpcore_mass = _tracer_mass_common_basis(expected_tpcore_tracer, final_dry_mass)
     common_oracle_vdiff_mass = _tracer_mass_common_basis(expected_vdiff_tracer, final_dry_mass)
     common_oracle_convection_mass = _tracer_mass_common_basis(expected_tracer, final_dry_mass)
-    common_actual_convection_mass = result.final_scalar_mass
+    common_actual_convection_mass = convection_scalar_mass
     actual_tracer = canonical_time_slice(result.state.data)
     error = np.abs(actual_tracer - expected_tracer)
     return TransportChainComparison(
@@ -1924,7 +1930,7 @@ def compare_transport_chain_oracle_fixture(
         negative_count_expected=negative_count,
         negative_count_actual=int(np.count_nonzero(actual_tracer < 0.0)),
         common_basis_initial_mass_max_abs_error=float(
-            np.max(np.abs(result.initial_scalar_mass - common_oracle_initial_mass))
+            np.max(np.abs(initial_scalar_mass - common_oracle_initial_mass))
         ),
         common_basis_final_mass_max_abs_error=float(
             np.max(np.abs(common_actual_convection_mass - common_oracle_convection_mass))
@@ -1932,13 +1938,13 @@ def compare_transport_chain_oracle_fixture(
         common_basis_mass_change_max_abs_error=float(
             np.max(
                 np.abs(
-                    (common_actual_convection_mass - result.initial_scalar_mass)
+                    (common_actual_convection_mass - initial_scalar_mass)
                     - (common_oracle_convection_mass - common_oracle_initial_mass)
                 )
             )
         ),
         common_basis_python_mass_change_max_abs=float(
-            np.max(np.abs(common_actual_convection_mass - result.initial_scalar_mass))
+            np.max(np.abs(common_actual_convection_mass - initial_scalar_mass))
         ),
         common_basis_oracle_mass_change_max_abs=float(
             np.max(np.abs(common_oracle_convection_mass - common_oracle_initial_mass))
@@ -1952,8 +1958,8 @@ def compare_transport_chain_oracle_fixture(
         common_basis_convection_stage_mass_change_max_abs=float(
             np.max(np.abs(common_oracle_convection_mass - common_oracle_vdiff_mass))
         ),
-        reported_final_mass_max_abs_error=float(np.max(np.abs(result.final_scalar_mass - convection_mass))),
-        reported_python_mass_change_max_abs=float(np.max(np.abs(result.final_scalar_mass - result.initial_scalar_mass))),
+        reported_final_mass_max_abs_error=float(np.max(np.abs(convection_scalar_mass - convection_mass))),
+        reported_python_mass_change_max_abs=float(np.max(np.abs(convection_scalar_mass - initial_scalar_mass))),
         reported_oracle_mass_change_max_abs=float(np.max(np.abs(convection_mass - initial_mass))),
         reported_tpcore_stage_mass_change_max_abs=float(np.max(np.abs(tpcore_mass - initial_mass))),
         reported_vdiff_stage_mass_change_max_abs=float(np.max(np.abs(vdiff_mass - tpcore_mass))),

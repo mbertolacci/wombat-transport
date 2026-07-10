@@ -118,9 +118,6 @@ def main(argv: list[str] | None = None) -> int:
     if result is not None:
         print(f"total_emitted_mass_kg: {result.total_emitted_mass:.8e}")
     if transport_result is not None:
-        scalar_mass_error = None
-        if hasattr(transport_result, "final_scalar_mass") and hasattr(transport_result, "initial_scalar_mass"):
-            scalar_mass_error = transport_result.final_scalar_mass - transport_result.initial_scalar_mass
         transport_steps = getattr(transport_result, "steps", 1)
         if hasattr(transport_result, "transport_steps"):
             transport_steps = transport_result.transport_steps
@@ -133,11 +130,6 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(transport_result, "emissions_steps"):
             print(f"emissions_steps: {transport_result.emissions_steps}")
             print(f"emissions_dt_s: {transport_result.emissions_dt_s:.8e}")
-        for stage in transport_result.stage_masses:
-            stage_error = stage.final_scalar_mass - stage.initial_scalar_mass
-            print(f"{stage.operator}_max_scalar_mass_error: {np.max(np.abs(stage_error)):.8e}")
-        if scalar_mass_error is not None:
-            print(f"max_transport_scalar_mass_error: {np.max(np.abs(scalar_mass_error)):.8e}")
 
     validation = config.validation or config.comparison
     comparison_path = validation.get("species_conc_sample")

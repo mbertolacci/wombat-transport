@@ -22,16 +22,43 @@ def _load_benchmark_module():
 benchmark = _load_benchmark_module()
 
 
-def test_tpcore_numba_defaults_to_all(monkeypatch):
+def test_tpcore_numba_defaults_to_enabled(monkeypatch):
     from wombat_transport.transport import tpcore
 
     monkeypatch.delenv("WOMBAT_TPCORE_NUMBA", raising=False)
 
-    assert tpcore._numba_tpcore_mode() == "all"
+    assert tpcore._numba_tpcore_mode() == "1"
+    assert tpcore._numba_tpcore_enabled()
     assert tpcore._numba_tpcore_x_enabled()
     assert tpcore._numba_tpcore_y_enabled()
     assert tpcore._numba_tpcore_z_enabled()
     assert tpcore._numba_tpcore_prepass_enabled()
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "x", "all"])
+def test_tpcore_numba_truthy_modes_enable_single_numba_path(monkeypatch, value):
+    from wombat_transport.transport import tpcore
+
+    monkeypatch.setenv("WOMBAT_TPCORE_NUMBA", value)
+
+    assert tpcore._numba_tpcore_enabled()
+    assert tpcore._numba_tpcore_x_enabled()
+    assert tpcore._numba_tpcore_y_enabled()
+    assert tpcore._numba_tpcore_z_enabled()
+    assert tpcore._numba_tpcore_prepass_enabled()
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "none"])
+def test_tpcore_numba_falsey_modes_disable_numba(monkeypatch, value):
+    from wombat_transport.transport import tpcore
+
+    monkeypatch.setenv("WOMBAT_TPCORE_NUMBA", value)
+
+    assert not tpcore._numba_tpcore_enabled()
+    assert not tpcore._numba_tpcore_x_enabled()
+    assert not tpcore._numba_tpcore_y_enabled()
+    assert not tpcore._numba_tpcore_z_enabled()
+    assert not tpcore._numba_tpcore_prepass_enabled()
 
 
 def test_tracer_state_bytes_scale_linearly_with_tracer_count():

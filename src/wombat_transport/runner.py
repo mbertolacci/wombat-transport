@@ -24,7 +24,6 @@ from wombat_transport.run_config import (
 )
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
-    TransportStageMass,
     dry_pressure_thickness_hpa,
     load_transport_forcing,
     run_transport_one_step,
@@ -47,7 +46,6 @@ class TracerSimulationResult:
     emissions_steps: int
     transport_dt_s: float
     emissions_dt_s: float
-    stage_masses: tuple[TransportStageMass, ...]
     final_delp_dry_hpa: np.ndarray | None
 
     @property
@@ -85,7 +83,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     forcing_cache = {}
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
     emissions_processed: list[EmissionsStep] = []
-    stage_masses: list[TransportStageMass] = []
     final_delp_dry_hpa = None
     transport_steps = 0
     emissions_steps = 0
@@ -126,7 +123,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         logger.debug("running_transport step=%d", transport_steps + 1)
         transport_result = run_transport_one_step(state, forcing, grid, dt_s=transport_dt_s)
         state = transport_result.state
-        stage_masses.extend(transport_result.stage_masses)
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         transport_steps += 1
         logger.debug("completed_transport step=%d", transport_steps)
@@ -161,7 +157,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         emissions_steps=emissions_steps,
         transport_dt_s=transport_dt_s,
         emissions_dt_s=emissions_dt_s,
-        stage_masses=tuple(stage_masses),
         final_delp_dry_hpa=final_delp_dry_hpa,
     )
 

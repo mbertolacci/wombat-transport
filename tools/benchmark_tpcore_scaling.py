@@ -131,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
                 inputs,
                 tracer_count=tracer_count,
                 repeat=args.repeat,
+                warmup=args.warmup,
                 state_bytes=state_bytes,
                 peak_bytes=peak_bytes,
                 memory_limit=memory_limit,
@@ -157,6 +158,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--counts", type=_positive_int, nargs="+", default=list(DEFAULT_COUNTS))
     parser.add_argument("--repeat", type=_positive_int, default=1)
+    parser.add_argument(
+        "--warmup",
+        type=_nonnegative_int,
+        default=1,
+        help="Untimed runs per tracer count before measurement. Defaults to 1 to exclude Numba compilation.",
+    )
     parser.add_argument("--dt-s", type=float, default=DEFAULT_DT_S)
     parser.add_argument(
         "--max-memory-gb",
@@ -176,6 +183,13 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
     return parsed
 
 
@@ -240,10 +254,27 @@ def _benchmark_inputs(
     *,
     tracer_count: int,
     repeat: int,
+    warmup: int,
     state_bytes: int,
     peak_bytes: int,
     memory_limit: int | None,
 ) -> BenchmarkRow:
+    for _ in range(warmup):
+        state = run_tpcore_one_step(
+            tracer_conc=inputs.tracer_conc,
+            p1_hpa=inputs.p1_hpa,
+            p2_hpa=inputs.p2_hpa,
+            u_m_s=inputs.u_m_s,
+            v_m_s=inputs.v_m_s,
+            area_m2=inputs.area_m2,
+            hyai_hpa=inputs.hyai_hpa,
+            hybi=inputs.hybi,
+            lat_deg=inputs.lat_deg,
+            dt_s=inputs.dt_s,
+        )
+        del state
+        gc.collect()
+
     elapsed_values: list[float] = []
     checksum = 0.0
     for _ in range(repeat):
