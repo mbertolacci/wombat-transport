@@ -649,17 +649,28 @@ def _write_restart_met_field(
     if field == "Met_PS1WET":
         variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
-        variable[:] = snapshot.forcing.surface_pressure_pa / 100.0
+        surface_pressure = getattr(
+            snapshot.forcing,
+            "restart_surface_pressure_pa",
+            snapshot.forcing.surface_pressure_pa,
+        )
+        variable[:] = surface_pressure / 100.0
         return
     if field == "Met_SPHU1":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "kg kg-1"
-        variable[:] = snapshot.forcing.specific_humidity_kg_kg[:, ::-1, :, :]
+        specific_humidity = getattr(
+            snapshot.forcing,
+            "restart_specific_humidity_kg_kg",
+            snapshot.forcing.specific_humidity_kg_kg,
+        )
+        variable[:] = specific_humidity[:, ::-1, :, :]
         return
     if field == "Met_TMPU1":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "K"
-        variable[:] = snapshot.forcing.temperature_k[:, ::-1, :, :]
+        temperature = getattr(snapshot.forcing, "restart_temperature_k", snapshot.forcing.temperature_k)
+        variable[:] = temperature[:, ::-1, :, :]
         return
     raise ValueError(f"unsupported restart met field {field}")
 

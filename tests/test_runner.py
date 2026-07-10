@@ -109,12 +109,15 @@ def test_run_config_logging_level_defaults_and_validates():
 def test_simulation_forcing_cache_keeps_only_current_met_slice(monkeypatch):
     calls = []
 
-    def fake_load_transport_forcing(met_root, timestamp, grid, *, time_index=0):
+    def fake_load_transport_forcing(met_root, start, current, grid, *, dt_s, initial_met_time_index=0, cache=None):
         forcing = object()
-        calls.append((timestamp, time_index, forcing))
+        calls.append((start, current, dt_s, initial_met_time_index, forcing))
+        if cache is not None:
+            for index in range(10):
+                cache[("raw", current, index)] = forcing
         return forcing
 
-    monkeypatch.setattr("wombat_transport.runner.load_transport_forcing", fake_load_transport_forcing)
+    monkeypatch.setattr("wombat_transport.runner.load_transport_forcing_for_step", fake_load_transport_forcing)
     cache = {}
     start = datetime(2014, 9, 1)
 
@@ -138,11 +141,15 @@ def test_simulation_forcing_cache_keeps_only_current_met_slice(monkeypatch):
         initial_met_time_index=0,
     )
 
-    assert same is first
-    assert next_met is not first
-    assert len(calls) == 2
-    assert len(cache) == 1
-    assert list(cache) == [(datetime(2014, 9, 1), 1)]
+    assert first is calls[0][4]
+    assert same is calls[1][4]
+    assert next_met is calls[2][4]
+    assert [call[1] for call in calls] == [
+        start,
+        start + timedelta(minutes=10),
+        start + timedelta(hours=3),
+    ]
+    assert len(cache) == 8
 
 
 def test_tracer_simulation_uses_configured_residual_emissions_source():

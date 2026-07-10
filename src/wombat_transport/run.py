@@ -22,7 +22,7 @@ from wombat_transport.runner import run_tracer_simulation
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
     dry_pressure_edges_from_thickness_hpa,
-    load_transport_forcing,
+    load_transport_forcing_for_step,
     run_transport_one_step,
     run_transport_window,
 )
@@ -66,11 +66,13 @@ def main(argv: list[str] | None = None) -> int:
             config.species_database,
             template_path=config.grid_template,
         )
-        forcing = load_transport_forcing(
+        forcing = load_transport_forcing_for_step(
             meteorology_root(config),
             simulation_start(config),
+            simulation_start(config),
             grid,
-            time_index=meteorology_initial_time_index(config),
+            dt_s=transport_timestep_s(config),
+            initial_met_time_index=meteorology_initial_time_index(config),
         )
         transport_result = run_transport_one_step(
             state,

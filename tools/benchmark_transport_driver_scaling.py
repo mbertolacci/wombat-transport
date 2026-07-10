@@ -255,13 +255,20 @@ def _build_synthetic_driver_inputs(run_config_path: Path, ntracer: int, *, dt_s:
         units=tuple("mol mol-1 dry" for _ in range(ntracer)),
         coords={"lev": grid.lev[::-1], "lat": lat, "lon": lon},
     )
+    surface_pressure_pa = surface_pressure_hpa[np.newaxis, ...] * 100.0
+    specific_humidity = qv[np.newaxis, ...]
+    temperature = temperature[np.newaxis, ...]
     forcing = TransportForcing(
         u_m_s=u[np.newaxis, ...],
         v_m_s=v[np.newaxis, ...],
         omega_pa_s=np.zeros((1, nlev, nlat, nlon), dtype=np.float64),
-        surface_pressure_pa=surface_pressure_hpa[np.newaxis, ...] * 100.0,
-        specific_humidity_kg_kg=qv[np.newaxis, ...],
-        temperature_k=temperature[np.newaxis, ...],
+        surface_pressure_start_pa=surface_pressure_pa,
+        surface_pressure_pa=surface_pressure_pa,
+        restart_surface_pressure_pa=surface_pressure_pa,
+        specific_humidity_kg_kg=specific_humidity,
+        restart_specific_humidity_kg_kg=specific_humidity,
+        temperature_k=temperature,
+        restart_temperature_k=temperature,
         pbl_height_m=np.full((1, nlat, nlon), 950.0, dtype=np.float64),
         sensible_heat_flux_w_m2=np.full((1, nlat, nlon), 65.0, dtype=np.float64),
         latent_heat_flux_w_m2=np.full((1, nlat, nlon), 90.0, dtype=np.float64),

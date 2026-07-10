@@ -13,7 +13,12 @@ from wombat_transport.fields import (
 )
 from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
-from wombat_transport.transport.forcing import TransportForcing, load_transport_forcing
+from wombat_transport.transport.forcing import (
+    ForcingRecordCache,
+    TransportForcing,
+    load_transport_forcing_for_step,
+    prune_forcing_record_cache,
+)
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import RD_J_PER_KG_K, ZVIR, G0_M_PER_S2, VdiffDrResult, run_vdiffdr_one_step
 from wombat_transport.transport.pressure import (
@@ -124,7 +129,7 @@ def run_transport_one_step(
 
     surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
     delp = dry_pressure_thickness_hpa(
-        forcing.surface_pressure_pa,
+        forcing.surface_pressure_start_pa,
         grid.hyai_hpa,
         grid.hybi,
     )
@@ -156,7 +161,7 @@ def trace_transport_one_step(
 
     surface_pressure_hpa = forcing.surface_pressure_pa[0] / 100.0
     delp = dry_pressure_thickness_hpa(
-        forcing.surface_pressure_pa,
+        forcing.surface_pressure_start_pa,
         grid.hyai_hpa,
         grid.hybi,
     )
@@ -231,7 +236,7 @@ def run_transport_window(
     dry_mass_sum = None
     state_sum = None
     delp_sum = None
-    forcing_cache: dict[tuple[datetime, int], TransportForcing] = {}
+    forcing_cache: ForcingRecordCache = {}
     first_forcing = _load_window_forcing(
         forcing_cache,
         met_root,
@@ -243,7 +248,7 @@ def run_transport_window(
     )
     dry_air_mass = dry_air_mass_from_pressure(
         dry_pressure_thickness_hpa(
-            first_forcing.surface_pressure_pa,
+            first_forcing.surface_pressure_start_pa,
             grid.hyai_hpa,
             grid.hybi,
         ),
@@ -763,7 +768,7 @@ def _format_tpcore_branch_preflight_error(report) -> str:
     )
 
 def _load_window_forcing(
-    cache: dict[tuple[datetime, int], TransportForcing],
+    cache: ForcingRecordCache,
     met_root: str | Path,
     start: datetime,
     grid: TransportGrid,
@@ -772,12 +777,15 @@ def _load_window_forcing(
     dt_s: float,
     initial_met_time_index: int,
 ) -> TransportForcing:
-    met_step = int((step * float(dt_s)) // (3.0 * 60.0 * 60.0))
-    absolute_index = int(initial_met_time_index) + met_step
-    timestamp = start + timedelta(days=absolute_index // 8)
-    time_index = absolute_index % 8
-    key = (datetime(timestamp.year, timestamp.month, timestamp.day), time_index)
-    if key not in cache:
-        cache.clear()
-        cache[key] = load_transport_forcing(met_root, key[0], grid, time_index=time_index)
-    return cache[key]
+    current = start + timedelta(seconds=int(step) * float(dt_s))
+    forcing = load_transport_forcing_for_step(
+        met_root,
+        start,
+        current,
+        grid,
+        dt_s=dt_s,
+        initial_met_time_index=initial_met_time_index,
+        cache=cache,
+    )
+    prune_forcing_record_cache(cache)
+    return forcing

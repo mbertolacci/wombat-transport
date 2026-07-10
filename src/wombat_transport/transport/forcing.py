@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import netCDF4
 import numpy as np
@@ -115,9 +116,13 @@ class TransportForcing:
     u_m_s: np.ndarray
     v_m_s: np.ndarray
     omega_pa_s: np.ndarray
+    surface_pressure_start_pa: np.ndarray
     surface_pressure_pa: np.ndarray
+    restart_surface_pressure_pa: np.ndarray
     specific_humidity_kg_kg: np.ndarray
+    restart_specific_humidity_kg_kg: np.ndarray
     temperature_k: np.ndarray
+    restart_temperature_k: np.ndarray
     pbl_height_m: np.ndarray
     sensible_heat_flux_w_m2: np.ndarray
     latent_heat_flux_w_m2: np.ndarray
@@ -138,6 +143,44 @@ class TransportForcing:
     a3mste_path: Path
     i3_path: Path
 
+
+@dataclass(frozen=True)
+class _A1Fields:
+    pblh: np.ndarray
+    hflux: np.ndarray
+    eflux: np.ndarray
+    ustar: np.ndarray
+    precccon: np.ndarray
+    path: Path
+
+
+@dataclass(frozen=True)
+class _A3Fields:
+    u: np.ndarray
+    v: np.ndarray
+    omega: np.ndarray
+    dtrain: np.ndarray
+    dqrcu: np.ndarray
+    reevapcn: np.ndarray
+    cmfmc: np.ndarray
+    pficu: np.ndarray
+    pflcu: np.ndarray
+    a3dyn_path: Path
+    a3mstc_path: Path
+    a3mste_path: Path
+
+
+@dataclass(frozen=True)
+class _I3Fields:
+    surface_pressure: np.ndarray
+    qv: np.ndarray
+    temperature: np.ndarray
+    path: Path
+
+
+ForcingRecordCache = dict[tuple[str, datetime, int], Any]
+
+
 def load_transport_forcing(
     met_root: str | Path,
     timestamp: datetime,
@@ -148,70 +191,248 @@ def load_transport_forcing(
     """Load MERRA2 forcing for one day and map 72 met levels to 47 levels."""
 
     met_root = Path(met_root)
-    day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
-    date = timestamp.strftime("%Y%m%d")
-    a1_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A1")
-    a3dyn_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3dyn")
-    a3mstc_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstC")
-    a3mste_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstE")
-    i3_path = day_dir / MERRA2_FILENAME.format(date=date, collection="I3")
-    a1_convection_time_index = int(time_index) * 3
+    timestamp = datetime(timestamp.year, timestamp.month, timestamp.day)
+    a1 = _load_a1_fields(met_root, timestamp, grid, int(time_index) * 3, None)
+    a3 = _load_a3_fields(met_root, timestamp, grid, int(time_index), None)
+    i3 = _load_i3_fields(met_root, timestamp, grid, int(time_index), None)
+    return _assemble_transport_forcing(
+        a1,
+        a3,
+        surface_pressure_start=i3.surface_pressure,
+        surface_pressure_end=i3.surface_pressure,
+        restart_surface_pressure=i3.surface_pressure,
+        specific_humidity=i3.qv,
+        restart_specific_humidity=i3.qv,
+        temperature=i3.temperature,
+        restart_temperature=i3.temperature,
+        i3_path=i3.path,
+        grid=grid,
+        vertical_mapping=MERRA2_72_TO_47_MAPPING,
+    )
 
+
+def load_transport_forcing_for_step(
+    met_root: str | Path,
+    start: datetime,
+    current: datetime,
+    grid: TransportGrid,
+    *,
+    dt_s: float,
+    initial_met_time_index: int = 0,
+    cache: ForcingRecordCache | None = None,
+) -> TransportForcing:
+    """Load GEOS-Chem-timed forcing for one transport step.
+
+    A1 records are hourly averages, A3 records are held for 3 hours, and I3
+    endpoint fields are interpolated to the dynamic timestep.
+    """
+
+    if dt_s <= 0:
+        raise ValueError("dt_s must be positive")
+    elapsed_s = (current - start).total_seconds()
+    if elapsed_s < 0:
+        raise ValueError("current must be at or after start")
+
+    met_root = Path(met_root)
+    start_day = datetime(start.year, start.month, start.day)
+    hour_index = int(initial_met_time_index) * 3 + int(elapsed_s // 3600.0)
+    i3_start_index = int(initial_met_time_index) + int(elapsed_s // 10800.0)
+    i3_end_index = i3_start_index + 1
+    seconds_into_i3_window = elapsed_s % 10800.0
+
+    a1_day, a1_index = _record_day_and_index(start_day, hour_index, 24)
+    a3_day, a3_index = _record_day_and_index(start_day, i3_start_index, 8)
+    i3_start_day, i3_start_time_index = _record_day_and_index(start_day, i3_start_index, 8)
+    i3_end_day, i3_end_time_index = _record_day_and_index(start_day, i3_end_index, 8)
+    restart_day, restart_time_index = _record_day_and_index(
+        start_day,
+        int(initial_met_time_index) + int((elapsed_s + dt_s) // 10800.0),
+        8,
+    )
+
+    a1 = _load_a1_fields(met_root, a1_day, grid, a1_index, cache)
+    a3 = _load_a3_fields(met_root, a3_day, grid, a3_index, cache)
+    i3_start = _load_i3_fields(met_root, i3_start_day, grid, i3_start_time_index, cache)
+    i3_end = _load_i3_fields(met_root, i3_end_day, grid, i3_end_time_index, cache)
+    i3_restart = _load_i3_fields(met_root, restart_day, grid, restart_time_index, cache)
+
+    start_fraction = seconds_into_i3_window / 10800.0
+    end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
+    midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
+    return _assemble_transport_forcing(
+        a1,
+        a3,
+        surface_pressure_start=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, start_fraction),
+        surface_pressure_end=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, end_fraction),
+        restart_surface_pressure=i3_restart.surface_pressure,
+        specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
+        restart_specific_humidity=i3_restart.qv,
+        temperature=_interpolate(i3_start.temperature, i3_end.temperature, midpoint_fraction),
+        restart_temperature=i3_restart.temperature,
+        i3_path=i3_start.path,
+        grid=grid,
+        vertical_mapping=MERRA2_72_TO_47_MAPPING,
+    )
+
+
+def prune_forcing_record_cache(cache: ForcingRecordCache, *, keep: int = 8) -> None:
+    """Bound raw forcing record cache size without assuming collection cadence."""
+
+    while len(cache) > keep:
+        oldest = next(iter(cache))
+        del cache[oldest]
+
+
+def _assemble_transport_forcing(
+    a1: _A1Fields,
+    a3: _A3Fields,
+    *,
+    surface_pressure_start: np.ndarray,
+    surface_pressure_end: np.ndarray,
+    restart_surface_pressure: np.ndarray,
+    specific_humidity: np.ndarray,
+    restart_specific_humidity: np.ndarray,
+    temperature: np.ndarray,
+    restart_temperature: np.ndarray,
+    i3_path: Path,
+    grid: TransportGrid,
+    vertical_mapping: str,
+) -> TransportForcing:
+
+    return TransportForcing(
+        u_m_s=a3.u,
+        v_m_s=a3.v,
+        omega_pa_s=a3.omega,
+        surface_pressure_start_pa=surface_pressure_start,
+        surface_pressure_pa=surface_pressure_end,
+        restart_surface_pressure_pa=restart_surface_pressure,
+        specific_humidity_kg_kg=specific_humidity,
+        restart_specific_humidity_kg_kg=restart_specific_humidity,
+        temperature_k=temperature,
+        restart_temperature_k=restart_temperature,
+        pbl_height_m=a1.pblh,
+        sensible_heat_flux_w_m2=a1.hflux,
+        latent_heat_flux_w_m2=a1.eflux,
+        friction_velocity_m_s=a1.ustar,
+        convective_mass_flux_kg_m2_s=a3.cmfmc[np.newaxis, 1:, :, :],
+        convective_detrainment_kg_m2_s=a3.dtrain,
+        convective_precip_prod_kg_kg_s=a3.dqrcu,
+        convective_precip_reevap_kg_kg_s=a3.reevapcn,
+        convective_ice_flux_kg_m2_s=a3.pficu[np.newaxis, 1:, :, :],
+        convective_liquid_flux_kg_m2_s=a3.pflcu[np.newaxis, 1:, :, :],
+        convective_precip_mm_day=a1.precccon * 86400.0,
+        lat_deg=grid.lat_deg,
+        lon_deg=grid.lon_deg,
+        vertical_mapping=vertical_mapping,
+        a1_path=a1.path.resolve(),
+        a3dyn_path=a3.a3dyn_path.resolve(),
+        a3mstc_path=a3.a3mstc_path.resolve(),
+        a3mste_path=a3.a3mste_path.resolve(),
+        i3_path=i3_path.resolve(),
+    )
+
+
+def _record_day_and_index(start_day: datetime, absolute_index: int, records_per_day: int) -> tuple[datetime, int]:
+    if absolute_index < 0:
+        raise ValueError(f"met record index must be nonnegative, got {absolute_index}")
+    return start_day + timedelta(days=absolute_index // records_per_day), absolute_index % records_per_day
+
+
+def _met_path(met_root: Path, timestamp: datetime, collection: str) -> Path:
+    day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
+    return day_dir / MERRA2_FILENAME.format(date=timestamp.strftime("%Y%m%d"), collection=collection)
+
+
+def _load_a1_fields(
+    met_root: Path,
+    timestamp: datetime,
+    grid: TransportGrid,
+    time_index: int,
+    cache: ForcingRecordCache | None,
+) -> _A1Fields:
+    key = ("A1", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
+    if cache is not None and key in cache:
+        return cache[key]
+    a1_path = _met_path(met_root, timestamp, "A1")
+    with netCDF4.Dataset(a1_path) as a1:
+        fields = _A1Fields(
+            pblh=_read_2d_time_slice(a1, "PBLH", time_index),
+            hflux=_read_2d_time_slice(a1, "HFLUX", time_index),
+            eflux=_read_2d_time_slice(a1, "EFLUX", time_index),
+            ustar=_read_2d_time_slice(a1, "USTAR", time_index),
+            precccon=np.asarray(a1.variables["PRECCON"][time_index : time_index + 1], dtype=np.float64),
+            path=a1_path,
+        )
+    if cache is not None:
+        cache[key] = fields
+    return fields
+
+
+def _load_a3_fields(
+    met_root: Path,
+    timestamp: datetime,
+    grid: TransportGrid,
+    time_index: int,
+    cache: ForcingRecordCache | None,
+) -> _A3Fields:
+    key = ("A3", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
+    if cache is not None and key in cache:
+        return cache[key]
+    a3dyn_path = _met_path(met_root, timestamp, "A3dyn")
+    a3mstc_path = _met_path(met_root, timestamp, "A3mstC")
+    a3mste_path = _met_path(met_root, timestamp, "A3mstE")
     with (
-        netCDF4.Dataset(a1_path) as a1,
         netCDF4.Dataset(a3dyn_path) as a3dyn,
         netCDF4.Dataset(a3mstc_path) as a3mstc,
         netCDF4.Dataset(a3mste_path) as a3mste,
-        netCDF4.Dataset(i3_path) as i3,
     ):
-        u = _read_3d_time_slice(a3dyn, "U", time_index)
-        v = _read_3d_time_slice(a3dyn, "V", time_index)
-        omega = _read_3d_time_slice(a3dyn, "OMEGA", time_index)
-        qv = _read_3d_time_slice(i3, "QV", time_index)
-        temperature = _read_3d_time_slice(i3, "T", time_index)
-        surface_pressure = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
-        pblh = _read_2d_time_slice(a1, "PBLH", time_index)
-        hflux = _read_2d_time_slice(a1, "HFLUX", time_index)
-        eflux = _read_2d_time_slice(a1, "EFLUX", time_index)
-        ustar = _read_2d_time_slice(a1, "USTAR", time_index)
-        dtrain = _read_3d_time_slice(a3dyn, "DTRAIN", time_index)
-        dqrcu = _read_3d_time_slice(a3mstc, "DQRCU", time_index)
-        reevapcn = _read_3d_time_slice(a3mstc, "REEVAPCN", time_index)
-        cmfmc = _map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][time_index], dtype=np.float64))
-        pficu = _map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][time_index], dtype=np.float64))
-        pflcu = _map_met_edges_to_48(np.asarray(a3mste.variables["PFLCU"][time_index], dtype=np.float64))
-        precccon = np.asarray(
-            a1.variables["PRECCON"][a1_convection_time_index : a1_convection_time_index + 1],
-            dtype=np.float64,
+        fields = _A3Fields(
+            u=_map_met_levels_to_47(_read_3d_time_slice(a3dyn, "U", time_index)),
+            v=_map_met_levels_to_47(_read_3d_time_slice(a3dyn, "V", time_index)),
+            omega=_map_met_levels_to_47(_read_3d_time_slice(a3dyn, "OMEGA", time_index)),
+            dtrain=_map_met_levels_to_47(_read_3d_time_slice(a3dyn, "DTRAIN", time_index)),
+            dqrcu=_map_met_levels_to_47(_read_3d_time_slice(a3mstc, "DQRCU", time_index)),
+            reevapcn=_map_met_levels_to_47(_read_3d_time_slice(a3mstc, "REEVAPCN", time_index)),
+            cmfmc=_map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][time_index], dtype=np.float64)),
+            pficu=_map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][time_index], dtype=np.float64)),
+            pflcu=_map_met_edges_to_48(np.asarray(a3mste.variables["PFLCU"][time_index], dtype=np.float64)),
+            a3dyn_path=a3dyn_path,
+            a3mstc_path=a3mstc_path,
+            a3mste_path=a3mste_path,
         )
+    if cache is not None:
+        cache[key] = fields
+    return fields
 
-    return TransportForcing(
-        u_m_s=_map_met_levels_to_47(u),
-        v_m_s=_map_met_levels_to_47(v),
-        omega_pa_s=_map_met_levels_to_47(omega),
-        surface_pressure_pa=surface_pressure,
-        specific_humidity_kg_kg=_map_met_levels_to_47(qv),
-        temperature_k=_map_met_levels_to_47(temperature),
-        pbl_height_m=pblh,
-        sensible_heat_flux_w_m2=hflux,
-        latent_heat_flux_w_m2=eflux,
-        friction_velocity_m_s=ustar,
-        convective_mass_flux_kg_m2_s=cmfmc[np.newaxis, 1:, :, :],
-        convective_detrainment_kg_m2_s=_map_met_levels_to_47(dtrain),
-        convective_precip_prod_kg_kg_s=_map_met_levels_to_47(dqrcu),
-        convective_precip_reevap_kg_kg_s=_map_met_levels_to_47(reevapcn),
-        convective_ice_flux_kg_m2_s=pficu[np.newaxis, 1:, :, :],
-        convective_liquid_flux_kg_m2_s=pflcu[np.newaxis, 1:, :, :],
-        convective_precip_mm_day=precccon * 86400.0,
-        lat_deg=grid.lat_deg,
-        lon_deg=grid.lon_deg,
-        vertical_mapping=MERRA2_72_TO_47_MAPPING,
-        a1_path=a1_path.resolve(),
-        a3dyn_path=a3dyn_path.resolve(),
-        a3mstc_path=a3mstc_path.resolve(),
-        a3mste_path=a3mste_path.resolve(),
-        i3_path=i3_path.resolve(),
-    )
+
+def _load_i3_fields(
+    met_root: Path,
+    timestamp: datetime,
+    grid: TransportGrid,
+    time_index: int,
+    cache: ForcingRecordCache | None,
+) -> _I3Fields:
+    key = ("I3", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
+    if cache is not None and key in cache:
+        return cache[key]
+    i3_path = _met_path(met_root, timestamp, "I3")
+    with netCDF4.Dataset(i3_path) as i3:
+        fields = _I3Fields(
+            surface_pressure=np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64),
+            qv=_map_met_levels_to_47(_read_3d_time_slice(i3, "QV", time_index)),
+            temperature=_map_met_levels_to_47(_read_3d_time_slice(i3, "T", time_index)),
+            path=i3_path,
+        )
+    if cache is not None:
+        cache[key] = fields
+    return fields
+
+
+def _interpolate(start: np.ndarray, end: np.ndarray, fraction: float) -> np.ndarray:
+    start_array = np.asarray(start, dtype=np.float64)
+    end_array = np.asarray(end, dtype=np.float64)
+    return start_array + (end_array - start_array) * float(fraction)
+
 
 def _read_3d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index: int) -> np.ndarray:
     return np.asarray(dataset.variables[variable_name][time_index : time_index + 1], dtype=np.float64)

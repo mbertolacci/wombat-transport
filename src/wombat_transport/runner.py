@@ -24,7 +24,8 @@ from wombat_transport.run_config import (
 )
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
-    load_transport_forcing,
+    load_transport_forcing_for_step,
+    prune_forcing_record_cache,
     run_transport_one_step,
 )
 
@@ -207,7 +208,7 @@ def _is_time_for_emissions(elapsed_s: int, transport_dt_s: float, emissions_dt_s
 
 
 def _load_simulation_forcing(
-    cache: dict[tuple[datetime, int], object],
+    cache: dict[tuple[object, ...], object],
     met_root: Path,
     start: datetime,
     grid,
@@ -216,17 +217,16 @@ def _load_simulation_forcing(
     transport_dt_s: float,
     initial_met_time_index: int,
 ):
-    elapsed_s = (current - start).total_seconds()
-    step = int(elapsed_s // float(transport_dt_s))
-    met_step = int((step * float(transport_dt_s)) // (3.0 * 60.0 * 60.0))
-    absolute_index = int(initial_met_time_index) + met_step
-    timestamp = start + timedelta(days=absolute_index // 8)
-    time_index = absolute_index % 8
-    key = (datetime(timestamp.year, timestamp.month, timestamp.day), time_index)
-    if key not in cache:
-        logger.debug("forcing_cache_miss date=%s time_index=%d", key[0].date().isoformat(), time_index)
-        cache.clear()
-        cache[key] = load_transport_forcing(met_root, key[0], grid, time_index=time_index)
-    else:
-        logger.debug("forcing_cache_hit date=%s time_index=%d", key[0].date().isoformat(), time_index)
-    return cache[key]
+    before = len(cache)
+    forcing = load_transport_forcing_for_step(
+        met_root,
+        start,
+        current,
+        grid,
+        dt_s=transport_dt_s,
+        initial_met_time_index=initial_met_time_index,
+        cache=cache,
+    )
+    prune_forcing_record_cache(cache)
+    logger.debug("forcing_cache_records before=%d after=%d", before, len(cache))
+    return forcing

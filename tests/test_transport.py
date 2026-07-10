@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import netCDF4
 import numpy as np
@@ -33,6 +36,7 @@ from wombat_transport.transport import (
     run_transport_window,
     trace_transport_one_step,
     _map_met_levels_to_47,
+    load_transport_forcing_for_step,
 )
 import wombat_transport.transport.pbl as pbl_module
 from wombat_transport.transport.pbl import (
@@ -56,6 +60,8 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert forcing.specific_humidity_kg_kg.shape == expected_shape
     assert forcing.temperature_k.shape == expected_shape
     assert forcing.surface_pressure_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.surface_pressure_start_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.restart_surface_pressure_pa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.pbl_height_m.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.sensible_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.latent_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
@@ -65,6 +71,79 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert forcing.a3dyn_path.exists()
     assert forcing.i3_path.exists()
     assert np.all(np.isfinite(forcing.u_m_s))
+
+
+def test_transport_forcing_for_step_uses_geos_chem_cadences(monkeypatch):
+    calls = []
+    grid = SimpleNamespace(lat_deg=np.array([0.0]), lon_deg=np.array([0.0]))
+
+    def fake_a1(met_root, timestamp, grid, time_index, cache):
+        calls.append(("A1", timestamp, time_index))
+        return _fake_a1_fields(time_index)
+
+    def fake_a3(met_root, timestamp, grid, time_index, cache):
+        calls.append(("A3", timestamp, time_index))
+        return _fake_a3_fields(time_index)
+
+    def fake_i3(met_root, timestamp, grid, time_index, cache):
+        calls.append(("I3", timestamp, time_index))
+        return _fake_i3_fields(time_index)
+
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_fields", fake_a1)
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_fields", fake_a3)
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_i3_fields", fake_i3)
+
+    start = datetime(2014, 9, 1)
+    load_transport_forcing_for_step(
+        "met",
+        start,
+        start + timedelta(hours=3),
+        grid,  # type: ignore[arg-type]
+        dt_s=600.0,
+        cache={},
+    )
+    load_transport_forcing_for_step(
+        "met",
+        start,
+        start + timedelta(hours=23, minutes=50),
+        grid,  # type: ignore[arg-type]
+        dt_s=600.0,
+        cache={},
+    )
+
+    assert ("A1", datetime(2014, 9, 1), 3) in calls
+    assert ("A3", datetime(2014, 9, 1), 1) in calls
+    assert ("I3", datetime(2014, 9, 1), 1) in calls
+    assert ("A1", datetime(2014, 9, 1), 23) in calls
+    assert ("A3", datetime(2014, 9, 1), 7) in calls
+    assert ("I3", datetime(2014, 9, 2), 0) in calls
+
+
+def test_transport_forcing_for_step_interpolates_i3_like_geos_chem(monkeypatch):
+    grid = SimpleNamespace(lat_deg=np.array([0.0]), lon_deg=np.array([0.0]))
+
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_fields", lambda *args: _fake_a1_fields(0.0))
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_fields", lambda *args: _fake_a3_fields(0.0))
+    monkeypatch.setattr(
+        "wombat_transport.transport.forcing._load_i3_fields",
+        lambda met_root, timestamp, grid, time_index, cache: _fake_i3_fields(float(time_index)),
+    )
+
+    start = datetime(2014, 9, 1)
+    forcing = load_transport_forcing_for_step(
+        "met",
+        start,
+        start + timedelta(hours=1),
+        grid,  # type: ignore[arg-type]
+        dt_s=600.0,
+        cache={},
+    )
+
+    np.testing.assert_allclose(forcing.surface_pressure_start_pa, 1.0 / 3.0)
+    np.testing.assert_allclose(forcing.surface_pressure_pa, 4200.0 / 10800.0)
+    np.testing.assert_allclose(forcing.specific_humidity_kg_kg, 3900.0 / 10800.0)
+    np.testing.assert_allclose(forcing.temperature_k, 3900.0 / 10800.0)
+    np.testing.assert_allclose(forcing.restart_surface_pressure_pa, 0.0)
 
 
 def test_load_transport_grid_reads_template_metadata():
@@ -95,12 +174,14 @@ def test_transport_forcing_accepts_preloaded_grid():
 def test_transport_window_forcing_cache_keeps_only_current_met_slice(monkeypatch):
     calls = []
 
-    def fake_load_transport_forcing(met_root, timestamp, grid, *, time_index=0):
+    def fake_load_transport_forcing(met_root, start, current, grid, *, dt_s, initial_met_time_index=0, cache=None):
         forcing = object()
-        calls.append((timestamp, time_index, forcing))
+        calls.append((start, current, dt_s, initial_met_time_index, forcing))
+        if cache is not None:
+            cache[("raw", current, len(cache))] = forcing
         return forcing
 
-    monkeypatch.setattr("wombat_transport.transport.driver.load_transport_forcing", fake_load_transport_forcing)
+    monkeypatch.setattr("wombat_transport.transport.driver.load_transport_forcing_for_step", fake_load_transport_forcing)
     cache = {}
     start = simulation_start(load_run_config(BASE_CONFIG))
 
@@ -108,11 +189,52 @@ def test_transport_window_forcing_cache_keeps_only_current_met_slice(monkeypatch
     same = _load_window_forcing(cache, "met", start, None, step=17, dt_s=600.0, initial_met_time_index=0)
     next_met = _load_window_forcing(cache, "met", start, None, step=18, dt_s=600.0, initial_met_time_index=0)
 
-    assert same is first
-    assert next_met is not first
-    assert len(calls) == 2
-    assert len(cache) == 1
-    assert list(cache) == [(datetime(2014, 9, 1), 1)]
+    assert first is calls[0][4]
+    assert same is calls[1][4]
+    assert next_met is calls[2][4]
+    assert [call[1] for call in calls] == [
+        start,
+        start + timedelta(minutes=170),
+        start + timedelta(hours=3),
+    ]
+    assert len(cache) <= 8
+
+
+def _fake_a1_fields(value: float):
+    data2 = np.full((1, 1, 1), float(value), dtype=np.float64)
+    return SimpleNamespace(
+        pblh=data2,
+        hflux=data2,
+        eflux=data2,
+        ustar=data2,
+        precccon=data2,
+        path=Path("A1.nc4"),
+    )
+
+
+def _fake_a3_fields(value: float):
+    data3 = np.full((1, 1, 1, 1), float(value), dtype=np.float64)
+    edge = np.full((2, 1, 1), float(value), dtype=np.float64)
+    return SimpleNamespace(
+        u=data3,
+        v=data3,
+        omega=data3,
+        dtrain=data3,
+        dqrcu=data3,
+        reevapcn=data3,
+        cmfmc=edge,
+        pficu=edge,
+        pflcu=edge,
+        a3dyn_path=Path("A3dyn.nc4"),
+        a3mstc_path=Path("A3mstC.nc4"),
+        a3mste_path=Path("A3mstE.nc4"),
+    )
+
+
+def _fake_i3_fields(value: float):
+    data2 = np.full((1, 1, 1), float(value), dtype=np.float64)
+    data3 = np.full((1, 1, 1, 1), float(value), dtype=np.float64)
+    return SimpleNamespace(surface_pressure=data2, qv=data3, temperature=data3, path=Path("I3.nc4"))
 
 
 def test_met_level_mapping_returns_47_level_inputs_unchanged():

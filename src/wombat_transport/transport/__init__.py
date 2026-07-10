@@ -22,6 +22,8 @@ from wombat_transport.transport.forcing import (
     TransportForcing,
     _map_met_levels_to_47,
     load_transport_forcing,
+    load_transport_forcing_for_step,
+    prune_forcing_record_cache,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import (
@@ -78,6 +80,8 @@ __all__ = [
     "dry_pressure_edges_from_thickness_hpa",
     "dry_pressure_thickness_hpa",
     "load_transport_forcing",
+    "load_transport_forcing_for_step",
+    "prune_forcing_record_cache",
     "load_transport_grid",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",
