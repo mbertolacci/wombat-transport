@@ -97,6 +97,11 @@ The `snapshot-tpcore` command does the same for the compact one-step
 The `snapshot-tpcore-branch` command creates small branch-isolating TPCORE
 snapshots. `x_fxppm_low_courant` is a passing X full-PPM fixture;
 `x_large_courant_polar` is a passing compact high-Courant E-W fixture.
+TPCORE snapshots also record `pressure_branch_gap_max_hpa`, the maximum
+difference between GEOS-Chem TPCORE's raw-`P2` layer-thickness branch and the
+PJC-adjusted `P1 + dps_ctm` branch. A zero value means that fixture cannot
+distinguish those two denominator paths; at least one TPCORE parity fixture
+should keep this value nonzero.
 The tracked VDIFF snapshot fixtures isolate the configured non-local
 `VDIFFDR -> vdiff/pbldif/qvdiff` path for zero constituent surface flux,
 nonzero constituent surface flux, and negative tracer clipping/rescaling.

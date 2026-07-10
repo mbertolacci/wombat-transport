@@ -55,6 +55,7 @@ from wombat_transport.transport.driver import _build_vdiff_input_after_tpcore
 from wombat_transport.transport.driver import compute_transport_stage_masses
 from wombat_transport.transport.driver import trace_transport_one_step
 from wombat_transport.transport.forcing import _load_i3_fields, _map_met_edges_to_48, _record_day_and_index
+from wombat_transport.transport.pjc import _pjc_horizontal_geometry
 from wombat_transport.transport.pbl import ZVIR
 from wombat_transport.transport.tpcore import (
     analyze_tpcore_branches,
@@ -62,6 +63,7 @@ from wombat_transport.transport.tpcore import (
     setup_tpcore_terms,
     trace_tpcore_one_step,
 )
+from wombat_transport.transport.tpcore._core import _average_poles_in_place, _calc_divergence
 
 
 PJC_INPUT_VERSION = "pjc-pfix-input-v1"
@@ -4173,6 +4175,7 @@ def _tpcore_snapshot_metadata(
         nlon = len(dataset.dimensions["lon"])
         ntracer = len(dataset.dimensions["tracer"])
         dt_s = float(getattr(dataset, "dt_s"))
+    pressure_branch_gap = _tpcore_pressure_branch_gap(input_path)
     return {
         "snapshot": TPCORE_SNAPSHOT_VERSION,
         "input_harness": TRANSPORT_INPUT_VERSION,
@@ -4181,9 +4184,40 @@ def _tpcore_snapshot_metadata(
         "output_file": output_path.name,
         "shape": {"tracer": ntracer, "lev": nlev, "lat": nlat, "lon": nlon},
         "dt_s": dt_s,
+        "pressure_branch_gap_max_hpa": pressure_branch_gap,
         "executable": str(executable),
         "gcclassic_head": _git_head(repo_root / "GCClassic"),
     }
+
+
+def _tpcore_pressure_branch_gap(input_path: str | Path) -> float:
+    """Return max |raw-p2 branch - PJC-adjusted pressure branch| for TPCORE."""
+
+    fixture = read_tpcore_input(input_path)
+    setup = setup_tpcore_terms(
+        p1_hpa=fixture.p1_hpa,
+        p2_hpa=fixture.p2_hpa,
+        u_m_s=fixture.u_m_s,
+        v_m_s=fixture.v_m_s,
+        area_m2=fixture.area_m2,
+        hyai_hpa=fixture.hyai_hpa,
+        hybi=fixture.hybi,
+        lat_deg=fixture.lat_deg,
+        dt_s=fixture.dt_s,
+    )
+    rel_area, geofac, geofac_pc, _cose, _cosp = _pjc_horizontal_geometry(fixture.area_m2, fixture.lat_deg)
+    p1 = fixture.p1_hpa.copy()
+    _average_poles_in_place(p1, rel_area)
+    ak = fixture.hyai_hpa[::-1]
+    bk = fixture.hybi[::-1]
+    dap = ak[1:] - ak[:-1]
+    dbk = bk[1:] - bk[:-1]
+    dpi = _calc_divergence(setup.xmass_hpa, setup.ymass_hpa, geofac, geofac_pc)
+    pjc_adjusted_pressure = p1 + np.sum(dpi, axis=0)
+    pjc_adjusted_branch = dap[:, np.newaxis, np.newaxis] + dbk[:, np.newaxis, np.newaxis] * (
+        pjc_adjusted_pressure[np.newaxis, :, :]
+    )
+    return float(np.max(np.abs(setup.delp2_hpa - pjc_adjusted_branch)))
 
 
 def _git_head(path: Path) -> str | None:

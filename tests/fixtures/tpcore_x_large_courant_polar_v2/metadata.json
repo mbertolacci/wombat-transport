@@ -23,6 +23,7 @@
   "input_harness": "transport-step-input-v2",
   "output_file": "tpcore_output.nc",
   "output_harness": "transport-step-output-v2",
+  "pressure_branch_gap_max_hpa": 7.105427357601002e-15,
   "scenario": "x_large_courant_polar",
   "shape": {
     "lat": 7,

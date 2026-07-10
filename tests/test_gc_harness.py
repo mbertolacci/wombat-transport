@@ -86,6 +86,7 @@ from wombat_transport.gc_harness import (
     write_synthetic_pjc_snapshot_input,
     write_synthetic_tpcore_snapshot_input,
     write_pjc_input,
+    _tpcore_pressure_branch_gap,
 )
 from wombat_transport.transport import convection as convection_mod
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
@@ -1190,6 +1191,7 @@ def test_tpcore_step_snapshot_records_geos_chem_oracle_boundary():
         metadata = json.load(handle)
     assert metadata["snapshot"] == TPCORE_SNAPSHOT_VERSION
     assert metadata["shape"] == {"tracer": 2, "lev": 47, "lat": 7, "lon": 8}
+    assert metadata["pressure_branch_gap_max_hpa"] == 0.0
 
     comparison = compare_transport_step_output(
         TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
@@ -1223,6 +1225,14 @@ def test_python_tpcore_setup_matches_oracle_pressure_on_low_courant_fixture():
     np.testing.assert_array_equal(setup.surface_pressure_hpa, oracle.surface_pressure_hpa)
     assert float(np.max(np.abs(setup.cx))) < 1.0
     assert float(np.max(np.abs(setup.cy))) < 1.0
+
+
+def test_tpcore_fixture_can_distinguish_raw_p2_from_pjc_adjusted_pressure_branch(tmp_path):
+    input_path = write_synthetic_tpcore_snapshot_input(tmp_path / "tpcore_input.nc")
+    with netCDF4.Dataset(input_path, "a") as dataset:
+        dataset.variables["p2_hpa"][:] = np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64) + 0.25
+
+    assert _tpcore_pressure_branch_gap(input_path) > 1.0e-3
 
 
 def test_tpcore_branch_report_accepts_low_courant_oracle_path():
@@ -1314,6 +1324,7 @@ def test_python_tpcore_matches_fxppm_low_courant_branch_fixture():
     with (TPCORE_FXPPM_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
     assert metadata["scenario"] == "x_fxppm_low_courant"
+    assert metadata["pressure_branch_gap_max_hpa"] == 0.0
     assert metadata["branch_report"]["needs_fxppm"]
     assert not metadata["branch_report"]["has_large_cx"]
 
@@ -1334,6 +1345,7 @@ def test_python_tpcore_matches_large_courant_branch_fixture():
     with (TPCORE_LARGE_CX_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
     assert metadata["scenario"] == "x_large_courant_polar"
+    assert metadata["pressure_branch_gap_max_hpa"] < 1.0e-12
     assert metadata["branch_report"]["has_large_cx"]
     assert not metadata["branch_report"]["needs_fxppm"]
 

@@ -23,6 +23,7 @@
   "input_harness": "transport-step-input-v2",
   "output_file": "tpcore_output.nc",
   "output_harness": "transport-step-output-v2",
+  "pressure_branch_gap_max_hpa": 0.0,
   "scenario": "x_fxppm_low_courant",
   "shape": {
     "lat": 11,
