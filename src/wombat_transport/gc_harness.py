@@ -1671,7 +1671,7 @@ def _write_chain_vdiff_input(
         dt_s = float(source.dt_s)
         tracer_names = _read_transport_step_tracer_names(chain_input_path)
     tpcore = read_transport_step_output(tpcore_output_path)
-    delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
+    delp = dry_pressure_thickness_from_surface_hpa(forcing.dry_surface_pressure_hpa, hyai, hybi)
     dry_mass = dry_air_mass_from_pressure(delp, area)[0]
     tpcore_state = TracerField(
         names=tracer_names,
@@ -1754,7 +1754,7 @@ def _write_chain_convection_input(
         tracer_names = _read_transport_step_tracer_names(chain_input_path)
     tpcore = read_transport_step_output(tpcore_output_path)
     vdiff = read_vdiff_output(vdiff_output_path)
-    delp = dry_pressure_thickness_hpa(tpcore.surface_pressure_hpa[np.newaxis, :, :] * 100.0, hyai, hybi)
+    delp = dry_pressure_thickness_from_surface_hpa(forcing.dry_surface_pressure_hpa, hyai, hybi)
     vdiff_state = TracerField(
         names=tracer_names,
         data=transport_tracer_to_canonical(vdiff.tracer_conc_after),

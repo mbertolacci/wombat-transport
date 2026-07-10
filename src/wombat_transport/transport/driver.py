@@ -374,7 +374,11 @@ def _run_tpcore_one_step_from_mass(
         lat_deg=forcing.lat_deg,
         dt_s=dt_s,
     )
-    next_delp = tpcore.delp2_hpa[np.newaxis, ::-1, :, :]
+    next_delp = dry_pressure_thickness_from_surface_hpa(
+        forcing.dry_surface_pressure_hpa,
+        hyai,
+        hybi,
+    )
     next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
     tpcore_state = TracerField(
         names=tracer_field.names,
@@ -472,7 +476,11 @@ def _trace_tpcore_one_step_from_mass(
         lat_deg=forcing.lat_deg,
         dt_s=dt_s,
     )
-    next_delp = tpcore.delp2_hpa[np.newaxis, ::-1, :, :]
+    next_delp = dry_pressure_thickness_from_surface_hpa(
+        forcing.dry_surface_pressure_hpa,
+        hyai,
+        hybi,
+    )
     next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
     tpcore_state = TracerField(
         names=tracer_field.names,
