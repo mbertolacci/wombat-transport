@@ -1,0 +1,11 @@
+EXPID: OutputDir/GEOSChem
+
+COLLECTIONS: 'SpeciesConcThreeHourly',
+::
+SpeciesConcThreeHourly.template: '%y4%m2%d2_%h2%n2z.nc4',
+SpeciesConcThreeHourly.format: 'CFIO',
+SpeciesConcThreeHourly.frequency: 00000000 010000,
+SpeciesConcThreeHourly.duration: 00000000 060000,
+SpeciesConcThreeHourly.mode: 'time-averaged',
+SpeciesConcThreeHourly.fields: 'SpeciesConcVV_?ADV?', 'GIGCchem',
+::

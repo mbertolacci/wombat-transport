@@ -1,0 +1,22 @@
+{
+  "config": {
+    "dt_s": 600,
+    "duration": "00000000 060000",
+    "frequency": "00000000 010000",
+    "nsteps": 36,
+    "ntracer": 3
+  },
+  "fixture": "history_six_hour_groups_v1",
+  "output": {
+    "name": "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4",
+    "sha256": "ba8fee2e8829bea86774fa3e5dcc9e53dd2ad97f1a861a707a991049b065dd7a",
+    "size_bytes": 150411,
+    "url": null
+  },
+  "scenario": "six_hour_groups",
+  "source": {
+    "build_command": "tools/gc_harness/build_history_harness.sh",
+    "fixture_command": "python -m wombat_transport.gc_harness history-fixture-generate six_hour_groups tests/fixtures/history_six_hour_groups_v1"
+  },
+  "version": "history-harness-v1"
+}

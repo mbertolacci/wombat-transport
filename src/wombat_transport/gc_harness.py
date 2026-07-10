@@ -5,8 +5,9 @@ import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from urllib.request import urlretrieve
 
@@ -20,6 +21,13 @@ from wombat_transport.fields import (
 )
 from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.io import initialize_tracers
+from wombat_transport.output import (
+    HistoryOutputManager,
+    OutputCollectionConfig,
+    OutputSnapshot,
+    OutputStorageConfig,
+    parse_history_interval,
+)
 from wombat_transport.run_config import (
     load_run_config,
     meteorology_initial_time_index,
@@ -63,6 +71,7 @@ VDIFF_OUTPUT_VERSION = "vdiffdr-output-v2"
 CONVECTION_INPUT_VERSION = "convection-input-v2"
 CONVECTION_OUTPUT_VERSION = "convection-output-v2"
 HISTORY_HARNESS_VERSION = "history-harness-v1"
+HISTORY_WOMBAT_OUTPUT_VERSION = "history-wombat-output-v1"
 TPCORE_TRACE_VERSION = "tpcore-trace-v2"
 TPCORE_SNAPSHOT_VERSION = "tpcore-step-snapshot-v2"
 SNAPSHOT_INPUT_NAME = "pjc_input.nc"
@@ -80,6 +89,7 @@ CONVECTION_SCENARIOS = ("no_cloud", "active_cloud", "multi_tracer")
 REAL_CONVECTION_MODES = ("sampled-columns", "full-grid")
 LARGE_ORACLE_MANIFEST_NAME = "manifest.json"
 HISTORY_HARNESS_OUTPUT_NAME = "OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
+HISTORY_FIXTURE_SCENARIOS = ("default", "six_hour_groups")
 PYTHON_TPCORE_TRACE_NAME = "python_tpcore_trace.nc"
 ORACLE_TPCORE_TRACE_NAME = "oracle_tpcore_trace.nc"
 BASE_INITIAL_TPCORE_FIXTURE_ID = "base_initial_tpcore_v2"
@@ -395,6 +405,17 @@ class HistoryHarnessComparison:
     first_record_expected: float
     first_record_actual: float
     boundary_included_in_previous: bool
+
+
+@dataclass(frozen=True)
+class HistoryHarnessWombatComparison:
+    reference_path: Path
+    wombat_path: Path
+    n_records: int
+    n_tracers: int
+    max_abs_error: float
+    max_time_error_min: float
+    max_coord_error: float
 
 
 def write_pjc_input_from_config(
@@ -3060,15 +3081,18 @@ def compare_history_harness_output(
             if name not in dataset.variables:
                 raise ValueError(f"missing HISTORY output variable {name}")
             values = np.asarray(dataset.variables[name][:], dtype=np.float64)
-            expected = _history_harness_expected_values(
+            expected_time = _history_harness_expected_time_values(
                 tracer_index=tracer_index,
                 n_records=expected_records,
                 steps_per_frequency=steps_per_frequency,
                 update_stride=update_stride,
             )
-            max_abs = max(max_abs, float(np.max(np.abs(values - expected[:, None, None, None]))))
+            expected = expected_time[:, None, None, None] + _history_harness_geos_spatial_offsets(*values.shape[1:4])[
+                None, :, :, :
+            ]
+            max_abs = max(max_abs, float(np.max(np.abs(values - expected))))
             if tracer_index == 1:
-                first_expected = float(expected[0])
+                first_expected = float(expected[0, 0, 0, 0])
                 first_actual = float(values[0, 0, 0, 0])
     return HistoryHarnessComparison(
         output_path=path,
@@ -3078,11 +3102,11 @@ def compare_history_harness_output(
         max_time_error_min=max_time,
         first_record_expected=first_expected,
         first_record_actual=first_actual,
-        boundary_included_in_previous=abs(first_actual - first_expected) < 1.0e-10,
+        boundary_included_in_previous=abs(first_actual - first_expected) < 1.0e-4,
     )
 
 
-def _history_harness_expected_values(
+def _history_harness_expected_time_values(
     *,
     tracer_index: int,
     n_records: int,
@@ -3096,6 +3120,13 @@ def _history_harness_expected_values(
         steps = np.arange(start, stop + 1, update_stride, dtype=np.float64)
         expected[record] = float(tracer_index * 1000) + float(np.mean(steps))
     return expected
+
+
+def _history_harness_geos_spatial_offsets(nlev: int, nlat: int, nlon: int) -> np.ndarray:
+    lev = np.arange(1, nlev + 1, dtype=np.float64)[:, None, None]
+    lat = np.arange(1, nlat + 1, dtype=np.float64)[None, :, None]
+    lon = np.arange(1, nlon + 1, dtype=np.float64)[None, None, :]
+    return lev * 0.125 + lat * 0.01 + lon * 0.001
 
 
 def _history_harness_history_rc(*, frequency: str, duration: str, acc_interval: str | None) -> str:
@@ -3160,6 +3191,210 @@ def _history_harness_geoschem_config(ntracer: int) -> str:
         "  transport:\n"
         f"    transported_species: {species}\n"
     )
+
+
+def history_harness_scenario_config(scenario: str) -> dict[str, object]:
+    if scenario == "default":
+        return {
+            "ntracer": 2,
+            "nsteps": 144,
+            "dt_s": 600,
+            "frequency": "00000000 030000",
+            "duration": "00000001 000000",
+        }
+    if scenario == "six_hour_groups":
+        return {
+            "ntracer": 3,
+            "nsteps": 36,
+            "dt_s": 600,
+            "frequency": "00000000 010000",
+            "duration": "00000000 060000",
+        }
+    raise ValueError(f"unknown HISTORY fixture scenario {scenario!r}; expected one of {HISTORY_FIXTURE_SCENARIOS}")
+
+
+def generate_history_harness_fixture(
+    scenario: str,
+    fixture_dir: str | Path,
+    *,
+    executable: str | Path = Path("tools/gc_harness/build/history_harness"),
+) -> Path:
+    config = history_harness_scenario_config(scenario)
+    output_path = run_history_harness(
+        executable,
+        fixture_dir,
+        ntracer=int(config["ntracer"]),
+        nsteps=int(config["nsteps"]),
+        dt_s=int(config["dt_s"]),
+        frequency=str(config["frequency"]),
+        duration=str(config["duration"]),
+    )
+    _write_history_harness_fixture_metadata(Path(fixture_dir), scenario, output_path, config)
+    return output_path
+
+
+def write_wombat_history_harness_output(
+    output_root: str | Path,
+    template_path: str | Path,
+    *,
+    ntracer: int,
+    nsteps: int,
+    dt_s: int,
+    frequency: str,
+    duration: str,
+) -> Path:
+    root = Path(output_root)
+    template = Path(template_path)
+    with netCDF4.Dataset(template) as dataset:
+        nlev = len(dataset.dimensions["lev"])
+        nlat = len(dataset.dimensions["lat"])
+        nlon = len(dataset.dimensions["lon"])
+    start = datetime(2014, 9, 1)
+    manager = HistoryOutputManager(
+        root=root,
+        template_path=template,
+        expid="OutputDir/GEOSChem",
+        collections=(
+            OutputCollectionConfig(
+                name="SpeciesConcThreeHourly",
+                filename=None,
+                template="%y4%m2%d2_%h2%n2z.nc4",
+                frequency=parse_history_interval(frequency),
+                duration=parse_history_interval(duration),
+                mode="time-averaged",
+                fields=("SpeciesConcVV_?ADV?",),
+                storage=OutputStorageConfig(dtype="float32"),
+            ),
+        ),
+        start=start,
+    )
+    delp = np.ones((1, nlev, nlat, nlon), dtype=np.float64)
+    forcing = SimpleNamespace(
+        surface_pressure_pa=np.full((1, nlat, nlon), 101000.0, dtype=np.float64),
+        specific_humidity_kg_kg=np.zeros((1, nlev, nlat, nlon), dtype=np.float64),
+        temperature_k=np.zeros((1, nlev, nlat, nlon), dtype=np.float64),
+    )
+    for step in range(1, nsteps + 1):
+        timestamp = start + timedelta(seconds=step * dt_s)
+        manager.record_step(
+            OutputSnapshot(
+                timestamp=timestamp,
+                state=_history_harness_canonical_field(step, ntracer, nlev, nlat, nlon),
+                delp_dry_hpa=delp,
+                forcing=forcing,  # type: ignore[arg-type]
+            )
+        )
+    manager.close()
+    output_path = root / HISTORY_HARNESS_OUTPUT_NAME
+    if not output_path.exists():
+        raise FileNotFoundError(f"Wombat HISTORY replay did not produce expected output {output_path}")
+    return output_path
+
+
+def compare_history_harness_to_wombat(
+    reference_path: str | Path,
+    work_dir: str | Path,
+    *,
+    ntracer: int,
+    nsteps: int,
+    dt_s: int,
+    frequency: str,
+    duration: str,
+) -> HistoryHarnessWombatComparison:
+    reference = Path(reference_path)
+    wombat = write_wombat_history_harness_output(
+        work_dir,
+        reference,
+        ntracer=ntracer,
+        nsteps=nsteps,
+        dt_s=dt_s,
+        frequency=frequency,
+        duration=duration,
+    )
+    max_abs = 0.0
+    max_time = 0.0
+    max_coord = 0.0
+    with netCDF4.Dataset(reference) as expected, netCDF4.Dataset(wombat) as actual:
+        expected_time = np.asarray(expected.variables["time"][:], dtype=np.float64)
+        actual_time = np.asarray(actual.variables["time"][:], dtype=np.float64)
+        max_time = float(np.max(np.abs(actual_time - expected_time))) if expected_time.size else 0.0
+        for name in ("lev", "ilev", "lat", "lon", "lat_bnds", "lon_bnds", "hyam", "hybm", "hyai", "hybi", "AREA"):
+            if name in expected.variables and name in actual.variables:
+                max_coord = max(
+                    max_coord,
+                    float(
+                        np.max(
+                            np.abs(
+                                np.asarray(actual.variables[name][:], dtype=np.float64)
+                                - np.asarray(expected.variables[name][:], dtype=np.float64)
+                            )
+                        )
+                    ),
+                )
+        for tracer_index in range(1, ntracer + 1):
+            name = f"SpeciesConcVV_hist_{tracer_index:03d}"
+            if name not in expected.variables:
+                raise ValueError(f"missing reference HISTORY variable {name}")
+            if name not in actual.variables:
+                raise ValueError(f"missing Wombat HISTORY variable {name}")
+            max_abs = max(
+                max_abs,
+                float(
+                    np.max(
+                        np.abs(
+                            np.asarray(actual.variables[name][:], dtype=np.float64)
+                            - np.asarray(expected.variables[name][:], dtype=np.float64)
+                        )
+                    )
+                ),
+            )
+    return HistoryHarnessWombatComparison(
+        reference_path=reference,
+        wombat_path=wombat,
+        n_records=int(expected_time.size),
+        n_tracers=ntracer,
+        max_abs_error=max_abs,
+        max_time_error_min=max_time,
+        max_coord_error=max_coord,
+    )
+
+
+def _history_harness_canonical_field(step: int, ntracer: int, nlev: int, nlat: int, nlon: int) -> TracerField:
+    geos_offsets = _history_harness_geos_spatial_offsets(nlev, nlat, nlon)
+    data = np.empty((1, nlev, nlat, nlon, ntracer), dtype=np.float64)
+    for tracer_index in range(1, ntracer + 1):
+        geos_values = float(tracer_index * 1000 + step) + geos_offsets
+        data[0, :, :, :, tracer_index - 1] = geos_values[::-1, :, :]
+    names = tuple(f"hist_{tracer_index:03d}" for tracer_index in range(1, ntracer + 1))
+    return TracerField(
+        names=names,
+        data=data,
+        units=tuple("mol mol-1 dry" for _ in names),
+        coords={},
+    )
+
+
+def _write_history_harness_fixture_metadata(
+    fixture_dir: Path,
+    scenario: str,
+    output_path: Path,
+    config: dict[str, object],
+) -> None:
+    metadata = {
+        "fixture": f"history_{scenario}_v1",
+        "scenario": scenario,
+        "version": HISTORY_HARNESS_VERSION,
+        "output": _large_oracle_file_record(output_path),
+        "config": config,
+        "source": {
+            "build_command": "tools/gc_harness/build_history_harness.sh",
+            "fixture_command": (
+                "python -m wombat_transport.gc_harness history-fixture-generate "
+                f"{scenario} {fixture_dir}"
+            ),
+        },
+    }
+    (fixture_dir / SNAPSHOT_METADATA_NAME).write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _load_large_oracle_definition(path: Path) -> dict[str, object]:
@@ -3595,6 +3830,21 @@ def format_history_harness_comparison(comparison: HistoryHarnessComparison) -> s
     )
 
 
+def format_history_harness_wombat_comparison(comparison: HistoryHarnessWombatComparison) -> str:
+    return "\n".join(
+        [
+            "metric,value",
+            f"reference_path,{comparison.reference_path}",
+            f"wombat_path,{comparison.wombat_path}",
+            f"n_records,{comparison.n_records}",
+            f"n_tracers,{comparison.n_tracers}",
+            f"max_abs_error,{comparison.max_abs_error:.8e}",
+            f"max_time_error_min,{comparison.max_time_error_min:.8e}",
+            f"max_coord_error,{comparison.max_coord_error:.8e}",
+        ]
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare and compare GEOS-Chem operator harness fixtures.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -3689,6 +3939,16 @@ def main(argv: list[str] | None = None) -> int:
     compare_history_parser.add_argument("--dt-s", type=int, default=600)
     compare_history_parser.add_argument("--frequency-s", type=int, default=10800)
     compare_history_parser.add_argument("--acc-interval-s", type=int, default=None)
+
+    history_fixture_parser = subparsers.add_parser("history-fixture-generate")
+    history_fixture_parser.add_argument("scenario", choices=HISTORY_FIXTURE_SCENARIOS)
+    history_fixture_parser.add_argument("fixture_dir", type=Path)
+    history_fixture_parser.add_argument("--executable", type=Path, default=Path("tools/gc_harness/build/history_harness"))
+
+    compare_history_wombat_parser = subparsers.add_parser("compare-history-fixture-wombat")
+    compare_history_wombat_parser.add_argument("reference", type=Path)
+    compare_history_wombat_parser.add_argument("work_dir", type=Path)
+    compare_history_wombat_parser.add_argument("--scenario", choices=HISTORY_FIXTURE_SCENARIOS, default="default")
 
     compare_python_tpcore_parser = subparsers.add_parser("compare-python-tpcore-output")
     compare_python_tpcore_parser.add_argument("input", type=Path)
@@ -3888,6 +4148,26 @@ def main(argv: list[str] | None = None) -> int:
                     dt_s=args.dt_s,
                     frequency_s=args.frequency_s,
                     acc_interval_s=args.acc_interval_s,
+                )
+            )
+        )
+        return 0
+    if args.command == "history-fixture-generate":
+        path = generate_history_harness_fixture(args.scenario, args.fixture_dir, executable=args.executable)
+        print(f"wrote_history_fixture: {path}")
+        return 0
+    if args.command == "compare-history-fixture-wombat":
+        config = history_harness_scenario_config(args.scenario)
+        print(
+            format_history_harness_wombat_comparison(
+                compare_history_harness_to_wombat(
+                    args.reference,
+                    args.work_dir,
+                    ntracer=int(config["ntracer"]),
+                    nsteps=int(config["nsteps"]),
+                    dt_s=int(config["dt_s"]),
+                    frequency=str(config["frequency"]),
+                    duration=str(config["duration"]),
                 )
             )
         )

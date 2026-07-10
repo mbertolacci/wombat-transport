@@ -1,0 +1,17 @@
+hist_001:
+  Formula: hist_001
+  Is_Gas: true
+  MW_g: 28.97
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0
+  FullName: HISTORY harness tracer 1
+
+hist_002:
+  Formula: hist_002
+  Is_Gas: true
+  MW_g: 28.97
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0
+  FullName: HISTORY harness tracer 2

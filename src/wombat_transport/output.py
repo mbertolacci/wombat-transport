@@ -9,7 +9,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
-from wombat_transport.io import FIXED_GRID, GRID_COORDS
+from wombat_transport.io import GRID_COORDS
 from wombat_transport.run_config import RunConfig, simulation_start
 from wombat_transport.transport.forcing import TransportForcing
 
@@ -360,9 +360,17 @@ def write_species_conc_collection(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     times = [timestamp for timestamp, _ in samples]
     fields = [field for _, field in samples]
-    _assert_compatible_samples(fields)
     with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
         _create_common_dimensions(output, template, time_size=len(samples), include_bounds=True)
+        _assert_compatible_samples(
+            fields,
+            expected_shape=(
+                1,
+                len(template.dimensions["lev"]),
+                len(template.dimensions["lat"]),
+                len(template.dimensions["lon"]),
+            ),
+        )
         _copy_common_coordinates(output, template, include_bounds=True, storage=storage)
         _write_time(output, times, base=times[0], storage=storage)
         output.title = title
@@ -611,19 +619,15 @@ def _write_time(
     variable[:] = np.asarray([(timestamp - base).total_seconds() / 60.0 for timestamp in times], dtype=np.float64)
 
 
-def _assert_compatible_samples(fields: list[TracerField]) -> None:
+def _assert_compatible_samples(fields: list[TracerField], *, expected_shape: tuple[int, int, int, int]) -> None:
     first = fields[0]
     for field in fields:
         if field.names != first.names:
             raise ValueError("all SpeciesConc samples must have the same tracer names")
         if field.data.shape != first.data.shape:
             raise ValueError("all SpeciesConc samples must have the same shape")
-        if field.data.shape[0] != 1 or field.data.shape[1:4] != (
-            FIXED_GRID["lev"],
-            FIXED_GRID["lat"],
-            FIXED_GRID["lon"],
-        ):
-            raise ValueError(f"unsupported SpeciesConc sample shape {field.data.shape}")
+        if field.data.shape[0:4] != expected_shape:
+            raise ValueError(f"SpeciesConc sample shape {field.data.shape} does not match template shape {expected_shape}")
 
 
 def _write_restart_met_field(

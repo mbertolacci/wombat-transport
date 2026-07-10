@@ -192,11 +192,20 @@ contains
   subroutine fill_synthetic_species(chm, step)
     type(ChmState), intent(inout) :: chm
     integer, intent(in) :: step
-    integer :: n
+    integer :: i, j, l, n
     real(fp) :: vv
     do n = 1, chm%nSpecies
-       vv = real(n * 1000 + step, fp)
-       chm%Species(n)%Conc = vv * chm%SpcData(n)%Info%MW_g / AIRMW
+       do l = 1, size(chm%Species(n)%Conc, 3)
+          do j = 1, size(chm%Species(n)%Conc, 2)
+             do i = 1, size(chm%Species(n)%Conc, 1)
+                vv = real(n * 1000 + step, fp) &
+                   + real(l, fp) * 0.125_fp &
+                   + real(j, fp) * 0.01_fp &
+                   + real(i, fp) * 0.001_fp
+                chm%Species(n)%Conc(i,j,l) = vv * chm%SpcData(n)%Info%MW_g / AIRMW
+             enddo
+          enddo
+       enddo
        chm%Species(n)%Units = KG_SPECIES_PER_KG_DRY_AIR
        chm%Species(n)%Previous_Units = KG_SPECIES_PER_KG_DRY_AIR
     enddo

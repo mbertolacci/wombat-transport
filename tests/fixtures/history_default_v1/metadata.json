@@ -1,0 +1,22 @@
+{
+  "config": {
+    "dt_s": 600,
+    "duration": "00000001 000000",
+    "frequency": "00000000 030000",
+    "nsteps": 144,
+    "ntracer": 2
+  },
+  "fixture": "history_default_v1",
+  "output": {
+    "name": "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4",
+    "sha256": "5b0736dd63d5ee653aa7ea0dec76f07398376f31fab371f09c6fbb1262ca81de",
+    "size_bytes": 139714,
+    "url": null
+  },
+  "scenario": "default",
+  "source": {
+    "build_command": "tools/gc_harness/build_history_harness.sh",
+    "fixture_command": "python -m wombat_transport.gc_harness history-fixture-generate default tests/fixtures/history_default_v1"
+  },
+  "version": "history-harness-v1"
+}

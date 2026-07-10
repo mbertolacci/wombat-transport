@@ -1,0 +1,10 @@
+simulation:
+  name: TransportTracers
+  debug_printout: false
+operations:
+  dry_deposition:
+    diag_alt_above_sfc_in_m: 10
+  rrtmg_rad_transfer_model:
+    aod_wavelengths_in_nm: [550]
+  transport:
+    transported_species: hist_001, hist_002

@@ -34,6 +34,7 @@ from wombat_transport.gc_harness import (
     attribute_python_tpcore_error,
     check_large_oracle_fixture,
     compare_history_harness_output,
+    compare_history_harness_to_wombat,
     compare_tpcore_trace_files,
     compare_pjc_output,
     compare_large_oracle_fixture,
@@ -44,10 +45,12 @@ from wombat_transport.gc_harness import (
     compare_vdiff_output,
     format_convection_comparison,
     format_history_harness_comparison,
+    format_history_harness_wombat_comparison,
     format_large_oracle_fixture_check,
     format_vdiff_comparison,
     read_convection_output,
     large_oracle_fixture_paths,
+    history_harness_scenario_config,
     read_vdiff_output,
     read_transport_step_output,
     write_python_convection_output,
@@ -86,6 +89,8 @@ VDIFF_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_snapshot_v2"
 VDIFF_NONZERO_FLUX_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_nonzero_surface_flux_v2"
 VDIFF_NEGATIVE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vdiff_negative_clipping_v2"
 CONVECTION_REAL_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "convection_real_sampled_v2"
+HISTORY_DEFAULT_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "history_default_v1"
+HISTORY_SIX_HOUR_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "history_six_hour_groups_v1"
 HISTORY_HARNESS_EXE = Path("tools/gc_harness/build/history_harness")
 
 
@@ -152,15 +157,17 @@ def test_history_harness_compare_reconstructs_default_window(tmp_path):
                 "f8",
                 ("time", "lev", "lat", "lon"),
             )
-            expected = np.array([tracer_index * 1000 + np.mean(np.arange(i * 18 + 1, (i + 1) * 18 + 1)) for i in range(8)])
-            variable[:] = expected[:, None, None, None]
+            expected_time = np.array(
+                [tracer_index * 1000 + np.mean(np.arange(i * 18 + 1, (i + 1) * 18 + 1)) for i in range(8)]
+            )
+            variable[:] = expected_time[:, None, None, None] + 0.136
 
     comparison = compare_history_harness_output(output_path, ntracer=2)
 
     assert comparison.max_abs_error == 0.0
     assert comparison.max_time_error_min == 0.0
-    assert comparison.first_record_expected == 1009.5
-    assert comparison.first_record_actual == 1009.5
+    assert comparison.first_record_expected == 1009.636
+    assert comparison.first_record_actual == 1009.636
     assert comparison.boundary_included_in_previous
     assert "max_abs_error,0.00000000e+00" in format_history_harness_comparison(comparison)
 
@@ -172,10 +179,58 @@ def test_history_harness_optional_geos_chem_compare(tmp_path):
 
     assert comparison.n_records == 8
     assert comparison.n_tracers == 2
-    assert comparison.max_abs_error < 1.0e-10
+    assert comparison.max_abs_error < 1.0e-4
     assert comparison.max_time_error_min == 0.0
-    assert comparison.first_record_expected == 1009.5
+    assert comparison.first_record_expected == 1009.636
     assert comparison.boundary_included_in_previous
+
+
+@pytest.mark.parametrize(
+    ("scenario", "fixture_dir"),
+    (
+        ("default", HISTORY_DEFAULT_FIXTURE_DIR),
+        ("six_hour_groups", HISTORY_SIX_HOUR_FIXTURE_DIR),
+    ),
+)
+def test_history_harness_fixtures_match_wombat_output_manager(tmp_path, scenario, fixture_dir):
+    config = history_harness_scenario_config(scenario)
+    reference = fixture_dir / HISTORY_HARNESS_OUTPUT_NAME
+
+    comparison = compare_history_harness_output(
+        reference,
+        ntracer=int(config["ntracer"]),
+        nsteps=int(config["nsteps"]),
+        dt_s=int(config["dt_s"]),
+        frequency_s=_history_interval_seconds_for_test(str(config["frequency"])),
+    )
+    assert comparison.max_abs_error < 1.0e-4
+
+    wombat_comparison = compare_history_harness_to_wombat(
+        reference,
+        tmp_path / scenario,
+        ntracer=int(config["ntracer"]),
+        nsteps=int(config["nsteps"]),
+        dt_s=int(config["dt_s"]),
+        frequency=str(config["frequency"]),
+        duration=str(config["duration"]),
+    )
+
+    assert wombat_comparison.n_records == int(config["nsteps"]) // (
+        _history_interval_seconds_for_test(str(config["frequency"])) // int(config["dt_s"])
+    )
+    assert wombat_comparison.n_tracers == int(config["ntracer"])
+    assert wombat_comparison.max_abs_error == 0.0
+    assert wombat_comparison.max_time_error_min == 0.0
+    assert wombat_comparison.max_coord_error < 1.0e-5
+    assert "max_abs_error,0.00000000e+00" in format_history_harness_wombat_comparison(wombat_comparison)
+
+
+def test_history_harness_fixture_metadata_records_generation_contract():
+    metadata = json.loads((HISTORY_DEFAULT_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).read_text(encoding="utf-8"))
+
+    assert metadata["version"] == "history-harness-v1"
+    assert metadata["scenario"] == "default"
+    assert metadata["output"]["name"] == Path(HISTORY_HARNESS_OUTPUT_NAME).name
 
 
 def test_large_oracle_fixture_check_reports_missing_payloads(tmp_path):
@@ -1407,6 +1462,11 @@ def _require_real_convection_inputs() -> None:
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         pytest.skip(f"real convection fixture inputs are not available: {', '.join(missing)}")
+
+
+def _history_interval_seconds_for_test(value: str) -> int:
+    date, clock = value.split()
+    return int(date[6:8]) * 86400 + int(clock[0:2]) * 3600 + int(clock[2:4]) * 60 + int(clock[4:6])
 
 
 def _write_large_oracle_definition(
