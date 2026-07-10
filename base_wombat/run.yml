@@ -17,6 +17,16 @@ logging:
   level: info
 outputs:
   expid: OutputDir/GEOSChem
+  dtype: float32
+  compression:
+    enabled: true
+    level: 5
+    shuffle: true
+  chunking:
+    rank1: [512]
+    rank2:
+    rank3: [1, 91, 144]
+    rank4: [1, 1, 91, 144]
   collections:
     Restart:
       filename: ./Restarts/GEOSChem.Restart.%y4%m2%d2_%h2%n2z.nc4

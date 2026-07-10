@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,36 @@ from wombat_transport.transport.forcing import TransportForcing
 
 SUPPORTED_RESTART_MET_FIELDS = {"Met_DELPDRY", "Met_PS1DRY", "Met_PS1WET", "Met_SPHU1", "Met_TMPU1"}
 SUPPORTED_FIELD_TOKENS = {"SpeciesConcVV_?ADV?", "SpeciesRst_?ALL?", *SUPPORTED_RESTART_MET_FIELDS}
+
+
+@dataclass(frozen=True)
+class OutputCompressionConfig:
+    enabled: bool = True
+    level: int = 5
+    shuffle: bool = True
+
+
+@dataclass(frozen=True)
+class OutputChunkingConfig:
+    rank1: tuple[int, ...] | None = None
+    rank2: tuple[int, ...] | None = None
+    rank3: tuple[int, ...] | None = None
+    rank4: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True)
+class OutputStorageConfig:
+    dtype: str = "float32"
+    compression: OutputCompressionConfig = field(default_factory=OutputCompressionConfig)
+    chunking: OutputChunkingConfig = field(default_factory=OutputChunkingConfig)
+
+    @property
+    def netcdf_dtype(self) -> str:
+        if self.dtype == "float32":
+            return "f4"
+        if self.dtype == "float64":
+            return "f8"
+        raise ValueError(f"unsupported output dtype {self.dtype!r}")
 
 
 @dataclass(frozen=True)
@@ -41,6 +71,7 @@ class OutputCollectionConfig:
     duration: HistoryInterval
     mode: str
     fields: tuple[str, ...]
+    storage: OutputStorageConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +218,7 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
             self._samples,
             self._template_path,
             title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
+            storage=_collection_storage(self._collection),
         )
         self._samples = []
 
@@ -216,6 +248,7 @@ class _InstantaneousRestartWriter(_CollectionWriter):
                 self._template_path,
                 fields=self._collection.fields,
                 title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
+                storage=_collection_storage(self._collection),
             )
             self._next_output = self._collection.frequency.add_to(self._next_output)
 
@@ -224,6 +257,7 @@ class _InstantaneousRestartWriter(_CollectionWriter):
 
 
 def parse_output_collections(raw: dict[str, Any]) -> tuple[OutputCollectionConfig, ...]:
+    storage = parse_output_storage(raw)
     collections_raw = raw.get("collections", {})
     if not isinstance(collections_raw, dict):
         raise TypeError("outputs.collections must be a mapping")
@@ -244,9 +278,43 @@ def parse_output_collections(raw: dict[str, Any]) -> tuple[OutputCollectionConfi
                 duration=parse_history_interval(str(value.get("duration", value["frequency"]))),
                 mode=str(value["mode"]),
                 fields=fields,
+                storage=storage,
             )
         )
     return tuple(collections)
+
+
+def parse_output_storage(raw: dict[str, Any]) -> OutputStorageConfig:
+    dtype = str(raw.get("dtype", "float32")).lower()
+    if dtype not in {"float32", "float64"}:
+        raise ValueError("outputs.dtype must be 'float32' or 'float64'")
+
+    compression_raw = raw.get("compression", {})
+    if compression_raw is None:
+        compression_raw = {}
+    if not isinstance(compression_raw, dict):
+        raise TypeError("outputs.compression must be a mapping")
+    level = int(compression_raw.get("level", 5))
+    if level < 0 or level > 9:
+        raise ValueError("outputs.compression.level must be between 0 and 9")
+    compression = OutputCompressionConfig(
+        enabled=bool(compression_raw.get("enabled", True)),
+        level=level,
+        shuffle=bool(compression_raw.get("shuffle", True)),
+    )
+
+    chunking_raw = raw.get("chunking", {})
+    if chunking_raw is None:
+        chunking_raw = {}
+    if not isinstance(chunking_raw, dict):
+        raise TypeError("outputs.chunking must be a mapping")
+    chunking = OutputChunkingConfig(
+        rank1=_parse_chunk_array(chunking_raw.get("rank1"), 1, "outputs.chunking.rank1"),
+        rank2=_parse_chunk_array(chunking_raw.get("rank2"), 2, "outputs.chunking.rank2"),
+        rank3=_parse_chunk_array(chunking_raw.get("rank3"), 3, "outputs.chunking.rank3"),
+        rank4=_parse_chunk_array(chunking_raw.get("rank4"), 4, "outputs.chunking.rank4"),
+    )
+    return OutputStorageConfig(dtype=dtype, compression=compression, chunking=chunking)
 
 
 def parse_history_interval(value: str) -> HistoryInterval:
@@ -283,7 +351,9 @@ def write_species_conc_collection(
     template_path: str | Path,
     *,
     title: str,
+    storage: OutputStorageConfig | None = None,
 ) -> Path:
+    storage = storage or OutputStorageConfig()
     if not samples:
         raise ValueError("cannot write a SpeciesConc collection with no samples")
     output_path = Path(path)
@@ -293,13 +363,18 @@ def write_species_conc_collection(
     _assert_compatible_samples(fields)
     with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
         _create_common_dimensions(output, template, time_size=len(samples), include_bounds=True)
-        _copy_common_coordinates(output, template, include_bounds=True)
-        _write_time(output, times, base=times[0])
+        _copy_common_coordinates(output, template, include_bounds=True, storage=storage)
+        _write_time(output, times, base=times[0], storage=storage)
         output.title = title
         output.format = "NetCDF-4"
         first = fields[0]
         for tracer_index, tracer_name in enumerate(first.names):
-            variable = output.createVariable(f"SpeciesConcVV_{tracer_name}", "f8", ("time", "lev", "lat", "lon"))
+            variable = _create_output_variable(
+                output,
+                f"SpeciesConcVV_{tracer_name}",
+                ("time", "lev", "lat", "lon"),
+                storage,
+            )
             variable.units = first.units[tracer_index] if tracer_index < len(first.units) else "mol mol-1 dry"
             variable.long_name = f"Dry mixing ratio of species {tracer_name}"
             variable[:] = np.stack([field.data[0, ::-1, :, :, tracer_index] for field in fields], axis=0)
@@ -313,18 +388,25 @@ def write_restart_collection(
     *,
     fields: tuple[str, ...],
     title: str,
+    storage: OutputStorageConfig | None = None,
 ) -> Path:
+    storage = storage or OutputStorageConfig()
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
         _create_common_dimensions(output, template, time_size=1, include_bounds=False)
-        _copy_common_coordinates(output, template, include_bounds=False)
-        _write_time(output, [snapshot.timestamp], base=snapshot.timestamp, utc=True)
+        _copy_common_coordinates(output, template, include_bounds=False, storage=storage)
+        _write_time(output, [snapshot.timestamp], base=snapshot.timestamp, utc=True, storage=storage)
         output.title = title
         output.format = "CFIO"
         if "SpeciesRst_?ALL?" in fields:
             for tracer_index, tracer_name in enumerate(snapshot.state.names):
-                variable = output.createVariable(f"SpeciesRst_{tracer_name}", "f8", ("time", "lev", "lat", "lon"))
+                variable = _create_output_variable(
+                    output,
+                    f"SpeciesRst_{tracer_name}",
+                    ("time", "lev", "lat", "lon"),
+                    storage,
+                )
                 variable.units = (
                     snapshot.state.units[tracer_index]
                     if tracer_index < len(snapshot.state.units)
@@ -334,7 +416,7 @@ def write_restart_collection(
                 variable[:] = snapshot.state.data[:, ::-1, :, :, tracer_index]
         for field in fields:
             if field in SUPPORTED_RESTART_MET_FIELDS:
-                _write_restart_met_field(output, field, snapshot)
+                _write_restart_met_field(output, field, snapshot, storage)
     return output_path
 
 
@@ -374,6 +456,23 @@ def _parse_fields(raw: Any) -> tuple[str, ...]:
     raise TypeError("output collection fields must be a string or list of strings")
 
 
+def _parse_chunk_array(raw: Any, rank: int, label: str) -> tuple[int, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError(f"{label} must be a list of {rank} positive integers")
+    values = tuple(int(item) for item in raw)
+    if len(values) != rank:
+        raise ValueError(f"{label} must contain exactly {rank} values")
+    if any(value <= 0 for value in values):
+        raise ValueError(f"{label} values must be positive")
+    return values
+
+
+def _collection_storage(collection: OutputCollectionConfig) -> OutputStorageConfig:
+    return collection.storage or OutputStorageConfig()
+
+
 def _collection_path(root: Path, expid: str, collection: OutputCollectionConfig, timestamp: datetime) -> Path:
     if collection.filename is not None:
         value = expand_history_template(collection.filename, timestamp)
@@ -394,19 +493,93 @@ def _create_common_dimensions(
     time_size: int,
     include_bounds: bool,
 ) -> None:
-    output.createDimension("time", time_size)
+    output.createDimension("time", None)
     for dim_name in ("lev", "ilev", "lat", "lon"):
         output.createDimension(dim_name, len(template.dimensions[dim_name]))
     if include_bounds:
         output.createDimension("nb", 2)
 
 
-def _copy_common_coordinates(output: netCDF4.Dataset, template: netCDF4.Dataset, *, include_bounds: bool) -> None:
+def _create_output_variable(
+    output: netCDF4.Dataset,
+    name: str,
+    dimensions: tuple[str, ...],
+    storage: OutputStorageConfig,
+):
+    kwargs: dict[str, Any] = {}
+    if dimensions:
+        chunks = _chunks_for_variable(output, dimensions, storage)
+        if chunks is not None:
+            kwargs["chunksizes"] = chunks
+        if storage.compression.enabled:
+            kwargs.update(
+                {
+                    "zlib": True,
+                    "complevel": storage.compression.level,
+                    "shuffle": storage.compression.shuffle,
+                }
+            )
+    return output.createVariable(name, storage.netcdf_dtype, dimensions, **kwargs)
+
+
+def _chunks_for_variable(
+    output: netCDF4.Dataset,
+    dimensions: tuple[str, ...],
+    storage: OutputStorageConfig,
+) -> tuple[int, ...] | None:
+    shape = tuple(len(output.dimensions[dimension]) for dimension in dimensions)
+    configured = {
+        1: storage.chunking.rank1,
+        2: storage.chunking.rank2,
+        3: storage.chunking.rank3,
+        4: storage.chunking.rank4,
+    }.get(len(dimensions))
+    if configured is not None:
+        return _fit_chunks_to_dimensions(output, dimensions, configured)
+    if len(dimensions) == 1:
+        if dimensions == ("time",):
+            return (512,)
+        return shape
+    if len(dimensions) == 2:
+        return shape
+    if len(dimensions) == 3:
+        if dimensions == ("time", "lat", "lon"):
+            return (1, shape[1], shape[2])
+        return shape
+    if len(dimensions) == 4:
+        if dimensions == ("time", "lev", "lat", "lon"):
+            return (1, 1, shape[2], shape[3])
+        return shape
+    return None
+
+
+def _fit_chunks_to_dimensions(
+    output: netCDF4.Dataset,
+    dimensions: tuple[str, ...],
+    chunks: tuple[int, ...],
+) -> tuple[int, ...]:
+    fitted: list[int] = []
+    for dimension, chunk in zip(dimensions, chunks, strict=True):
+        output_dimension = output.dimensions[dimension]
+        if output_dimension.isunlimited():
+            fitted.append(chunk)
+        else:
+            fitted.append(min(chunk, len(output_dimension)))
+    return tuple(fitted)
+
+
+def _copy_common_coordinates(
+    output: netCDF4.Dataset,
+    template: netCDF4.Dataset,
+    *,
+    include_bounds: bool,
+    storage: OutputStorageConfig,
+) -> None:
     for coord_name in GRID_COORDS:
         if coord_name == "time" or coord_name not in template.variables:
             continue
         source = template.variables[coord_name]
-        variable = output.createVariable(coord_name, source.datatype, source.dimensions)
+        variable = _create_output_variable(output, coord_name, source.dimensions, storage)
         variable.setncatts({name: source.getncattr(name) for name in source.ncattrs()})
         if source.dimensions:
             variable[:] = np.asarray(source[:])
@@ -416,13 +589,20 @@ def _copy_common_coordinates(output: netCDF4.Dataset, template: netCDF4.Dataset,
         for coord_name in ("lat_bnds", "lon_bnds"):
             if coord_name in template.variables:
                 source = template.variables[coord_name]
-                variable = output.createVariable(coord_name, source.datatype, source.dimensions)
+                variable = _create_output_variable(output, coord_name, source.dimensions, storage)
                 variable.setncatts({name: source.getncattr(name) for name in source.ncattrs()})
                 variable[:] = np.asarray(source[:])
 
 
-def _write_time(output: netCDF4.Dataset, times: list[datetime], *, base: datetime, utc: bool = False) -> None:
-    variable = output.createVariable("time", "f8", ("time",))
+def _write_time(
+    output: netCDF4.Dataset,
+    times: list[datetime],
+    *,
+    base: datetime,
+    storage: OutputStorageConfig,
+    utc: bool = False,
+) -> None:
+    variable = _create_output_variable(output, "time", ("time",), storage)
     variable.long_name = "Time"
     suffix = " UTC" if utc else ""
     variable.units = f"minutes since {base:%Y-%m-%d %H:%M:%S}{suffix}"
@@ -446,29 +626,34 @@ def _assert_compatible_samples(fields: list[TracerField]) -> None:
             raise ValueError(f"unsupported SpeciesConc sample shape {field.data.shape}")
 
 
-def _write_restart_met_field(output: netCDF4.Dataset, field: str, snapshot: OutputSnapshot) -> None:
+def _write_restart_met_field(
+    output: netCDF4.Dataset,
+    field: str,
+    snapshot: OutputSnapshot,
+    storage: OutputStorageConfig,
+) -> None:
     if field == "Met_DELPDRY":
-        variable = output.createVariable(field, "f8", ("time", "lev", "lat", "lon"))
+        variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "hPa"
         variable[:] = snapshot.delp_dry_hpa[:, ::-1, :, :]
         return
     if field == "Met_PS1DRY":
-        variable = output.createVariable(field, "f8", ("time", "lat", "lon"))
+        variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
         variable[:] = np.sum(snapshot.delp_dry_hpa, axis=1)
         return
     if field == "Met_PS1WET":
-        variable = output.createVariable(field, "f8", ("time", "lat", "lon"))
+        variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
         variable[:] = snapshot.forcing.surface_pressure_pa / 100.0
         return
     if field == "Met_SPHU1":
-        variable = output.createVariable(field, "f8", ("time", "lev", "lat", "lon"))
+        variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "kg kg-1"
         variable[:] = snapshot.forcing.specific_humidity_kg_kg[:, ::-1, :, :]
         return
     if field == "Met_TMPU1":
-        variable = output.createVariable(field, "f8", ("time", "lev", "lat", "lon"))
+        variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "K"
         variable[:] = snapshot.forcing.temperature_k[:, ::-1, :, :]
         return
