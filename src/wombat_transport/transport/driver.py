@@ -410,6 +410,7 @@ def _run_tpcore_one_step_from_mass(
         area,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
+        specific_humidity_top=vdiff.specific_humidity_kg_kg,
     )
     convection = _run_convection_input(convection_input, diagnostics=False)
     state = TracerField(
@@ -512,6 +513,7 @@ def _trace_tpcore_one_step_from_mass(
         area,
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
+        specific_humidity_top=vdiff.specific_humidity_kg_kg,
     )
     convection = _run_convection_input(convection_input, diagnostics=True)
     state = TracerField(
@@ -689,10 +691,17 @@ def _build_convection_input_after_vdiff(
     *,
     top_edge_hpa: float,
     dt_s: float,
+    specific_humidity_top: np.ndarray | None = None,
 ) -> ConvectionInputState:
     pedge = dry_pressure_edges_from_thickness_hpa(delp_dry_hpa, top_edge_hpa=top_edge_hpa)[0]
     temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
-    sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+    if specific_humidity_top is None:
+        sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+    else:
+        sphu_top = np.asarray(specific_humidity_top, dtype=np.float64)
+        if sphu_top.shape != temperature.shape:
+            raise ValueError(f"specific_humidity_top shape {sphu_top.shape} does not match temperature {temperature.shape}")
+        sphu = sphu_top[::-1]
     virtual_temperature = temperature * (1.0 + ZVIR * sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     delp = np.asarray(delp_dry_hpa[0], dtype=np.float64)
