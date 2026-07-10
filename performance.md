@@ -1050,3 +1050,65 @@ the compute loop. This was rejected. It regressed to `0.048`, `0.169`, and
 `0.329 s` best times for 24, 96, and 192 tracers, suggesting the split
 compute-then-clamp loops are materially better for generated code even though
 the temporary workspace stores appear in Profila.
+
+## 2026-07-10 TPCORE follow-up experiments
+
+TPCORE was profiled again after the VDIFF/convection work. Current 96-tracer
+standalone timing was about `0.810-0.823 s`. The staged split was:
+
+| Stage | Mean s | Share |
+| --- | ---: | ---: |
+| `ytp_horizontal_mass_flux` | 0.175 | 22.8% |
+| `fzppm_vertical` | 0.147 | 19.2% |
+| `xtp_horizontal_mass_flux` | 0.146 | 19.0% |
+| `poles_plus_dq_init` | 0.068 | 8.8% |
+| `python_copy_workspace_cross_terms` | 0.057 | 7.4% |
+| `calc_cross_terms` | 0.053 | 6.9% |
+| `qckxyz_fill_finalize` | 0.050 | 6.6% |
+
+Whole-kernel `perf stat -d` at 96 tracers: IPC `1.89`, backend bound `59.4%`,
+frontend bound `5.4%`, branch misses `0.25%`, L1D miss rate `5.15%`, and LLC
+load miss rate `74.38%`. Isolated stage counters still show backend/cache
+pressure, especially in fixed full-grid passes. Profila remained diffuse but
+again highlighted limiter-heavy `min`/`max` code in XTP/YTP/FZPPM.
+
+Five follow-up experiments were run:
+
+| Experiment | 96-tracer result | Decision |
+| --- | ---: | --- |
+| Replace hot three-argument `min`/`max` limiters with explicit scalar comparisons | `0.863 s` best | Rejected; slower than baseline |
+| Fuse pole averaging with `dq1 = q * mass` initialization | `0.824 s` best | Rejected; straightforward fusion did not remove enough traffic |
+| Always run `qckxyz` fill instead of the guarded negative scan | `0.836 s` best | Rejected; guarded scan is cheaper for this workload |
+| Use no-clip finalize after `fill=True` | `0.819 s` best | Rejected; extra kernel split did not pay |
+| Hoist per-cell `ua[j, i]`/`va[j, i]` loads in cross-term setup | `0.809-0.815 s` best | Retained; neutral to slightly positive |
+
+The retained cross-term hoist is deliberately small. Confirmation timings were
+`0.236`, `0.815`, and `2.210 s` best for 24, 96, and 256 tracers respectively,
+versus the prior current run of `0.243`, `0.810`, and `2.218 s`. The larger
+precomputed-index workspace idea was not retained here because the cheap hoist
+gave only noise-level movement, and a full precompute would add per-step setup
+work unless those indices become reusable across multiple transport calls.
+
+## 2026-07-10 TPCORE codegen-guided experiments
+
+LLVM/ASM inspection was used after the Profila pass. Summary:
+
+- XTP, YTP, FZPPM, cross-terms, and finalize all generate SIMD vector bodies.
+- The generated vector width is AVX2-style `<4 x double>` / YMM, not AVX-512.
+- `qckxyz_needs_fill` and `qckxyz` have no vector bodies.
+- FZPPM still has 8 NRT allocation references from internal scratch arrays.
+- The limiter-heavy loops are vectorized but branch/select heavy; this matches
+  the earlier result that explicit scalar `min`/`max` rewrites were slower.
+
+Four codegen-guided follow-up experiments were then tried:
+
+| Experiment | 96-tracer result | Decision |
+| --- | ---: | --- |
+| Replace early-return `qckxyz_needs_fill` with a full reduction-style scan | `0.859 s` best | Rejected; early exit wins for this workload |
+| Rework pole averaging with reusable per-tracer accumulators | `0.816 s` best, noisy mean | Rejected; not better than baseline |
+| Move FZPPM scratch arrays into reusable workspace | `0.840 s` best | Rejected; removing NRT allocations worsened kernel shape |
+| Hoist scalar coefficients/masses inside XTP/YTP | `0.827 s` best | Rejected; worse than baseline |
+
+No additional TPCORE code changes were retained from this codegen pass. The
+current retained TPCORE change remains only the earlier cross-term `ua`/`va`
+scalar hoist.

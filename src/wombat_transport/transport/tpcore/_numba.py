@@ -505,18 +505,20 @@ if njit is not None:
         for j in range(j1p, j2p + 1):
             if j <= js or j >= jn:
                 for i in range(nlon):
-                    iu0 = int(ua[j, i])
-                    ru = ua[j, i] - float(iu0)
+                    ua_value = ua[j, i]
+                    va_value = va[j, i]
+                    iu0 = int(ua_value)
+                    ru = ua_value - float(iu0)
                     iu = i - iu0
                     iu_mod = iu % nlon
                     im1 = (iu - 1) % nlon
                     ip1 = (iu + 1) % nlon
-                    jv = int((j + 1.0) - va[j, i]) - 1
+                    jv = int((j + 1.0) - va_value) - 1
                     jvp1 = jv + 1
-                    coeff_v = va[j, i]
+                    coeff_v = va_value
                     left_valid = jv >= 0 and jv < nlat
                     right_valid = jvp1 >= 0 and jvp1 < nlat
-                    if ua[j, i] >= 0.0:
+                    if ua_value >= 0.0:
                         if left_valid and right_valid:
                             for tracer in range(ntracer):
                                 q_center = q[j, i, tracer]
@@ -576,13 +578,15 @@ if njit is not None:
                                 qqv[j, i, tracer] = q_center
             else:
                 for i in range(nlon):
-                    iu = int((i + 1.0) - ua[j, i]) - 1
+                    ua_value = ua[j, i]
+                    va_value = va[j, i]
+                    iu = int((i + 1.0) - ua_value) - 1
                     iu_mod = iu % nlon
                     ip1 = (iu + 1) % nlon
-                    coeff = ua[j, i]
-                    jv = int((j + 1.0) - va[j, i]) - 1
+                    coeff = ua_value
+                    jv = int((j + 1.0) - va_value) - 1
                     jvp1 = jv + 1
-                    coeff_v = va[j, i]
+                    coeff_v = va_value
                     left_valid = jv >= 0 and jv < nlat
                     right_valid = jvp1 >= 0 and jvp1 < nlat
                     if left_valid and right_valid:
