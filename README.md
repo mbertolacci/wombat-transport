@@ -87,6 +87,14 @@ Use the local virtual environment when available:
 .venv/bin/python -m pytest
 ```
 
+Selected transport parity tests run both pure NumPy and Numba transport paths
+by default. The Numba half skips automatically when `numba` is not importable.
+
+Optional Numba acceleration is controlled globally with `WOMBAT_NUMBA`; unset
+or truthy values enable it when available, and `0`, `false`, `no`, `off`, or
+`none` disable it. `WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and
+`WOMBAT_CONVECTION_NUMBA` override the global flag for individual operators.
+
 The project can also be installed with standard Python packaging tools. Core
 runtime dependencies are `numpy`, `netCDF4`, and `PyYAML`; the `dev` extra adds
 `pytest`.

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 
 import numpy as np
+
+from wombat_transport.transport.numba_control import numba_enabled
+from wombat_transport.transport.numba_control import numba_mode
 
 try:  # Optional acceleration path; NumPy remains the reference fallback.
     from numba import njit
@@ -441,13 +443,11 @@ def _convect_column_group_top(
 
 
 def _numba_convection_mode() -> str:
-    return os.environ.get("WOMBAT_CONVECTION_NUMBA", "1").lower()
+    return numba_mode("WOMBAT_CONVECTION_NUMBA")
 
 
 def _numba_convection_enabled() -> bool:
-    if not _NUMBA_AVAILABLE:
-        return False
-    return _numba_convection_mode() not in {"0", "false", "no", "off", "none"}
+    return numba_enabled("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
 
 
 def _convect_fullgrid_top_numba(

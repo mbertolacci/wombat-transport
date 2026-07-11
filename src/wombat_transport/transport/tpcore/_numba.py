@@ -2,15 +2,15 @@
 
 This module owns the optional compiled path. The reference implementation and
 public API stay in ``_core.py`` so WOMBAT_TPCORE_NUMBA=0 remains a plain NumPy
-path.
+path. WOMBAT_NUMBA provides the shared transport-wide default.
 """
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 
+from wombat_transport.transport.numba_control import numba_enabled
+from wombat_transport.transport.numba_control import numba_mode
 from wombat_transport.transport.tpcore.types import TpcoreSetup
 
 try:  # Optional acceleration dependency.
@@ -176,13 +176,11 @@ def _advect_tracers_fused_numba(
 
 
 def _numba_tpcore_mode() -> str:
-    return os.environ.get("WOMBAT_TPCORE_NUMBA", "1").lower()
+    return numba_mode("WOMBAT_TPCORE_NUMBA")
 
 
 def _numba_tpcore_enabled() -> bool:
-    if not _NUMBA_AVAILABLE:
-        return False
-    return _numba_tpcore_mode() not in {"0", "false", "no", "off", "none"}
+    return numba_enabled("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
 
 
 def _numba_tpcore_z_enabled() -> bool:

@@ -9,6 +9,11 @@ has since been replaced by a boolean switch; unset or truthy
 `WOMBAT_TPCORE_NUMBA` now enables the fused Numba path, and false-like values
 disable it.
 
+Current transport-wide control is `WOMBAT_NUMBA`: unset or truthy values enable
+optional Numba paths when importable, while false-like values disable them.
+`WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and `WOMBAT_CONVECTION_NUMBA`
+override that global switch for individual operators.
+
 The benchmark scripts now support `--warmup`, defaulting to one untimed run per
 tracer count. This avoids timing first-call Numba compilation when collecting
 steady-state kernel/runtime numbers.

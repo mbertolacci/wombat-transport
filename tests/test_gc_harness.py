@@ -968,7 +968,7 @@ def test_python_real_convection_sampled_output_has_finite_mass(tmp_path):
     np.testing.assert_allclose(output.final_tracer_mass, output.initial_tracer_mass, rtol=0.0, atol=1.0e-6)
 
 
-def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path):
+def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path, transport_numba_mode):
     with (CONVECTION_REAL_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
     assert metadata["snapshot"] == "convection-real-sampled-v2"
@@ -988,7 +988,7 @@ def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path):
     assert comparison.common_basis_oracle_mass_change_max_abs == 0.0
 
 
-def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
+def test_tracked_vdiff_snapshot_matches_python_port(tmp_path, transport_numba_mode):
     comparison = compare_vdiff_output(
         VDIFF_FIXTURE_DIR / "vdiff_input.nc",
         VDIFF_FIXTURE_DIR / "vdiff_output.nc",
@@ -1007,7 +1007,7 @@ def test_tracked_vdiff_snapshot_matches_python_port(tmp_path):
     assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
 
 
-def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_path):
+def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_path, transport_numba_mode):
     comparison = compare_vdiff_output(
         VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_input.nc",
         VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_output.nc",
@@ -1023,7 +1023,7 @@ def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_pat
     assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
 
 
-def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path):
+def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path, transport_numba_mode):
     comparison = compare_vdiff_output(
         VDIFF_NEGATIVE_FIXTURE_DIR / "vdiff_input.nc",
         VDIFF_NEGATIVE_FIXTURE_DIR / "vdiff_output.nc",
@@ -1305,7 +1305,7 @@ def test_tpcore_branch_preflight_rejects_large_n_s_path():
         validate_tpcore_branch_support(setup)
 
 
-def test_python_tpcore_matches_low_courant_oracle_tracer_step():
+def test_python_tpcore_matches_low_courant_oracle_tracer_step(transport_numba_mode):
     comparison = compare_python_tpcore_output(
         TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME,
         TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_OUTPUT_NAME,
@@ -1320,7 +1320,7 @@ def test_python_tpcore_matches_low_courant_oracle_tracer_step():
     assert comparison.max_abs_cy < 1.0
 
 
-def test_python_tpcore_matches_fxppm_low_courant_branch_fixture():
+def test_python_tpcore_matches_fxppm_low_courant_branch_fixture(transport_numba_mode):
     with (TPCORE_FXPPM_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
     assert metadata["scenario"] == "x_fxppm_low_courant"
@@ -1341,7 +1341,7 @@ def test_python_tpcore_matches_fxppm_low_courant_branch_fixture():
     assert comparison.max_abs_cy < 1.0
 
 
-def test_python_tpcore_matches_large_courant_branch_fixture():
+def test_python_tpcore_matches_large_courant_branch_fixture(transport_numba_mode):
     with (TPCORE_LARGE_CX_FIXTURE_DIR / SNAPSHOT_METADATA_NAME).open(encoding="utf-8") as handle:
         metadata = json.load(handle)
     assert metadata["scenario"] == "x_large_courant_polar"
@@ -1362,7 +1362,7 @@ def test_python_tpcore_matches_large_courant_branch_fixture():
     assert comparison.tracer_max_abs_error < 1.0e-12
 
 
-def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture():
+def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture(transport_numba_mode):
     with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
         tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
         tracer[:] = 4.0e-4

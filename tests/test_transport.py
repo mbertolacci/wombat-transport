@@ -417,7 +417,7 @@ def test_mix_full_pbl_mass_weights_full_and_fractional_levels():
     np.testing.assert_allclose(after_column_mass, before_column_mass)
 
 
-def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux():
+def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux(transport_numba_mode):
     fixture = _synthetic_vdiff_fixture()
 
     result = run_vdiffdr_one_step(**fixture)
@@ -497,7 +497,7 @@ def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
         raise AssertionError("run_vdiffdr_one_step accepted a malformed edge grid")
 
 
-def test_transport_one_step_runs_residual_operator_chain():
+def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
@@ -516,7 +516,7 @@ def test_transport_one_step_runs_residual_operator_chain():
     assert np.all(np.isfinite(result.state.data))
 
 
-def test_trace_transport_one_step_captures_operator_handoffs():
+def test_trace_transport_one_step_captures_operator_handoffs(transport_numba_mode):
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
     field = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)

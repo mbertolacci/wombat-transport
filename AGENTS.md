@@ -76,6 +76,9 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
   see `tools/gc_harness/README.md`.
 - Large local-data tests should skip or fail with clear messages when required
   GEOS-Chem fixture files are absent.
+- Transport parity tests that use the `transport_numba_mode` fixture run both
+  pure NumPy and Numba paths by default; the Numba case skips when `numba` is
+  unavailable.
 
 ## Coding Constraints
 
@@ -88,4 +91,7 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 - Keep comments sparse and useful; document intentional GEOS-Chem deviations
   where they occur.
 - Numba is available in the local `.venv` and is part of the current
-  performance path, but correctness is still judged by GEOS-Chem parity tests.
+  performance path. `WOMBAT_NUMBA` is the global switch, with
+  `WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and `WOMBAT_CONVECTION_NUMBA`
+  as per-operator overrides. Correctness is still judged by GEOS-Chem parity
+  tests.
