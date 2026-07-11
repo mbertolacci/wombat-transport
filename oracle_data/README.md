@@ -16,6 +16,9 @@ oracle_data/
     base_initial_tpcore_v1.json
     residual_initial_tpcore_v1.json
     fullgrid_synthetic_low_courant_tpcore_v1.json
+    base_initial_transport_chain_v3.json
+    base_initial_vdiff_after_tpcore_v3.json
+    base_initial_convection_fullgrid_v3.json
   base_initial_tpcore_v1/
     transport_step_input.nc
     transport_step_output.nc
@@ -27,6 +30,18 @@ oracle_data/
   fullgrid_synthetic_low_courant_tpcore_v1/
     transport_step_input.nc
     transport_step_output.nc
+    manifest.json
+  base_initial_transport_chain_v3/
+    transport_chain_input.nc
+    transport_chain_output.nc
+    manifest.json
+  base_initial_vdiff_after_tpcore_v3/
+    vdiff_input.nc
+    vdiff_output.nc
+    manifest.json
+  base_initial_convection_fullgrid_v3/
+    convection_input.nc
+    convection_output.nc
     manifest.json
 ```
 
@@ -54,6 +69,16 @@ Generate the 24-tracer residual initial-condition fixture:
 python -m wombat_transport.gc_harness oracle-fixture-generate residual_initial_tpcore_v1
 ```
 
+Generate the current full transport-chain handoff fixtures:
+
+```bash
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_transport_chain_v3
+
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_vdiff_after_tpcore_v3
+
+python -m wombat_transport.gc_harness oracle-fixture-generate base_initial_convection_fullgrid_v3
+```
+
 Check a cached fixture:
 
 ```bash
@@ -75,6 +100,12 @@ The full-grid synthetic low-Courant fixture is a diagnostic control: it uses the
 same horizontal and vertical grid but smooth synthetic pressure, wind, and
 tracer fields. It should stay at tight TPCORE parity and helps separate
 full-grid geometry issues from real-met/restart interactions.
+
+The `base_initial_transport_chain_v3` fixture and its isolated VDIFF and
+convection stage fixtures should be treated as one generation set. If the
+handoff comparison reports pressure-derived or tracer mismatches between the
+chain output and the stage inputs, regenerate all three local payloads before
+changing thresholds.
 
 Fetch support uses the same cache layout, but the tracked manifest must first be
 updated with concrete URLs and checksums:

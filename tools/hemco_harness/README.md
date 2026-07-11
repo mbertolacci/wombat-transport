@@ -7,6 +7,12 @@ factor, and species-emission assembly behavior.
 Generated files belong under `tools/hemco_harness/work/` and are ignored by
 git.
 
+The generated `HEMCO_sa_Grid.rc` deliberately writes explicit GEOS 2x2.5
+latitude edges, including the polar half-cells `[-90, -89]` and `[89, 90]`.
+Do not remove those edges: HEMCO standalone reconstructs different polar edges
+from `YMID` alone, which exercises a different regridding branch than the
+GEOS-Chem Classic target run.
+
 ## Generate a Scenario
 
 ```bash
@@ -57,3 +63,8 @@ python -m wombat_transport.hemco_harness compare \
 The comparison reports per-scenario, per-species max/mean error, global mass
 error, max grid-cell mass error, nonzero-mask mismatches, and whether both
 outputs are bottom-level-only.
+
+The optional standalone comparison should stay tight for same-grid fields,
+source regridding, scale factors, and source-plus-scale regridding. If only the
+first or last latitude row fails, inspect the generated target grid edges
+before relaxing tolerances.
