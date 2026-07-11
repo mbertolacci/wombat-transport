@@ -17,6 +17,7 @@ tools/gc_harness/work/
 tools/hemco_harness/build/
 tools/hemco_harness/work/
 validation_runs/work/
+wombat_run_metadata.json
 oracle_data/*/
 oracle_data/*.nc
 oracle_data/*.nc4

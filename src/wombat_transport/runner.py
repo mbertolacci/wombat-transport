@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from datetime import timezone
+import json
 import logging
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import numpy as np
@@ -33,6 +36,7 @@ from wombat_transport.transport import (
 )
 
 logger = logging.getLogger(__name__)
+RUN_METADATA_NAME = "wombat_run_metadata.json"
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,7 @@ class TracerSimulationResult:
 
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
+    _write_run_metadata(config)
     species = load_species_database(config.species_database)
     logger.debug("loaded_species count=%d", len(species))
     state = initialize_tracers(
@@ -180,6 +185,65 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         emissions_dt_s=emissions_dt_s,
         final_delp_dry_hpa=final_delp_dry_hpa,
     )
+
+
+def _write_run_metadata(config: RunConfig) -> None:
+    metadata = {
+        "schema_version": 1,
+        "kind": "wombat-run",
+        "run_name": config.name,
+        "run_directory": str(config.root),
+        "written_at_utc": datetime.now(timezone.utc).isoformat(),
+        "git": _git_provenance(config.root),
+    }
+    path = config.root / RUN_METADATA_NAME
+    try:
+        path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("failed_to_write_run_metadata path=%s error=%s", path, exc)
+
+
+def _git_provenance(path: Path) -> dict[str, Any]:
+    root = _git_output(path, "rev-parse", "--show-toplevel")
+    if root is None:
+        fallback = Path(__file__).resolve().parents[2]
+        root = _git_output(fallback, "rev-parse", "--show-toplevel")
+    if root is None:
+        return {"available": False}
+    commit = _git_output(Path(root), "rev-parse", "HEAD")
+    tracked_dirty = _git_returncode(Path(root), "diff-index", "--quiet", "HEAD", "--") == 1
+    untracked_output = _git_output(Path(root), "ls-files", "--others", "--exclude-standard")
+    untracked_present = bool(untracked_output)
+    return {
+        "available": True,
+        "root": root,
+        "commit": commit,
+        "dirty": bool(tracked_dirty or untracked_present),
+        "tracked_dirty": bool(tracked_dirty),
+        "untracked_present": untracked_present,
+    }
+
+
+def _git_output(path: Path, *args: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def _git_returncode(path: Path, *args: str) -> int:
+    completed = subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return completed.returncode
 
 
 def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOperator:

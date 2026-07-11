@@ -61,6 +61,10 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 - Local generated run/debug directories such as `base_noemis*`,
   `residual_trace/`, and `*_wombat/one_day_debug/` are working artifacts unless
   the user explicitly asks to track them.
+- When working from a separate Git worktree, check the parent
+  `wombat-transport/` checkout for missing large local artifacts before
+  regenerating them. Oracle payloads, `validation_runs/work/` outputs, and
+  other long-run NetCDF products are often present only in the primary checkout.
 
 ## Validation Pointers
 

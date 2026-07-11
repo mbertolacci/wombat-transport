@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+import json
 from types import SimpleNamespace
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
 from wombat_transport.run_config import load_run_config, logging_level
 from wombat_transport.runner import (
+    RUN_METADATA_NAME,
     _is_time_for_emissions,
     _load_emissions_operator,
     _load_simulation_forcing,
@@ -392,6 +394,11 @@ def test_run_cli_debug_logging_includes_runner_substeps(tmp_path):
     assert "DEBUG wombat_transport.runner evaluating_emissions step=1" in completed.stderr
     assert "DEBUG wombat_transport.runner running_transport step=1" in completed.stderr
     assert "DEBUG wombat_transport.runner output_manager enabled=False" in completed.stderr
+    metadata = json.loads((tmp_path / RUN_METADATA_NAME).read_text(encoding="utf-8"))
+    assert metadata["kind"] == "wombat-run"
+    assert metadata["run_name"] == "logging_smoke"
+    assert "written_at_utc" in metadata
+    assert {"available", "commit", "dirty", "tracked_dirty", "untracked_present"} <= set(metadata["git"])
 
 
 def test_run_cli_base_init_only_smoke():
