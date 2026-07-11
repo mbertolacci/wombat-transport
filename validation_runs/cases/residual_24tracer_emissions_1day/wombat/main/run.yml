@@ -1,0 +1,50 @@
+name: residual_24tracer_emissions_1day_wombat
+source_run_dir: .
+species_database: ./species_database.yml
+initial_restart:
+grid_template: ../../../../../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4
+output_dir: ./OutputDir
+simulation:
+  start: "2014-09-01 00:00"
+  end: "2014-09-02 00:00"
+  transport_timestep_s: 600
+  emissions_timestep_s: 1200
+meteorology:
+  root: ../../../../../ExtData/GEOS_2x2.5/MERRA2
+emissions: emissions.yml
+logging:
+  level: info
+outputs:
+  expid: OutputDir/GEOSChem
+  dtype: float32
+  compression:
+    enabled: true
+    level: 5
+    shuffle: true
+  chunking:
+    rank1: [512]
+    rank2:
+    rank3: [1, 91, 144]
+    rank4: [1, 1, 91, 144]
+  collections:
+    Restart:
+      filename: ./Restarts/GEOSChem.Restart.%y4%m2%d2_%h2%n2z.nc4
+      frequency: 00000001 000000
+      duration: 00000001 000000
+      mode: instantaneous
+      fields:
+        - SpeciesRst_?ALL?
+        - Met_DELPDRY
+        - Met_PS1WET
+        - Met_PS1DRY
+        - Met_SPHU1
+        - Met_TMPU1
+    SpeciesConcThreeHourly:
+      template: "%y4%m2%d2_%h2%n2z.nc4"
+      frequency: 00000000 030000
+      duration: 00000001 000000
+      mode: time-averaged
+      fields:
+        - SpeciesConcVV_?ADV?
+diagnostics: {}
+comparison: {}

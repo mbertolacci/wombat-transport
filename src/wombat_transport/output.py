@@ -664,13 +664,13 @@ def _write_restart_met_field(
         return
     if field == "Met_SPHU1":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
-        variable.units = "kg kg-1"
+        variable.units = "g kg-1"
         specific_humidity = getattr(
             snapshot.forcing,
             "restart_specific_humidity_kg_kg",
             snapshot.forcing.specific_humidity_kg_kg,
         )
-        variable[:] = specific_humidity[:, ::-1, :, :]
+        variable[:] = specific_humidity[:, ::-1, :, :] * 1000.0
         return
     if field == "Met_TMPU1":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)

@@ -175,7 +175,8 @@ def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):
         assert dataset.variables["Met_PS1WET"].shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
         np.testing.assert_allclose(dataset.variables["Met_PS1DRY"][:], 1009.0)
         np.testing.assert_allclose(dataset.variables["Met_PS1WET"][:], 1011.0)
-        np.testing.assert_allclose(dataset.variables["Met_SPHU1"][:], 0.005)
+        assert dataset.variables["Met_SPHU1"].units == "g kg-1"
+        np.testing.assert_allclose(dataset.variables["Met_SPHU1"][:], 5.0)
         np.testing.assert_allclose(dataset.variables["Met_TMPU1"][:], 281.0)
 
 

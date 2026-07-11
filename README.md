@@ -56,6 +56,8 @@ multi-week/month transport-only behavior still need explicit comparison.
 - `tools/gc_harness/`: GEOS-Chem-backed operator, output, met, oracle, and
   full-run trace harnesses.
 - `tools/hemco_harness/`: standalone HEMCO emissions comparison scenarios.
+- `validation_runs/`: named full-run GEOS-Chem vs Wombat validation case
+  specs and compare-only tooling conventions.
 - `oracle_data/`: ignored large-oracle payload cache with tracked fixture
   definitions under `oracle_data/manifests/`.
 
@@ -70,6 +72,8 @@ deviations.
 - `tools/hemco_harness/README.md` documents standalone HEMCO scenarios for
   source reads, regridding, scale factors, optional dimensions, and polar-row
   behavior.
+- `validation_runs/README.md` documents full-run validation case specs and the
+  compare-only workflow for existing GC/Wombat outputs.
 - `oracle_data/README.md` documents the local large-fixture cache and the
   current full-chain fixture set.
 - `performance.md` records benchmark and profiling results.
@@ -136,4 +140,5 @@ interpretation.
 - `performance.md`: benchmark history and profiling workflows.
 - `tools/gc_harness/README.md`: GEOS-Chem oracle and trace tooling.
 - `tools/hemco_harness/README.md`: HEMCO standalone emissions parity tooling.
+- `validation_runs/README.md`: full-run validation case registry.
 - `oracle_data/README.md`: large oracle cache layout.

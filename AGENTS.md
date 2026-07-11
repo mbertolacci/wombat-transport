@@ -40,6 +40,8 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 - `tools/gc_harness/`: GEOS-Chem operator, HISTORY, met, oracle, and
   full-run/main-loop trace tooling.
 - `tools/hemco_harness/`: standalone HEMCO scenarios for emissions parity.
+- `validation_runs/`: named full-run GEOS-Chem vs Wombat case specs and
+  compare-only workflows for existing outputs.
 - `oracle_data/`: ignored large oracle payload cache plus tracked lightweight
   manifests.
 - `performance.md`: benchmark/profiling notes and Numba status.

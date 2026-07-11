@@ -1,0 +1,40 @@
+schema_version: 1
+name: residual_24tracer_emissions_1day
+title: Residual 24-tracer emissions, one day
+purpose: >
+  Run the 24-tracer residual emissions configuration for one day and compare
+  normal SpeciesConc HISTORY output.
+tags: [residual, emissions, multi-tracer, quick-history]
+
+defaults:
+  grid: geos_2x25_47
+  transport_timestep_s: 600
+  meteorology_root: "{repo}/ExtData/GEOS_2x2.5/MERRA2"
+
+modes:
+  quick:
+    comparisons: [species_conc]
+
+stages:
+  - id: main
+    start: "2014-09-01 00:00"
+    end: "2014-09-02 00:00"
+    engines:
+      geoschem:
+        template_dir: geoschem/main
+        work_dir: "{work}/main/geoschem"
+        compile_script: compile_geoschem.sh
+        run_script: run_geoschem.sh
+      wombat:
+        template_dir: wombat/main
+        work_dir: "{work}/main/wombat"
+    initial_restart:
+      geoschem: null
+      wombat: null
+    comparisons:
+      - id: species_conc
+        kind: species_conc
+        geoschem_glob: "OutputDir/GEOSChem.SpeciesConcThreeHourly.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.SpeciesConcThreeHourly.*.nc4"
+        fields: ["SpeciesConcVV_?ALL?"]
+        tolerance_mode: report
