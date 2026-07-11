@@ -1,0 +1,192 @@
+r0002p001s001:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: background
+r0002p001s002:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion12_month2014-09
+r0002p001s003:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion13_month2014-09
+r0002p001s004:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion14_month2014-09
+r0002p001s005:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion15_month2014-09
+r0002p001s006:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion16_month2014-09
+r0002p001s007:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion17_month2014-09
+r0002p001s008:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion18_month2014-09
+r0002p001s009:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion19_month2014-09
+r0002p001s010:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion20_month2014-09
+r0002p001s011:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion21_month2014-09
+r0002p001s012:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: ocean_residual_regionRegion22_month2014-09
+r0002p001s013:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft02_regionRegion07_month2014-09
+r0002p001s014:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft03_regionRegion07_month2014-09
+r0002p001s015:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion03_month2014-09
+r0002p001s016:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion04_month2014-09
+r0002p001s017:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion05_month2014-09
+r0002p001s018:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion06_month2014-09
+r0002p001s019:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion08_month2014-09
+r0002p001s020:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion09_month2014-09
+r0002p001s021:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft04_regionRegion10_month2014-09
+r0002p001s022:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft05_regionRegion02_month2014-09
+r0002p001s023:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft05_regionRegion03_month2014-09
+r0002p001s024:
+  Formula: CO2
+  Is_Gas: true
+  MW_g: 44.01
+  Src_Mode: HEMCO
+  Is_Tracer: true
+  Background_VV: 0.0004
+  FullName: bio_gpp_residual_pft05_regionRegion04_month2014-09

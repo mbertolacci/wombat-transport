@@ -1,0 +1,61 @@
+unit_conversion: none
+missing_species: zero
+
+scales:
+  regionRegion12_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion12_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion13_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion13_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion14_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion14_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion15_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion15_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion16_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion16_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion17_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion17_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion18_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion18_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion19_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion19_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion20_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion20_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion21_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion21_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion22_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion22_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion07_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion07_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion03_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion03_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion04_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion04_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion05_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion05_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion06_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion06_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion08_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion08_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion09_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion09_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion10_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion10_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  regionRegion02_month2014-09: {path_template: ../../../../../scaling-grids/regionRegion02_month2014-09.nc, variable: value, frequency: monthly, dimensions: xy}
+  bio_gpp_residual_pft02_regionRegion07_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft03_regionRegion07_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion03_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion04_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion05_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion06_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion08_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion09_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft04_regionRegion10_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft05_regionRegion02_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft05_regionRegion03_month2014-09_MULTIPLY_BY: {value: -1.0}
+  bio_gpp_residual_pft05_regionRegion04_month2014-09_MULTIPLY_BY: {value: -1.0}
+
+fields:
+  - {name: ocean_residual_regionRegion12_month2014-09, species: r0002p001s002, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion12_month2014-09]}
+  - {name: ocean_residual_regionRegion13_month2014-09, species: r0002p001s003, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion13_month2014-09]}
+  - {name: ocean_residual_regionRegion14_month2014-09, species: r0002p001s004, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion14_month2014-09]}
+  - {name: ocean_residual_regionRegion15_month2014-09, species: r0002p001s005, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion15_month2014-09]}
+  - {name: ocean_residual_regionRegion16_month2014-09, species: r0002p001s006, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion16_month2014-09]}
+  - {name: ocean_residual_regionRegion17_month2014-09, species: r0002p001s007, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion17_month2014-09]}
+  - {name: ocean_residual_regionRegion18_month2014-09, species: r0002p001s008, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion18_month2014-09]}
+  - {name: ocean_residual_regionRegion19_month2014-09, species: r0002p001s009, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion19_month2014-09]}
+  - {name: ocean_residual_regionRegion20_month2014-09, species: r0002p001s010, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion20_month2014-09]}
+  - {name: ocean_residual_regionRegion21_month2014-09, species: r0002p001s011, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion21_month2014-09]}
+  - {name: ocean_residual_regionRegion22_month2014-09, species: r0002p001s012, path_template: ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc, variable: residual, frequency: monthly, dimensions: xy, units: kgCO2/m2/s, scales: [regionRegion22_month2014-09]}
+  - {name: bio_gpp_residual_pft02_regionRegion07_month2014-09, species: r0002p001s013, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 2}, scales: [regionRegion07_month2014-09, bio_gpp_residual_pft02_regionRegion07_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft03_regionRegion07_month2014-09, species: r0002p001s014, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 3}, scales: [regionRegion07_month2014-09, bio_gpp_residual_pft03_regionRegion07_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion03_month2014-09, species: r0002p001s015, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion03_month2014-09, bio_gpp_residual_pft04_regionRegion03_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion04_month2014-09, species: r0002p001s016, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion04_month2014-09, bio_gpp_residual_pft04_regionRegion04_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion05_month2014-09, species: r0002p001s017, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion05_month2014-09, bio_gpp_residual_pft04_regionRegion05_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion06_month2014-09, species: r0002p001s018, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion06_month2014-09, bio_gpp_residual_pft04_regionRegion06_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion08_month2014-09, species: r0002p001s019, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion08_month2014-09, bio_gpp_residual_pft04_regionRegion08_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion09_month2014-09, species: r0002p001s020, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion09_month2014-09, bio_gpp_residual_pft04_regionRegion09_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft04_regionRegion10_month2014-09, species: r0002p001s021, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 4}, scales: [regionRegion10_month2014-09, bio_gpp_residual_pft04_regionRegion10_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft05_regionRegion02_month2014-09, species: r0002p001s022, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 5}, scales: [regionRegion02_month2014-09, bio_gpp_residual_pft05_regionRegion02_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft05_regionRegion03_month2014-09, species: r0002p001s023, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 5}, scales: [regionRegion03_month2014-09, bio_gpp_residual_pft05_regionRegion03_month2014-09_MULTIPLY_BY]}
+  - {name: bio_gpp_residual_pft05_regionRegion04_month2014-09, species: r0002p001s024, path_template: ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc, variable: residual, frequency: hourly, dimensions: xy, units: kgCO2/m2/s, select: {dimension: npft, value: 5}, scales: [regionRegion04_month2014-09, bio_gpp_residual_pft05_regionRegion04_month2014-09_MULTIPLY_BY]}

@@ -1,0 +1,91 @@
+schema_version: 1
+name: restart_chain_noemis_2month
+title: Restart chain, no emissions, two months
+purpose: >
+  Run two one-month no-emissions windows and compare daily averaged
+  SpeciesConc output plus monthly restart behavior after each engine restarts
+  from its own first-window restart output.
+tags: [noemis, restart-chain, long-history]
+
+defaults:
+  grid: geos_2x25_47
+  transport_timestep_s: 600
+  meteorology_root: "{repo}/ExtData/GEOS_2x2.5/MERRA2"
+
+modes:
+  quick:
+    comparisons: [species_conc]
+  restart:
+    comparisons: [species_conc, restart]
+
+stages:
+  - id: window1
+    start: "2014-09-01 00:00"
+    end: "2014-10-01 00:00"
+    engines:
+      geoschem:
+        template_dir: geoschem/window1
+        work_dir: "{work}/window1/geoschem"
+        compile_script: compile_geoschem.sh
+        run_script: run_geoschem.sh
+      wombat:
+        template_dir: wombat/window1
+        work_dir: "{work}/window1/wombat"
+    initial_restart:
+      geoschem: "{repo}/base/Restarts/GEOSChem.Restart.20140901_0000z.nc4"
+      wombat: "{repo}/base/Restarts/GEOSChem.Restart.20140901_0000z.nc4"
+    comparisons:
+      - id: species_conc
+        kind: species_conc
+        geoschem_glob: "OutputDir/GEOSChem.SpeciesConcDaily.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.SpeciesConcDaily.*.nc4"
+        fields: ["SpeciesConcVV_?ALL?"]
+        tolerance_mode: report
+      - id: restart
+        kind: restart
+        geoschem_glob: "Restarts/GEOSChem.Restart.20141001_0000z.nc4"
+        wombat_glob: "Restarts/GEOSChem.Restart.20141001_0000z.nc4"
+        fields:
+          - SpeciesRst_?ALL?
+          - Met_DELPDRY
+          - Met_PS1DRY
+          - Met_PS1WET
+          - Met_SPHU1
+          - Met_TMPU1
+        tolerance_mode: report
+
+  - id: window2
+    depends_on: window1
+    start: "2014-10-01 00:00"
+    end: "2014-11-01 00:00"
+    engines:
+      geoschem:
+        template_dir: geoschem/window2
+        work_dir: "{work}/window2/geoschem"
+        compile_script: compile_geoschem.sh
+        run_script: run_geoschem.sh
+      wombat:
+        template_dir: wombat/window2
+        work_dir: "{work}/window2/wombat"
+    initial_restart:
+      geoschem: "{work}/window1/geoschem/Restarts/GEOSChem.Restart.20141001_0000z.nc4"
+      wombat: "{work}/window1/wombat/Restarts/GEOSChem.Restart.20141001_0000z.nc4"
+    comparisons:
+      - id: species_conc
+        kind: species_conc
+        geoschem_glob: "OutputDir/GEOSChem.SpeciesConcDaily.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.SpeciesConcDaily.*.nc4"
+        fields: ["SpeciesConcVV_?ALL?"]
+        tolerance_mode: report
+      - id: restart
+        kind: restart
+        geoschem_glob: "Restarts/GEOSChem.Restart.20141101_0000z.nc4"
+        wombat_glob: "Restarts/GEOSChem.Restart.20141101_0000z.nc4"
+        fields:
+          - SpeciesRst_?ALL?
+          - Met_DELPDRY
+          - Met_PS1DRY
+          - Met_PS1WET
+          - Met_SPHU1
+          - Met_TMPU1
+        tolerance_mode: report
