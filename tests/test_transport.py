@@ -9,6 +9,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.fields import (
     canonical_time_slice,
 )
@@ -614,6 +615,26 @@ def test_active_emissions_rejects_vertically_distributed_flux_until_supported():
         assert "vertically distributed emissions are not yet supported" in str(exc)
     else:
         raise AssertionError("vertically distributed emissions were accepted")
+
+
+def test_surface_emissions_are_accepted_without_full_5d_field():
+    tracer = TracerField(
+        names=("A",),
+        data=np.zeros((1, 3, 2, 2, 1), dtype=np.float64),
+        units=("mol mol-1 dry",),
+        coords={},
+    )
+    values = np.arange(4.0).reshape(2, 2, 1)
+    emissions = SurfaceEmissions(
+        names=("A",),
+        data=values,
+        units=("kg/m2/s",),
+        coords={"AREA": np.ones((2, 2), dtype=np.float64)},
+    )
+
+    surface = _surface_flux_from_active_emissions(tracer, emissions, nlat=2, nlon=2, ntracer=1)
+
+    np.testing.assert_array_equal(surface, values)
 
 
 def test_transport_window_accumulates_average_state():

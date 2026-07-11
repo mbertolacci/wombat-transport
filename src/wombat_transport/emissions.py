@@ -22,6 +22,33 @@ class EmissionOperatorConfiguration:
     missing_species: str
 
 
+@dataclass(frozen=True)
+class SurfaceEmissions:
+    """Surface-only emissions in transport layout ``(lat, lon, tracer)``."""
+
+    names: tuple[str, ...]
+    data: np.ndarray
+    units: tuple[str, ...]
+    coords: dict[str, np.ndarray]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.data.shape
+
+    def to_tracer_field(self, nlev: int) -> TracerField:
+        full = np.zeros((1, int(nlev), self.data.shape[0], self.data.shape[1], self.data.shape[2]), dtype=np.float64)
+        full[0, -1, :, :, :] = self.data
+        return TracerField(names=self.names, data=full, units=self.units, coords=self.coords)
+
+
+@dataclass(frozen=True)
+class _SourceSlice:
+    values: np.ndarray
+    dims: tuple[str, ...]
+    lat: np.ndarray
+    lon: np.ndarray
+
+
 class EmissionsOperator:
     """Evaluate explicitly configured raw emissions fields for one timestep."""
 
@@ -42,8 +69,9 @@ class EmissionsOperator:
         self.species = tuple(species)
         self.grid = grid
         self._species_index = {item.name: index for index, item in enumerate(self.species)}
-        self._field_cache: dict[tuple[str, datetime], np.ndarray] = {}
+        self._field_cache: dict[tuple[object, ...], np.ndarray] = {}
         self._scale_cache: dict[tuple[str, datetime], np.ndarray | float] = {}
+        self._source_cache: dict[tuple[object, ...], _SourceSlice] = {}
         self._regrid_cache: dict[tuple[bytes, bytes], tuple[np.ndarray, np.ndarray]] = {}
 
         for field in self.config.fields:
@@ -90,8 +118,11 @@ class EmissionsOperator:
         return tuple(str(field["species"]) for field in self.config.fields)
 
     def evaluate(self, valid_time: datetime) -> TracerField:
-        nlev, nlat, nlon = self.grid.shape
-        data = np.zeros((1, nlev, nlat, nlon, len(self.species)), dtype=np.float64)
+        return self.evaluate_surface_flux(valid_time).to_tracer_field(self.grid.shape[0])
+
+    def evaluate_surface_flux(self, valid_time: datetime) -> SurfaceEmissions:
+        _nlev, nlat, nlon = self.grid.shape
+        data = np.zeros((nlat, nlon, len(self.species)), dtype=np.float64)
         units = [""] * len(self.species)
 
         for field in self.config.fields:
@@ -102,10 +133,11 @@ class EmissionsOperator:
                 scale = self._evaluate_scale(str(scale_name), valid_time)
                 surface_flux *= scale
 
-            data[0, -1, :, :, tracer_index] += surface_flux
+            data[:, :, tracer_index] += surface_flux
             units[tracer_index] = str(field.get("units", units[tracer_index]))
 
-        return TracerField(
+        self._prune_temporal_caches(valid_time)
+        return SurfaceEmissions(
             names=tuple(item.name for item in self.species),
             data=data,
             units=tuple(units),
@@ -118,9 +150,10 @@ class EmissionsOperator:
         )
 
     def _evaluate_field(self, field: dict[str, Any], valid_time: datetime) -> np.ndarray:
-        key = (str(field["name"]), _selection_time(valid_time, str(field.get("frequency", "constant"))))
+        selection_time = _selection_time(valid_time, str(field.get("frequency", "constant")))
+        key = self._configured_array_key(field, selection_time)
         if key not in self._field_cache:
-            self._field_cache[key] = self._read_configured_array(field, key[1])
+            self._field_cache[key] = self._read_configured_array(field, selection_time)
         return self._field_cache[key]
 
     def _evaluate_scale(self, name: str, valid_time: datetime) -> np.ndarray | float:
@@ -134,45 +167,61 @@ class EmissionsOperator:
         return self._scale_cache[key]
 
     def _read_configured_array(self, spec: dict[str, Any], selection_time: datetime) -> np.ndarray:
+        source = self._read_source_slice(spec, selection_time)
+        values = source.values
+        dims = list(source.dims)
+        path = _resolve_template_path(self.root, str(spec["path_template"]), selection_time)
+        variable_name = str(spec["variable"])
+
+        select = spec.get("select")
+        if select:
+            dim_name = str(select["dimension"])
+            if dim_name not in dims:
+                raise ValueError(f"{path}:{variable_name} has no dimension {dim_name}")
+            axis = dims.index(dim_name)
+            index = _select_dimension_index_from_size(dims, dim_name, int(select["value"]), values.shape[axis])
+            values = np.take(values, index, axis=axis)
+            dims.pop(axis)
+
+        if "lat" not in dims or "lon" not in dims:
+            raise ValueError(f"{path}:{variable_name} must have lat and lon dimensions after selection")
+        lat_axis = dims.index("lat")
+        lon_axis = dims.index("lon")
+        values = np.moveaxis(np.asarray(values, dtype=np.float64), (lat_axis, lon_axis), (0, 1))
+        if values.ndim != 2:
+            raise ValueError(f"{path}:{variable_name} must reduce to a 2-D horizontal field")
+
+        if _same_grid(source.lat, self.grid.lat_deg) and _same_grid(source.lon, self.grid.lon_deg):
+            return np.ascontiguousarray(values)
+        return self._regrid_to_target(values, source.lat, source.lon)
+
+    def _read_source_slice(self, spec: dict[str, Any], selection_time: datetime) -> _SourceSlice:
+        key = self._source_slice_key(spec, selection_time)
+        if key in self._source_cache:
+            return self._source_cache[key]
+
         path = _resolve_template_path(self.root, str(spec["path_template"]), selection_time)
         variable_name = str(spec["variable"])
         with netCDF4.Dataset(path) as dataset:
             if variable_name not in dataset.variables:
                 raise KeyError(f"{path} is missing variable {variable_name}")
             variable = dataset.variables[variable_name]
-            values = np.ma.filled(variable[:], np.nan)
             dims = list(variable.dimensions)
-
+            slices: list[object] = [slice(None)] * len(dims)
             if "time" in dims:
                 axis = dims.index("time")
                 index = _select_time_index(dataset, selection_time, frequency=str(spec.get("frequency", "constant")))
-                values = np.take(values, index, axis=axis)
+                slices[axis] = index
                 dims.pop(axis)
-
-            select = spec.get("select")
-            if select:
-                dim_name = str(select["dimension"])
-                if dim_name not in dims:
-                    raise ValueError(f"{path}:{variable_name} has no dimension {dim_name}")
-                axis = dims.index(dim_name)
-                index = _select_dimension_index(dataset, dim_name, int(select["value"]))
-                values = np.take(values, index, axis=axis)
-                dims.pop(axis)
-
-            if "lat" not in dims or "lon" not in dims:
-                raise ValueError(f"{path}:{variable_name} must have lat and lon dimensions after selection")
-            lat_axis = dims.index("lat")
-            lon_axis = dims.index("lon")
-            values = np.moveaxis(np.asarray(values, dtype=np.float64), (lat_axis, lon_axis), (0, 1))
-            if values.ndim != 2:
-                raise ValueError(f"{path}:{variable_name} must reduce to a 2-D horizontal field")
-
-            source_lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
-            source_lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
-
-        if _same_grid(source_lat, self.grid.lat_deg) and _same_grid(source_lon, self.grid.lon_deg):
-            return np.ascontiguousarray(values)
-        return self._regrid_to_target(values, source_lat, source_lon)
+            values = np.ma.filled(variable[tuple(slices)], np.nan)
+            source = _SourceSlice(
+                values=np.asarray(values, dtype=np.float64),
+                dims=tuple(dims),
+                lat=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+                lon=np.asarray(dataset.variables["lon"][:], dtype=np.float64),
+            )
+        self._source_cache[key] = source
+        return source
 
     def _regrid_to_target(self, values: np.ndarray, source_lat: np.ndarray, source_lon: np.ndarray) -> np.ndarray:
         key = (np.ascontiguousarray(source_lat).tobytes(), np.ascontiguousarray(source_lon).tobytes())
@@ -193,6 +242,37 @@ class EmissionsOperator:
         regridded = lat_regridded @ lon_weights.T
         regridded /= lon_denominator[np.newaxis, :]
         return np.ascontiguousarray(regridded)
+
+    def _configured_array_key(self, spec: dict[str, Any], selection_time: datetime) -> tuple[object, ...]:
+        select = spec.get("select") or {}
+        return (
+            "array",
+            str(_resolve_template_path(self.root, str(spec["path_template"]), selection_time)),
+            str(spec["variable"]),
+            selection_time,
+            str(select.get("dimension", "")),
+            int(select["value"]) if "value" in select else None,
+        )
+
+    def _source_slice_key(self, spec: dict[str, Any], selection_time: datetime) -> tuple[object, ...]:
+        return (
+            "source",
+            str(_resolve_template_path(self.root, str(spec["path_template"]), selection_time)),
+            str(spec["variable"]),
+            selection_time,
+        )
+
+    def _prune_temporal_caches(self, valid_time: datetime) -> None:
+        keep_times = {datetime(2000, 1, 1)}
+        for field in self.config.fields:
+            keep_times.add(_selection_time(valid_time, str(field.get("frequency", "constant"))))
+            for scale_name in field.get("scales", ()):
+                spec = self.config.scales[str(scale_name)]
+                keep_times.add(_selection_time(valid_time, str(spec.get("frequency", "constant"))))
+
+        self._field_cache = {key: value for key, value in self._field_cache.items() if key[3] in keep_times}
+        self._source_cache = {key: value for key, value in self._source_cache.items() if key[3] in keep_times}
+        self._scale_cache = {key: value for key, value in self._scale_cache.items() if key[1] in keep_times}
 
 def _resolve_path(root: Path, value: str) -> Path:
     path = Path(value)
@@ -247,9 +327,15 @@ def _select_time_index(dataset: netCDF4.Dataset, timestamp: datetime, *, frequen
 
 
 def _select_dimension_index(dataset: netCDF4.Dataset, dimension: str, value: int) -> int:
+    return _select_dimension_index_from_size([dimension], dimension, value, len(dataset.dimensions[dimension]))
+
+
+def _select_dimension_index_from_size(dims: list[str], dimension: str, value: int, size: int) -> int:
+    if dimension not in dims:
+        raise ValueError(f"dimension {dimension!r} is not present")
     index = value - 1
-    if index < 0 or index >= len(dataset.dimensions[dimension]):
-        raise IndexError(f"{dimension}={value} is outside dimension length {len(dataset.dimensions[dimension])}")
+    if index < 0 or index >= size:
+        raise IndexError(f"{dimension}={value} is outside dimension length {size}")
     return index
 
 

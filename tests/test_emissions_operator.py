@@ -62,6 +62,87 @@ def test_from_mapping_accepts_inline_emissions_spec(tmp_path):
     np.testing.assert_array_equal(emissions.data[0, -1, :, :, 0], values)
 
 
+def test_evaluate_surface_flux_returns_compact_surface_field(tmp_path):
+    grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=3)
+    values = np.arange(8.0).reshape(2, 4) + 1.0
+    _write_xy_file(tmp_path / "source.nc", values)
+    operator = EmissionsOperator.from_mapping(
+        {
+            "unit_conversion": "none",
+            "missing_species": "zero",
+            "scales": {},
+            "fields": [_field("field_a", "A", "source.nc")],
+        },
+        root=tmp_path,
+        species=_species("A", "B"),
+        grid=grid,
+    )
+
+    surface = operator.evaluate_surface_flux(datetime(2014, 9, 1))
+    full = surface.to_tracer_field(grid.shape[0])
+
+    assert surface.names == ("A", "B")
+    assert surface.shape == (2, 4, 2)
+    np.testing.assert_array_equal(surface.data[:, :, 0], values)
+    np.testing.assert_array_equal(surface.data[:, :, 1], np.zeros((2, 4)))
+    np.testing.assert_array_equal(full.data[0, -1, :, :, 0], values)
+    np.testing.assert_array_equal(full.data[0, :-1, :, :, :], np.zeros((2, 2, 4, 2)))
+
+
+def test_shared_source_file_is_read_once_for_multiple_selected_fields(tmp_path, monkeypatch):
+    grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
+    values = np.stack(
+        [
+            np.full((2, 4), 10.0),
+            np.full((2, 4), 20.0),
+            np.full((2, 4), 30.0),
+        ]
+    )
+    source_path = tmp_path / "source.nc"
+    _write_time_npft_file(source_path, [datetime(2014, 9, 1)], values[np.newaxis, ...], npft=None)
+    config_path = _write_config(
+        tmp_path,
+        fields=[
+            {
+                "name": "field_a",
+                "species": "A",
+                "path_template": "source.nc",
+                "variable": "emis",
+                "frequency": "hourly",
+                "dimensions": "xy",
+                "select": {"dimension": "npft", "value": 1},
+            },
+            {
+                "name": "field_b",
+                "species": "B",
+                "path_template": "source.nc",
+                "variable": "emis",
+                "frequency": "hourly",
+                "dimensions": "xy",
+                "select": {"dimension": "npft", "value": 2},
+            },
+        ],
+    )
+    original_dataset = netCDF4.Dataset
+    opened = []
+
+    def counting_dataset(path, *args, **kwargs):
+        if Path(path) == source_path:
+            opened.append(Path(path))
+        return original_dataset(path, *args, **kwargs)
+
+    monkeypatch.setattr(netCDF4, "Dataset", counting_dataset)
+    operator = EmissionsOperator.from_yaml(config_path, root=tmp_path, species=_species("A", "B"), grid=grid)
+
+    emissions = operator.evaluate_surface_flux(datetime(2014, 9, 1))
+    again = operator.evaluate_surface_flux(datetime(2014, 9, 1, 0, 30))
+
+    assert len(opened) == 1
+    np.testing.assert_array_equal(emissions.data[:, :, 0], np.full((2, 4), 10.0))
+    np.testing.assert_array_equal(emissions.data[:, :, 1], np.full((2, 4), 20.0))
+    np.testing.assert_array_equal(again.data, emissions.data)
+
+
 def test_constant_file_and_multiple_scale_factors_are_multiplied(tmp_path):
     grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
     values = np.full((2, 4), 3.0)

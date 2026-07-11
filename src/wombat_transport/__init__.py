@@ -17,6 +17,7 @@ from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.emissions import (
     EmissionOperatorConfiguration,
     EmissionsOperator,
+    SurfaceEmissions,
 )
 from wombat_transport.io import (
     FIXED_GRID,
@@ -99,6 +100,7 @@ __all__ = [
     "PblHeightState",
     "RunConfig",
     "Species",
+    "SurfaceEmissions",
     "TracerField",
     "TracerSimulationResult",
     "TransportForcing",

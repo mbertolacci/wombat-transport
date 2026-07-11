@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from wombat_transport.constants import AIRMW_G_PER_MOL
-from wombat_transport.emissions import EmissionsOperator
+from wombat_transport.emissions import EmissionsOperator, SurfaceEmissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
@@ -105,7 +105,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     final_delp_dry_hpa = None
     transport_steps = 0
     emissions_steps = 0
-    active_emissions: TracerField | None = None
+    active_emissions: SurfaceEmissions | None = None
 
     current = start
     while current < end:
@@ -128,7 +128,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
             emission_midpoint = current + timedelta(seconds=emissions_dt_s / 2.0)
             logger.debug("evaluating_emissions step=%d midpoint=%s", transport_steps + 1, emission_midpoint.isoformat())
-            emissions = configured_emissions.evaluate(emission_midpoint)
+            emissions = configured_emissions.evaluate_surface_flux(emission_midpoint)
             if has_invalid_emissions(emissions):
                 raise ValueError(f"configured emissions contain invalid values at {emission_midpoint:%Y-%m-%d %H:%M}")
             emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(emissions, emissions_dt_s)
@@ -274,15 +274,18 @@ def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:
     return dry_air_mass_from_pressure(delp, grid.area_m2)
 
 
-def has_invalid_emissions(emissions: TracerField) -> bool:
+def has_invalid_emissions(emissions: TracerField | SurfaceEmissions) -> bool:
     """Return true when an emissions field contains fill values as data."""
 
     data = emissions.data
     return bool(np.any(~np.isfinite(data)) or np.any(np.abs(data) > 1.0e20))
 
 
-def emitted_mass_by_tracer_for_step(emissions: TracerField, dt_s: float) -> np.ndarray:
+def emitted_mass_by_tracer_for_step(emissions: TracerField | SurfaceEmissions, dt_s: float) -> np.ndarray:
     area = emissions.coords["AREA"]
+    if emissions.data.ndim == 3:
+        area_3d = area[:, :, np.newaxis]
+        return np.sum(emissions.data * float(dt_s) * area_3d, axis=(0, 1))
     area_5d = area[np.newaxis, np.newaxis, :, :, np.newaxis]
     return np.sum(emissions.data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
 

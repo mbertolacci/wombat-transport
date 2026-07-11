@@ -12,6 +12,7 @@ from wombat_transport.fields import (
     canonical_time_slice,
     transport_tracer_to_canonical,
 )
+from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import (
@@ -127,7 +128,7 @@ def run_transport_one_step(
     *,
     dt_s: float = 600.0,
     max_courant: float = 0.95,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
 ) -> TransportStepResult:
@@ -160,7 +161,7 @@ def trace_transport_one_step(
     *,
     dt_s: float = 600.0,
     max_courant: float = 0.95,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
 ) -> TransportStepDiagnostics:
@@ -317,7 +318,7 @@ def _run_transport_one_step_with_mass(
     *,
     dt_s: float,
     max_courant: float,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> TransportStepResult:
     p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
@@ -348,7 +349,7 @@ def _run_tpcore_one_step_from_mass(
     p2_hpa: np.ndarray,
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> TransportStepResult:
     if tracer_field.data.shape[0] != 1:
@@ -457,7 +458,7 @@ def _trace_tpcore_one_step_from_mass(
     p2_hpa: np.ndarray,
     dt_s: float,
     p1_hpa: np.ndarray | None = None,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> TransportStepDiagnostics:
     if tracer_field.data.shape[0] != 1:
@@ -574,7 +575,7 @@ def _run_vdiff_after_tpcore(
     *,
     top_edge_hpa: float,
     dt_s: float,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
 ):
     return _run_vdiff_input(
@@ -606,7 +607,7 @@ def _build_vdiff_input_after_tpcore(
     *,
     top_edge_hpa: float,
     dt_s: float,
-    active_emissions: TracerField | None = None,
+    active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
 ) -> VdiffInputState:
     pedge = pressure_edges_from_surface_hpa(forcing.wet_surface_pressure_hpa, hyai_hpa, hybi)[0]
@@ -666,7 +667,7 @@ def _scale_surface_flux_for_vdiff(
 
 def _surface_flux_from_active_emissions(
     tracer_field: TracerField,
-    active_emissions: TracerField | None,
+    active_emissions: TracerField | SurfaceEmissions | None,
     *,
     nlat: int,
     nlon: int,
@@ -676,6 +677,12 @@ def _surface_flux_from_active_emissions(
         return np.zeros((nlat, nlon, ntracer), dtype=np.float64)
     if active_emissions.names != tracer_field.names:
         raise ValueError("active emissions names do not match tracer field names")
+    if isinstance(active_emissions, SurfaceEmissions):
+        if active_emissions.data.shape != (nlat, nlon, ntracer):
+            raise ValueError(
+                f"active surface emissions shape {active_emissions.data.shape} does not match {(nlat, nlon, ntracer)}"
+            )
+        return np.ascontiguousarray(active_emissions.data)
     if active_emissions.data.shape != tracer_field.data.shape:
         raise ValueError(
             f"active emissions shape {active_emissions.data.shape} does not match tracer field shape {tracer_field.data.shape}"
