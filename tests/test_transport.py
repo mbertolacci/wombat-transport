@@ -69,6 +69,10 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert forcing.dry_surface_pressure_start_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.dry_surface_pressure_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.restart_dry_surface_pressure_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.i3_start_wet_surface_pressure_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.i3_start_dry_surface_pressure_hpa.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert forcing.i3_start_specific_humidity_kg_kg.shape == expected_shape
+    assert forcing.i3_start_temperature_k.shape == expected_shape
     assert forcing.pbl_height_m.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.sensible_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
     assert forcing.latent_heat_flux_w_m2.shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
@@ -148,7 +152,9 @@ def test_transport_forcing_for_step_interpolates_i3_like_geos_chem(monkeypatch):
 
     np.testing.assert_allclose(forcing.surface_pressure_start_pa, 1.0 / 3.0)
     np.testing.assert_allclose(forcing.surface_pressure_pa, 4200.0 / 10800.0)
+    np.testing.assert_allclose(forcing.i3_start_specific_humidity_kg_kg, 0.0)
     np.testing.assert_allclose(forcing.specific_humidity_kg_kg, 3900.0 / 10800.0)
+    np.testing.assert_allclose(forcing.i3_start_temperature_k, 0.0)
     np.testing.assert_allclose(forcing.temperature_k, 3900.0 / 10800.0)
     np.testing.assert_allclose(forcing.restart_surface_pressure_pa, 0.0)
 

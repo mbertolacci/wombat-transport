@@ -530,6 +530,28 @@ def _create_output_variable(
     return output.createVariable(name, storage.netcdf_dtype, dimensions, **kwargs)
 
 
+def _create_template_variable(
+    output: netCDF4.Dataset,
+    source: netCDF4.Variable,
+    storage: OutputStorageConfig,
+):
+    kwargs: dict[str, Any] = {}
+    dimensions = source.dimensions
+    if dimensions:
+        chunks = _chunks_for_variable(output, dimensions, storage)
+        if chunks is not None:
+            kwargs["chunksizes"] = chunks
+        if storage.compression.enabled:
+            kwargs.update(
+                {
+                    "zlib": True,
+                    "complevel": storage.compression.level,
+                    "shuffle": storage.compression.shuffle,
+                }
+            )
+    return output.createVariable(source.name, source.datatype, dimensions, **kwargs)
+
+
 def _chunks_for_variable(
     output: netCDF4.Dataset,
     dimensions: tuple[str, ...],
@@ -587,7 +609,7 @@ def _copy_common_coordinates(
         if coord_name == "time" or coord_name not in template.variables:
             continue
         source = template.variables[coord_name]
-        variable = _create_output_variable(output, coord_name, source.dimensions, storage)
+        variable = _create_template_variable(output, source, storage)
         variable.setncatts({name: source.getncattr(name) for name in source.ncattrs()})
         if source.dimensions:
             variable[:] = np.asarray(source[:])
@@ -597,7 +619,7 @@ def _copy_common_coordinates(
         for coord_name in ("lat_bnds", "lon_bnds"):
             if coord_name in template.variables:
                 source = template.variables[coord_name]
-                variable = _create_output_variable(output, coord_name, source.dimensions, storage)
+                variable = _create_template_variable(output, source, storage)
                 variable.setncatts({name: source.getncattr(name) for name in source.ncattrs()})
                 variable[:] = np.asarray(source[:])
 
@@ -639,12 +661,12 @@ def _write_restart_met_field(
     if field == "Met_DELPDRY":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "hPa"
-        variable[:] = snapshot.delp_dry_hpa[:, ::-1, :, :]
+        variable[:] = snapshot.delp_dry_hpa
         return
     if field == "Met_PS1DRY":
         variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
-        dry_surface_pressure = getattr(snapshot.forcing, "restart_dry_surface_pressure_hpa", None)
+        dry_surface_pressure = getattr(snapshot.forcing, "i3_start_dry_surface_pressure_hpa", None)
         if dry_surface_pressure is None:
             dry_surface_pressure = np.sum(snapshot.delp_dry_hpa, axis=1)
         variable[:] = dry_surface_pressure
@@ -652,11 +674,11 @@ def _write_restart_met_field(
     if field == "Met_PS1WET":
         variable = _create_output_variable(output, field, ("time", "lat", "lon"), storage)
         variable.units = "hPa"
-        wet_surface_pressure = getattr(snapshot.forcing, "restart_wet_surface_pressure_hpa", None)
+        wet_surface_pressure = getattr(snapshot.forcing, "i3_start_wet_surface_pressure_hpa", None)
         if wet_surface_pressure is None:
             surface_pressure = getattr(
                 snapshot.forcing,
-                "restart_surface_pressure_pa",
+                "surface_pressure_start_pa",
                 snapshot.forcing.surface_pressure_pa,
             )
             wet_surface_pressure = surface_pressure / 100.0
@@ -667,16 +689,16 @@ def _write_restart_met_field(
         variable.units = "g kg-1"
         specific_humidity = getattr(
             snapshot.forcing,
-            "restart_specific_humidity_kg_kg",
+            "i3_start_specific_humidity_kg_kg",
             snapshot.forcing.specific_humidity_kg_kg,
         )
-        variable[:] = specific_humidity[:, ::-1, :, :] * 1000.0
+        variable[:] = specific_humidity * 1000.0
         return
     if field == "Met_TMPU1":
         variable = _create_output_variable(output, field, ("time", "lev", "lat", "lon"), storage)
         variable.units = "K"
-        temperature = getattr(snapshot.forcing, "restart_temperature_k", snapshot.forcing.temperature_k)
-        variable[:] = temperature[:, ::-1, :, :]
+        temperature = getattr(snapshot.forcing, "i3_start_temperature_k", snapshot.forcing.temperature_k)
+        variable[:] = temperature
         return
     raise ValueError(f"unsupported restart met field {field}")
 

@@ -126,8 +126,12 @@ class TransportForcing:
     dry_surface_pressure_start_hpa: np.ndarray
     dry_surface_pressure_hpa: np.ndarray
     restart_dry_surface_pressure_hpa: np.ndarray
+    i3_start_wet_surface_pressure_hpa: np.ndarray
+    i3_start_dry_surface_pressure_hpa: np.ndarray
+    i3_start_specific_humidity_kg_kg: np.ndarray
     specific_humidity_kg_kg: np.ndarray
     restart_specific_humidity_kg_kg: np.ndarray
+    i3_start_temperature_k: np.ndarray
     temperature_k: np.ndarray
     restart_temperature_k: np.ndarray
     pbl_height_m: np.ndarray
@@ -217,8 +221,14 @@ def load_transport_forcing(
         restart_dry_surface_pressure=dry_surface_pressure_hpa(
             i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
         ),
+        i3_start_surface_pressure=i3.surface_pressure,
+        i3_start_dry_surface_pressure=dry_surface_pressure_hpa(
+            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
+        ),
+        i3_start_specific_humidity=i3.qv,
         specific_humidity=i3.qv,
         restart_specific_humidity=i3.qv,
+        i3_start_temperature=i3.temperature,
         temperature=i3.temperature,
         restart_temperature=i3.temperature,
         i3_path=i3.path,
@@ -305,8 +315,12 @@ def load_transport_forcing_for_step(
         dry_surface_pressure_start=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, start_fraction),
         dry_surface_pressure_end=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, end_fraction),
         restart_dry_surface_pressure=restart_dry_surface,
+        i3_start_surface_pressure=i3_start.surface_pressure,
+        i3_start_dry_surface_pressure=dry_surface_start_endpoint,
+        i3_start_specific_humidity=i3_start.qv,
         specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
         restart_specific_humidity=i3_restart.qv,
+        i3_start_temperature=i3_start.temperature,
         temperature=_interpolate(i3_start.temperature, i3_end.temperature, midpoint_fraction),
         restart_temperature=i3_restart.temperature,
         i3_path=i3_start.path,
@@ -333,8 +347,12 @@ def _assemble_transport_forcing(
     dry_surface_pressure_start: np.ndarray,
     dry_surface_pressure_end: np.ndarray,
     restart_dry_surface_pressure: np.ndarray,
+    i3_start_surface_pressure: np.ndarray,
+    i3_start_dry_surface_pressure: np.ndarray,
+    i3_start_specific_humidity: np.ndarray,
     specific_humidity: np.ndarray,
     restart_specific_humidity: np.ndarray,
+    i3_start_temperature: np.ndarray,
     temperature: np.ndarray,
     restart_temperature: np.ndarray,
     i3_path: Path,
@@ -345,6 +363,7 @@ def _assemble_transport_forcing(
     wet_surface_pressure_start = wet_surface_pressure_hpa(surface_pressure_start, area_m2=grid.area_m2)
     wet_surface_pressure_end = wet_surface_pressure_hpa(surface_pressure_end, area_m2=grid.area_m2)
     restart_wet_surface_pressure = wet_surface_pressure_hpa(restart_surface_pressure, area_m2=grid.area_m2)
+    i3_start_wet_surface_pressure = wet_surface_pressure_hpa(i3_start_surface_pressure, area_m2=grid.area_m2)
     return TransportForcing(
         u_m_s=a3.u,
         v_m_s=a3.v,
@@ -358,8 +377,12 @@ def _assemble_transport_forcing(
         dry_surface_pressure_start_hpa=dry_surface_pressure_start,
         dry_surface_pressure_hpa=dry_surface_pressure_end,
         restart_dry_surface_pressure_hpa=restart_dry_surface_pressure,
+        i3_start_wet_surface_pressure_hpa=i3_start_wet_surface_pressure,
+        i3_start_dry_surface_pressure_hpa=i3_start_dry_surface_pressure,
+        i3_start_specific_humidity_kg_kg=i3_start_specific_humidity,
         specific_humidity_kg_kg=specific_humidity,
         restart_specific_humidity_kg_kg=restart_specific_humidity,
+        i3_start_temperature_k=i3_start_temperature,
         temperature_k=temperature,
         restart_temperature_k=restart_temperature,
         pbl_height_m=a1.pblh,

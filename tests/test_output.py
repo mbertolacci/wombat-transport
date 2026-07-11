@@ -7,6 +7,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, load_restart, load_species_conc
 from wombat_transport.output import (
     HistoryOutputManager,
@@ -136,15 +137,32 @@ def test_species_conc_writer_honors_float64_dtype_and_explicit_chunks(tmp_path):
 
 def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):
     field = _field(("A",), values=(4.0,))
-    delp = np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 10.0)
+    level_values = np.arange(FIXED_GRID["lev"], dtype=np.float64).reshape(1, FIXED_GRID["lev"], 1, 1)
+    delp = np.broadcast_to(
+        10.0 + level_values,
+        (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]),
+    ).copy()
+    sphu_start = np.broadcast_to(
+        0.001 + level_values * 1.0e-5,
+        (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]),
+    ).copy()
+    temperature_start = np.broadcast_to(
+        250.0 + level_values,
+        (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]),
+    ).copy()
     forcing = SimpleNamespace(
         surface_pressure_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 101000.0),
+        surface_pressure_start_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 100700.0),
         restart_surface_pressure_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 101100.0),
+        i3_start_wet_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1007.0),
         restart_wet_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1011.0),
+        i3_start_dry_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1006.0),
         restart_dry_surface_pressure_hpa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1009.0),
         specific_humidity_kg_kg=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 0.002),
+        i3_start_specific_humidity_kg_kg=sphu_start,
         restart_specific_humidity_kg_kg=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 0.005),
         temperature_k=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 280.0),
+        i3_start_temperature_k=temperature_start,
         restart_temperature_k=np.full((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]), 281.0),
     )
     output_path = tmp_path / "GEOSChem.Restart.20140901_0010z.nc4"
@@ -169,15 +187,24 @@ def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):
         assert rst.dtype == np.dtype("float32")
         assert rst.filters()["complevel"] == 5
         assert rst.chunking() == [1, 1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
+        assert dataset.variables["hyai"].dtype == np.dtype("float64")
+        assert dataset.variables["hybi"].dtype == np.dtype("float64")
+        assert dataset.variables["lat"].dtype == np.dtype("float64")
+        assert dataset.variables["lon"].dtype == np.dtype("float64")
         assert dataset.variables["Met_DELPDRY"].shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
         assert dataset.variables["Met_PS1DRY"].shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
         assert dataset.variables["Met_PS1DRY"].chunking() == [1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
         assert dataset.variables["Met_PS1WET"].shape == (1, FIXED_GRID["lat"], FIXED_GRID["lon"])
-        np.testing.assert_allclose(dataset.variables["Met_PS1DRY"][:], 1009.0)
-        np.testing.assert_allclose(dataset.variables["Met_PS1WET"][:], 1011.0)
+        np.testing.assert_allclose(dataset.variables["Met_DELPDRY"][:], delp)
+        np.testing.assert_allclose(dataset.variables["Met_PS1DRY"][:], 1006.0)
+        np.testing.assert_allclose(dataset.variables["Met_PS1WET"][:], 1007.0)
         assert dataset.variables["Met_SPHU1"].units == "g kg-1"
-        np.testing.assert_allclose(dataset.variables["Met_SPHU1"][:], 5.0)
-        np.testing.assert_allclose(dataset.variables["Met_TMPU1"][:], 281.0)
+        np.testing.assert_allclose(dataset.variables["Met_SPHU1"][:], sphu_start * 1000.0)
+        np.testing.assert_allclose(dataset.variables["Met_TMPU1"][:], temperature_start)
+    written_grid = load_transport_grid(output_path)
+    template_grid = load_transport_grid(BASE_RESTART)
+    np.testing.assert_array_equal(written_grid.hyai_hpa, template_grid.hyai_hpa)
+    np.testing.assert_array_equal(written_grid.hybi, template_grid.hybi)
 
 
 def test_output_manager_uses_post_step_arithmetic_averages(tmp_path):
