@@ -126,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
             end=args.end,
             outputs_enabled=args.outputs,
             field_offset=args.field_offset,
+            species_conc_frequency=args.species_conc_frequency,
+            species_conc_duration=args.species_conc_duration,
+            output_compression=args.output_compression,
+            output_compression_level=args.output_compression_level,
+            output_shuffle=args.output_shuffle,
+            output_rank4_chunking=tuple(args.output_rank4_chunking) if args.output_rank4_chunking else None,
         )
         cprofile_path = output_dir / f"cprofile_{count:03d}.prof" if args.cprofile else None
         result = _run_profiled(run_dir / "run.yml", tracer_count=count, max_steps=None, cprofile_path=cprofile_path)
@@ -145,6 +151,42 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--end", default=DEFAULT_END)
     parser.add_argument("--warmup-steps", type=int, default=2)
     parser.add_argument("--outputs", action="store_true", help="Keep configured HISTORY-like outputs enabled.")
+    parser.add_argument(
+        "--species-conc-frequency",
+        default=None,
+        help="Override SpeciesConc collection frequency, e.g. '00000000 010000' for hourly samples.",
+    )
+    parser.add_argument(
+        "--species-conc-duration",
+        default=None,
+        help="Override SpeciesConc collection duration, e.g. '00000001 000000' for daily files.",
+    )
+    parser.add_argument(
+        "--output-compression",
+        choices=("on", "off"),
+        default=None,
+        help="Override output compression enabled state.",
+    )
+    parser.add_argument(
+        "--output-compression-level",
+        type=int,
+        default=None,
+        help="Override output compression level.",
+    )
+    parser.add_argument(
+        "--output-shuffle",
+        choices=("on", "off"),
+        default=None,
+        help="Override output compression shuffle filter.",
+    )
+    parser.add_argument(
+        "--output-rank4-chunking",
+        type=int,
+        nargs=4,
+        default=None,
+        metavar=("TIME", "LEV", "LAT", "LON"),
+        help="Override rank-4 output chunks, e.g. 1 47 91 144.",
+    )
     parser.add_argument("--cprofile", action="store_true", help="Write one cProfile .prof per tracer count.")
     parser.add_argument(
         "--field-offset",
@@ -169,6 +211,12 @@ def _prepare_run_dir(
     end: str,
     outputs_enabled: bool,
     field_offset: int = 0,
+    species_conc_frequency: str | None = None,
+    species_conc_duration: str | None = None,
+    output_compression: str | None = None,
+    output_compression_level: int | None = None,
+    output_shuffle: str | None = None,
+    output_rank4_chunking: tuple[int, int, int, int] | None = None,
 ) -> Path:
     if run_dir.exists():
         shutil.rmtree(run_dir)
@@ -207,6 +255,36 @@ def _prepare_run_dir(
     run_config["validation"] = {}
     if not outputs_enabled:
         run_config["outputs"] = {}
+    elif (
+        species_conc_frequency
+        or species_conc_duration
+        or output_compression
+        or output_compression_level is not None
+        or output_shuffle
+        or output_rank4_chunking is not None
+    ):
+        outputs = run_config.get("outputs", {})
+        if output_compression or output_compression_level is not None or output_shuffle:
+            compression = dict(outputs.get("compression", {}))
+            if output_compression:
+                compression["enabled"] = output_compression == "on"
+            if output_compression_level is not None:
+                compression["level"] = output_compression_level
+            if output_shuffle:
+                compression["shuffle"] = output_shuffle == "on"
+            outputs["compression"] = compression
+            run_config["outputs"] = outputs
+        if output_rank4_chunking is not None:
+            chunking = dict(outputs.get("chunking", {}))
+            chunking["rank4"] = list(output_rank4_chunking)
+            outputs["chunking"] = chunking
+            run_config["outputs"] = outputs
+        for name, collection in run_config.get("outputs", {}).get("collections", {}).items():
+            if str(name).startswith("SpeciesConc"):
+                if species_conc_frequency:
+                    collection["frequency"] = species_conc_frequency
+                if species_conc_duration:
+                    collection["duration"] = species_conc_duration
 
     (run_dir / "run.yml").write_text(yaml.safe_dump(run_config, sort_keys=False), encoding="utf-8")
     return run_dir
@@ -300,6 +378,11 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         (driver_mod, "run_cloud_convection_one_step", driver_mod.run_cloud_convection_one_step),
         (output_mod.HistoryOutputManager, "record_step", output_mod.HistoryOutputManager.record_step),
         (output_mod.HistoryOutputManager, "close", output_mod.HistoryOutputManager.close),
+        (output_mod, "write_species_conc_collection", output_mod.write_species_conc_collection),
+        (output_mod, "write_restart_collection", output_mod.write_restart_collection),
+        (output_mod._StreamingSpeciesConcFile, "_open", output_mod._StreamingSpeciesConcFile._open),
+        (output_mod._StreamingSpeciesConcFile, "append_average", output_mod._StreamingSpeciesConcFile.append_average),
+        (output_mod._StreamingSpeciesConcFile, "close", output_mod._StreamingSpeciesConcFile.close),
     ]
     stage_names = {
         "_load_simulation_forcing": "met_forcing",
@@ -314,10 +397,18 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         "run_cloud_convection_one_step": "transport_convection",
         "record_step": "output_record_step",
         "close": "output_close",
+        "write_species_conc_collection": "output_write_species_conc",
+        "write_restart_collection": "output_write_restart",
+        "_open": "output_open_species_conc",
+        "append_average": "output_append_species_conc",
     }
     try:
         for obj, name, original in originals:
-            setattr(obj, name, profiler.wrap(stage_names[name], original))
+            if obj is output_mod._StreamingSpeciesConcFile and name == "close":
+                stage = "output_close_species_conc"
+            else:
+                stage = stage_names[name]
+            setattr(obj, name, profiler.wrap(stage, original))
         yield
     finally:
         for obj, name, original in originals:

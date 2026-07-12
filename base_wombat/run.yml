@@ -20,7 +20,7 @@ outputs:
   dtype: float32
   compression:
     enabled: true
-    level: 5
+    level: 1
     shuffle: true
   chunking:
     rank1: [512]

@@ -48,7 +48,7 @@ def test_output_storage_defaults_and_validates():
 
     assert storage.dtype == "float32"
     assert storage.compression.enabled
-    assert storage.compression.level == 5
+    assert storage.compression.level == 1
     assert storage.compression.shuffle
     assert storage.chunking.rank1 is None
     assert storage.chunking.rank4 is None
@@ -107,7 +107,7 @@ def test_species_conc_writer_roundtrips_geos_chem_style_collection(tmp_path):
         assert variable.dtype == np.dtype("float32")
         assert variable.filters()["zlib"]
         assert variable.filters()["shuffle"]
-        assert variable.filters()["complevel"] == 5
+        assert variable.filters()["complevel"] == 1
         assert variable.chunking() == [1, 1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
         assert dataset.variables["time"].chunking() == [512]
         np.testing.assert_array_equal(dataset.variables["time"][:], np.array([0.0, 180.0]))
@@ -185,7 +185,7 @@ def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):
     with netCDF4.Dataset(output_path) as dataset:
         rst = dataset.variables["SpeciesRst_A"]
         assert rst.dtype == np.dtype("float32")
-        assert rst.filters()["complevel"] == 5
+        assert rst.filters()["complevel"] == 1
         assert rst.chunking() == [1, 1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
         assert dataset.variables["hyai"].dtype == np.dtype("float64")
         assert dataset.variables["hybi"].dtype == np.dtype("float64")
@@ -243,6 +243,45 @@ def test_output_manager_uses_post_step_arithmetic_averages(tmp_path):
     output = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
     loaded = load_species_conc(output)
     np.testing.assert_allclose(loaded.data[0, :, :, :, 0], _field(("A",), values=(2.0,)).data[0, :, :, :, 0])
+
+
+def test_output_manager_streams_species_conc_across_daily_files(tmp_path):
+    manager = HistoryOutputManager(
+        root=tmp_path,
+        template_path=BASE_RESTART,
+        expid="OutputDir/GEOSChem",
+        collections=(
+            OutputCollectionConfig(
+                name="SpeciesConcHourly",
+                filename=None,
+                template="%y4%m2%d2_%h2%n2z.nc4",
+                frequency=parse_history_interval("00000000 010000"),
+                duration=parse_history_interval("00000001 000000"),
+                mode="time-averaged",
+                fields=("SpeciesConcVV_?ADV?",),
+            ),
+        ),
+        start=datetime(2014, 9, 1),
+    )
+    forcing = SimpleNamespace(
+        surface_pressure_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 101000.0),
+        specific_humidity_kg_kg=np.zeros((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])),
+        temperature_k=np.zeros((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])),
+    )
+    delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
+
+    manager.record_step(
+        OutputSnapshot(datetime(2014, 9, 1, 0, 10), _field(("A",), values=(1.0,)), delp, forcing)  # type: ignore[arg-type]
+    )
+    manager.record_step(
+        OutputSnapshot(datetime(2014, 9, 2, 0, 10), _field(("A",), values=(2.0,)), delp, forcing)  # type: ignore[arg-type]
+    )
+    manager.close()
+
+    first = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
+    second = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140902_0000z.nc4"
+    np.testing.assert_allclose(load_species_conc(first).data[0, :, :, :, 0], _field(("A",), values=(1.0,)).data[0, :, :, :, 0])
+    np.testing.assert_allclose(load_species_conc(second).data[0, :, :, :, 0], _field(("A",), values=(2.0,)).data[0, :, :, :, 0])
 
 
 def _field(names: tuple[str, ...], *, values: tuple[float, ...]) -> TracerField:
