@@ -1228,6 +1228,48 @@ rather than mixing it into the VDIFF improvement.
 
 ## 2026-07-12 TPCORE buffer/workspace experiment
 
+The TPCORE explorer produced the following broader idea list, ranked by payoff
+versus risk before the buffer/workspace pass:
+
+1. Reusable `q`/`dq1` buffers: avoid repeated full tracer cube
+   allocation/page clearing inside TPCORE. Medium impact, manageable aliasing
+   risk.
+2. Explicit TPCORE output ownership / double buffering: let driver-owned
+   next-state buffers flow into VDIFF instead of fresh TPCORE output
+   allocation. Medium impact, broader lifecycle change.
+3. Store `ua`/`va`/`jn`/`js` in `TpcoreSetup`: avoid recomputing cross Courant
+   averages and branch bounds each call. Low risk, likely low-medium impact.
+4. TPCORE setup workspace: reuse setup arrays like `delp1`, `delpm`, `pu`,
+   `cx`, `cy`, `dpi`, `wz`, `xmass`, and `ymass`. Medium implementation risk,
+   low-medium impact.
+5. Low-Courant specialized kernels: dispatch to branch-light XTP/YTP kernels
+   for validated common path. Medium payoff, medium parity/codegen risk.
+6. YTP/FZPPM longitude tiling: improve cache locality while keeping tracer
+   inner. Medium possible payoff, high vectorization risk.
+7. Precompute horizontal remap indices/masks: cache X/Y integer indices, signs,
+   and branch masks per setup. Possible medium payoff, but extra memory traffic
+   may hurt.
+8. Precompute A3 wind-block PJC helpers: cache wind-only pieces across the 18
+   steps sharing A3 winds. Low-medium payoff, mostly setup-side.
+9. Carry `p1_hpa` directly between steps: avoid reconstructing pressure from
+   dry mass every step. Low risk, low payoff.
+10. Avoid normal-path TPCORE flux wrapping: do not allocate/carry
+    `xmass`/`ymass`/`zmass` unless diagnostics need them. Low risk, low payoff.
+11. Amortize branch validation: validate on first step or met-record changes
+    instead of every step. Low numerical risk, small payoff.
+12. Pole/init/cross-term fusion: reduce full-grid sweeps. Prior simple fusion
+    did not help, so this needs a more careful memory-traffic experiment.
+13. `qck` scan/finalize policy by negative frequency: dispatch no-fill or
+    fused-fill variants when safe. Small-medium payoff, higher semantic risk.
+14. FZPPM scratch allocation surgery: remove remaining Numba NRT scratch
+    allocations. Tempting, but prior workspace attempt worsened code shape.
+15. Overlap next-step setup in a helper thread: prepare next setup while
+    VDIFF/convection run. Fits the allowed threading exception, but setup is
+    probably too small for huge wins.
+16. Native C++/Fortran TPCORE rewrite: highest ceiling, highest cost/risk.
+    Only worth it if Numba hits a hard wall and we can stage it
+    operator-by-operator against oracle traces.
+
 Four low-risk TPCORE ideas were tested sequentially on the 96-tracer path. Two
 were retained and two were rejected.
 
@@ -1272,3 +1314,42 @@ for that stage, but `-ffast-math` is a GEOS-Chem parity risk over full
 transport windows. The next native-code experiment, if any, should be a full
 TPCORE-step prototype comparing strict and fast-math builds against full-step
 fixtures before considering production integration.
+
+## 2026-07-12 TPCORE follow-up ideas 5/10/11/7
+
+Four more ideas from the ranked list were tried after the buffer reuse commit.
+
+Rejected:
+
+- Low-Courant specialized XTP dispatch. The experiment routed validated
+  non-large-`cx` setups to a branch-light XTP kernel. It passed the TPCORE
+  oracle tests, including the large-Courant fixture through the generic path,
+  but direct 96-tracer TPCORE regressed from `0.781 s` to `0.787 s`, while the
+  driver movement was only noise-level (`1.040 s` vs `1.045 s`). The duplicate
+  kernel shape was not worth retaining.
+- Precomputed X remap indices. The experiment cached the
+  `int((i + 1) - cx) - 1` upstream index array in the TPCORE Numba workspace.
+  It passed oracle tests, but direct TPCORE regressed (`0.791 s` on the first
+  run and `0.844 s` on rerun, versus `0.781 s` baseline). Driver timings were
+  noisy and did not justify the extra memory traffic.
+
+Retained:
+
+- Normal transport no longer wraps TPCORE `xmass`/`ymass`/`zmass` flux
+  diagnostics unless explicitly requested with `include_flux_diagnostics=True`.
+  The production runner does not use these arrays; trace/oracle paths still opt
+  in where needed. The one-step 96-tracer driver benchmark moved from
+  `1.045 s` best / `1.050 s` mean to `1.040 s` best / `1.043 s` mean, with the
+  overhead bucket dropping from about `0.021 s` to `0.0185 s`.
+- Multi-step loops now amortize TPCORE branch validation. Public one-step calls
+  still validate by default, but `run_transport_window` validates only the first
+  step of its fixed-forcing window, and the full runner validates at the start
+  of each 3-hour met window. A synthetic 18-step, 96-tracer comparison gave
+  identical checksums and improved from `19.20-19.26 s` when validating every
+  step to `19.04-19.14 s` when validating once for the window.
+
+The main lesson from ideas 5 and 7 is that pulling scalar remap work out of XTP
+does not automatically help. That work is not tracer-inner, and the additional
+kernel/code shape or memory traffic can cost more than the saved integer
+operations. Future X/Y work needs to target a larger structural change than
+precomputing one index array or duplicating the low-Courant branch.

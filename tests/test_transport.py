@@ -616,8 +616,19 @@ def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
     assert result.state.shape == field.shape
     assert result.transport_operators == ("tpcore", "vdiff", "convection")
     assert result.delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
-    assert result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert result.xmass_hpa is None
+    assert result.ymass_hpa is None
+    assert result.zmass_hpa is None
     assert np.all(np.isfinite(result.state.data))
+
+    diagnostic_result = run_transport_one_step(
+        field,
+        _load_forcing(config, grid=grid),
+        grid,
+        dt_s=600.0,
+        include_flux_diagnostics=True,
+    )
+    assert diagnostic_result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
 
 
 def test_trace_transport_one_step_captures_operator_handoffs(transport_numba_mode):

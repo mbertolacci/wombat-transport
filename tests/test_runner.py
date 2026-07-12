@@ -165,6 +165,7 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
     initial = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     active_emissions_seen = []
     state_inputs = []
+    validation_flags = []
 
     def fake_load_forcing(*args, **kwargs):
         return SimpleNamespace(
@@ -182,9 +183,11 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         surface_flux_to_vmr_factor=None,
         dry_air_mass_kg=None,
         tpcore_static_terms=None,
+        validate_tpcore_branches=True,
     ):
         state_inputs.append(tracer_field.data.copy())
         active_emissions_seen.append(active_emissions)
+        validation_flags.append(validate_tpcore_branches)
         assert surface_flux_to_vmr_factor is not None
         assert tpcore_static_terms is not None
         return SimpleNamespace(
@@ -200,6 +203,7 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
 
     assert result.emissions_steps == 1
     assert len(active_emissions_seen) == 2
+    assert validation_flags == [True, False]
     assert active_emissions_seen[0] is not None
     assert active_emissions_seen[0] is active_emissions_seen[1]
     np.testing.assert_array_equal(state_inputs[0], initial.data)

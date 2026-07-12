@@ -378,6 +378,7 @@ def _run_python_step(config: RunConfig, *, max_tracers: int):
         forcing,
         grid,
         dt_s=transport_timestep_s(config),
+        include_flux_diagnostics=True,
     )
 
 

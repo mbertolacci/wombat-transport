@@ -54,9 +54,9 @@ class TransportStepResult:
     state: TracerField
     dry_air_mass_kg: np.ndarray
     delp_dry_hpa: np.ndarray
-    xmass_hpa: np.ndarray
-    ymass_hpa: np.ndarray
-    zmass_hpa: np.ndarray
+    xmass_hpa: np.ndarray | None
+    ymass_hpa: np.ndarray | None
+    zmass_hpa: np.ndarray | None
     transport_operators: tuple[str, ...]
 
 
@@ -133,6 +133,8 @@ def run_transport_one_step(
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
+    include_flux_diagnostics: bool = False,
+    validate_tpcore_branches: bool = True,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
@@ -154,6 +156,8 @@ def run_transport_one_step(
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
         tpcore_static_terms=tpcore_static_terms,
+        include_flux_diagnostics=include_flux_diagnostics,
+        validate_tpcore_branches=validate_tpcore_branches,
     )
 
 
@@ -285,6 +289,7 @@ def run_transport_window(
             dt_s=dt_s,
             max_courant=max_courant,
             tpcore_static_terms=tpcore_static_terms,
+            validate_tpcore_branches=step == 0,
         )
         state = step_result.state
         dry_air_mass = step_result.dry_air_mass_kg
@@ -332,6 +337,8 @@ def _run_transport_one_step_with_mass(
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
+    include_flux_diagnostics: bool = False,
+    validate_tpcore_branches: bool = True,
 ) -> TransportStepResult:
     p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
     p2_hpa = forcing.dry_surface_pressure_hpa[0]
@@ -348,6 +355,8 @@ def _run_transport_one_step_with_mass(
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
         tpcore_static_terms=tpcore_static_terms,
+        include_flux_diagnostics=include_flux_diagnostics,
+        validate_tpcore_branches=validate_tpcore_branches,
     )
 
 
@@ -365,6 +374,8 @@ def _run_tpcore_one_step_from_mass(
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
+    include_flux_diagnostics: bool = False,
+    validate_tpcore_branches: bool = True,
 ) -> TransportStepResult:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -383,11 +394,12 @@ def _run_tpcore_one_step_from_mass(
         dt_s=dt_s,
         static_terms=tpcore_static_terms,
     )
-    try:
-        validate_tpcore_branch_support(setup)
-    except NotImplementedError as exc:
-        report = analyze_tpcore_branches(setup)
-        raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
+    if validate_tpcore_branches:
+        try:
+            validate_tpcore_branch_support(setup)
+        except NotImplementedError as exc:
+            report = analyze_tpcore_branches(setup)
+            raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
     tpcore = run_tpcore_one_step_with_setup(
         tracer_conc=canonical_time_slice(tracer_field.data),
@@ -447,13 +459,20 @@ def _run_tpcore_one_step_from_mass(
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
+    xmass_hpa = None
+    ymass_hpa = None
+    zmass_hpa = None
+    if include_flux_diagnostics:
+        xmass_hpa = tpcore.xmass_hpa[np.newaxis, ::-1, :, :]
+        ymass_hpa = tpcore.ymass_hpa[np.newaxis, ::-1, :, :]
+        zmass_hpa = _tpcore_vertical_flux_edges(tpcore.vertical_mass_flux_hpa[::-1])
     return TransportStepResult(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
         delp_dry_hpa=next_delp,
-        xmass_hpa=tpcore.xmass_hpa[np.newaxis, ::-1, :, :],
-        ymass_hpa=tpcore.ymass_hpa[np.newaxis, ::-1, :, :],
-        zmass_hpa=_tpcore_vertical_flux_edges(tpcore.vertical_mass_flux_hpa[::-1]),
+        xmass_hpa=xmass_hpa,
+        ymass_hpa=ymass_hpa,
+        zmass_hpa=zmass_hpa,
         transport_operators=("tpcore", "vdiff", "convection"),
     )
 
