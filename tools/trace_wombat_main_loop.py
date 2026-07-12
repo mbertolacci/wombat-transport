@@ -17,6 +17,7 @@ from wombat_transport.io import initialize_tracers
 from wombat_transport.run_config import (
     emissions_timestep_s,
     load_run_config,
+    meteorology_chunk_multiple,
     meteorology_initial_time_index,
     meteorology_root,
     simulation_start,
@@ -29,7 +30,7 @@ from wombat_transport.runner import (
     has_invalid_emissions,
 )
 from wombat_transport.species import load_species_database
-from wombat_transport.transport.forcing import ForcingRecordCache, load_transport_forcing_for_step, prune_forcing_record_cache
+from wombat_transport.transport.forcing import TransportForcingProvider
 from wombat_transport.transport.driver import TransportStepDiagnostics, trace_transport_one_step
 
 
@@ -116,16 +117,14 @@ def main() -> int:
     emissions_dt_s = float(emissions_timestep_s(config))
     emissions_operator = _load_emissions_operator(config, species, grid)
 
-    forcing_cache: ForcingRecordCache = {}
-    first_forcing = load_transport_foring_cached(
-        forcing_cache,
+    forcing_provider = TransportForcingProvider(
         met_root,
         start,
-        start,
         grid,
-        transport_dt_s,
-        meteorology_initial_time_index(config),
+        initial_met_time_index=meteorology_initial_time_index(config),
+        chunk_multiple=meteorology_chunk_multiple(config),
     )
+    first_forcing = forcing_provider.forcing_for_step(start, dt_s=transport_dt_s)
     dry_air_mass = _initial_dry_air_mass(config, first_forcing, grid)
     active_emissions = None
     emitted_mass = np.zeros(len(species), dtype=np.float64)
@@ -133,15 +132,7 @@ def main() -> int:
 
     for step in range(args.steps):
         current = start + timedelta(seconds=step * transport_dt_s)
-        forcing = load_transport_foring_cached(
-            forcing_cache,
-            met_root,
-            start,
-            current,
-            grid,
-            transport_dt_s,
-            meteorology_initial_time_index(config),
-        )
+        forcing = forcing_provider.forcing_for_step(current, dt_s=transport_dt_s)
         elapsed_s = int(round((current - start).total_seconds()))
         emissions_was_refreshed = False
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
@@ -187,29 +178,6 @@ def main() -> int:
     _write_trace(args.output, records, columns, state.names, grid.lev, emitted_mass)
     print(f"wrote_wombat_main_loop_trace: {args.output}")
     return 0
-
-
-def load_transport_foring_cached(
-    cache: ForcingRecordCache,
-    met_root: Path,
-    start: datetime,
-    current: datetime,
-    grid,
-    dt_s: float,
-    initial_met_time_index: int,
-):
-    forcing = load_transport_forcing_for_step(
-        met_root,
-        start,
-        current,
-        grid,
-        dt_s=dt_s,
-        initial_met_time_index=initial_met_time_index,
-        cache=cache,
-    )
-    prune_forcing_record_cache(cache)
-    return forcing
-
 
 def _load_emissions_operator(config, species, grid) -> EmissionsOperator:
     if isinstance(config.emissions, str):

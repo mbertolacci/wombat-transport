@@ -13,6 +13,7 @@ from wombat_transport.io import initialize_tracers, load_species_conc, write_res
 from wombat_transport.run_config import (
     logging_level,
     load_run_config,
+    meteorology_chunk_multiple,
     meteorology_initial_time_index,
     meteorology_root,
     simulation_start,
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             grid,
             dt_s=transport_timestep_s(config),
             initial_met_time_index=meteorology_initial_time_index(config),
+            chunk_multiple=meteorology_chunk_multiple(config),
         )
         transport_result = run_transport_one_step(
             state,
@@ -102,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             steps=steps,
             dt_s=transport_timestep_s(config),
             initial_met_time_index=meteorology_initial_time_index(config),
+            chunk_multiple=meteorology_chunk_multiple(config),
         )
         state = transport_result.state
         comparison_state = transport_result.average_state

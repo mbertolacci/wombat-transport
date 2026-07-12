@@ -19,12 +19,13 @@ from wombat_transport.met_diagnostics import (
 from wombat_transport.output import OutputStorageConfig, _copy_common_coordinates, _create_common_dimensions, _create_output_variable, _write_time
 from wombat_transport.run_config import (
     load_run_config,
+    meteorology_chunk_multiple,
     meteorology_initial_time_index,
     meteorology_root,
     simulation_start,
     transport_timestep_s,
 )
-from wombat_transport.transport.forcing import ForcingRecordCache, load_transport_forcing_for_step, prune_forcing_record_cache
+from wombat_transport.transport.forcing import TransportForcingProvider
 from wombat_transport.transport.driver import trace_transport_one_step
 from wombat_transport.runner import _initial_dry_air_mass
 
@@ -81,8 +82,13 @@ def compute_window_diagnostics(config, *, window_count: int, steps_per_window: i
     met_root = meteorology_root(config)
     start = simulation_start(config)
     dt_s = float(transport_timestep_s(config))
-    initial_met_time_index = meteorology_initial_time_index(config)
-    cache: ForcingRecordCache = {}
+    forcing_provider = TransportForcingProvider(
+        met_root,
+        start,
+        grid,
+        initial_met_time_index=meteorology_initial_time_index(config),
+        chunk_multiple=meteorology_chunk_multiple(config),
+    )
     windows: list[WindowDiagnostics] = []
     state = None
     dry_air_mass = None
@@ -99,16 +105,7 @@ def compute_window_diagnostics(config, *, window_count: int, steps_per_window: i
     window_start = start
     for step in range(total_steps):
         current = start + timedelta(seconds=step * dt_s)
-        forcing = load_transport_forcing_for_step(
-            met_root,
-            start,
-            current,
-            grid,
-            dt_s=dt_s,
-            initial_met_time_index=initial_met_time_index,
-            cache=cache,
-        )
-        prune_forcing_record_cache(cache)
+        forcing = forcing_provider.forcing_for_step(current, dt_s=dt_s)
         if phase == "forcing":
             diag = airqnt_diagnostics_from_forcing(forcing, grid)
         elif phase == "after-vdiff":

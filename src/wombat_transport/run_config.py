@@ -102,6 +102,16 @@ def meteorology_initial_time_index(config: RunConfig) -> int:
     return int(config.meteorology.get("initial_time_index", 0))
 
 
+def meteorology_chunk_multiple(config: RunConfig) -> int:
+    try:
+        value = int(config.meteorology.get("chunk_multiple", 1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("meteorology.chunk_multiple must be an integer >= 1") from exc
+    if value < 1:
+        raise ValueError("meteorology.chunk_multiple must be an integer >= 1")
+    return value
+
+
 def logging_level(config: RunConfig) -> str:
     value = str(config.logging.get("level", "warning")).lower()
     allowed = {"warning", "info", "debug"}

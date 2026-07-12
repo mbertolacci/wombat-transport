@@ -17,7 +17,7 @@ from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
-from wombat_transport.run_config import load_run_config, logging_level
+from wombat_transport.run_config import load_run_config, logging_level, meteorology_chunk_multiple
 from wombat_transport.runner import (
     RUN_METADATA_NAME,
     _is_time_for_emissions,
@@ -108,50 +108,41 @@ def test_run_config_logging_level_defaults_and_validates():
         logging_level(replace(config, logging={"level": "trace"}))
 
 
-def test_simulation_forcing_cache_keeps_only_current_met_slice(monkeypatch):
+def test_run_config_meteorology_chunk_multiple_defaults_and_validates():
+    config = load_run_config(RESIDUAL_CONFIG)
+
+    assert meteorology_chunk_multiple(config) == 1
+    assert meteorology_chunk_multiple(replace(config, meteorology={"root": "met", "chunk_multiple": 2})) == 2
+    with pytest.raises(ValueError, match="meteorology.chunk_multiple"):
+        meteorology_chunk_multiple(replace(config, meteorology={"root": "met", "chunk_multiple": 0}))
+    with pytest.raises(ValueError, match="meteorology.chunk_multiple"):
+        meteorology_chunk_multiple(replace(config, meteorology={"root": "met", "chunk_multiple": "many"}))
+
+
+def test_simulation_forcing_uses_provider_timestamps():
     calls = []
 
-    def fake_load_transport_forcing(met_root, start, current, grid, *, dt_s, initial_met_time_index=0, cache=None):
-        forcing = object()
-        calls.append((start, current, dt_s, initial_met_time_index, forcing))
-        if cache is not None:
-            for index in range(10):
-                cache[("raw", current, index)] = forcing
-        return forcing
+    class FakeProvider:
+        def forcing_for_step(self, current, *, dt_s):
+            forcing = object()
+            calls.append((current, dt_s, forcing))
+            return forcing
 
-    monkeypatch.setattr("wombat_transport.runner.load_transport_forcing_for_step", fake_load_transport_forcing)
-    cache = {}
+    provider = FakeProvider()
     start = datetime(2014, 9, 1)
 
-    first = _load_simulation_forcing(cache, "met", start, None, start, transport_dt_s=600.0, initial_met_time_index=0)
-    same = _load_simulation_forcing(
-        cache,
-        "met",
-        start,
-        None,
-        start + timedelta(minutes=10),
-        transport_dt_s=600.0,
-        initial_met_time_index=0,
-    )
-    next_met = _load_simulation_forcing(
-        cache,
-        "met",
-        start,
-        None,
-        start + timedelta(hours=3),
-        transport_dt_s=600.0,
-        initial_met_time_index=0,
-    )
+    first = _load_simulation_forcing(provider, start, transport_dt_s=600.0)
+    same = _load_simulation_forcing(provider, start + timedelta(minutes=10), transport_dt_s=600.0)
+    next_met = _load_simulation_forcing(provider, start + timedelta(hours=3), transport_dt_s=600.0)
 
-    assert first is calls[0][4]
-    assert same is calls[1][4]
-    assert next_met is calls[2][4]
-    assert [call[1] for call in calls] == [
+    assert first is calls[0][2]
+    assert same is calls[1][2]
+    assert next_met is calls[2][2]
+    assert [call[0] for call in calls] == [
         start,
         start + timedelta(minutes=10),
         start + timedelta(hours=3),
     ]
-    assert len(cache) == 8
 
 
 def test_tracer_simulation_uses_configured_residual_emissions_source():

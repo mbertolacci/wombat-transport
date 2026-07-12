@@ -109,6 +109,11 @@ MERRA2_72_TO_47_GROUPS = (
 )
 
 MERRA2_72_TO_47_MAPPING = "collapse_72_to_47_pressure_weighted"
+MERRA2_A1_RECORDS_PER_DAY = 24
+MERRA2_A3_RECORDS_PER_DAY = 8
+MERRA2_A1_NATURAL_BLOCK_RECORDS = 24
+MERRA2_A3_NATURAL_BLOCK_RECORDS = 4
+MERRA2_I3_NATURAL_BLOCK_RECORDS = 4
 
 @dataclass(frozen=True)
 class TransportForcing:
@@ -191,7 +196,219 @@ class _I3Fields:
     path: Path
 
 
-ForcingRecordCache = dict[tuple[str, datetime, int], Any]
+@dataclass(frozen=True)
+class _A1Block:
+    start_index: int
+    count: int
+    pblh: np.ndarray
+    hflux: np.ndarray
+    eflux: np.ndarray
+    ustar: np.ndarray
+    precccon: np.ndarray
+    paths: tuple[Path, ...]
+
+    def contains(self, index: int) -> bool:
+        return self.start_index <= index < self.start_index + self.count
+
+    def field(self, index: int) -> _A1Fields:
+        offset = index - self.start_index
+        return _A1Fields(
+            pblh=self.pblh[offset : offset + 1],
+            hflux=self.hflux[offset : offset + 1],
+            eflux=self.eflux[offset : offset + 1],
+            ustar=self.ustar[offset : offset + 1],
+            precccon=self.precccon[offset : offset + 1],
+            path=self.paths[offset],
+        )
+
+
+@dataclass(frozen=True)
+class _A3Block:
+    start_index: int
+    count: int
+    u: np.ndarray
+    v: np.ndarray
+    omega: np.ndarray
+    dtrain: np.ndarray
+    dqrcu: np.ndarray
+    reevapcn: np.ndarray
+    cmfmc: np.ndarray
+    pficu: np.ndarray
+    pflcu: np.ndarray
+    a3dyn_paths: tuple[Path, ...]
+    a3mstc_paths: tuple[Path, ...]
+    a3mste_paths: tuple[Path, ...]
+
+    def contains(self, index: int) -> bool:
+        return self.start_index <= index < self.start_index + self.count
+
+    def field(self, index: int) -> _A3Fields:
+        offset = index - self.start_index
+        return _A3Fields(
+            u=self.u[offset : offset + 1],
+            v=self.v[offset : offset + 1],
+            omega=self.omega[offset : offset + 1],
+            dtrain=self.dtrain[offset : offset + 1],
+            dqrcu=self.dqrcu[offset : offset + 1],
+            reevapcn=self.reevapcn[offset : offset + 1],
+            cmfmc=self.cmfmc[offset],
+            pficu=self.pficu[offset],
+            pflcu=self.pflcu[offset],
+            a3dyn_path=self.a3dyn_paths[offset],
+            a3mstc_path=self.a3mstc_paths[offset],
+            a3mste_path=self.a3mste_paths[offset],
+        )
+
+
+@dataclass(frozen=True)
+class _I3Block:
+    start_index: int
+    count: int
+    surface_pressure: np.ndarray
+    qv: np.ndarray
+    temperature: np.ndarray
+    dry_surface_pressure_hpa: np.ndarray
+    wet_surface_pressure_hpa: np.ndarray
+    paths: tuple[Path, ...]
+
+    def contains_base(self, index: int) -> bool:
+        return self.start_index <= index < self.start_index + self.count
+
+    def contains_endpoint(self, index: int) -> bool:
+        return self.start_index <= index < self.start_index + self.surface_pressure.shape[0]
+
+    def field(self, index: int) -> _I3Fields:
+        offset = index - self.start_index
+        return _I3Fields(
+            surface_pressure=self.surface_pressure[offset : offset + 1],
+            qv=self.qv[offset : offset + 1],
+            temperature=self.temperature[offset : offset + 1],
+            dry_surface_pressure_hpa=self.dry_surface_pressure_hpa[offset : offset + 1],
+            wet_surface_pressure_hpa=self.wet_surface_pressure_hpa[offset : offset + 1],
+            path=self.paths[offset],
+        )
+
+
+class TransportForcingProvider:
+    """Block-oriented MERRA2 forcing loader for GEOS-Chem-timed steps."""
+
+    def __init__(
+        self,
+        met_root: str | Path,
+        start: datetime,
+        grid: TransportGrid,
+        *,
+        initial_met_time_index: int = 0,
+        chunk_multiple: int = 1,
+    ) -> None:
+        if int(chunk_multiple) < 1:
+            raise ValueError("meteorology chunk_multiple must be >= 1")
+        self._met_root = Path(met_root)
+        self._start = start
+        self._start_day = datetime(start.year, start.month, start.day)
+        self._grid = grid
+        self._initial_met_time_index = int(initial_met_time_index)
+        self._chunk_multiple = int(chunk_multiple)
+        self._a1_block: _A1Block | None = None
+        self._a3_block: _A3Block | None = None
+        self._i3_block: _I3Block | None = None
+
+    @property
+    def start(self) -> datetime:
+        return self._start
+
+    def forcing_for_step(self, current: datetime, *, dt_s: float) -> TransportForcing:
+        if dt_s <= 0:
+            raise ValueError("dt_s must be positive")
+        elapsed_s = (current - self._start).total_seconds()
+        if elapsed_s < 0:
+            raise ValueError("current must be at or after start")
+
+        hour_index = self._initial_met_time_index * 3 + int(elapsed_s // 3600.0)
+        i3_start_index = self._initial_met_time_index + int(elapsed_s // 10800.0)
+        i3_end_index = i3_start_index + 1
+        restart_i3_index = self._initial_met_time_index + int((elapsed_s + dt_s) // 10800.0)
+
+        a1 = self._a1_field(hour_index)
+        a3 = self._a3_field(i3_start_index)
+        i3_start = self._i3_field(i3_start_index, base=True)
+        i3_end = self._i3_field(i3_end_index, base=False)
+        if restart_i3_index == i3_start_index:
+            i3_restart = i3_start
+        elif restart_i3_index == i3_end_index:
+            i3_restart = i3_end
+        else:
+            i3_restart = self._i3_field(restart_i3_index, base=False)
+
+        seconds_into_i3_window = elapsed_s % 10800.0
+        start_fraction = seconds_into_i3_window / 10800.0
+        end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
+        midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
+        dry_surface_start_endpoint = _i3_dry_surface_pressure_hpa(i3_start, self._grid)
+        dry_surface_end_endpoint = _i3_dry_surface_pressure_hpa(i3_end, self._grid)
+        wet_surface_start_endpoint = _i3_wet_surface_pressure_hpa(i3_start, self._grid)
+        wet_surface_end_endpoint = _i3_wet_surface_pressure_hpa(i3_end, self._grid)
+        return _assemble_transport_forcing(
+            a1,
+            a3,
+            surface_pressure_start=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, start_fraction),
+            surface_pressure_end=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, end_fraction),
+            restart_surface_pressure=i3_restart.surface_pressure,
+            wet_surface_pressure_start=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, start_fraction),
+            wet_surface_pressure_end=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, end_fraction),
+            restart_wet_surface_pressure=_i3_wet_surface_pressure_hpa(i3_restart, self._grid),
+            dry_surface_pressure_start=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, start_fraction),
+            dry_surface_pressure_end=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, end_fraction),
+            restart_dry_surface_pressure=_i3_dry_surface_pressure_hpa(i3_restart, self._grid),
+            i3_start_dry_surface_pressure=dry_surface_start_endpoint,
+            i3_start_wet_surface_pressure=wet_surface_start_endpoint,
+            i3_start_specific_humidity=i3_start.qv,
+            specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
+            restart_specific_humidity=i3_restart.qv,
+            i3_start_temperature=i3_start.temperature,
+            temperature=_interpolate(i3_start.temperature, i3_end.temperature, midpoint_fraction),
+            restart_temperature=i3_restart.temperature,
+            i3_path=i3_start.path,
+            grid=self._grid,
+            vertical_mapping=MERRA2_72_TO_47_MAPPING,
+        )
+
+    def _a1_field(self, index: int) -> _A1Fields:
+        block_size = MERRA2_A1_NATURAL_BLOCK_RECORDS * self._chunk_multiple
+        if self._a1_block is None or not self._a1_block.contains(index):
+            self._a1_block = _load_a1_block(
+                self._met_root,
+                self._start_day,
+                _block_start(index, block_size),
+                block_size,
+            )
+        return self._a1_block.field(index)
+
+    def _a3_field(self, index: int) -> _A3Fields:
+        block_size = MERRA2_A3_NATURAL_BLOCK_RECORDS * self._chunk_multiple
+        if self._a3_block is None or not self._a3_block.contains(index):
+            self._a3_block = _load_a3_block(
+                self._met_root,
+                self._start_day,
+                _block_start(index, block_size),
+                block_size,
+            )
+        return self._a3_block.field(index)
+
+    def _i3_field(self, index: int, *, base: bool) -> _I3Fields:
+        block_size = MERRA2_I3_NATURAL_BLOCK_RECORDS * self._chunk_multiple
+        in_block = False
+        if self._i3_block is not None:
+            in_block = self._i3_block.contains_base(index) if base else self._i3_block.contains_endpoint(index)
+        if not in_block:
+            self._i3_block = _load_i3_block(
+                self._met_root,
+                self._start_day,
+                _block_start(index, block_size),
+                block_size,
+                self._grid,
+            )
+        return self._i3_block.field(index)
 
 
 def load_transport_forcing(
@@ -244,7 +461,7 @@ def load_transport_forcing_for_step(
     *,
     dt_s: float,
     initial_met_time_index: int = 0,
-    cache: ForcingRecordCache | None = None,
+    chunk_multiple: int = 1,
 ) -> TransportForcing:
     """Load GEOS-Chem-timed forcing for one transport step.
 
@@ -252,76 +469,14 @@ def load_transport_forcing_for_step(
     endpoint fields are interpolated to the dynamic timestep.
     """
 
-    if dt_s <= 0:
-        raise ValueError("dt_s must be positive")
-    elapsed_s = (current - start).total_seconds()
-    if elapsed_s < 0:
-        raise ValueError("current must be at or after start")
-
-    met_root = Path(met_root)
-    start_day = datetime(start.year, start.month, start.day)
-    hour_index = int(initial_met_time_index) * 3 + int(elapsed_s // 3600.0)
-    i3_start_index = int(initial_met_time_index) + int(elapsed_s // 10800.0)
-    i3_end_index = i3_start_index + 1
-    seconds_into_i3_window = elapsed_s % 10800.0
-
-    a1_day, a1_index = _record_day_and_index(start_day, hour_index, 24)
-    a3_day, a3_index = _record_day_and_index(start_day, i3_start_index, 8)
-    i3_start_day, i3_start_time_index = _record_day_and_index(start_day, i3_start_index, 8)
-    i3_end_day, i3_end_time_index = _record_day_and_index(start_day, i3_end_index, 8)
-    restart_i3_index = int(initial_met_time_index) + int((elapsed_s + dt_s) // 10800.0)
-    restart_day, restart_time_index = _record_day_and_index(start_day, restart_i3_index, 8)
-
-    a1 = _load_a1_fields(met_root, a1_day, grid, a1_index, cache)
-    a3 = _load_a3_fields(met_root, a3_day, grid, a3_index, cache)
-    i3_start = _load_i3_fields(met_root, i3_start_day, grid, i3_start_time_index, cache)
-    i3_end = _load_i3_fields(met_root, i3_end_day, grid, i3_end_time_index, cache)
-    if restart_i3_index == i3_start_index:
-        i3_restart = i3_start
-    elif restart_i3_index == i3_end_index:
-        i3_restart = i3_end
-    else:
-        i3_restart = _load_i3_fields(met_root, restart_day, grid, restart_time_index, cache)
-
-    start_fraction = seconds_into_i3_window / 10800.0
-    end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
-    midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
-    dry_surface_start_endpoint = _i3_dry_surface_pressure_hpa(i3_start, grid)
-    dry_surface_end_endpoint = _i3_dry_surface_pressure_hpa(i3_end, grid)
-    wet_surface_start_endpoint = _i3_wet_surface_pressure_hpa(i3_start, grid)
-    wet_surface_end_endpoint = _i3_wet_surface_pressure_hpa(i3_end, grid)
-    return _assemble_transport_forcing(
-        a1,
-        a3,
-        surface_pressure_start=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, start_fraction),
-        surface_pressure_end=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, end_fraction),
-        restart_surface_pressure=i3_restart.surface_pressure,
-        wet_surface_pressure_start=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, start_fraction),
-        wet_surface_pressure_end=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, end_fraction),
-        restart_wet_surface_pressure=_i3_wet_surface_pressure_hpa(i3_restart, grid),
-        dry_surface_pressure_start=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, start_fraction),
-        dry_surface_pressure_end=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, end_fraction),
-        restart_dry_surface_pressure=_i3_dry_surface_pressure_hpa(i3_restart, grid),
-        i3_start_dry_surface_pressure=dry_surface_start_endpoint,
-        i3_start_wet_surface_pressure=wet_surface_start_endpoint,
-        i3_start_specific_humidity=i3_start.qv,
-        specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
-        restart_specific_humidity=i3_restart.qv,
-        i3_start_temperature=i3_start.temperature,
-        temperature=_interpolate(i3_start.temperature, i3_end.temperature, midpoint_fraction),
-        restart_temperature=i3_restart.temperature,
-        i3_path=i3_start.path,
-        grid=grid,
-        vertical_mapping=MERRA2_72_TO_47_MAPPING,
+    provider = TransportForcingProvider(
+        met_root,
+        start,
+        grid,
+        initial_met_time_index=initial_met_time_index,
+        chunk_multiple=chunk_multiple,
     )
-
-
-def prune_forcing_record_cache(cache: ForcingRecordCache, *, keep: int = 8) -> None:
-    """Bound raw forcing record cache size without assuming collection cadence."""
-
-    while len(cache) > keep:
-        oldest = next(iter(cache))
-        del cache[oldest]
+    return provider.forcing_for_step(current, dt_s=dt_s)
 
 
 def _assemble_transport_forcing(
@@ -404,12 +559,152 @@ def _met_path(met_root: Path, timestamp: datetime, collection: str) -> Path:
     return day_dir / MERRA2_FILENAME.format(date=timestamp.strftime("%Y%m%d"), collection=collection)
 
 
+def _block_start(index: int, block_size: int) -> int:
+    if index < 0:
+        raise ValueError(f"met record index must be nonnegative, got {index}")
+    return index // block_size * block_size
+
+
+def _load_a1_block(met_root: Path, start_day: datetime, start_index: int, count: int) -> _A1Block:
+    pblh = []
+    hflux = []
+    eflux = []
+    ustar = []
+    precccon = []
+    paths = []
+    for day, day_index, records in _record_spans(start_day, start_index, count, MERRA2_A1_RECORDS_PER_DAY):
+        a1_path = _met_path(met_root, day, "A1")
+        with netCDF4.Dataset(a1_path) as a1:
+            selector = slice(day_index, day_index + records)
+            pblh.append(np.asarray(a1.variables["PBLH"][selector], dtype=np.float64))
+            hflux.append(np.asarray(a1.variables["HFLUX"][selector], dtype=np.float64))
+            eflux.append(np.asarray(a1.variables["EFLUX"][selector], dtype=np.float64))
+            ustar.append(np.asarray(a1.variables["USTAR"][selector], dtype=np.float64))
+            precccon.append(np.asarray(a1.variables["PRECCON"][selector], dtype=np.float64))
+        paths.extend([a1_path.resolve()] * records)
+    return _A1Block(
+        start_index=start_index,
+        count=count,
+        pblh=np.concatenate(pblh, axis=0),
+        hflux=np.concatenate(hflux, axis=0),
+        eflux=np.concatenate(eflux, axis=0),
+        ustar=np.concatenate(ustar, axis=0),
+        precccon=np.concatenate(precccon, axis=0),
+        paths=tuple(paths),
+    )
+
+
+def _load_a3_block(met_root: Path, start_day: datetime, start_index: int, count: int) -> _A3Block:
+    u = []
+    v = []
+    omega = []
+    dtrain = []
+    dqrcu = []
+    reevapcn = []
+    cmfmc = []
+    pficu = []
+    pflcu = []
+    a3dyn_paths = []
+    a3mstc_paths = []
+    a3mste_paths = []
+    for day, day_index, records in _record_spans(start_day, start_index, count, MERRA2_A3_RECORDS_PER_DAY):
+        a3dyn_path = _met_path(met_root, day, "A3dyn")
+        a3mstc_path = _met_path(met_root, day, "A3mstC")
+        a3mste_path = _met_path(met_root, day, "A3mstE")
+        selector = slice(day_index, day_index + records)
+        with (
+            netCDF4.Dataset(a3dyn_path) as a3dyn,
+            netCDF4.Dataset(a3mstc_path) as a3mstc,
+            netCDF4.Dataset(a3mste_path) as a3mste,
+        ):
+            u.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["U"][selector], dtype=np.float64)))
+            v.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["V"][selector], dtype=np.float64)))
+            omega.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["OMEGA"][selector], dtype=np.float64)))
+            dtrain.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["DTRAIN"][selector], dtype=np.float64)))
+            dqrcu.append(_map_met_levels_to_47(np.asarray(a3mstc.variables["DQRCU"][selector], dtype=np.float64)))
+            reevapcn.append(_map_met_levels_to_47(np.asarray(a3mstc.variables["REEVAPCN"][selector], dtype=np.float64)))
+            cmfmc.append(_map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][selector], dtype=np.float64)))
+            pficu.append(_map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][selector], dtype=np.float64)))
+            pflcu.append(_map_met_edges_to_48(np.asarray(a3mste.variables["PFLCU"][selector], dtype=np.float64)))
+        a3dyn_paths.extend([a3dyn_path.resolve()] * records)
+        a3mstc_paths.extend([a3mstc_path.resolve()] * records)
+        a3mste_paths.extend([a3mste_path.resolve()] * records)
+    return _A3Block(
+        start_index=start_index,
+        count=count,
+        u=np.concatenate(u, axis=0),
+        v=np.concatenate(v, axis=0),
+        omega=np.concatenate(omega, axis=0),
+        dtrain=np.concatenate(dtrain, axis=0),
+        dqrcu=np.concatenate(dqrcu, axis=0),
+        reevapcn=np.concatenate(reevapcn, axis=0),
+        cmfmc=np.concatenate(cmfmc, axis=0),
+        pficu=np.concatenate(pficu, axis=0),
+        pflcu=np.concatenate(pflcu, axis=0),
+        a3dyn_paths=tuple(a3dyn_paths),
+        a3mstc_paths=tuple(a3mstc_paths),
+        a3mste_paths=tuple(a3mste_paths),
+    )
+
+
+def _load_i3_block(met_root: Path, start_day: datetime, start_index: int, count: int, grid: TransportGrid) -> _I3Block:
+    surface_pressure = []
+    qv = []
+    temperature = []
+    paths = []
+    read_count = count + 1
+    for day, day_index, records in _record_spans(start_day, start_index, read_count, MERRA2_A3_RECORDS_PER_DAY):
+        i3_path = _met_path(met_root, day, "I3")
+        selector = slice(day_index, day_index + records)
+        with netCDF4.Dataset(i3_path) as i3:
+            surface_pressure.append(np.asarray(i3.variables["PS"][selector], dtype=np.float64))
+            qv.append(_map_met_levels_to_47(np.asarray(i3.variables["QV"][selector], dtype=np.float64)))
+            temperature.append(_map_met_levels_to_47(np.asarray(i3.variables["T"][selector], dtype=np.float64)))
+        paths.extend([i3_path.resolve()] * records)
+    surface_pressure_array = np.concatenate(surface_pressure, axis=0)
+    qv_array = np.concatenate(qv, axis=0)
+    return _I3Block(
+        start_index=start_index,
+        count=count,
+        surface_pressure=surface_pressure_array,
+        qv=qv_array,
+        temperature=np.concatenate(temperature, axis=0),
+        dry_surface_pressure_hpa=dry_surface_pressure_hpa(
+            surface_pressure_array,
+            qv_array,
+            grid.hyai_hpa,
+            grid.hybi,
+            area_m2=grid.area_m2,
+        ),
+        wet_surface_pressure_hpa=wet_surface_pressure_hpa(surface_pressure_array, area_m2=grid.area_m2),
+        paths=tuple(paths),
+    )
+
+
+def _record_spans(
+    start_day: datetime,
+    start_index: int,
+    count: int,
+    records_per_day: int,
+) -> tuple[tuple[datetime, int, int], ...]:
+    spans = []
+    remaining = int(count)
+    index = int(start_index)
+    while remaining > 0:
+        day, day_index = _record_day_and_index(start_day, index, records_per_day)
+        records = min(remaining, records_per_day - day_index)
+        spans.append((day, day_index, records))
+        remaining -= records
+        index += records
+    return tuple(spans)
+
+
 def _load_a1_fields(
     met_root: Path,
     timestamp: datetime,
     grid: TransportGrid,
     time_index: int,
-    cache: ForcingRecordCache | None,
+    cache: dict[tuple[str, datetime, int], Any] | None,
 ) -> _A1Fields:
     key = ("A1", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
     if cache is not None and key in cache:
@@ -434,7 +729,7 @@ def _load_a3_fields(
     timestamp: datetime,
     grid: TransportGrid,
     time_index: int,
-    cache: ForcingRecordCache | None,
+    cache: dict[tuple[str, datetime, int], Any] | None,
 ) -> _A3Fields:
     key = ("A3", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
     if cache is not None and key in cache:
@@ -471,7 +766,7 @@ def _load_i3_fields(
     timestamp: datetime,
     grid: TransportGrid,
     time_index: int,
-    cache: ForcingRecordCache | None,
+    cache: dict[tuple[str, datetime, int], Any] | None,
 ) -> _I3Fields:
     key = ("I3", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
     if cache is not None and key in cache:
@@ -543,14 +838,18 @@ def _map_met_levels_to_47(data: np.ndarray) -> np.ndarray:
 
 def _map_met_edges_to_48(data: np.ndarray) -> np.ndarray:
     edges = np.asarray(data, dtype=np.float64)
-    if edges.ndim != 3:
-        raise ValueError(f"edge field must be 3-D (edge, lat, lon), found {edges.shape}")
-    if edges.shape[0] == FIXED_GRID["lev"] + 1:
+    if edges.ndim == 3:
+        edge_axis = 0
+    elif edges.ndim == 4:
+        edge_axis = 1
+    else:
+        raise ValueError(f"edge field must be 3-D or 4-D, found {edges.shape}")
+    if edges.shape[edge_axis] == FIXED_GRID["lev"] + 1:
         return edges
-    if edges.shape[0] != 73:
-        raise ValueError(f"cannot map {edges.shape[0]} met edges to {FIXED_GRID['lev'] + 1} target edges")
+    if edges.shape[edge_axis] != 73:
+        raise ValueError(f"cannot map {edges.shape[edge_axis]} met edges to {FIXED_GRID['lev'] + 1} target edges")
     target_indices = np.array(
         list(range(37)) + [38, 40, 42, 44, 48, 52, 56, 60, 64, 68, 72],
         dtype=np.int64,
     )
-    return edges[target_indices]
+    return np.take(edges, target_indices, axis=edge_axis)

@@ -16,10 +16,9 @@ from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import (
-    ForcingRecordCache,
     TransportForcing,
+    TransportForcingProvider,
     load_transport_forcing_for_step,
-    prune_forcing_record_cache,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import RD_J_PER_KG_K, G0_M_PER_S2, VdiffDrResult, run_vdiffdr_one_step
@@ -232,6 +231,7 @@ def run_transport_window(
     steps: int = 18,
     dt_s: float = 600.0,
     initial_met_time_index: int = 0,
+    chunk_multiple: int = 1,
     max_courant: float = 0.95,
 ) -> TransportWindowResult:
     """Run a short transport window and accumulate arithmetic mean state."""
@@ -243,27 +243,25 @@ def run_transport_window(
     dry_mass_sum = None
     state_sum = None
     delp_sum = None
-    forcing_cache: ForcingRecordCache = {}
-    first_forcing = _load_window_forcing(
-        forcing_cache,
+    forcing_provider = TransportForcingProvider(
         met_root,
         start,
         grid,
+        initial_met_time_index=initial_met_time_index,
+        chunk_multiple=chunk_multiple,
+    )
+    first_forcing = _load_window_forcing(
+        forcing_provider,
         step=0,
         dt_s=dt_s,
-        initial_met_time_index=initial_met_time_index,
     )
     dry_air_mass = _dry_air_mass_from_forcing_start(first_forcing, grid)
 
     for step in range(steps):
         forcing = _load_window_forcing(
-            forcing_cache,
-            met_root,
-            start,
-            grid,
+            forcing_provider,
             step=step,
             dt_s=dt_s,
-            initial_met_time_index=initial_met_time_index,
         )
         step_result = _run_transport_one_step_with_mass(
             state,
@@ -856,24 +854,10 @@ def _dry_air_mass_from_forcing_start(forcing: TransportForcing, grid: TransportG
     return dry_air_mass_from_pressure(delp, grid.area_m2)
 
 def _load_window_forcing(
-    cache: ForcingRecordCache,
-    met_root: str | Path,
-    start: datetime,
-    grid: TransportGrid,
+    forcing_provider: TransportForcingProvider,
     *,
     step: int,
     dt_s: float,
-    initial_met_time_index: int,
 ) -> TransportForcing:
-    current = start + timedelta(seconds=int(step) * float(dt_s))
-    forcing = load_transport_forcing_for_step(
-        met_root,
-        start,
-        current,
-        grid,
-        dt_s=dt_s,
-        initial_met_time_index=initial_met_time_index,
-        cache=cache,
-    )
-    prune_forcing_record_cache(cache)
-    return forcing
+    current = forcing_provider.start + timedelta(seconds=int(step) * float(dt_s))
+    return forcing_provider.forcing_for_step(current, dt_s=dt_s)

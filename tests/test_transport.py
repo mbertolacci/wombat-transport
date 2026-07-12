@@ -43,6 +43,7 @@ from wombat_transport.transport import (
     _map_met_levels_to_47,
     load_transport_forcing_for_step,
 )
+import wombat_transport.transport.forcing as forcing_module
 import wombat_transport.transport.pbl as pbl_module
 from wombat_transport.transport.pbl import (
     ZVIR,
@@ -85,70 +86,60 @@ def test_transport_forcing_loads_merra2_on_47_level_grid():
     assert np.all(np.isfinite(forcing.u_m_s))
 
 
-def test_transport_forcing_for_step_uses_geos_chem_cadences(monkeypatch):
+def test_transport_forcing_provider_uses_block_cadences(monkeypatch):
     calls = []
     grid = _fake_grid()
 
-    def fake_a1(met_root, timestamp, grid, time_index, cache):
-        calls.append(("A1", timestamp, time_index))
-        return _fake_a1_fields(time_index)
+    def fake_a1_block(met_root, start_day, start_index, count):
+        calls.append(("A1", start_index, count))
+        return _fake_a1_block(start_index, count)
 
-    def fake_a3(met_root, timestamp, grid, time_index, cache):
-        calls.append(("A3", timestamp, time_index))
-        return _fake_a3_fields(time_index)
+    def fake_a3_block(met_root, start_day, start_index, count):
+        calls.append(("A3", start_index, count))
+        return _fake_a3_block(start_index, count)
 
-    def fake_i3(met_root, timestamp, grid, time_index, cache):
-        calls.append(("I3", timestamp, time_index))
-        return _fake_i3_fields(time_index)
+    def fake_i3_block(met_root, start_day, start_index, count, grid):
+        calls.append(("I3", start_index, count))
+        return _fake_i3_block(start_index, count)
 
-    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_fields", fake_a1)
-    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_fields", fake_a3)
-    monkeypatch.setattr("wombat_transport.transport.forcing._load_i3_fields", fake_i3)
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_block", fake_a1_block)
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_block", fake_a3_block)
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_i3_block", fake_i3_block)
 
     start = datetime(2014, 9, 1)
-    load_transport_forcing_for_step(
+    provider = forcing_module.TransportForcingProvider(
         "met",
         start,
-        start + timedelta(hours=3),
         grid,  # type: ignore[arg-type]
-        dt_s=600.0,
-        cache={},
     )
-    load_transport_forcing_for_step(
-        "met",
-        start,
-        start + timedelta(hours=23, minutes=50),
-        grid,  # type: ignore[arg-type]
-        dt_s=600.0,
-        cache={},
-    )
+    provider.forcing_for_step(start + timedelta(hours=3), dt_s=600.0)
+    provider.forcing_for_step(start + timedelta(hours=3, minutes=10), dt_s=600.0)
+    provider.forcing_for_step(start + timedelta(hours=23, minutes=50), dt_s=600.0)
 
-    assert ("A1", datetime(2014, 9, 1), 3) in calls
-    assert ("A3", datetime(2014, 9, 1), 1) in calls
-    assert ("I3", datetime(2014, 9, 1), 1) in calls
-    assert ("A1", datetime(2014, 9, 1), 23) in calls
-    assert ("A3", datetime(2014, 9, 1), 7) in calls
-    assert ("I3", datetime(2014, 9, 2), 0) in calls
+    assert calls == [
+        ("A1", 0, 24),
+        ("A3", 0, 4),
+        ("I3", 0, 4),
+        ("A3", 4, 4),
+        ("I3", 4, 4),
+    ]
 
 
-def test_transport_forcing_for_step_interpolates_i3_like_geos_chem(monkeypatch):
+def test_transport_forcing_provider_interpolates_i3_like_geos_chem(monkeypatch):
     grid = _fake_grid()
 
-    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_fields", lambda *args: _fake_a1_fields(0.0))
-    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_fields", lambda *args: _fake_a3_fields(0.0))
-    monkeypatch.setattr(
-        "wombat_transport.transport.forcing._load_i3_fields",
-        lambda met_root, timestamp, grid, time_index, cache: _fake_i3_fields(float(time_index)),
-    )
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_block", lambda *args: _fake_a1_block(0, 24))
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_block", lambda *args: _fake_a3_block(0, 4))
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_i3_block", lambda *args: _fake_i3_block(0, 4))
 
     start = datetime(2014, 9, 1)
-    forcing = load_transport_forcing_for_step(
+    forcing = forcing_module.TransportForcingProvider(
         "met",
         start,
-        start + timedelta(hours=1),
         grid,  # type: ignore[arg-type]
+    ).forcing_for_step(
+        start + timedelta(hours=1),
         dt_s=600.0,
-        cache={},
     )
 
     np.testing.assert_allclose(forcing.surface_pressure_start_pa, 1.0 / 3.0)
@@ -199,33 +190,79 @@ def test_transport_forcing_accepts_preloaded_grid():
     np.testing.assert_array_equal(forcing.lon_deg, grid.lon_deg)
 
 
-def test_transport_window_forcing_cache_keeps_only_current_met_slice(monkeypatch):
+def test_transport_forcing_provider_chunk_multiple_is_numerically_equivalent():
+    config = load_run_config(BASE_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    met_root = meteorology_root(config)
+    start = simulation_start(config)
+    dt_s = float(transport_timestep_s(config))
+    provider_one = forcing_module.TransportForcingProvider(
+        met_root,
+        start,
+        grid,
+        initial_met_time_index=meteorology_initial_time_index(config),
+        chunk_multiple=1,
+    )
+    provider_two = forcing_module.TransportForcingProvider(
+        met_root,
+        start,
+        grid,
+        initial_met_time_index=meteorology_initial_time_index(config),
+        chunk_multiple=2,
+    )
+
+    for current in (
+        start,
+        start + timedelta(hours=1),
+        start + timedelta(hours=12),
+        start + timedelta(hours=23, minutes=50),
+        start + timedelta(hours=24),
+    ):
+        forcing_one = provider_one.forcing_for_step(current, dt_s=dt_s)
+        forcing_two = provider_two.forcing_for_step(current, dt_s=dt_s)
+        for name in (
+            "u_m_s",
+            "v_m_s",
+            "omega_pa_s",
+            "surface_pressure_start_pa",
+            "surface_pressure_pa",
+            "dry_surface_pressure_start_hpa",
+            "dry_surface_pressure_hpa",
+            "specific_humidity_kg_kg",
+            "temperature_k",
+            "pbl_height_m",
+            "convective_mass_flux_kg_m2_s",
+        ):
+            np.testing.assert_array_equal(getattr(forcing_one, name), getattr(forcing_two, name))
+
+
+def test_transport_window_uses_forcing_provider_timestamps():
     calls = []
 
-    def fake_load_transport_forcing(met_root, start, current, grid, *, dt_s, initial_met_time_index=0, cache=None):
-        forcing = object()
-        calls.append((start, current, dt_s, initial_met_time_index, forcing))
-        if cache is not None:
-            cache[("raw", current, len(cache))] = forcing
-        return forcing
+    class FakeProvider:
+        def __init__(self, start):
+            self.start = start
 
-    monkeypatch.setattr("wombat_transport.transport.driver.load_transport_forcing_for_step", fake_load_transport_forcing)
-    cache = {}
+        def forcing_for_step(self, current, *, dt_s):
+            forcing = object()
+            calls.append((current, dt_s, forcing))
+            return forcing
+
     start = simulation_start(load_run_config(BASE_CONFIG))
+    provider = FakeProvider(start)
 
-    first = _load_window_forcing(cache, "met", start, None, step=0, dt_s=600.0, initial_met_time_index=0)
-    same = _load_window_forcing(cache, "met", start, None, step=17, dt_s=600.0, initial_met_time_index=0)
-    next_met = _load_window_forcing(cache, "met", start, None, step=18, dt_s=600.0, initial_met_time_index=0)
+    first = _load_window_forcing(provider, step=0, dt_s=600.0)
+    same = _load_window_forcing(provider, step=17, dt_s=600.0)
+    next_met = _load_window_forcing(provider, step=18, dt_s=600.0)
 
-    assert first is calls[0][4]
-    assert same is calls[1][4]
-    assert next_met is calls[2][4]
-    assert [call[1] for call in calls] == [
+    assert first is calls[0][2]
+    assert same is calls[1][2]
+    assert next_met is calls[2][2]
+    assert [call[0] for call in calls] == [
         start,
         start + timedelta(minutes=170),
         start + timedelta(hours=3),
     ]
-    assert len(cache) <= 8
 
 
 def _fake_a1_fields(value: float):
@@ -263,6 +300,61 @@ def _fake_i3_fields(value: float):
     data2 = np.full((1, 1, 1), float(value), dtype=np.float64)
     data3 = np.full((1, 1, 1, 1), float(value), dtype=np.float64)
     return SimpleNamespace(surface_pressure=data2, qv=data3, temperature=data3, path=Path("I3.nc4"))
+
+
+def _fake_a1_block(start_index: int, count: int):
+    values = np.arange(start_index, start_index + count, dtype=np.float64).reshape(count, 1, 1)
+    paths = tuple(Path(f"A1_{index}.nc4") for index in range(start_index, start_index + count))
+    return forcing_module._A1Block(
+        start_index=start_index,
+        count=count,
+        pblh=values,
+        hflux=values,
+        eflux=values,
+        ustar=values,
+        precccon=values,
+        paths=paths,
+    )
+
+
+def _fake_a3_block(start_index: int, count: int):
+    values = np.arange(start_index, start_index + count, dtype=np.float64).reshape(count, 1, 1, 1)
+    edges = np.arange(start_index, start_index + count, dtype=np.float64).reshape(count, 1, 1, 1)
+    edges = np.repeat(edges, 2, axis=1)
+    paths = tuple(Path(f"A3_{index}.nc4") for index in range(start_index, start_index + count))
+    return forcing_module._A3Block(
+        start_index=start_index,
+        count=count,
+        u=values,
+        v=values,
+        omega=values,
+        dtrain=values,
+        dqrcu=values,
+        reevapcn=values,
+        cmfmc=edges,
+        pficu=edges,
+        pflcu=edges,
+        a3dyn_paths=paths,
+        a3mstc_paths=paths,
+        a3mste_paths=paths,
+    )
+
+
+def _fake_i3_block(start_index: int, count: int):
+    read_count = count + 1
+    values2 = np.arange(start_index, start_index + read_count, dtype=np.float64).reshape(read_count, 1, 1)
+    values3 = np.arange(start_index, start_index + read_count, dtype=np.float64).reshape(read_count, 1, 1, 1)
+    paths = tuple(Path(f"I3_{index}.nc4") for index in range(start_index, start_index + read_count))
+    return forcing_module._I3Block(
+        start_index=start_index,
+        count=count,
+        surface_pressure=values2,
+        qv=values3,
+        temperature=values3,
+        dry_surface_pressure_hpa=values2,
+        wet_surface_pressure_hpa=values2,
+        paths=paths,
+    )
 
 
 def _fake_grid():

@@ -20,10 +20,10 @@ from wombat_transport.transport.forcing import (
     MERRA2_72_TO_47_MAPPING,
     MERRA2_FILENAME,
     TransportForcing,
+    TransportForcingProvider,
     _map_met_levels_to_47,
     load_transport_forcing,
     load_transport_forcing_for_step,
-    prune_forcing_record_cache,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import (
@@ -62,6 +62,7 @@ __all__ = [
     "MERRA2_72_TO_47_MAPPING",
     "MERRA2_FILENAME",
     "TransportForcing",
+    "TransportForcingProvider",
     "TransportGrid",
     "ConvectionResult",
     "ConvectionInputState",
@@ -87,7 +88,6 @@ __all__ = [
     "dry_surface_pressure_hpa",
     "load_transport_forcing",
     "load_transport_forcing_for_step",
-    "prune_forcing_record_cache",
     "load_transport_grid",
     "mix_full_pbl",
     "pjc_mass_flux_hpa",

@@ -20,6 +20,7 @@ from wombat_transport.output import HistoryOutputManager, OutputSnapshot
 from wombat_transport.run_config import (
     RunConfig,
     emissions_timestep_s,
+    meteorology_chunk_multiple,
     meteorology_initial_time_index,
     meteorology_root,
     simulation_end,
@@ -30,8 +31,7 @@ from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
-    load_transport_forcing_for_step,
-    prune_forcing_record_cache,
+    TransportForcingProvider,
     run_transport_one_step,
 )
 
@@ -89,15 +89,17 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     output_manager = HistoryOutputManager.from_run_config(config)
     logger.debug("output_manager enabled=%s", output_manager is not None)
 
-    forcing_cache = {}
-    first_forcing = _load_simulation_forcing(
-        forcing_cache,
+    forcing_provider = TransportForcingProvider(
         met_root,
         start,
         grid,
+        initial_met_time_index=meteorology_initial_time_index(config),
+        chunk_multiple=meteorology_chunk_multiple(config),
+    )
+    first_forcing = _load_simulation_forcing(
+        forcing_provider,
         start,
         transport_dt_s=transport_dt_s,
-        initial_met_time_index=meteorology_initial_time_index(config),
     )
     dry_air_mass = _initial_dry_air_mass(config, first_forcing, grid)
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
@@ -116,13 +118,9 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         logger.info("transport_timestep step=%d time=%s", transport_steps + 1, current.isoformat())
         logger.debug("loading_forcing step=%d time=%s", transport_steps + 1, current.isoformat())
         forcing = _load_simulation_forcing(
-            forcing_cache,
-            met_root,
-            start,
-            grid,
+            forcing_provider,
             current,
             transport_dt_s=transport_dt_s,
-            initial_met_time_index=meteorology_initial_time_index(config),
         )
         elapsed_s = int(round((current - start).total_seconds()))
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
@@ -311,25 +309,9 @@ def _is_time_for_emissions(elapsed_s: int, transport_dt_s: float, emissions_dt_s
 
 
 def _load_simulation_forcing(
-    cache: dict[tuple[object, ...], object],
-    met_root: Path,
-    start: datetime,
-    grid,
+    forcing_provider: TransportForcingProvider,
     current: datetime,
     *,
     transport_dt_s: float,
-    initial_met_time_index: int,
 ):
-    before = len(cache)
-    forcing = load_transport_forcing_for_step(
-        met_root,
-        start,
-        current,
-        grid,
-        dt_s=transport_dt_s,
-        initial_met_time_index=initial_met_time_index,
-        cache=cache,
-    )
-    prune_forcing_record_cache(cache)
-    logger.debug("forcing_cache_records before=%d after=%d", before, len(cache))
-    return forcing
+    return forcing_provider.forcing_for_step(current, dt_s=transport_dt_s)
