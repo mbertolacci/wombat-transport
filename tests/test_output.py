@@ -17,6 +17,7 @@ from wombat_transport.output import (
     expand_history_template,
     parse_history_interval,
     parse_output_storage,
+    parse_output_writer,
     write_restart_collection,
     write_species_conc_collection,
 )
@@ -64,6 +65,18 @@ def test_output_storage_defaults_and_validates():
     assert not explicit.compression.enabled
     assert explicit.chunking.rank3 == (1, 2, 3)
     assert explicit.chunking.rank4 == (1, 1, 2, 3)
+
+
+def test_output_writer_defaults_and_validates():
+    assert parse_output_writer({}).mode == "sync"
+    assert parse_output_writer({"writer": "threaded"}).mode == "threaded"
+
+    try:
+        parse_output_writer({"writer": "process"})
+    except ValueError as exc:
+        assert "outputs.writer" in str(exc)
+    else:
+        raise AssertionError("accepted invalid output writer mode")
 
 
 def test_output_storage_rejects_invalid_values():
@@ -282,6 +295,90 @@ def test_output_manager_streams_species_conc_across_daily_files(tmp_path):
     second = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140902_0000z.nc4"
     np.testing.assert_allclose(load_species_conc(first).data[0, :, :, :, 0], _field(("A",), values=(1.0,)).data[0, :, :, :, 0])
     np.testing.assert_allclose(load_species_conc(second).data[0, :, :, :, 0], _field(("A",), values=(2.0,)).data[0, :, :, :, 0])
+
+
+def test_threaded_output_manager_matches_sync_species_conc(tmp_path):
+    forcing = _forcing()
+    delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
+    collection = OutputCollectionConfig(
+        name="SpeciesConcHourly",
+        filename=None,
+        template="%y4%m2%d2_%h2%n2z.nc4",
+        frequency=parse_history_interval("00000000 010000"),
+        duration=parse_history_interval("00000001 000000"),
+        mode="time-averaged",
+        fields=("SpeciesConcVV_?ADV?",),
+    )
+
+    for writer_mode in ("sync", "threaded"):
+        manager = HistoryOutputManager(
+            root=tmp_path / writer_mode,
+            template_path=BASE_RESTART,
+            expid="OutputDir/GEOSChem",
+            collections=(collection,),
+            start=datetime(2014, 9, 1),
+            writer=parse_output_writer({"writer": writer_mode}),
+        )
+        manager.record_step(
+            OutputSnapshot(datetime(2014, 9, 1, 0, 10), _field(("A",), values=(1.0,)), delp, forcing)  # type: ignore[arg-type]
+        )
+        manager.record_step(
+            OutputSnapshot(datetime(2014, 9, 1, 0, 20), _field(("A",), values=(3.0,)), delp, forcing)  # type: ignore[arg-type]
+        )
+        manager.record_step(
+            OutputSnapshot(datetime(2014, 9, 1, 1, 10), _field(("A",), values=(5.0,)), delp, forcing)  # type: ignore[arg-type]
+        )
+        manager.close()
+
+    sync = load_species_conc(
+        tmp_path / "sync" / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
+    )
+    threaded = load_species_conc(
+        tmp_path / "threaded" / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
+    )
+    np.testing.assert_allclose(threaded.data, sync.data)
+    assert threaded.names == sync.names
+
+
+def test_threaded_output_manager_reraises_writer_errors(tmp_path):
+    manager = HistoryOutputManager(
+        root=tmp_path,
+        template_path=tmp_path / "missing_template.nc4",
+        expid="OutputDir/GEOSChem",
+        collections=(
+            OutputCollectionConfig(
+                name="SpeciesConcHourly",
+                filename=None,
+                template="%y4%m2%d2_%h2%n2z.nc4",
+                frequency=parse_history_interval("00000000 010000"),
+                duration=parse_history_interval("00000001 000000"),
+                mode="time-averaged",
+                fields=("SpeciesConcVV_?ADV?",),
+            ),
+        ),
+        start=datetime(2014, 9, 1),
+        writer=parse_output_writer({"writer": "threaded"}),
+    )
+    forcing = _forcing()
+    delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
+    manager.record_step(
+        OutputSnapshot(datetime(2014, 9, 1, 0, 10), _field(("A",), values=(1.0,)), delp, forcing)  # type: ignore[arg-type]
+    )
+
+    try:
+        manager.close()
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("threaded output writer error was not reraised")
+
+
+def _forcing() -> SimpleNamespace:
+    return SimpleNamespace(
+        surface_pressure_pa=np.full((1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 101000.0),
+        specific_humidity_kg_kg=np.zeros((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])),
+        temperature_k=np.zeros((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])),
+    )
 
 
 def _field(names: tuple[str, ...], *, values: tuple[float, ...]) -> TracerField:

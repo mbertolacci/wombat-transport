@@ -6,6 +6,7 @@ import csv
 import json
 import pstats
 import shutil
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -77,23 +78,33 @@ class ProfileResult:
 class RuntimeProfiler:
     def __init__(self) -> None:
         self.timers: dict[str, CallTimer] = {}
-        self._stack: list[tuple[str, float, float]] = []
+        self._local = threading.local()
+        self._lock = threading.Lock()
+
+    def _stack(self) -> list[tuple[str, float, float]]:
+        stack = getattr(self._local, "stack", None)
+        if stack is None:
+            stack = []
+            self._local.stack = stack
+        return stack
 
     def wrap(self, stage: str, function: Callable) -> Callable:
         def wrapper(*args, **kwargs):
-            self._stack.append((stage, time.perf_counter(), 0.0))
+            stack = self._stack()
+            stack.append((stage, time.perf_counter(), 0.0))
             try:
                 return function(*args, **kwargs)
             finally:
-                finished_stage, start, child_s = self._stack.pop()
+                finished_stage, start, child_s = stack.pop()
                 elapsed = time.perf_counter() - start
-                timer = self.timers.setdefault(finished_stage, CallTimer())
-                timer.calls += 1
-                timer.total_s += elapsed
-                timer.child_s += child_s
-                if self._stack:
-                    parent_stage, parent_start, parent_child = self._stack.pop()
-                    self._stack.append((parent_stage, parent_start, parent_child + elapsed))
+                with self._lock:
+                    timer = self.timers.setdefault(finished_stage, CallTimer())
+                    timer.calls += 1
+                    timer.total_s += elapsed
+                    timer.child_s += child_s
+                if stack:
+                    parent_stage, parent_start, parent_child = stack.pop()
+                    stack.append((parent_stage, parent_start, parent_child + elapsed))
 
         return wrapper
 
@@ -132,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             output_compression_level=args.output_compression_level,
             output_shuffle=args.output_shuffle,
             output_rank4_chunking=tuple(args.output_rank4_chunking) if args.output_rank4_chunking else None,
+            output_writer=args.output_writer,
         )
         cprofile_path = output_dir / f"cprofile_{count:03d}.prof" if args.cprofile else None
         result = _run_profiled(run_dir / "run.yml", tracer_count=count, max_steps=None, cprofile_path=cprofile_path)
@@ -187,6 +199,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar=("TIME", "LEV", "LAT", "LON"),
         help="Override rank-4 output chunks, e.g. 1 47 91 144.",
     )
+    parser.add_argument(
+        "--output-writer",
+        choices=("sync", "threaded"),
+        default=None,
+        help="Override outputs.writer.",
+    )
     parser.add_argument("--cprofile", action="store_true", help="Write one cProfile .prof per tracer count.")
     parser.add_argument(
         "--field-offset",
@@ -217,6 +235,7 @@ def _prepare_run_dir(
     output_compression_level: int | None = None,
     output_shuffle: str | None = None,
     output_rank4_chunking: tuple[int, int, int, int] | None = None,
+    output_writer: str | None = None,
 ) -> Path:
     if run_dir.exists():
         shutil.rmtree(run_dir)
@@ -262,8 +281,12 @@ def _prepare_run_dir(
         or output_compression_level is not None
         or output_shuffle
         or output_rank4_chunking is not None
+        or output_writer
     ):
         outputs = run_config.get("outputs", {})
+        if output_writer:
+            outputs["writer"] = output_writer
+            run_config["outputs"] = outputs
         if output_compression or output_compression_level is not None or output_shuffle:
             compression = dict(outputs.get("compression", {}))
             if output_compression:

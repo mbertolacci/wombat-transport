@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,6 +49,11 @@ class OutputStorageConfig:
 
 
 @dataclass(frozen=True)
+class OutputWriterConfig:
+    mode: str = "sync"
+
+
+@dataclass(frozen=True)
 class HistoryInterval:
     months: int = 0
     days: int = 0
@@ -91,13 +97,16 @@ class HistoryOutputManager:
         expid: str,
         collections: tuple[OutputCollectionConfig, ...],
         start: datetime,
+        writer: OutputWriterConfig | None = None,
     ) -> None:
         self._root = root
         self._template_path = template_path
         self._expid = expid
         self._start = start
+        self._writer = writer or OutputWriterConfig()
         self._writers: list[_CollectionWriter] = [
-            _writer_for_collection(root, template_path, expid, collection, start) for collection in collections
+            _writer_for_collection(root, template_path, expid, collection, start, self._writer)
+            for collection in collections
         ]
 
     @classmethod
@@ -110,6 +119,7 @@ class HistoryOutputManager:
             expid=str(config.outputs.get("expid", "OutputDir/GEOSChem")),
             collections=parse_output_collections(config.outputs),
             start=simulation_start(config),
+            writer=parse_output_writer(config.outputs),
         )
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
@@ -138,17 +148,18 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
         expid: str,
         collection: OutputCollectionConfig,
         start: datetime,
+        sink: _SpeciesConcSink,
     ) -> None:
         self._root = root
         self._template_path = template_path
         self._expid = expid
         self._collection = collection
         self._start = start
+        self._sink = sink
         self._window_start: datetime | None = None
         self._group_start: datetime | None = None
         self._sum: np.ndarray | None = None
         self._count = 0
-        self._group_file: _StreamingSpeciesConcFile | None = None
         self._last_state: TracerField | None = None
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
@@ -160,21 +171,20 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
         if self._window_start is None:
             self._start_window(window_start)
         elif window_start != self._window_start:
-            self._finish_window(snapshot.state)
             group_start = _floor_to_interval(self._start, window_start, self._collection.duration)
-            if self._group_start is not None and group_start != self._group_start:
-                self._close_group()
+            close_group = self._group_start is not None and group_start != self._group_start
+            self._finish_window(snapshot.state, close_group=close_group)
             self._start_window(window_start)
 
         if self._sum is None:
-            self._sum = np.zeros_like(snapshot.state.data, dtype=np.float64)
+            self._sum = self._sink.acquire_accumulator(snapshot.state.data)
         self._sum += snapshot.state.data
         self._count += 1
 
     def close(self) -> None:
         if self._window_start is not None and self._count:
-            self._finish_window(self._last_state)
-        self._close_group()
+            self._finish_window(self._last_state, close_group=True)
+        self._sink.close()
 
     def _start_window(self, window_start: datetime) -> None:
         self._window_start = window_start
@@ -182,35 +192,226 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
         self._sum = None
         self._count = 0
 
-    def _finish_window(self, fallback_state: TracerField | None) -> None:
+    def _finish_window(self, fallback_state: TracerField | None, *, close_group: bool) -> None:
         if self._window_start is None or self._sum is None or self._count == 0:
             return
         if fallback_state is None:
             raise ValueError("cannot finish SpeciesConc output window without tracer metadata")
-        self._write_average(self._window_start, self._sum, self._count, fallback_state)
+        self._write_average(self._window_start, self._sum, self._count, fallback_state, close_group=close_group)
         self._sum = None
         self._count = 0
 
-    def _write_average(self, timestamp: datetime, summed: np.ndarray, count: int, metadata: TracerField) -> None:
+    def _write_average(
+        self,
+        timestamp: datetime,
+        summed: np.ndarray,
+        count: int,
+        metadata: TracerField,
+        *,
+        close_group: bool,
+    ) -> None:
         if self._group_start is None:
             return
+        self._sink.append_average(
+            path=_collection_path(
+                self._root,
+                self._expid,
+                self._collection,
+                self._group_start,
+            ),
+            template_path=self._template_path,
+            title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
+            storage=_collection_storage(self._collection),
+            timestamp=timestamp,
+            summed=summed,
+            count=count,
+            metadata=metadata,
+            close_group=close_group,
+        )
+
+
+class _SpeciesConcSink:
+    def acquire_accumulator(self, reference: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def append_average(
+        self,
+        *,
+        path: Path,
+        template_path: Path,
+        title: str,
+        storage: OutputStorageConfig,
+        timestamp: datetime,
+        summed: np.ndarray,
+        count: int,
+        metadata: TracerField,
+        close_group: bool,
+    ) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class _SyncSpeciesConcSink(_SpeciesConcSink):
+    def __init__(self) -> None:
+        self._group_file: _StreamingSpeciesConcFile | None = None
+        self._free_accumulators: list[np.ndarray] = []
+
+    def acquire_accumulator(self, reference: np.ndarray) -> np.ndarray:
+        if self._free_accumulators:
+            accumulator = self._free_accumulators.pop()
+            accumulator.fill(0.0)
+            return accumulator
+        return np.zeros_like(reference, dtype=np.float64)
+
+    def append_average(
+        self,
+        *,
+        path: Path,
+        template_path: Path,
+        title: str,
+        storage: OutputStorageConfig,
+        timestamp: datetime,
+        summed: np.ndarray,
+        count: int,
+        metadata: TracerField,
+        close_group: bool,
+    ) -> None:
         if self._group_file is None:
             self._group_file = _StreamingSpeciesConcFile(
-                path=_collection_path(
-                    self._root,
-                    self._expid,
-                    self._collection,
-                    self._group_start,
-                ),
-                template_path=self._template_path,
-                title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
-                storage=_collection_storage(self._collection),
+                path=path,
+                template_path=template_path,
+                title=title,
+                storage=storage,
                 first_timestamp=timestamp,
                 first_state=metadata,
             )
         self._group_file.append_average(timestamp, summed, count, metadata)
+        if close_group:
+            self._close_group()
+        self._free_accumulators.append(summed)
+
+    def close(self) -> None:
+        self._close_group()
 
     def _close_group(self) -> None:
+        if self._group_file is not None:
+            self._group_file.close()
+            self._group_file = None
+
+
+class _ThreadedSpeciesConcSink(_SpeciesConcSink):
+    def __init__(self) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wombat-output")
+        self._pending: Future[np.ndarray] | None = None
+        self._free_accumulators: list[np.ndarray] = []
+        self._initialized_shape: tuple[int, ...] | None = None
+        self._initialized_dtype: np.dtype | None = None
+        self._group_file: _StreamingSpeciesConcFile | None = None
+        self._closed = False
+
+    def acquire_accumulator(self, reference: np.ndarray) -> np.ndarray:
+        self._ensure_open()
+        self._ensure_accumulator_pool(reference)
+        self._collect_completed(block=False)
+        if not self._free_accumulators:
+            self._collect_completed(block=True)
+        accumulator = self._free_accumulators.pop()
+        accumulator.fill(0.0)
+        return accumulator
+
+    def append_average(
+        self,
+        *,
+        path: Path,
+        template_path: Path,
+        title: str,
+        storage: OutputStorageConfig,
+        timestamp: datetime,
+        summed: np.ndarray,
+        count: int,
+        metadata: TracerField,
+        close_group: bool,
+    ) -> None:
+        self._ensure_open()
+        self._collect_completed(block=False)
+        if self._pending is not None:
+            self._collect_completed(block=True)
+        self._pending = self._executor.submit(
+            self._append_average_worker,
+            path,
+            template_path,
+            title,
+            storage,
+            timestamp,
+            summed,
+            count,
+            metadata,
+            close_group,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self._collect_completed(block=True)
+            future = self._executor.submit(self._close_group_worker)
+            future.result()
+        finally:
+            self._closed = True
+            self._executor.shutdown(wait=True)
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ValueError("cannot write to closed threaded SpeciesConc sink")
+
+    def _ensure_accumulator_pool(self, reference: np.ndarray) -> None:
+        dtype = np.dtype(np.float64)
+        if self._initialized_shape is None:
+            self._initialized_shape = tuple(reference.shape)
+            self._initialized_dtype = dtype
+            self._free_accumulators.extend(np.zeros_like(reference, dtype=dtype) for _ in range(2))
+            return
+        if tuple(reference.shape) != self._initialized_shape or dtype != self._initialized_dtype:
+            raise ValueError("SpeciesConc accumulator shape changed during threaded output")
+
+    def _collect_completed(self, *, block: bool) -> None:
+        if self._pending is None:
+            return
+        if not block and not self._pending.done():
+            return
+        accumulator = self._pending.result()
+        self._pending = None
+        self._free_accumulators.append(accumulator)
+
+    def _append_average_worker(
+        self,
+        path: Path,
+        template_path: Path,
+        title: str,
+        storage: OutputStorageConfig,
+        timestamp: datetime,
+        summed: np.ndarray,
+        count: int,
+        metadata: TracerField,
+        close_group: bool,
+    ) -> np.ndarray:
+        if self._group_file is None:
+            self._group_file = _StreamingSpeciesConcFile(
+                path=path,
+                template_path=template_path,
+                title=title,
+                storage=storage,
+                first_timestamp=timestamp,
+                first_state=metadata,
+            )
+        self._group_file.append_average(timestamp, summed, count, metadata)
+        if close_group:
+            self._close_group_worker()
+        return summed
+
+    def _close_group_worker(self) -> None:
         if self._group_file is not None:
             self._group_file.close()
             self._group_file = None
@@ -384,6 +585,13 @@ def parse_output_collections(raw: dict[str, Any]) -> tuple[OutputCollectionConfi
     return tuple(collections)
 
 
+def parse_output_writer(raw: dict[str, Any]) -> OutputWriterConfig:
+    mode = str(raw.get("writer", "sync")).lower()
+    if mode not in {"sync", "threaded"}:
+        raise ValueError("outputs.writer must be 'sync' or 'threaded'")
+    return OutputWriterConfig(mode=mode)
+
+
 def parse_output_storage(raw: dict[str, Any]) -> OutputStorageConfig:
     dtype = str(raw.get("dtype", "float32")).lower()
     if dtype not in {"float32", "float64"}:
@@ -534,6 +742,7 @@ def _writer_for_collection(
     expid: str,
     collection: OutputCollectionConfig,
     start: datetime,
+    writer: OutputWriterConfig,
 ) -> _CollectionWriter:
     if collection.mode == "time-averaged" and collection.fields == ("SpeciesConcVV_?ADV?",):
         return _TimeAverageSpeciesWriter(
@@ -542,6 +751,7 @@ def _writer_for_collection(
             expid=expid,
             collection=collection,
             start=start,
+            sink=_species_conc_sink(writer),
         )
     if collection.mode == "instantaneous" and "SpeciesRst_?ALL?" in collection.fields:
         if collection.frequency.is_zero:
@@ -554,6 +764,14 @@ def _writer_for_collection(
             start=start,
         )
     raise ValueError(f"unsupported output collection {collection.name}: mode={collection.mode}, fields={collection.fields}")
+
+
+def _species_conc_sink(writer: OutputWriterConfig) -> _SpeciesConcSink:
+    if writer.mode == "sync":
+        return _SyncSpeciesConcSink()
+    if writer.mode == "threaded":
+        return _ThreadedSpeciesConcSink()
+    raise ValueError(f"unsupported SpeciesConc writer mode {writer.mode!r}")
 
 
 def _parse_fields(raw: Any) -> tuple[str, ...]:
