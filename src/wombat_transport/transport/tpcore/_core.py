@@ -69,6 +69,7 @@ def run_tpcore_one_step_with_setup(
     area_m2: np.ndarray,
     fill: bool = True,
     validate_branches: bool = True,
+    reuse_output: bool = False,
 ) -> TpcoreState:
     """Run TPCORE tracer advection using an already computed setup."""
 
@@ -79,6 +80,7 @@ def run_tpcore_one_step_with_setup(
         setup=setup,
         area_m2=np.asarray(area_m2, dtype=np.float64),
         fill=fill,
+        reuse_output=reuse_output,
     )
     if fill:
         tracer[tracer < 0.0] = 1.0e-26
@@ -426,6 +428,7 @@ def _advect_tracers(
     area_m2: np.ndarray,
     fill: bool,
     trace: bool = False,
+    reuse_output: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, TpcoreTrace | None]:
     """Advect canonical tracer arrays in top-level order."""
 
@@ -441,6 +444,7 @@ def _advect_tracers(
             setup=setup,
             area_m2=np.asarray(area_m2, dtype=np.float64),
             fill=fill,
+            reuse_output=reuse_output,
         )
 
     delp1 = setup.delp1_hpa
@@ -1345,10 +1349,11 @@ def _advect_tracers_fused_numba(
     setup: TpcoreSetup,
     area_m2: np.ndarray,
     fill: bool,
+    reuse_output: bool = False,
 ) -> np.ndarray:
     from wombat_transport.transport.tpcore._numba import _advect_tracers_fused_numba as _impl
 
-    return _impl(tracer_conc=tracer_conc, setup=setup, area_m2=area_m2, fill=fill)
+    return _impl(tracer_conc=tracer_conc, setup=setup, area_m2=area_m2, fill=fill, reuse_output=reuse_output)
 
 
 def _numba_tpcore_mode() -> str:

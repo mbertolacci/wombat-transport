@@ -24,10 +24,12 @@ _TPCORE_NUMBA_WORKSPACE = None
 
 
 class _TpcoreNumbaWorkspace:
-    __slots__ = ("shape", "qqu", "qqv", "x_workspace", "y_workspace", "ua", "va", "jn", "js")
+    __slots__ = ("shape", "q", "dq1", "qqu", "qqv", "x_workspace", "y_workspace", "ua", "va", "jn", "js")
 
     def __init__(self, nlev: int, nlat: int, nlon: int, ntracer: int) -> None:
         self.shape = (nlev, nlat, nlon, ntracer)
+        self.q = np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64)
+        self.dq1 = np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64)
         self.qqu = np.empty((nlat, nlon, ntracer), dtype=np.float64)
         self.qqv = np.empty((nlat, nlon, ntracer), dtype=np.float64)
         self.x_workspace = _make_xtp_numba_workspace(nlat, nlon, ntracer)
@@ -139,13 +141,15 @@ def _advect_tracers_fused_numba(
     setup: TpcoreSetup,
     area_m2: np.ndarray,
     fill: bool,
+    reuse_output: bool = False,
 ) -> np.ndarray:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     nlev, nlat, nlon, ntracer = tracer_conc.shape
-    q = np.ascontiguousarray(tracer_conc).copy()
-    dq1 = np.empty_like(q)
     workspace = _get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer)
+    q = workspace.q
+    np.copyto(q, tracer_conc)
+    dq1 = workspace.dq1 if reuse_output else np.empty_like(q)
     _set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
     _set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
     _advect_tracers_fused_numba_kernel(

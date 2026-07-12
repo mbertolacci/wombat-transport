@@ -1225,3 +1225,50 @@ current full-grid Numba kernel has been tuned as a single fused pass. Switching
 to grouped cached kernels could accidentally back out the earlier vectorization
 and loop-shape wins. Leave this for a dedicated convection-kernel profiling pass
 rather than mixing it into the VDIFF improvement.
+
+## 2026-07-12 TPCORE buffer/workspace experiment
+
+Four low-risk TPCORE ideas were tested sequentially on the 96-tracer path. Two
+were retained and two were rejected.
+
+Retained:
+
+- The fused Numba TPCORE path now reuses a caller-owned contiguous input buffer
+  inside the existing per-shape Numba workspace. This replaces a fresh
+  `ascontiguousarray(...).copy()` allocation with `np.copyto` into the reusable
+  buffer. The direct TPCORE benchmark improved from `0.804 s` best / `0.807 s`
+  mean to `0.781 s` best / `0.790 s` mean.
+- The normal transport driver now opts into reusable TPCORE output ownership.
+  The traced/diagnostic and public direct-call defaults still allocate a fresh
+  output array, but the production driver can safely let the next operator
+  consume the workspace-owned result before the next TPCORE call. The 96-tracer
+  one-step driver benchmark improved from `1.111 s` best with `0.782 s` in
+  TPCORE to `1.045 s` best with `0.721 s` in TPCORE after the retained changes.
+
+Rejected:
+
+- Storing `ua`, `va`, `jn`, and `js` in `TpcoreSetup` regressed the direct
+  TPCORE benchmark to `0.791 s` best / `0.803 s` mean. Keeping this work inside
+  the Numba workspace/kernel setup appears better for codegen/cache behavior.
+- A NumPy-side `TpcoreSetupWorkspace` that filled setup arrays in place regressed
+  the one-step driver benchmark to `1.115 s` best. Reducing allocation did not
+  offset the cost of the changed NumPy expression shape.
+
+The main lesson is that TPCORE remains sensitive to loop and vectorization
+shape. Moving small setup arrays out of the Numba-owned flow or converting
+broadcast expressions to manual `out=` forms can make the code slower even when
+it allocates less. Future TPCORE edits should measure both the direct TPCORE
+benchmark and the driver benchmark, because reusable output only helps the
+production driver path.
+
+An isolated C++ YTP prototype under `validation_runs/work/tpcore_cpp_ytp/`
+showed that a native port is not automatically faster. With strict
+`-O3 -march=native`, the C++ YTP kernel was slower than the current Numba YTP
+kernel (`0.207 s` vs `0.170 s` for 96 tracers). With
+`-O3 -march=native -ffast-math`, the best simple indexed C++ kernel improved to
+`0.144 s` for 96 tracers and `0.041 s` for 24 tracers, about `15-23%` faster
+than Numba on the isolated YTP stage. The local parity check was roundoff-clean
+for that stage, but `-ffast-math` is a GEOS-Chem parity risk over full
+transport windows. The next native-code experiment, if any, should be a full
+TPCORE-step prototype comparing strict and fast-math builds against full-step
+fixtures before considering production integration.

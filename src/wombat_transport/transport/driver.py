@@ -394,6 +394,7 @@ def _run_tpcore_one_step_from_mass(
         setup=setup,
         area_m2=area,
         validate_branches=False,
+        reuse_output=True,
     )
     next_delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,
