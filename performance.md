@@ -1181,3 +1181,47 @@ Recommended order:
    remain stable across normal run profiles.
 3. Revisit VDIFF zero-emissions and convection A3-block caching after TPCORE
    setup cleanup is measured in a full output-enabled benchmark.
+
+## 2026-07-12 VDIFF and convection multi-step follow-up
+
+After the TPCORE setup cleanup, the next pass focused on the residual-run path
+rather than the no-emissions case. The important VDIFF observation was that the
+production full-grid Numba path was only used when surface tracer flux was
+zero. Residual runs have nonzero surface emissions, so they fell back to the
+older latitude-by-latitude Numba path.
+
+The retained VDIFF change generalizes the full-grid diagnostics-light Numba
+path to nonzero surface fluxes. The full-grid kernel now carries the same
+surface-flux bookkeeping as the latitude path: bottom flux increments, nonlocal
+`cgq`, adjusted `qmx`, and emitted tracer mass in the final mass ratio. A
+regression test compares the nonzero-flux production path against the diagnostic
+path on the tracked VDIFF fixture.
+
+The 96-tracer, 6-hour residual-style profile moved as follows:
+
+| Variant | Total s | VDIFF s | Convection s |
+| --- | ---: | ---: | ---: |
+| After TPCORE setup/static cleanup | 48.22 | 13.79 | 2.16 |
+| VDIFF/convection pass, first run | 46.65 | 11.34 | 2.76 |
+| VDIFF/convection pass, rerun | 43.15 | 8.44 | 2.17 |
+
+The first post-edit run likely still had cache/compilation noise; the rerun is
+the better indication of steady behavior. A 24-tracer, 6-hour reference after
+this pass was `13.82 s` total, with `8.17 s` TPCORE, `2.68 s` VDIFF, and
+`0.71 s` convection.
+
+For convection, the retained change is deliberately conservative. Normal
+transport no longer builds or passes wet-scavenging diagnostic fields that are
+unused when `reconstruct_conv_precip_flux=False`: wet-pressure box heights,
+`PFICU`, `PFLCU`, temperature, and convective precipitation. Trace/harness paths
+still request those fields so handoff fixtures remain complete. The normal path
+also avoids an extra `delp_hpa` copy.
+
+The more aggressive convection idea was to cache A3 active-column/cloud-base
+groups across the 18 ten-minute steps in each 3-hour A3 block. Real residual A3
+records have roughly `9.5k-9.9k` active columns out of `13.1k`, with about
+`18-21` cloud-base groups. That gives some potential fixed-cost upside, but the
+current full-grid Numba kernel has been tuned as a single fused pass. Switching
+to grouped cached kernels could accidentally back out the earlier vectorization
+and loop-shape wins. Leave this for a dedicated convection-kernel profiling pass
+rather than mixing it into the VDIFF improvement.

@@ -86,6 +86,7 @@ class _VdiffFullGridWorkspace:
     qpert: np.ndarray
     tmp1: np.ndarray
     dshbot: np.ndarray
+    dqbot: np.ndarray
     rrho: np.ndarray
     khfs: np.ndarray
     kshfs: np.ndarray
@@ -105,6 +106,9 @@ class _VdiffFullGridWorkspace:
     cch: np.ndarray
     zeh: np.ndarray
     termh: np.ndarray
+    cgq: np.ndarray
+    qmx: np.ndarray
+    adjust: np.ndarray
     tracer_diffused: np.ndarray
     tracer_ratio: np.ndarray
     tracer_after_mass: np.ndarray
@@ -131,6 +135,8 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
     lev_shape = (nlon, nlev)
     edge_shape = (nlon, nlev + 1)
     tracer_shape = (nlon, ntracer)
+    lev_tracer_shape = (nlon, nlev, ntracer)
+    edge_tracer_shape = (nlon, nlev + 1, ntracer)
     _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
         pmid=np.empty(lev_shape, dtype=np.float64),
         pint=np.empty(edge_shape, dtype=np.float64),
@@ -147,6 +153,7 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         qpert=np.empty(nlon, dtype=np.float64),
         tmp1=np.empty(nlon, dtype=np.float64),
         dshbot=np.empty(nlon, dtype=np.float64),
+        dqbot=np.empty(tracer_shape, dtype=np.float64),
         rrho=np.empty(nlon, dtype=np.float64),
         khfs=np.empty(nlon, dtype=np.float64),
         kshfs=np.empty(nlon, dtype=np.float64),
@@ -166,7 +173,10 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         cch=np.empty(lev_shape, dtype=np.float64),
         zeh=np.empty(lev_shape, dtype=np.float64),
         termh=np.empty(lev_shape, dtype=np.float64),
-        tracer_diffused=np.empty((nlon, nlev, ntracer), dtype=np.float64),
+        cgq=np.empty(edge_tracer_shape, dtype=np.float64),
+        qmx=np.empty(lev_tracer_shape, dtype=np.float64),
+        adjust=np.empty(tracer_shape, dtype=np.bool_),
+        tracer_diffused=np.empty(lev_tracer_shape, dtype=np.float64),
         tracer_ratio=np.empty(tracer_shape, dtype=np.float64),
         tracer_after_mass=np.empty(tracer_shape, dtype=np.float64),
         shmx=np.empty(lev_shape, dtype=np.float64),
@@ -406,7 +416,7 @@ def run_vdiffdr_one_step(
 
     numba_vdiff = _numba_vdiff_enabled()
     surface_flux_is_zero = bool(not np.any(surface_flux != 0.0)) if numba_vdiff else False
-    if numba_vdiff and surface_flux_is_zero and not diagnostics:
+    if numba_vdiff and not diagnostics:
         return _run_vdiffdr_one_step_fullgrid_numba(
             tracer_top=tracer,
             u_top=u,
@@ -421,9 +431,12 @@ def run_vdiffdr_one_step(
             pblh_m=pblh,
             hflux_w_m2=hflux,
             water_flux_kg_m2_s=eflux / LATVAP_J_PER_KG,
+            surface_flux_kg_m2_s=surface_flux,
             ustar_m_s=ustar,
+            area_m2=area,
             dt_s=float(dt_s),
             npbl=_max_pbl_levels_from_pressure(pmid),
+            surface_flux_is_zero=surface_flux_is_zero,
         )
 
     pmid_pa = pmid * 100.0
@@ -832,9 +845,12 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     pblh_m: np.ndarray,
     hflux_w_m2: np.ndarray,
     water_flux_kg_m2_s: np.ndarray,
+    surface_flux_kg_m2_s: np.ndarray,
     ustar_m_s: np.ndarray,
+    area_m2: np.ndarray,
     dt_s: float,
     npbl: int,
+    surface_flux_is_zero: bool,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -856,9 +872,12 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         pblh_m,
         hflux_w_m2,
         water_flux_kg_m2_s,
+        surface_flux_kg_m2_s,
         ustar_m_s,
+        area_m2,
         dt_s,
         npbl,
+        surface_flux_is_zero,
         tracer_out,
         sphu_out,
         workspace.pmid,
@@ -876,6 +895,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.qpert,
         workspace.tmp1,
         workspace.dshbot,
+        workspace.dqbot,
         workspace.rrho,
         workspace.khfs,
         workspace.kshfs,
@@ -895,6 +915,9 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.cch,
         workspace.zeh,
         workspace.termh,
+        workspace.cgq,
+        workspace.qmx,
+        workspace.adjust,
         workspace.tracer_diffused,
         workspace.tracer_ratio,
         workspace.tracer_after_mass,
@@ -951,9 +974,12 @@ if njit is not None:
         pblh_m: np.ndarray,
         hflux_w_m2: np.ndarray,
         water_flux_kg_m2_s: np.ndarray,
+        surface_flux_kg_m2_s: np.ndarray,
         ustar_m_s: np.ndarray,
+        area_m2: np.ndarray,
         dt_s: float,
         npbl: int,
+        surface_flux_is_zero: bool,
         tracer_out: np.ndarray,
         sphu_out: np.ndarray,
         pmid: np.ndarray,
@@ -971,6 +997,7 @@ if njit is not None:
         qpert: np.ndarray,
         tmp1: np.ndarray,
         dshbot: np.ndarray,
+        dqbot: np.ndarray,
         rrho: np.ndarray,
         khfs: np.ndarray,
         kshfs: np.ndarray,
@@ -990,6 +1017,9 @@ if njit is not None:
         cch: np.ndarray,
         zeh: np.ndarray,
         termh: np.ndarray,
+        cgq: np.ndarray,
+        qmx: np.ndarray,
+        adjust: np.ndarray,
         tracer_diffused: np.ndarray,
         tracer_ratio: np.ndarray,
         tracer_after_mass: np.ndarray,
@@ -1038,10 +1068,16 @@ if njit is not None:
                     kvm[lon, edge] = 0.0
                     cgsh[lon, edge] = 0.0
                     cgs[lon, edge] = 0.0
+                    if not surface_flux_is_zero:
+                        for tracer in range(ntracer):
+                            cgq[lon, edge, tracer] = 0.0
                 tpert[lon] = 0.0
                 qpert[lon] = 0.0
                 tmp1[lon] = dt_s * G0_M_PER_S2 * rpdel[lon, nlev - 1]
                 dshbot[lon] = water_flux_kg_m2_s[lat, lon] * tmp1[lon]
+                if not surface_flux_is_zero:
+                    for tracer in range(ntracer):
+                        dqbot[lon, tracer] = surface_flux_kg_m2_s[lat, lon, tracer] * tmp1[lon]
 
             for lev in range(ntopfl, nlev - 1):
                 ml2_value = 0.0
@@ -1149,6 +1185,11 @@ if njit is not None:
                             cgs[lon, lev] = fak3[lon] / (pblh_m[lat, lon] * wm[lon])
                             pr[lon] = phiminv[lon] / phihinv[lon] + _CCON * fak3[lon] / _FAK
                             cgsh[lon, lev] = kshfs[lon] * cgs[lon, lev]
+                            if not surface_flux_is_zero:
+                                for tracer in range(ntracer):
+                                    cgq[lon, lev, tracer] = (
+                                        surface_flux_kg_m2_s[lat, lon, tracer] * rrho[lon] * cgs[lon, lev]
+                                    )
                         if pblk[lon] > kvf[lon, lev]:
                             kvm[lon, lev] = pblk[lon]
                         else:
@@ -1206,13 +1247,39 @@ if njit is not None:
                     )
                     zeh[lon, lev] = cah[lon, lev] * termh[lon, lev]
 
+            if not surface_flux_is_zero:
+                for lon in range(nlon):
+                    for tracer in range(ntracer):
+                        adjust[lon, tracer] = False
+                    for lev in range(nlev):
+                        for tracer in range(ntracer):
+                            qmx[lon, lev, tracer] = tracer_top[lev, lat, lon, tracer]
+                if npbl > 1:
+                    for lev in range(start, nlev):
+                        for lon in range(nlon):
+                            scale = ztodtgor * rpdel[lon, lev]
+                            term_next = potbar[lon, lev + 1] * kvh[lon, lev + 1]
+                            term_now = potbar[lon, lev] * kvh[lon, lev]
+                            for tracer in range(ntracer):
+                                qmx_value = tracer_top[lev, lat, lon, tracer] + scale * (
+                                    term_next * cgq[lon, lev + 1, tracer] - term_now * cgq[lon, lev, tracer]
+                                )
+                                qmx[lon, lev, tracer] = qmx_value
+                                if qmx_value < 0.0:
+                                    adjust[lon, tracer] = True
+                    for lon in range(nlon):
+                        for tracer in range(ntracer):
+                            if adjust[lon, tracer]:
+                                for lev in range(start, nlev):
+                                    qmx[lon, lev, tracer] = tracer_top[lev, lat, lon, tracer]
+
             for lon in range(nlon):
                 dry_mass = dry_mass_top[ntopfl, lat, lon]
                 for tracer in range(ntracer):
                     tracer_value = tracer_top[ntopfl, lat, lon, tracer]
                     tracer_ratio[lon, tracer] = tracer_value * dry_mass
                     tracer_diffused[lon, ntopfl, tracer] = (
-                        tracer_value * termh[lon, ntopfl]
+                        (tracer_value if surface_flux_is_zero else qmx[lon, ntopfl, tracer]) * termh[lon, ntopfl]
                     )
             for lev in range(ntopfl + 1, nlev - 1):
                 for lon in range(nlon):
@@ -1222,8 +1289,9 @@ if njit is not None:
                     for tracer in range(ntracer):
                         tracer_value = tracer_top[lev, lat, lon, tracer]
                         tracer_ratio[lon, tracer] += tracer_value * dry_mass
+                        source_value = tracer_value if surface_flux_is_zero else qmx[lon, lev, tracer]
                         tracer_diffused[lon, lev, tracer] = (
-                            tracer_value
+                            source_value
                             + cch_value * tracer_diffused[lon, lev - 1, tracer]
                         ) * termh_value
             for lon in range(nlon):
@@ -1233,8 +1301,10 @@ if njit is not None:
                 for tracer in range(ntracer):
                     tracer_value = tracer_top[nlev - 1, lat, lon, tracer]
                     tracer_ratio[lon, tracer] += tracer_value * dry_mass
+                    source_value = tracer_value if surface_flux_is_zero else qmx[lon, nlev - 1, tracer]
                     tracer_diffused[lon, nlev - 1, tracer] = (
-                        tracer_value
+                        source_value
+                        + (0.0 if surface_flux_is_zero else dqbot[lon, tracer])
                         + cch_bottom * tracer_diffused[lon, nlev - 2, tracer]
                     ) * tmp1d
             for lev in range(nlev - 2, ntopfl - 1, -1):
@@ -1260,6 +1330,8 @@ if njit is not None:
                 for tracer in range(ntracer):
                     ratio = 1.0
                     before_mass = tracer_ratio[lon, tracer]
+                    if not surface_flux_is_zero:
+                        before_mass += surface_flux_kg_m2_s[lat, lon, tracer] * area_m2[lat, lon] * dt_s
                     after_mass = tracer_after_mass[lon, tracer]
                     if abs(before_mass) > 0.0 and abs(after_mass) > 0.0:
                         ratio = before_mass / after_mass

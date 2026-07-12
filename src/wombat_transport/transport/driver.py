@@ -92,11 +92,11 @@ class ConvectionInputState:
     delp_dry_hpa: np.ndarray
     delp_hpa: np.ndarray
     area_m2: np.ndarray
-    bxheight_m: np.ndarray
-    pficu_kg_m2_s: np.ndarray
-    pflcu_kg_m2_s: np.ndarray
-    temperature_k: np.ndarray
-    precccon_mm_day: np.ndarray
+    bxheight_m: np.ndarray | None
+    pficu_kg_m2_s: np.ndarray | None
+    pflcu_kg_m2_s: np.ndarray | None
+    temperature_k: np.ndarray | None
+    precccon_mm_day: np.ndarray | None
     dt_s: float
 
 
@@ -437,6 +437,7 @@ def _run_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
+        include_diagnostics_fields=False,
     )
     convection = _run_convection_input(convection_input, diagnostics=False)
     state = TracerField(
@@ -542,6 +543,7 @@ def _trace_tpcore_one_step_from_mass(
         top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
+        include_diagnostics_fields=True,
     )
     convection = _run_convection_input(convection_input, diagnostics=True)
     state = TracerField(
@@ -735,6 +737,7 @@ def _run_convection_after_vdiff(
     *,
     top_edge_hpa: float,
     dt_s: float,
+    include_diagnostics_fields: bool = True,
 ):
     return _run_convection_input(
         _build_convection_input_after_vdiff(
@@ -746,6 +749,7 @@ def _run_convection_after_vdiff(
             hybi,
             top_edge_hpa=top_edge_hpa,
             dt_s=dt_s,
+            include_diagnostics_fields=include_diagnostics_fields,
         )
     )
 
@@ -761,33 +765,47 @@ def _build_convection_input_after_vdiff(
     top_edge_hpa: float,
     dt_s: float,
     specific_humidity_top: np.ndarray | None = None,
+    include_diagnostics_fields: bool = True,
 ) -> ConvectionInputState:
-    pedge = pressure_edges_from_surface_hpa(forcing.wet_surface_pressure_hpa, hyai_hpa, hybi)[0]
-    temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
-    if specific_humidity_top is None:
-        sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
-    else:
-        sphu_top = np.asarray(specific_humidity_top, dtype=np.float64)
-        if sphu_top.shape != temperature.shape:
-            raise ValueError(f"specific_humidity_top shape {sphu_top.shape} does not match temperature {temperature.shape}")
-        sphu = sphu_top[::-1]
-    virtual_temperature = _virtual_temperature_k(temperature, sphu)
-    bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
     delp = np.asarray(delp_dry_hpa[0], dtype=np.float64)
+    delp_top = delp[::-1]
+    bxheight = None
+    pficu = None
+    pflcu = None
+    temperature_top = None
+    precccon = None
+    if include_diagnostics_fields:
+        pedge = pressure_edges_from_surface_hpa(forcing.wet_surface_pressure_hpa, hyai_hpa, hybi)[0]
+        temperature = np.asarray(forcing.temperature_k[0], dtype=np.float64)
+        if specific_humidity_top is None:
+            sphu = np.asarray(forcing.specific_humidity_kg_kg[0], dtype=np.float64)
+        else:
+            sphu_top = np.asarray(specific_humidity_top, dtype=np.float64)
+            if sphu_top.shape != temperature.shape:
+                raise ValueError(
+                    f"specific_humidity_top shape {sphu_top.shape} does not match temperature {temperature.shape}"
+                )
+            sphu = sphu_top[::-1]
+        virtual_temperature = _virtual_temperature_k(temperature, sphu)
+        bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)[::-1]
+        pficu = np.asarray(forcing.convective_ice_flux_kg_m2_s[0], dtype=np.float64)[::-1]
+        pflcu = np.asarray(forcing.convective_liquid_flux_kg_m2_s[0], dtype=np.float64)[::-1]
+        temperature_top = temperature[::-1]
+        precccon = np.asarray(forcing.convective_precip_mm_day[0], dtype=np.float64)
     return ConvectionInputState(
         tracer_conc=canonical_time_slice(tracer_field.data),
         cmfmc_kg_m2_s=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64)[::-1],
         dtrain_kg_m2_s=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64)[::-1],
         dqrcu_kg_kg_s=np.asarray(forcing.convective_precip_prod_kg_kg_s[0], dtype=np.float64)[::-1],
         reevapcn_kg_kg_s=np.asarray(forcing.convective_precip_reevap_kg_kg_s[0], dtype=np.float64)[::-1],
-        delp_dry_hpa=delp[::-1],
-        delp_hpa=delp[::-1].copy(),
+        delp_dry_hpa=delp_top,
+        delp_hpa=delp_top,
         area_m2=area,
-        bxheight_m=bxheight[::-1],
-        pficu_kg_m2_s=np.asarray(forcing.convective_ice_flux_kg_m2_s[0], dtype=np.float64)[::-1],
-        pflcu_kg_m2_s=np.asarray(forcing.convective_liquid_flux_kg_m2_s[0], dtype=np.float64)[::-1],
-        temperature_k=temperature[::-1],
-        precccon_mm_day=np.asarray(forcing.convective_precip_mm_day[0], dtype=np.float64),
+        bxheight_m=bxheight,
+        pficu_kg_m2_s=pficu,
+        pflcu_kg_m2_s=pflcu,
+        temperature_k=temperature_top,
+        precccon_mm_day=precccon,
         dt_s=dt_s,
     )
 

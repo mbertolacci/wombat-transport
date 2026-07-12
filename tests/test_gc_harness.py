@@ -90,6 +90,7 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.transport import convection as convection_mod
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -1021,6 +1022,41 @@ def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_pat
     assert comparison.negative_count_before_clip_actual == 0
     assert comparison.negative_count_after_clip_actual == 0
     assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
+
+
+def test_vdiff_nonzero_surface_flux_fast_path_matches_diagnostic_path(transport_numba_mode):
+    with netCDF4.Dataset(VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_input.nc") as dataset:
+        kwargs = dict(
+            tracer_conc=np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            specific_humidity_kg_kg=np.asarray(dataset.variables["specific_humidity_kg_kg"][:], dtype=np.float64),
+            pmid_hpa=np.asarray(dataset.variables["pmid_hpa"][:], dtype=np.float64),
+            pedge_hpa=np.asarray(dataset.variables["pedge_hpa"][:], dtype=np.float64),
+            virtual_temperature_k=np.asarray(dataset.variables["virtual_temperature_k"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            dry_air_mass_kg=np.asarray(dataset.variables["dry_air_mass_kg"][:], dtype=np.float64),
+            pbl_top_m=np.asarray(dataset.variables["pbl_top_m"][:], dtype=np.float64),
+            hflux_w_m2=np.asarray(dataset.variables["hflux_w_m2"][:], dtype=np.float64),
+            eflux_w_m2=np.asarray(dataset.variables["eflux_w_m2"][:], dtype=np.float64),
+            ustar_m_s=np.asarray(dataset.variables["ustar_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+            surface_flux_kg_m2_s=np.asarray(dataset.variables["surface_flux_kg_m2_s"][:], dtype=np.float64),
+        )
+
+    diagnostic = run_vdiffdr_one_step(**kwargs, diagnostics=True)
+    fast = run_vdiffdr_one_step(**kwargs, diagnostics=False)
+
+    np.testing.assert_allclose(fast.tracer_conc, diagnostic.tracer_conc, rtol=0.0, atol=1.0e-15)
+    np.testing.assert_allclose(
+        fast.specific_humidity_kg_kg,
+        diagnostic.specific_humidity_kg_kg,
+        rtol=0.0,
+        atol=1.0e-15,
+    )
+    assert fast.negative_count_before_clip == diagnostic.negative_count_before_clip
 
 
 def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path, transport_numba_mode):
