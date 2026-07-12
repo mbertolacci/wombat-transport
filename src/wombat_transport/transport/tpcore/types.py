@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.transport.pjc import PjcHorizontalGeometry
+
 
 @dataclass(frozen=True)
 class TpcoreState:
@@ -52,6 +54,16 @@ class TpcoreSetup:
     cy: np.ndarray
     geofac: np.ndarray
     geofac_pc: float
+
+
+@dataclass(frozen=True)
+class TpcoreStaticTerms:
+    pjc_geometry: PjcHorizontalGeometry
+    ak_top_hpa: np.ndarray
+    dap_top_hpa: np.ndarray
+    dbk_top: np.ndarray
+    dap_geos_hpa: np.ndarray
+    dbk_geos: np.ndarray
 
 
 @dataclass(frozen=True)

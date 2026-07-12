@@ -181,10 +181,12 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         active_emissions=None,
         surface_flux_to_vmr_factor=None,
         dry_air_mass_kg=None,
+        tpcore_static_terms=None,
     ):
         state_inputs.append(tracer_field.data.copy())
         active_emissions_seen.append(active_emissions)
         assert surface_flux_to_vmr_factor is not None
+        assert tpcore_static_terms is not None
         return SimpleNamespace(
             state=tracer_field,
             dry_air_mass_kg=dry_air_mass_kg,

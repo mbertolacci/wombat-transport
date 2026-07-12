@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from wombat_transport.constants import EARTH_RADIUS_M
+
+
+@dataclass(frozen=True)
+class PjcHorizontalGeometry:
+    rel_area: np.ndarray
+    geofac: np.ndarray
+    geofac_pc: float
+    cose: np.ndarray
+    cosp: np.ndarray
 
 def pjc_mass_flux_hpa(
     *,
@@ -15,6 +26,9 @@ def pjc_mass_flux_hpa(
     hybi: np.ndarray,
     lat_deg: np.ndarray,
     dt_s: float,
+    horizontal_geometry: PjcHorizontalGeometry | None = None,
+    dap_hpa: np.ndarray | None = None,
+    dbk: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Port GEOS-Chem ``DO_PJC_PFIX`` horizontal mass fluxes to NumPy.
 
@@ -35,9 +49,14 @@ def pjc_mass_flux_hpa(
 
     _assert_pjc_mass_flux_shapes(p1, p2, u, v, area, hyai, hybi_arr, lat)
 
-    rel_area, geofac, geofac_pc, cose, cosp = _pjc_horizontal_geometry(area, lat)
-    dap = hyai[:-1] - hyai[1:]
-    dbk = hybi_arr[:-1] - hybi_arr[1:]
+    geometry = horizontal_geometry if horizontal_geometry is not None else build_pjc_horizontal_geometry(area, lat)
+    rel_area = geometry.rel_area
+    geofac = geometry.geofac
+    geofac_pc = geometry.geofac_pc
+    cose = geometry.cose
+    cosp = geometry.cosp
+    dap = hyai[:-1] - hyai[1:] if dap_hpa is None else np.asarray(dap_hpa, dtype=np.float64)
+    dbk_arr = hybi_arr[:-1] - hybi_arr[1:] if dbk is None else np.asarray(dbk, dtype=np.float64)
 
     dgpress = np.sum((p2 - p1) * rel_area)
     p2 -= dgpress
@@ -46,13 +65,13 @@ def pjc_mass_flux_hpa(
     _average_pjc_poles(p2, rel_area)
 
     delpm = dap[:, np.newaxis, np.newaxis] + (
-        dbk[:, np.newaxis, np.newaxis] * 0.5 * (p1 + p2)[np.newaxis, :, :]
+        dbk_arr[:, np.newaxis, np.newaxis] * 0.5 * (p1 + p2)[np.newaxis, :, :]
     )
     xmass, ymass = _pjc_raw_mass_flux(delpm, u, v, cose, cosp, dt_s=float(dt_s))
     dpi = _pjc_divergence(xmass, ymass, geofac, geofac_pc)
     dps_ctm = np.sum(dpi, axis=0)
     dps = p2 - p1
-    return _pjc_pressure_fixed_fluxes(xmass, ymass, dps, dps_ctm, rel_area, geofac, geofac_pc, dbk)
+    return _pjc_pressure_fixed_fluxes(xmass, ymass, dps, dps_ctm, rel_area, geofac, geofac_pc, dbk_arr)
 
 def _assert_pjc_mass_flux_shapes(
     p1: np.ndarray,
@@ -80,7 +99,7 @@ def _assert_pjc_mass_flux_shapes(
     if p1.shape[0] < 5:
         raise ValueError("PJC polar-cap path requires at least five latitudes")
 
-def _pjc_horizontal_geometry(area_m2: np.ndarray, lat_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray]:
+def build_pjc_horizontal_geometry(area_m2: np.ndarray, lat_deg: np.ndarray) -> PjcHorizontalGeometry:
     nlon = area_m2.shape[1]
     nlat = area_m2.shape[0]
     rel_area = area_m2 / np.sum(area_m2)
@@ -108,7 +127,18 @@ def _pjc_horizontal_geometry(area_m2: np.ndarray, lat_deg: np.ndarray) -> tuple[
     dlat[-1] = 2.0 * (elat[-1] - elat[-2])
     gw = sine[1:] - sine[:-1]
     cosp = gw / dlat
-    return rel_area, geofac, geofac_pc, cose, cosp
+    return PjcHorizontalGeometry(
+        rel_area=rel_area,
+        geofac=geofac,
+        geofac_pc=float(geofac_pc),
+        cose=cose,
+        cosp=cosp,
+    )
+
+
+def _pjc_horizontal_geometry(area_m2: np.ndarray, lat_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray]:
+    geometry = build_pjc_horizontal_geometry(area_m2, lat_deg)
+    return geometry.rel_area, geometry.geofac, geometry.geofac_pc, geometry.cose, geometry.cosp
 
 def _average_pjc_poles(pressure_hpa: np.ndarray, rel_area: np.ndarray) -> None:
     south_weight = rel_area[:2, :]

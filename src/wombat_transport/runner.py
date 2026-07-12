@@ -29,6 +29,7 @@ from wombat_transport.run_config import (
 )
 from wombat_transport.species import load_species_database
 from wombat_transport.transport import (
+    build_tpcore_static_terms,
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
@@ -77,6 +78,12 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     surface_flux_to_vmr_factor = _surface_flux_to_vmr_factor(state, species)
     logger.debug("initialized_tracers shape=%s", state.shape)
     grid = load_transport_grid(config.grid_template)
+    tpcore_static_terms = build_tpcore_static_terms(
+        area_m2=grid.area_m2,
+        hyai_hpa=grid.hyai_hpa,
+        hybi=grid.hybi,
+        lat_deg=grid.lat_deg,
+    )
     met_root = meteorology_root(config)
     start = simulation_start(config)
     end = simulation_end(config)
@@ -144,6 +151,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             active_emissions=active_emissions,
             surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             dry_air_mass_kg=dry_air_mass,
+            tpcore_static_terms=tpcore_static_terms,
         )
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg

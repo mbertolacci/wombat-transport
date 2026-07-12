@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from wombat_transport.transport.pjc import _pjc_horizontal_geometry, pjc_mass_flux_hpa
+from wombat_transport.transport.pjc import build_pjc_horizontal_geometry, pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore.types import (
     TpcoreBranchReport,
     TpcoreSetup,
     TpcoreState,
+    TpcoreStaticTerms,
     TpcoreTrace,
 )
 
@@ -52,7 +53,27 @@ def run_tpcore_one_step(
         lat_deg=lat_deg,
         dt_s=dt_s,
     )
-    validate_tpcore_branch_support(setup)
+    return run_tpcore_one_step_with_setup(
+        tracer_conc=tracer_conc,
+        setup=setup,
+        area_m2=area_m2,
+        fill=fill,
+        validate_branches=True,
+    )
+
+
+def run_tpcore_one_step_with_setup(
+    *,
+    tracer_conc: np.ndarray,
+    setup: TpcoreSetup,
+    area_m2: np.ndarray,
+    fill: bool = True,
+    validate_branches: bool = True,
+) -> TpcoreState:
+    """Run TPCORE tracer advection using an already computed setup."""
+
+    if validate_branches:
+        validate_tpcore_branch_support(setup)
     tracer = _advect_tracers(
         tracer_conc=np.asarray(tracer_conc, dtype=np.float64),
         setup=setup,
@@ -61,16 +82,7 @@ def run_tpcore_one_step(
     )
     if fill:
         tracer[tracer < 0.0] = 1.0e-26
-    return TpcoreState(
-        tracer_conc_after=tracer,
-        xmass_hpa=setup.xmass_hpa,
-        ymass_hpa=setup.ymass_hpa,
-        surface_pressure_hpa=setup.surface_pressure_hpa,
-        delp1_hpa=setup.delp1_hpa,
-        delpm_hpa=setup.delpm_hpa,
-        delp2_hpa=setup.delp2_hpa,
-        vertical_mass_flux_hpa=setup.vertical_mass_flux_hpa,
-    )
+    return _tpcore_state_from_setup(setup, tracer)
 
 
 def trace_tpcore_one_step(
@@ -100,7 +112,28 @@ def trace_tpcore_one_step(
         lat_deg=lat_deg,
         dt_s=dt_s,
     )
-    validate_tpcore_branch_support(setup)
+    state, trace = trace_tpcore_one_step_with_setup(
+        tracer_conc=tracer_conc,
+        setup=setup,
+        area_m2=area_m2,
+        fill=fill,
+        validate_branches=True,
+    )
+    return state, trace
+
+
+def trace_tpcore_one_step_with_setup(
+    *,
+    tracer_conc: np.ndarray,
+    setup: TpcoreSetup,
+    area_m2: np.ndarray,
+    fill: bool = True,
+    validate_branches: bool = True,
+) -> tuple[TpcoreState, TpcoreTrace]:
+    """Run trace-enabled TPCORE using an already computed setup."""
+
+    if validate_branches:
+        validate_tpcore_branch_support(setup)
     tracer, trace = _advect_tracers(
         tracer_conc=np.asarray(tracer_conc, dtype=np.float64),
         setup=setup,
@@ -110,8 +143,15 @@ def trace_tpcore_one_step(
     )
     if fill:
         tracer[tracer < 0.0] = 1.0e-26
-    state = TpcoreState(
-        tracer_conc_after=tracer,
+    state = _tpcore_state_from_setup(setup, tracer)
+    if trace is None:
+        raise AssertionError("trace=True did not produce a TPCORE trace")
+    return state, trace
+
+
+def _tpcore_state_from_setup(setup: TpcoreSetup, tracer_conc_after: np.ndarray) -> TpcoreState:
+    return TpcoreState(
+        tracer_conc_after=tracer_conc_after,
         xmass_hpa=setup.xmass_hpa,
         ymass_hpa=setup.ymass_hpa,
         surface_pressure_hpa=setup.surface_pressure_hpa,
@@ -120,9 +160,6 @@ def trace_tpcore_one_step(
         delp2_hpa=setup.delp2_hpa,
         vertical_mass_flux_hpa=setup.vertical_mass_flux_hpa,
     )
-    if trace is None:
-        raise AssertionError("trace=True did not produce a TPCORE trace")
-    return state, trace
 
 
 def analyze_tpcore_branches(setup: TpcoreSetup) -> TpcoreBranchReport:
@@ -204,6 +241,7 @@ def setup_tpcore_terms(
     hybi: np.ndarray,
     lat_deg: np.ndarray,
     dt_s: float,
+    static_terms: TpcoreStaticTerms | None = None,
 ) -> TpcoreSetup:
     """Port the non-tracer setup performed before TPCORE tracer advection."""
 
@@ -213,6 +251,11 @@ def setup_tpcore_terms(
     hyai = np.asarray(hyai_hpa, dtype=np.float64)
     hybi_arr = np.asarray(hybi, dtype=np.float64)
     lat = np.asarray(lat_deg, dtype=np.float64)
+    static = (
+        build_tpcore_static_terms(area_m2=area, hyai_hpa=hyai, hybi=hybi_arr, lat_deg=lat)
+        if static_terms is None
+        else static_terms
+    )
 
     xmass, ymass = pjc_mass_flux_hpa(
         p1_hpa=p1,
@@ -224,16 +267,21 @@ def setup_tpcore_terms(
         hybi=hybi_arr,
         lat_deg=lat,
         dt_s=dt_s,
+        horizontal_geometry=static.pjc_geometry,
+        dap_hpa=static.dap_geos_hpa,
+        dbk=static.dbk_geos,
     )
 
-    rel_area, geofac, geofac_pc, cose, _cosp = _pjc_horizontal_geometry(area, lat)
+    rel_area = static.pjc_geometry.rel_area
+    geofac = static.pjc_geometry.geofac
+    geofac_pc = static.pjc_geometry.geofac_pc
+    cose = static.pjc_geometry.cose
     _average_poles_in_place(p1, rel_area)
     _average_poles_in_place(p2, rel_area)
 
-    ak = hyai[::-1]
-    bk = hybi_arr[::-1]
-    dap = ak[1:] - ak[:-1]
-    dbk = bk[1:] - bk[:-1]
+    ak = static.ak_top_hpa
+    dap = static.dap_top_hpa
+    dbk = static.dbk_top
 
     x_tpcore = xmass[::-1]
     y_tpcore = ymass[::-1]
@@ -258,6 +306,32 @@ def setup_tpcore_terms(
         cy=cy_t,
         geofac=geofac,
         geofac_pc=geofac_pc,
+    )
+
+
+def build_tpcore_static_terms(
+    *,
+    area_m2: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+    lat_deg: np.ndarray,
+) -> TpcoreStaticTerms:
+    """Build grid-only TPCORE/PJC terms reusable across transport steps."""
+
+    area = np.asarray(area_m2, dtype=np.float64)
+    hyai = np.asarray(hyai_hpa, dtype=np.float64)
+    hybi_arr = np.asarray(hybi, dtype=np.float64)
+    lat = np.asarray(lat_deg, dtype=np.float64)
+    geometry = build_pjc_horizontal_geometry(area, lat)
+    ak_top = hyai[::-1].copy()
+    bk_top = hybi_arr[::-1]
+    return TpcoreStaticTerms(
+        pjc_geometry=geometry,
+        ak_top_hpa=ak_top,
+        dap_top_hpa=(ak_top[1:] - ak_top[:-1]).copy(),
+        dbk_top=(bk_top[1:] - bk_top[:-1]).copy(),
+        dap_geos_hpa=(hyai[:-1] - hyai[1:]).copy(),
+        dbk_geos=(hybi_arr[:-1] - hybi_arr[1:]).copy(),
     )
 
 

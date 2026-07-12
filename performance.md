@@ -1117,3 +1117,67 @@ Four codegen-guided follow-up experiments were then tried:
 No additional TPCORE code changes were retained from this codegen pass. The
 current retained TPCORE change remains only the earlier cross-term `ua`/`va`
 scalar hoist.
+
+## 2026-07-12 Multi-step transport optimization notes
+
+The next likely gains are from repeated work across many transport steps, not
+from another isolated one-step kernel pass. The one-step operators have already
+been pushed hard with direct timings, `cProfile`, `perf`, codegen inspection,
+and Profila line-level Numba profiling. Extra stage timers are not a prerequisite
+for obvious repeated-work cleanups; use `cProfile` for Python call attribution
+and Profila/codegen inspection for Numba kernel internals.
+
+A 96-tracer, 6-hour profile gave this broad split:
+
+| Stage | Time s |
+| --- | ---: |
+| Total | 50.47 |
+| TPCORE | 30.64 |
+| VDIFF | 14.11 |
+| Convection | 2.20 |
+| TPCORE setup bucket | 0.61 |
+| Meteorology forcing | 0.74 |
+
+Two TPCORE setup cleanups were identified as direct, low-risk candidates. First,
+the transport driver built a `TpcoreSetup`, then `run_tpcore_one_step()` built
+the same setup again internally. This duplicated PJC mass-flux setup, pressure
+terms, Courant and divergence setup, vertical flux setup, and branch validation
+every normal driver step. Second, static geometry and hybrid-grid terms were
+recomputed during setup even though area factors, `geofac`, `geofac_pc`,
+`cose`/`cosp`, and hybrid coefficient deltas do not change step-to-step for the
+current fixed 2 x 2.5, 47-level grid.
+
+Both cleanups were tested on the same 96-tracer, 6-hour profile:
+
+| Variant | Total s | TPCORE s | TPCORE setup s |
+| --- | ---: | ---: | ---: |
+| Before multi-step cleanup | 50.47 | 30.64 | 0.61 |
+| Reuse driver-built setup | 48.89 | 29.68 | 0.59 |
+| Reuse setup + static terms | 48.22 | 29.19 | 0.57 |
+
+The static-term refactor is intentionally outside the Numba kernels, but it
+still needs the same caution as any performance edit: if a future version
+changes array layout, contiguity, or the exact arrays passed into the kernels,
+recheck that it has not backed out earlier vectorization/codegen wins.
+
+VDIFF has less obvious reusable work. Most of the expensive state depends on
+evolving dry mass, pressure, humidity, temperature, PBL fields, and emissions.
+Low-risk candidates are avoiding repeated zero surface-flux allocation/scans in
+no-emissions runs and precomputing slow-cadence forcing views or simple scalars
+such as water-flux conversions. These are probably secondary unless profiles of
+the target run show VDIFF setup, rather than the solve itself, becoming large.
+
+Convection has one reusable multi-step structure: A3 convection forcing fields
+are fixed across a 3-hour block, so top-order forcing views, active-column
+masks, and cloud-base indices can potentially be cached for the 18 ten-minute
+transport steps in that block. This is lower priority at high tracer counts
+because convection is only a small share of runtime, but it may matter more for
+low-tracer full-run throughput.
+
+Recommended order:
+
+1. Keep the duplicate TPCORE setup removal if parity tests continue to pass.
+2. Keep the TPCORE/PJC static geometry and hybrid-term cache if benchmark wins
+   remain stable across normal run profiles.
+3. Revisit VDIFF zero-emissions and convection A3-block caching after TPCORE
+   setup cleanup is measured in a full output-enabled benchmark.

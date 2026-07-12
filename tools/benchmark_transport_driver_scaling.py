@@ -364,7 +364,7 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
     timing_stack: list[dict[str, float]] = []
     originals: dict[str, Callable] = {
         "setup_tpcore_terms": driver_mod.setup_tpcore_terms,
-        "run_tpcore_one_step": driver_mod.run_tpcore_one_step,
+        "run_tpcore_one_step_with_setup": driver_mod.run_tpcore_one_step_with_setup,
         "run_vdiffdr_one_step": driver_mod.run_vdiffdr_one_step,
         "run_cloud_convection_one_step": driver_mod.run_cloud_convection_one_step,
     }
@@ -386,7 +386,7 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
 
     try:
         driver_mod.setup_tpcore_terms = timed("setup", originals["setup_tpcore_terms"])
-        driver_mod.run_tpcore_one_step = timed("tpcore", originals["run_tpcore_one_step"])
+        driver_mod.run_tpcore_one_step_with_setup = timed("tpcore", originals["run_tpcore_one_step_with_setup"])
         driver_mod.run_vdiffdr_one_step = timed("vdiff", originals["run_vdiffdr_one_step"])
         driver_mod.run_cloud_convection_one_step = timed("convection", originals["run_cloud_convection_one_step"])
         start = time.perf_counter()
@@ -399,7 +399,7 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
         total = time.perf_counter() - start
     finally:
         driver_mod.setup_tpcore_terms = originals["setup_tpcore_terms"]
-        driver_mod.run_tpcore_one_step = originals["run_tpcore_one_step"]
+        driver_mod.run_tpcore_one_step_with_setup = originals["run_tpcore_one_step_with_setup"]
         driver_mod.run_vdiffdr_one_step = originals["run_vdiffdr_one_step"]
         driver_mod.run_cloud_convection_one_step = originals["run_cloud_convection_one_step"]
 

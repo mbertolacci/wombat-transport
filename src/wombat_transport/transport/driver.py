@@ -32,9 +32,11 @@ from wombat_transport.transport.pressure import (
 )
 from wombat_transport.transport.tpcore import (
     TpcoreState,
+    TpcoreStaticTerms,
     _average_const_poles_batch,
     analyze_tpcore_branches,
-    run_tpcore_one_step,
+    build_tpcore_static_terms,
+    run_tpcore_one_step_with_setup,
     setup_tpcore_terms,
     validate_tpcore_branch_support,
 )
@@ -130,6 +132,7 @@ def run_transport_one_step(
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
+    tpcore_static_terms: TpcoreStaticTerms | None = None,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
@@ -150,6 +153,7 @@ def run_transport_one_step(
         dt_s=dt_s,
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
+        tpcore_static_terms=tpcore_static_terms,
     )
 
 
@@ -163,6 +167,7 @@ def trace_transport_one_step(
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
+    tpcore_static_terms: TpcoreStaticTerms | None = None,
 ) -> TransportStepDiagnostics:
     """Run one transport step and retain exact operator handoff arrays."""
 
@@ -183,6 +188,7 @@ def trace_transport_one_step(
         dt_s=dt_s,
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
+        tpcore_static_terms=tpcore_static_terms,
     )
 
 
@@ -250,6 +256,12 @@ def run_transport_window(
         initial_met_time_index=initial_met_time_index,
         chunk_multiple=chunk_multiple,
     )
+    tpcore_static_terms = build_tpcore_static_terms(
+        area_m2=grid.area_m2,
+        hyai_hpa=grid.hyai_hpa,
+        hybi=grid.hybi,
+        lat_deg=grid.lat_deg,
+    )
     first_forcing = _load_window_forcing(
         forcing_provider,
         step=0,
@@ -272,6 +284,7 @@ def run_transport_window(
             grid.hybi,
             dt_s=dt_s,
             max_courant=max_courant,
+            tpcore_static_terms=tpcore_static_terms,
         )
         state = step_result.state
         dry_air_mass = step_result.dry_air_mass_kg
@@ -318,6 +331,7 @@ def _run_transport_one_step_with_mass(
     max_courant: float,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
+    tpcore_static_terms: TpcoreStaticTerms | None = None,
 ) -> TransportStepResult:
     p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
     p2_hpa = forcing.dry_surface_pressure_hpa[0]
@@ -333,6 +347,7 @@ def _run_transport_one_step_with_mass(
         dt_s=dt_s,
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
+        tpcore_static_terms=tpcore_static_terms,
     )
 
 
@@ -349,6 +364,7 @@ def _run_tpcore_one_step_from_mass(
     p1_hpa: np.ndarray | None = None,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
+    tpcore_static_terms: TpcoreStaticTerms | None = None,
 ) -> TransportStepResult:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -365,6 +381,7 @@ def _run_tpcore_one_step_from_mass(
         hybi=hybi,
         lat_deg=forcing.lat_deg,
         dt_s=dt_s,
+        static_terms=tpcore_static_terms,
     )
     try:
         validate_tpcore_branch_support(setup)
@@ -372,17 +389,11 @@ def _run_tpcore_one_step_from_mass(
         report = analyze_tpcore_branches(setup)
         raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
-    tpcore = run_tpcore_one_step(
+    tpcore = run_tpcore_one_step_with_setup(
         tracer_conc=canonical_time_slice(tracer_field.data),
-        p1_hpa=p1_hpa,
-        p2_hpa=p2_hpa,
-        u_m_s=forcing.u_m_s[0],
-        v_m_s=forcing.v_m_s[0],
+        setup=setup,
         area_m2=area,
-        hyai_hpa=hyai,
-        hybi=hybi,
-        lat_deg=forcing.lat_deg,
-        dt_s=dt_s,
+        validate_branches=False,
     )
     next_delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,
@@ -458,6 +469,7 @@ def _trace_tpcore_one_step_from_mass(
     p1_hpa: np.ndarray | None = None,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
+    tpcore_static_terms: TpcoreStaticTerms | None = None,
 ) -> TransportStepDiagnostics:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -474,6 +486,7 @@ def _trace_tpcore_one_step_from_mass(
         hybi=hybi,
         lat_deg=forcing.lat_deg,
         dt_s=dt_s,
+        static_terms=tpcore_static_terms,
     )
     try:
         validate_tpcore_branch_support(setup)
@@ -481,17 +494,11 @@ def _trace_tpcore_one_step_from_mass(
         report = analyze_tpcore_branches(setup)
         raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
-    tpcore = run_tpcore_one_step(
+    tpcore = run_tpcore_one_step_with_setup(
         tracer_conc=canonical_time_slice(tracer_field.data),
-        p1_hpa=p1_hpa,
-        p2_hpa=p2_hpa,
-        u_m_s=forcing.u_m_s[0],
-        v_m_s=forcing.v_m_s[0],
+        setup=setup,
         area_m2=area,
-        hyai_hpa=hyai,
-        hybi=hybi,
-        lat_deg=forcing.lat_deg,
-        dt_s=dt_s,
+        validate_branches=False,
     )
     next_delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,
