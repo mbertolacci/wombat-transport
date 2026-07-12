@@ -186,6 +186,8 @@ class _I3Fields:
     surface_pressure: np.ndarray
     qv: np.ndarray
     temperature: np.ndarray
+    dry_surface_pressure_hpa: np.ndarray
+    wet_surface_pressure_hpa: np.ndarray
     path: Path
 
 
@@ -206,25 +208,22 @@ def load_transport_forcing(
     a1 = _load_a1_fields(met_root, timestamp, grid, int(time_index) * 3, None)
     a3 = _load_a3_fields(met_root, timestamp, grid, int(time_index), None)
     i3 = _load_i3_fields(met_root, timestamp, grid, int(time_index), None)
+    dry_surface = _i3_dry_surface_pressure_hpa(i3, grid)
+    wet_surface = _i3_wet_surface_pressure_hpa(i3, grid)
     return _assemble_transport_forcing(
         a1,
         a3,
         surface_pressure_start=i3.surface_pressure,
         surface_pressure_end=i3.surface_pressure,
         restart_surface_pressure=i3.surface_pressure,
-        dry_surface_pressure_start=dry_surface_pressure_hpa(
-            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
-        ),
-        dry_surface_pressure_end=dry_surface_pressure_hpa(
-            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
-        ),
-        restart_dry_surface_pressure=dry_surface_pressure_hpa(
-            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
-        ),
-        i3_start_surface_pressure=i3.surface_pressure,
-        i3_start_dry_surface_pressure=dry_surface_pressure_hpa(
-            i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2
-        ),
+        wet_surface_pressure_start=wet_surface,
+        wet_surface_pressure_end=wet_surface,
+        restart_wet_surface_pressure=wet_surface,
+        dry_surface_pressure_start=dry_surface,
+        dry_surface_pressure_end=dry_surface,
+        restart_dry_surface_pressure=dry_surface,
+        i3_start_dry_surface_pressure=dry_surface,
+        i3_start_wet_surface_pressure=wet_surface,
         i3_start_specific_humidity=i3.qv,
         specific_humidity=i3.qv,
         restart_specific_humidity=i3.qv,
@@ -270,53 +269,41 @@ def load_transport_forcing_for_step(
     a3_day, a3_index = _record_day_and_index(start_day, i3_start_index, 8)
     i3_start_day, i3_start_time_index = _record_day_and_index(start_day, i3_start_index, 8)
     i3_end_day, i3_end_time_index = _record_day_and_index(start_day, i3_end_index, 8)
-    restart_day, restart_time_index = _record_day_and_index(
-        start_day,
-        int(initial_met_time_index) + int((elapsed_s + dt_s) // 10800.0),
-        8,
-    )
+    restart_i3_index = int(initial_met_time_index) + int((elapsed_s + dt_s) // 10800.0)
+    restart_day, restart_time_index = _record_day_and_index(start_day, restart_i3_index, 8)
 
     a1 = _load_a1_fields(met_root, a1_day, grid, a1_index, cache)
     a3 = _load_a3_fields(met_root, a3_day, grid, a3_index, cache)
     i3_start = _load_i3_fields(met_root, i3_start_day, grid, i3_start_time_index, cache)
     i3_end = _load_i3_fields(met_root, i3_end_day, grid, i3_end_time_index, cache)
-    i3_restart = _load_i3_fields(met_root, restart_day, grid, restart_time_index, cache)
+    if restart_i3_index == i3_start_index:
+        i3_restart = i3_start
+    elif restart_i3_index == i3_end_index:
+        i3_restart = i3_end
+    else:
+        i3_restart = _load_i3_fields(met_root, restart_day, grid, restart_time_index, cache)
 
     start_fraction = seconds_into_i3_window / 10800.0
     end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
     midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
-    dry_surface_start_endpoint = dry_surface_pressure_hpa(
-        i3_start.surface_pressure,
-        i3_start.qv,
-        grid.hyai_hpa,
-        grid.hybi,
-        area_m2=grid.area_m2,
-    )
-    dry_surface_end_endpoint = dry_surface_pressure_hpa(
-        i3_end.surface_pressure,
-        i3_end.qv,
-        grid.hyai_hpa,
-        grid.hybi,
-        area_m2=grid.area_m2,
-    )
-    restart_dry_surface = dry_surface_pressure_hpa(
-        i3_restart.surface_pressure,
-        i3_restart.qv,
-        grid.hyai_hpa,
-        grid.hybi,
-        area_m2=grid.area_m2,
-    )
+    dry_surface_start_endpoint = _i3_dry_surface_pressure_hpa(i3_start, grid)
+    dry_surface_end_endpoint = _i3_dry_surface_pressure_hpa(i3_end, grid)
+    wet_surface_start_endpoint = _i3_wet_surface_pressure_hpa(i3_start, grid)
+    wet_surface_end_endpoint = _i3_wet_surface_pressure_hpa(i3_end, grid)
     return _assemble_transport_forcing(
         a1,
         a3,
         surface_pressure_start=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, start_fraction),
         surface_pressure_end=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, end_fraction),
         restart_surface_pressure=i3_restart.surface_pressure,
+        wet_surface_pressure_start=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, start_fraction),
+        wet_surface_pressure_end=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, end_fraction),
+        restart_wet_surface_pressure=_i3_wet_surface_pressure_hpa(i3_restart, grid),
         dry_surface_pressure_start=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, start_fraction),
         dry_surface_pressure_end=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, end_fraction),
-        restart_dry_surface_pressure=restart_dry_surface,
-        i3_start_surface_pressure=i3_start.surface_pressure,
+        restart_dry_surface_pressure=_i3_dry_surface_pressure_hpa(i3_restart, grid),
         i3_start_dry_surface_pressure=dry_surface_start_endpoint,
+        i3_start_wet_surface_pressure=wet_surface_start_endpoint,
         i3_start_specific_humidity=i3_start.qv,
         specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
         restart_specific_humidity=i3_restart.qv,
@@ -344,11 +331,14 @@ def _assemble_transport_forcing(
     surface_pressure_start: np.ndarray,
     surface_pressure_end: np.ndarray,
     restart_surface_pressure: np.ndarray,
+    wet_surface_pressure_start: np.ndarray,
+    wet_surface_pressure_end: np.ndarray,
+    restart_wet_surface_pressure: np.ndarray,
     dry_surface_pressure_start: np.ndarray,
     dry_surface_pressure_end: np.ndarray,
     restart_dry_surface_pressure: np.ndarray,
-    i3_start_surface_pressure: np.ndarray,
     i3_start_dry_surface_pressure: np.ndarray,
+    i3_start_wet_surface_pressure: np.ndarray,
     i3_start_specific_humidity: np.ndarray,
     specific_humidity: np.ndarray,
     restart_specific_humidity: np.ndarray,
@@ -360,10 +350,6 @@ def _assemble_transport_forcing(
     vertical_mapping: str,
 ) -> TransportForcing:
 
-    wet_surface_pressure_start = wet_surface_pressure_hpa(surface_pressure_start, area_m2=grid.area_m2)
-    wet_surface_pressure_end = wet_surface_pressure_hpa(surface_pressure_end, area_m2=grid.area_m2)
-    restart_wet_surface_pressure = wet_surface_pressure_hpa(restart_surface_pressure, area_m2=grid.area_m2)
-    i3_start_wet_surface_pressure = wet_surface_pressure_hpa(i3_start_surface_pressure, area_m2=grid.area_m2)
     return TransportForcing(
         u_m_s=a3.u,
         v_m_s=a3.v,
@@ -399,11 +385,11 @@ def _assemble_transport_forcing(
         lat_deg=grid.lat_deg,
         lon_deg=grid.lon_deg,
         vertical_mapping=vertical_mapping,
-        a1_path=a1.path.resolve(),
-        a3dyn_path=a3.a3dyn_path.resolve(),
-        a3mstc_path=a3.a3mstc_path.resolve(),
-        a3mste_path=a3.a3mste_path.resolve(),
-        i3_path=i3_path.resolve(),
+        a1_path=a1.path,
+        a3dyn_path=a3.a3dyn_path,
+        a3mstc_path=a3.a3mstc_path,
+        a3mste_path=a3.a3mste_path,
+        i3_path=i3_path,
     )
 
 
@@ -436,7 +422,7 @@ def _load_a1_fields(
             eflux=_read_2d_time_slice(a1, "EFLUX", time_index),
             ustar=_read_2d_time_slice(a1, "USTAR", time_index),
             precccon=np.asarray(a1.variables["PRECCON"][time_index : time_index + 1], dtype=np.float64),
-            path=a1_path,
+            path=a1_path.resolve(),
         )
     if cache is not None:
         cache[key] = fields
@@ -471,9 +457,9 @@ def _load_a3_fields(
             cmfmc=_map_met_edges_to_48(np.asarray(a3mste.variables["CMFMC"][time_index], dtype=np.float64)),
             pficu=_map_met_edges_to_48(np.asarray(a3mste.variables["PFICU"][time_index], dtype=np.float64)),
             pflcu=_map_met_edges_to_48(np.asarray(a3mste.variables["PFLCU"][time_index], dtype=np.float64)),
-            a3dyn_path=a3dyn_path,
-            a3mstc_path=a3mstc_path,
-            a3mste_path=a3mste_path,
+            a3dyn_path=a3dyn_path.resolve(),
+            a3mstc_path=a3mstc_path.resolve(),
+            a3mste_path=a3mste_path.resolve(),
         )
     if cache is not None:
         cache[key] = fields
@@ -492,11 +478,21 @@ def _load_i3_fields(
         return cache[key]
     i3_path = _met_path(met_root, timestamp, "I3")
     with netCDF4.Dataset(i3_path) as i3:
+        surface_pressure = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
+        qv = _map_met_levels_to_47(_read_3d_time_slice(i3, "QV", time_index))
         fields = _I3Fields(
-            surface_pressure=np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64),
-            qv=_map_met_levels_to_47(_read_3d_time_slice(i3, "QV", time_index)),
+            surface_pressure=surface_pressure,
+            qv=qv,
             temperature=_map_met_levels_to_47(_read_3d_time_slice(i3, "T", time_index)),
-            path=i3_path,
+            dry_surface_pressure_hpa=dry_surface_pressure_hpa(
+                surface_pressure,
+                qv,
+                grid.hyai_hpa,
+                grid.hybi,
+                area_m2=grid.area_m2,
+            ),
+            wet_surface_pressure_hpa=wet_surface_pressure_hpa(surface_pressure, area_m2=grid.area_m2),
+            path=i3_path.resolve(),
         )
     if cache is not None:
         cache[key] = fields
@@ -507,6 +503,20 @@ def _interpolate(start: np.ndarray, end: np.ndarray, fraction: float) -> np.ndar
     start_array = np.asarray(start, dtype=np.float64)
     end_array = np.asarray(end, dtype=np.float64)
     return start_array + (end_array - start_array) * float(fraction)
+
+
+def _i3_dry_surface_pressure_hpa(i3: _I3Fields, grid: TransportGrid) -> np.ndarray:
+    value = getattr(i3, "dry_surface_pressure_hpa", None)
+    if value is not None:
+        return value
+    return dry_surface_pressure_hpa(i3.surface_pressure, i3.qv, grid.hyai_hpa, grid.hybi, area_m2=grid.area_m2)
+
+
+def _i3_wet_surface_pressure_hpa(i3: _I3Fields, grid: TransportGrid) -> np.ndarray:
+    value = getattr(i3, "wet_surface_pressure_hpa", None)
+    if value is not None:
+        return value
+    return wet_surface_pressure_hpa(i3.surface_pressure, area_m2=grid.area_m2)
 
 
 def _read_3d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index: int) -> np.ndarray:
