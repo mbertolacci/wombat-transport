@@ -805,6 +805,46 @@ def test_transport_one_step_consumes_input_only_when_requested(monkeypatch):
     np.testing.assert_array_equal(consumed_result.state.data, safe_output)
 
 
+def test_transport_one_step_keeps_pure_reference_path_non_destructive(monkeypatch):
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    initialized = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    )
+    original = np.ascontiguousarray(initialized.data[..., :1])
+    forcing = _load_forcing(config, grid=grid)
+
+    safe_field = TracerField(
+        names=initialized.names[:1],
+        data=original.copy(),
+        units=initialized.units[:1],
+        coords=initialized.coords,
+    )
+    safe_result = run_transport_one_step(safe_field, forcing, grid, dt_s=600.0)
+
+    reference_field = TracerField(
+        names=initialized.names[:1],
+        data=original.copy(),
+        units=initialized.units[:1],
+        coords=initialized.coords,
+    )
+    reference_before = reference_field.data.copy()
+    reference_result = run_transport_one_step(
+        reference_field,
+        forcing,
+        grid,
+        dt_s=600.0,
+        consume_input=True,
+    )
+
+    np.testing.assert_array_equal(reference_field.data, reference_before)
+    assert not np.shares_memory(reference_result.state.data, reference_field.data)
+    np.testing.assert_array_equal(reference_result.state.data, safe_result.state.data)
+
+
 def test_trace_transport_one_step_captures_operator_handoffs(transport_numba_mode):
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)

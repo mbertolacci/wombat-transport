@@ -14,7 +14,11 @@ from wombat_transport.fields import (
 )
 from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.grid import TransportGrid
-from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
+from wombat_transport.transport.convection import (
+    ConvectionResult,
+    _numba_convection_enabled,
+    run_cloud_convection_one_step,
+)
 from wombat_transport.transport.forcing import (
     TransportForcing,
     TransportForcingProvider,
@@ -412,15 +416,21 @@ def _run_tpcore_one_step_from_mass(
             raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
     input_tracer = canonical_time_slice(tracer_field.data)
-    recycled_tracer = input_tracer if consume_input else None
-    defer_tpcore_finalization = _numba_tpcore_enabled() and _numba_vdiff_enabled()
+    numba_tpcore = _numba_tpcore_enabled()
+    numba_vdiff = _numba_vdiff_enabled()
+    numba_convection = _numba_convection_enabled()
+    # Keep destructive ownership optimizations out of pure and mixed reference paths.
+    numba_ownership_chain = numba_tpcore and numba_vdiff and numba_convection
+    recycle_input = consume_input and numba_ownership_chain
+    recycled_tracer = input_tracer if recycle_input else None
+    defer_tpcore_finalization = numba_tpcore and numba_vdiff
     tpcore = run_tpcore_one_step_with_setup(
         tracer_conc=input_tracer,
         setup=setup,
         area_m2=area,
         validate_branches=False,
-        reuse_output=True,
-        reuse_input=consume_input,
+        reuse_output=numba_tpcore,
+        reuse_input=recycle_input,
         defer_finalization=defer_tpcore_finalization,
     )
     next_delp = dry_pressure_thickness_from_surface_hpa(
@@ -472,7 +482,11 @@ def _run_tpcore_one_step_from_mass(
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
         include_diagnostics_fields=False,
     )
-    convection = _run_convection_input(convection_input, diagnostics=False, consume_input=True)
+    convection = _run_convection_input(
+        convection_input,
+        diagnostics=False,
+        consume_input=numba_ownership_chain,
+    )
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(convection.tracer_conc),
@@ -770,7 +784,7 @@ def _run_vdiff_input(
         dt_s=state.dt_s,
         surface_flux_kg_m2_s=state.surface_flux_for_vdiff,
         diagnostics=diagnostics,
-        reuse_output=not diagnostics,
+        reuse_output=not diagnostics and _numba_vdiff_enabled(),
         output_buffer=output_buffer,
         input_mass_pressure_hpa=input_mass_pressure_hpa,
     )
@@ -881,7 +895,7 @@ def _run_convection_input(
         precccon_mm_day=state.precccon_mm_day,
         dt_s=state.dt_s,
         diagnostics=diagnostics,
-        reuse_output=not diagnostics,
+        reuse_output=not diagnostics and _numba_convection_enabled(),
         consume_input=consume_input,
     )
 

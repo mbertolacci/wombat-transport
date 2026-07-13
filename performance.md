@@ -2239,8 +2239,16 @@ their ordering and values remain unchanged.
 Standalone TPCORE, standalone VDIFF, pure-Python, and mixed-backend calls retain
 their previous public semantics. Synthetic 24- and 96-tracer comparisons were
 bitwise exact. A real nonzero-emissions residual step was also bitwise exact
-(`array_equal`, maximum absolute difference zero). The integrated suite passed
-with 231 tests and two skips.
+(`array_equal`, maximum absolute difference zero). The initial integrated suite
+passed with 231 tests and two skips.
+
+The destructive two-buffer ownership chain is enabled only when TPCORE, VDIFF,
+and convection are all using Numba. An explicit `WOMBAT_NUMBA=0` production run
+uses ordinary allocating reference calls even when the runner offers ownership
+with `consume_input=True`; the caller's input remains unchanged and the result
+does not alias it. This guard was added after the original buffer-recycling
+commit exposed a pure-runner coverage gap. The added regression test brings the
+suite to 232 passes and two skips.
 
 Two serialized, CPU8-pinned, one-thread six-hour real comparisons were run with
 opposite candidate/baseline and tracer-count order:
