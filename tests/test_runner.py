@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+import gzip
 import json
 from types import SimpleNamespace
 import subprocess
@@ -245,6 +246,53 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
     with netCDF4.Dataset(restart) as dataset:
         assert "Met_DELPDRY" in dataset.variables
         assert "Met_PS1WET" in dataset.variables
+
+
+def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_path):
+    config = load_run_config(RESIDUAL_CONFIG)
+    first_name = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    ).names[0]
+    input_path = tmp_path / "obsoperator-20140901.yml.gz"
+    with gzip.open(input_path, "wt", encoding="utf-8") as handle:
+        yaml.safe_dump(
+            {
+                "entries": [
+                    {
+                        "id": "first-step",
+                        "fields": f"SpeciesConcVV_{first_name}",
+                        "time_operator": {"type": "point", "unit": "time_index", "time": 0},
+                        "horizontal_operator": {
+                            "type": "point",
+                            "unit": "grid_index",
+                            "longitude": 1,
+                            "latitude": 1,
+                        },
+                        "vertical_operator": {"type": "point", "unit": "pressure_level", "value": 1},
+                    }
+                ]
+            },
+            handle,
+        )
+    output_template = tmp_path / "GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4"
+    outputs = {
+        "obsoperator": {
+            "activate": True,
+            "input_file": str(tmp_path / "obsoperator-YYYYMMDD.yml.gz"),
+            "output_file": str(output_template),
+        }
+    }
+
+    result = run_tracer_simulation(replace(config, outputs=outputs), max_steps=1)
+
+    output_path = tmp_path / "GEOSChem.ObsOperator.20140901_0000z.nc4"
+    with netCDF4.Dataset(output_path) as dataset:
+        np.testing.assert_allclose(
+            dataset.variables["sample"][:],
+            np.array([result.state.data[0, -1, 0, 0, 0]], dtype=np.float32),
+        )
 
 
 def test_invalid_hemco_fill_values_are_detected():

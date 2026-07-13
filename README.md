@@ -110,6 +110,44 @@ base_wombat/run.yml
 residual_20140901_part001_split01_wombat/run.yml
 ```
 
+### ObsOperator output
+
+Wombat can sample the post-transport species concentration field inline using
+the GEOS-Chem ObsOperator schema. Configure it below `outputs`:
+
+```yaml
+outputs:
+  obsoperator:
+    activate: true
+    verbose: false
+    input_file: ./ObsOperator/obsoperator-YYYYMMDD.yml.gz
+    output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
+```
+
+Relative paths are resolved from the run YAML directory. `YYYY`, `MM`, `DD`,
+`hh`, `mm`, and `ss` are expanded from the current model time. Input files may
+be ordinary YAML or gzip-compressed YAML ending in `.gz`; a missing expanded
+daily input is logged and skipped.
+
+Each input contains an `entries` sequence. Entries use `fields` with explicit
+`SpeciesConcVV_<tracer>` names or the `SpeciesConcVV_?ALL?` and
+`SpeciesConcVV_?ADV?` tokens. The older `species` key is not accepted. Time,
+horizontal, and vertical operators follow the current GEOS-Chem ObsOperator
+format. Pressure is in hPa, altitude is in metres, and `grid_index` and
+`pressure_level` values are one-based. Pressure levels are counted bottom-up.
+
+Time indices are zero-based and retain GEOS-Chem's end-of-timestep sampling
+semantics: time index `0` samples the concentration after the first transport
+step. Wombat concentrations are already dry volume mixing ratios, so no
+additional molecular-weight conversion is applied. Output uses the current
+compressed ObsOperator NetCDF layout with `id`, `field`, `id_index`,
+`field_index`, and `sample` variables.
+
+For a local GEOS-Chem parity check, set `WOMBAT_GC_OBSOPERATOR_OUTPUT` and
+`WOMBAT_OBSOPERATOR_OUTPUT` to matching generated NetCDF files and run
+`tests/test_obsoperator.py`. The check skips with a clear message when either
+large local artifact is unavailable.
+
 The main runner is available as a module:
 
 ```bash

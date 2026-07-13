@@ -16,6 +16,7 @@ from wombat_transport.emissions import EmissionsOperator, SurfaceEmissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
+from wombat_transport.obsoperator import ObsOperatorManager
 from wombat_transport.output import HistoryOutputManager, OutputSnapshot
 from wombat_transport.run_config import (
     RunConfig,
@@ -95,6 +96,13 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     logger.debug("loaded_emissions_operator")
     output_manager = HistoryOutputManager.from_run_config(config)
     logger.debug("output_manager enabled=%s", output_manager is not None)
+    obsoperator_manager = ObsOperatorManager.from_run_config(
+        config,
+        tracer_names=state.names,
+        grid=grid,
+        transport_dt_s=transport_dt_s,
+    )
+    logger.debug("obsoperator_manager enabled=%s", obsoperator_manager is not None)
 
     forcing_provider = TransportForcingProvider(
         met_root,
@@ -158,24 +166,32 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg
         final_delp_dry_hpa = transport_result.delp_dry_hpa
+        step_end = current + timedelta(seconds=transport_dt_s)
+        snapshot: OutputSnapshot | None = None
+        if output_manager is not None or obsoperator_manager is not None:
+            snapshot = OutputSnapshot(
+                timestamp=step_end,
+                state=state,
+                delp_dry_hpa=transport_result.delp_dry_hpa,
+                forcing=forcing,
+            )
+        if obsoperator_manager is not None:
+            assert snapshot is not None
+            logger.debug("sampling_obsoperator step=%d time_index=%d", transport_steps + 1, transport_steps)
+            obsoperator_manager.sample(step_start=current, time_index=transport_steps, snapshot=snapshot)
         transport_steps += 1
         logger.debug("completed_transport step=%d", transport_steps)
-        step_end = current + timedelta(seconds=transport_dt_s)
-        if output_manager is not None:
+        if output_manager is not None and snapshot is not None:
             logger.debug("recording_outputs step=%d timestamp=%s", transport_steps, step_end.isoformat())
-            output_manager.record_step(
-                OutputSnapshot(
-                    timestamp=step_end,
-                    state=state,
-                    delp_dry_hpa=transport_result.delp_dry_hpa,
-                    forcing=forcing,
-                )
-            )
+            output_manager.record_step(snapshot)
         current = step_end
 
     if output_manager is not None:
         logger.debug("closing_outputs")
         output_manager.close()
+    if obsoperator_manager is not None:
+        logger.debug("closing_obsoperator")
+        obsoperator_manager.close()
 
     logger.info(
         "simulation_complete transport_steps=%d emissions_steps=%d total_emitted_mass_kg=%.8e",
