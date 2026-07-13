@@ -2183,7 +2183,7 @@ asserted the extension-reported compiler and FP mode. The native branch now
 makes explicit `cpp` selection fail with loader detail; only `auto` may fall
 back, and the extension reports compiler, FP model, architecture, and LTO state.
 
-Final locked CPU8, one-thread minimum timings were:
+The corrected pre-alias CPU8, one-thread minimum timings were:
 
 | Backend | FP mode | 24 tracers s | 96 tracers s | Numerical result |
 | --- | --- | ---: | ---: | --- |
@@ -2201,10 +2201,135 @@ but gave no speedup. Clang contraction reached `0.8021 s` with 29 ULP error;
 Clang reciprocal reached `0.8259 s` with two ULP error. No mode within one ULP
 beat strict Clang, and strict Clang remained about 10% slower than Numba.
 
-Source-level `restrict`, alignment, `ivdep`, and LTO experiments were also
-rejected after asserted reruns; none improved the final strict frontier. The
-compiler comparison does show that LLVM explains a large part of the original
-GCC gap (`1.0665 -> 0.8281 s`), but not all of it. Numba's specialized parfor
-lowering still outperformed the same algorithm expressed as strict Clang C++.
-Keep Numba as the production backend. The optional native implementation and
-benchmark-hardening commit remain isolated on the Track D branch.
+The table above predates the final alias-contract pass. Adding correct
+`restrict` contracts to the native TPCORE arguments enabled vectorization that
+the compilers had previously declined. It introduced no new numerical
+difference. The final locked comparison was:
+
+| Backend | 24 tracers s | 96 tracers s | Change from Numba |
+| --- | ---: | ---: | ---: |
+| Numba/LLVM | 0.20383 | 0.74405 | reference |
+| strict Clang C++ with alias contracts | 0.19233 | 0.69167 | -5.6% / -7.0% |
+| strict Intel C++ with alias contracts | 0.19401 | 0.78341 | -4.8% / +5.3% |
+
+Thus `restrict` was material; alignment, `ivdep`, LTO, and broad fast-math were
+not useful on top of the final strict frontier. LLVM explains much of the
+original GCC gap, while Numba's specialized parfor lowering explains why the
+initial strict C++ ports were not automatically faster. The optimized Clang
+prototype is now modestly faster, but it remains isolated on the Track D branch
+because the supported Numba path is close, exact, and much cheaper to maintain.
+
+## 2026-07-13 supported-Numba follow-up experiments
+
+This pass deliberately excluded low-Courant specialization and fixed-grid or
+fixed-tracer shapes. It also stayed within supported Numba/NumPy: no custom
+compiler alias metadata, C++ production backend, fast-math, or changed transport
+semantics.
+
+### Retained: defer TPCORE finalization into VDIFF
+
+TPCORE normally finishes by converting its full `(lev, lat, lon, tracer)` mass
+array back to mixing ratio. VDIFF immediately traverses the same values. When
+both production Numba operators are enabled, TPCORE now leaves the interior in
+mass form and VDIFF performs the division and negative clamp on its existing
+first reads. This removes one complete tracer-grid read/write pass. The two
+TPCORE pole-copy rows are finalized by a small pole-only kernel before VDIFF so
+their ordering and values remain unchanged.
+
+Standalone TPCORE, standalone VDIFF, pure-Python, and mixed-backend calls retain
+their previous public semantics. Synthetic 24- and 96-tracer comparisons were
+bitwise exact. A real nonzero-emissions residual step was also bitwise exact
+(`array_equal`, maximum absolute difference zero). The integrated suite passed
+with 231 tests and two skips.
+
+Two serialized, CPU8-pinned, one-thread six-hour real comparisons were run with
+opposite candidate/baseline and tracer-count order:
+
+| Tracers | Pair | Before s | After s | Change |
+| ---: | ---: | ---: | ---: | ---: |
+| 24 | 1 | 12.092 | 11.890 | -1.67% |
+| 24 | 2, reverse order | 12.127 | 11.944 | -1.51% |
+| 96 | 1 | 37.166 | 36.500 | -1.79% |
+| 96 | 2, reverse order | 37.134 | 35.553 | -4.26% |
+
+The 24-tracer result is stable at about 1.5-1.7%. The 96-tracer TPCORE time is
+more sensitive to memory-system state. Use 1.8% as the conservative repeatable
+96-tracer claim; several reverse-order runs reached about 4.3%, but larger
+movements are not a safe production estimate.
+
+Repeated synthetic full-driver timings provide a shorter controlled check:
+
+| Threads | Tracers | Before best/mean s | After best/mean s | Best / mean change |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 24 | 0.31283 / 0.31418 | 0.30452 / 0.30560 | -2.66% / -2.73% |
+| 1 | 96 | 0.96291 / 0.96600 | 0.94270 / 0.95783 | -2.10% / -0.85% |
+| 4 | 24 | 0.18901 / 0.19357 | 0.18177 / 0.18593 | -3.83% / -3.95% |
+| 4 | 96 | 0.53300 / 0.54745 | 0.51947 / 0.53136 | -2.54% / -2.94% |
+
+The optimization therefore helps both the preferred one-thread/process mode
+and modest within-process threading.
+
+### Post-fusion VTune
+
+Two warmed one-hour 96-tracer `uarch-exploration` captures used the same
+profiling/debug settings as the prior post-A/E result. Both were clean (MUX
+reliability 0.994 and 0.998) and agreed on the hardware movement:
+
+| Metric | Post A/E | Deferred-finalization range |
+| --- | ---: | ---: |
+| CPI | 0.359 | 0.360-0.361 |
+| retiring | 48.0% | 47.9-48.1% |
+| back-end bound | 33.8% | 32.1-32.4% |
+| memory bound | 25.4% | 23.6-23.9% |
+| DRAM bound | 8.2% | 6.4-6.5% |
+| bandwidth active | 28.5% | 23.7-25.5% |
+| store bound | 9.9% | 10.0-10.1% |
+
+This confirms that removing the full-grid pass reduces memory pressure. The
+debug/profiling build itself ran about 1% slower (`11.522 -> 11.620-11.665 s`)
+because conversion branches and instructions move into VDIFF; it does not
+reproduce the normal-build wall-time win. Use normal pinned timings for the
+speed claim and VTune only for the microarchitectural explanation.
+
+### Rejected scheduling and code-shape variants
+
+- Naively parallelizing the outer level loop regressed 24 tracers by 64.7% due
+  to nested parallel scheduling.
+- A correct outer scheduler with serial inner stages and per-worker scratch was
+  exact but about 2.9% slower.
+- Tracer blocking through non-contiguous last-axis slices caused a very large
+  Numba specialization whose compilation was repeatedly killed. Threading
+  explicit bounds through roughly 70 loops was not justified without evidence
+  of a runtime win.
+- Manual groups of eight in FZPPM regressed full TPCORE by 1.9-5.1%.
+- A divisible-by-eight tracer-loop specialization was neutral within 0.5%.
+- Outlining the rare X fallback helped the isolated X stage but was neutral or
+  worse in whole TPCORE. Removing a logically dead edge branch regressed the
+  96-tracer four-core best by 6.3%.
+
+The retained `tools/profile_tpcore_paths.py` census explains these results. In
+the measured workload, XTP uses common PPM for 86.2% of rows, the near-pole path
+for 11.5%, and fallback for 2.3%. No fallback cell actually has `|cx| > 1`.
+X flux is 97.7% positive, but Y and vertical flux signs are essentially 50/50,
+and limiter work overwhelmingly belongs to common paths. There is no large,
+rare branch with enough cost to justify duplicating the supported Numba kernel.
+
+### Rejected cross-operator chunking and forcing caches
+
+Latitude-chunked VDIFF-to-convection execution was exact but slower: best full
+driver time moved `0.31064 -> 0.31158 s` at 24 tracers and
+`0.92949 -> 0.93339 s` at 96, with the 96-tracer mean 1.4% slower. It was fully
+removed.
+
+The retained offline `tools/census_forcing_stability.py` checked all 35 adjacent
+transitions in a six-hour nonzero-emissions run. A3 winds shared storage and
+equal values for 34/35 transitions, and hourly PBL fields did so for 30/35.
+However, pressure, interpolated temperature, and humidity changed on 35/35.
+Every complete TPCORE setup product and the complete VDIFF coefficient input set
+therefore had zero legal reuse hits.
+
+A narrower west-neighbour U cache was bitwise exact and improved its raw PJC
+stage by 11.5-14.5%, but that projects to only 17-27 ms over 36 steps
+(0.05-0.07% of the whole run) and retains another 18.8 MiB per A3 block. It was
+rejected and reverted. Do not retry broad setup/coefficient caching unless the
+forcing interpolation cadence or semantics change.
