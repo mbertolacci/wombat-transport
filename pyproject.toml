@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "netCDF4",
     "PyYAML",
+    "py-yaml12>=0.1.0",
 ]
 
 [project.optional-dependencies]

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import yaml
 
+import wombat_transport.obsoperator as obsoperator_module
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import TransportGrid
 from wombat_transport.obsoperator import (
@@ -19,9 +20,7 @@ from wombat_transport.obsoperator import (
     ObsOperatorConfig,
     ObsOperatorManager,
     expand_obsoperator_template,
-    load_obsoperator_entries,
     parse_obsoperator_config,
-    sample_obsoperator_entry,
 )
 from wombat_transport.output import OutputSnapshot
 
@@ -39,11 +38,15 @@ def test_obsoperator_config_and_date_template():
                 "input_file": "obs-YYYYMMDD.yml.gz",
                 "output_file": "out-YYYYMMDD_hhmmss.nc4",
                 "restart_file": "restart-YYYYMMDD_hhmmss.nc4",
+                "input_mode": "threaded",
+                "writer": "threaded",
             }
         }
     )
     assert config.activate
     assert config.verbose
+    assert config.input_mode == "threaded"
+    assert config.writer_mode == "threaded"
     assert expand_obsoperator_template(config.output_file or "", datetime(2014, 9, 2, 3, 4, 5)) == (
         "out-20140902_030405.nc4"
     )
@@ -58,6 +61,115 @@ def test_obsoperator_config_and_date_template():
         )
     with pytest.raises(TypeError, match="must be a mapping"):
         parse_obsoperator_config({"obsoperator": "on"})
+    with pytest.raises(ValueError, match="input_mode"):
+        parse_obsoperator_config({"obsoperator": {"input_mode": "process"}})
+    with pytest.raises(ValueError, match="writer"):
+        parse_obsoperator_config({"obsoperator": {"writer": "process"}})
+
+
+def test_threaded_input_and_output_match_synchronous_contract(tmp_path: Path):
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {"entries": [_entry_raw(entry_id="first"), _entry_raw(entry_id="second", fields="SpeciesConcVV_B")]},
+    )
+    manager = _manager(tmp_path, input_mode="threaded", writer_mode="threaded")
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0000.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["first", "second"]
+        assert _decode_rows(dataset.variables["field"][:]) == ["SpeciesConcVV_A", "SpeciesConcVV_B"]
+        np.testing.assert_array_equal(dataset.variables["id_index"][:], np.array([1, 2], dtype=np.int32))
+
+
+def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WOMBAT_OBSOPERATOR_NUMBA", "0")
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {"entries": [_entry_raw(entry_id="first"), _entry_raw(entry_id="second")]},
+    )
+    original = obsoperator_module._sample_prepared_entries_kernel
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(obsoperator_module, "_sample_prepared_entries_kernel", counted)
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+
+    assert calls == 1
+
+
+def test_numba_manager_matches_python_array_sampler_for_float64_accumulators(tmp_path: Path, monkeypatch):
+    entries = []
+    operators = [
+        (
+            {"type": "point", "unit": "grid_index", "longitude": 1, "latitude": 1},
+            {"type": "point", "unit": "pressure_level", "value": 2},
+        ),
+        (
+            {
+                "type": "box",
+                "unit": "grid_index",
+                "longitude_start": 1,
+                "longitude_end": 2,
+                "latitude_start": 1,
+                "latitude_end": 2,
+                "weights": "equal",
+            },
+            {"type": "range", "unit": "altitude", "start": 0.0, "end": 1000.0, "weights": "normalized"},
+        ),
+        (
+            {
+                "type": "box",
+                "unit": "grid_index",
+                "longitude_start": 1,
+                "longitude_end": 2,
+                "latitude_start": 1,
+                "latitude_end": 3,
+                "weights": "normalized_area",
+            },
+            {
+                "type": "range",
+                "unit": "pressure",
+                "start": 100.0,
+                "end": 900.0,
+                "weights": "normalized_pressure",
+            },
+        ),
+        (
+            {"type": "point", "unit": "degrees", "longitude": 0.0, "latitude": 0.0},
+            {"type": "exact", "unit": "pressure", "values": [900.0, 500.0], "weights": [0.25, 0.75]},
+        ),
+    ]
+    for index, (horizontal, vertical) in enumerate(operators):
+        entry = _entry_raw(
+            entry_id=f"operator-{index}",
+            fields=["SpeciesConcVV_A", "SpeciesConcVV_B"],
+            time={"type": "range", "unit": "time_index", "start": 0, "end": 1, "weights": "equal"},
+        )
+        entry["horizontal_operator"] = horizontal
+        entry["vertical_operator"] = vertical
+        entries.append(entry)
+
+    results = {}
+    for mode in ("0", "1"):
+        run_dir = tmp_path / mode
+        run_dir.mkdir()
+        _write_yaml(run_dir / "obs-20140901.yml", {"entries": entries})
+        monkeypatch.setenv("WOMBAT_OBSOPERATOR_NUMBA", mode)
+        manager = _manager(run_dir)
+        manager.sample(step_start=START, time_index=0, snapshot=_snapshot(horizontal_gradient=True))
+        results[mode] = _manager_accumulators(manager)
+        manager.close(boundary_time=START + timedelta(minutes=10))
+
+    assert results["1"].keys() == results["0"].keys()
+    for entry_id in results["0"]:
+        np.testing.assert_array_equal(results["1"][entry_id], results["0"][entry_id])
 
 
 def test_plain_and_gzip_yaml_parse_identically_and_deduplicate_fields(tmp_path: Path):
@@ -75,13 +187,58 @@ def test_plain_and_gzip_yaml_parse_identically_and_deduplicate_fields(tmp_path: 
     with gzip.open(compressed, "wt", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle)
 
-    plain_entries = _load(plain)
-    gzip_entries = _load(compressed)
+    plain_state = _load(plain)
+    gzip_state = _load(compressed)
 
-    assert plain_entries[0].field_names == ("SpeciesConcVV_A", "SpeciesConcVV_B")
-    np.testing.assert_array_equal(plain_entries[0].field_indices, np.array([0, 1]))
-    np.testing.assert_array_equal(gzip_entries[0].field_indices, plain_entries[0].field_indices)
-    np.testing.assert_array_equal(gzip_entries[0].time.indices, plain_entries[0].time.indices)
+    assert plain_state.field_names[0] == ("SpeciesConcVV_A", "SpeciesConcVV_B")
+    np.testing.assert_array_equal(_entry_field_indices(plain_state, 0), np.array([0, 1]))
+    np.testing.assert_array_equal(_entry_field_indices(gzip_state, 0), _entry_field_indices(plain_state, 0))
+    np.testing.assert_array_equal(gzip_state.remaining_time_us, plain_state.remaining_time_us)
+
+
+def test_array_loader_builds_flat_selection_and_schedule_tables(tmp_path: Path):
+    raw = {
+        "entries": [
+            _entry_raw(
+                entry_id="range",
+                fields=["SpeciesConcVV_B", "SpeciesConcVV_?ALL?"],
+                time={"type": "range", "unit": "time_index", "start": 0, "end": 2},
+            ),
+            _entry_raw(
+                entry_id="exact",
+                fields="SpeciesConcVV_A",
+                time={"type": "point", "unit": "time_index", "time": 1},
+            ),
+        ]
+    }
+    raw["entries"][0]["horizontal_operator"] = {
+        "type": "box",
+        "unit": "grid_index",
+        "longitude_start": 1,
+        "longitude_end": 2,
+        "latitude_start": 1,
+        "latitude_end": 3,
+        "weights": "normalized_area",
+    }
+    raw["entries"][1]["vertical_operator"] = {
+        "type": "exact",
+        "unit": "pressure_level",
+        "values": [1, 3],
+        "weights": [0.25, 0.75],
+    }
+    path = _write_yaml(tmp_path / "obs.yml", raw)
+    state = _load(path)
+
+    assert state.ids == ("range", "exact")
+    assert state.field_names == (("SpeciesConcVV_B", "SpeciesConcVV_A"), ("SpeciesConcVV_A",))
+    np.testing.assert_array_equal(state.prepared.entry_field_start, [0, 2])
+    np.testing.assert_array_equal(state.prepared.entry_field_count, [2, 1])
+    np.testing.assert_array_equal(state.prepared.field_indices, [1, 0, 0])
+    np.testing.assert_array_equal(state.time_start, [0, 3])
+    np.testing.assert_array_equal(state.time_count, [3, 1])
+    np.testing.assert_array_equal(state.schedule_entry, [0, 0, 1, 0])
+    np.testing.assert_array_equal(state.schedule_count, [1, 2, 1])
+    np.testing.assert_array_equal(state.prepared.entry_exact_count, [0, 2])
 
 
 def test_time_date_values_are_zero_based_and_floor_to_timestep(tmp_path: Path):
@@ -94,10 +251,10 @@ def test_time_date_values_are_zero_based_and_floor_to_timestep(tmp_path: Path):
         "weights": "normalized",
     }
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
-    entry = _load(path)[0]
+    state = _load(path)
 
-    np.testing.assert_array_equal(entry.time.indices, np.array([0, 1, 2]))
-    np.testing.assert_allclose(entry.time.weights, np.full(3, 1.0 / 3.0))
+    np.testing.assert_array_equal(_entry_time_indices(state, 0), np.array([0, 1, 2]))
+    np.testing.assert_allclose(_entry_time_weights(state, 0), np.full(3, 1.0 / 3.0))
 
 
 def test_yaml_clock_with_leading_zero_is_read_as_decimal(tmp_path: Path):
@@ -123,9 +280,9 @@ def test_yaml_clock_with_leading_zero_is_read_as_decimal(tmp_path: Path):
         encoding="utf-8",
     )
 
-    entry = _load(path)[0]
+    state = _load(path)
 
-    np.testing.assert_array_equal(entry.time.indices, np.array([5]))
+    np.testing.assert_array_equal(_entry_time_indices(state, 0), np.array([5]))
 
 
 @pytest.mark.parametrize(
@@ -151,9 +308,8 @@ def test_vertical_operator_modes(tmp_path: Path, vertical: dict, expected: float
     raw = _entry_raw()
     raw["vertical_operator"] = vertical
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
-    entry = _load(path)[0]
-
-    sampled = sample_obsoperator_entry(entry, _snapshot(), _grid())
+    state = _load(path)
+    sampled = _sample_state(state, _snapshot(), _grid())[0, :1]
 
     np.testing.assert_allclose(sampled, np.array([expected]))
 
@@ -170,8 +326,8 @@ def test_horizontal_box_weight_modes_and_longitude_wrap(tmp_path: Path):
         "weights": "normalized",
     }
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
-    entry = _load(path)[0]
-    sampled = sample_obsoperator_entry(entry, _snapshot(horizontal_gradient=True), _grid())
+    state = _load(path)
+    sampled = _sample_state(state, _snapshot(horizontal_gradient=True), _grid())[0, :1]
     np.testing.assert_allclose(sampled, np.array([(1.0 + 11.0 + 2.0 + 12.0) / 4.0]))
 
     raw["horizontal_operator"] = {
@@ -181,8 +337,9 @@ def test_horizontal_box_weight_modes_and_longitude_wrap(tmp_path: Path):
         "latitude": -90.0,
     }
     _write_yaml(path, {"entries": [raw]})
-    wrapped = _load(path)[0]
-    np.testing.assert_array_equal(wrapped.horizontal.indices, np.array([[0, 0]]))
+    wrapped = _load(path)
+    np.testing.assert_array_equal(wrapped.prepared.horizontal_lat, np.array([0]))
+    np.testing.assert_array_equal(wrapped.prepared.horizontal_lon, np.array([0]))
 
 
 @pytest.mark.parametrize(("latitude", "expected_index"), [(-90.0, 0), (-89.0, 1), (89.0, 90), (90.0, 90)])
@@ -207,15 +364,16 @@ def test_geos_polar_degree_boundaries(tmp_path: Path, latitude: float, expected_
     }
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
 
-    entry = load_obsoperator_entries(
+    state = obsoperator_module._load_obsoperator_array_state(
         path,
         tracer_names=("A", "B"),
         grid=grid,
         simulation_start=START,
         transport_dt_s=600.0,
-    )[0]
+    )
 
-    np.testing.assert_array_equal(entry.horizontal.indices, np.array([[expected_index, 0]]))
+    np.testing.assert_array_equal(state.prepared.horizontal_lat, np.array([expected_index]))
+    np.testing.assert_array_equal(state.prepared.horizontal_lon, np.array([0]))
 
 
 def test_parser_rejects_obsolete_species_and_invalid_values(tmp_path: Path):
@@ -275,12 +433,62 @@ def test_manager_writes_fortran_compatible_netcdf_and_first_step_sample(tmp_path
         assert dataset.variables["id_index"].dtype == np.dtype("int32")
         assert dataset.variables["sample"].filters()["zlib"]
         assert dataset.variables["sample"].filters()["complevel"] == 1
+        assert dataset.variables["id"].chunking() == [256, MAX_ID_LENGTH]
+        assert dataset.variables["field"].chunking() == [64, MAX_FIELD_NAME_LENGTH]
+        assert dataset.variables["id_index"].chunking() == [16_384]
+        assert dataset.variables["field_index"].chunking() == [16_384]
+        assert dataset.variables["sample"].chunking() == [16_384]
         assert dataset.variables["sample"].description == "sample of the id and field"
         assert _decode_rows(dataset.variables["id"][:]) == ["first", "average"]
         assert _decode_rows(dataset.variables["field"][:]) == ["SpeciesConcVV_A", "SpeciesConcVV_B"]
         np.testing.assert_array_equal(dataset.variables["id_index"][:], np.array([1, 1, 2]))
         np.testing.assert_array_equal(dataset.variables["field_index"][:], np.array([1, 2, 1]))
         np.testing.assert_allclose(dataset.variables["sample"][:], np.array([1.0, 10.0, 2.0], dtype=np.float32))
+
+
+def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(obsoperator_module, "SCIENCE_STAGE_ENTRIES", 2)
+    output = tmp_path / "staged.nc4"
+    writer = obsoperator_module._ObsOperatorNetCDFWriter(output)
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {
+            "entries": [
+                _entry_raw(entry_id="one", fields=["SpeciesConcVV_A", "SpeciesConcVV_B"]),
+                _entry_raw(entry_id="two", fields="SpeciesConcVV_B"),
+                _entry_raw(entry_id="three", fields=["SpeciesConcVV_C", "SpeciesConcVV_A"]),
+            ]
+        },
+    )
+    state = obsoperator_module._load_obsoperator_array_state(
+        path,
+        tracer_names=("A", "B", "C"),
+        grid=_grid(),
+        simulation_start=START,
+        transport_dt_s=600.0,
+    )
+    state.field_accumulator[:] = [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    writer.write_array_entries(((state, np.array([0])),))
+    assert not output.exists()
+    writer.write_array_entries(((state, np.array([1])),))
+    assert output.exists()
+    writer.write_array_entries(((state, np.array([2])),))
+    writer.close()
+
+    with netCDF4.Dataset(output) as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["one", "two", "three"]
+        assert _decode_rows(dataset.variables["field"][:]) == [
+            "SpeciesConcVV_A",
+            "SpeciesConcVV_B",
+            "SpeciesConcVV_C",
+        ]
+        np.testing.assert_array_equal(dataset.variables["id_index"][:], [1, 1, 2, 3, 3])
+        np.testing.assert_array_equal(dataset.variables["field_index"][:], [1, 2, 2, 3, 1])
+        np.testing.assert_array_equal(dataset.variables["sample"][:], [1.0, 2.0, 3.0, 4.0, 5.0])
 
 
 def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
@@ -340,6 +548,7 @@ def test_restart_continues_accumulator_without_partial_output_or_final_division(
     first = _manager(tmp_path)
     first.sample(step_start=START, time_index=0, snapshot=_snapshot(scale=1.0))
     first.close(boundary_time=START + timedelta(minutes=10))
+    (tmp_path / "obs-20140901.yml").unlink()
     assert not list(tmp_path.glob("out-*.nc4"))
 
     first_restart = tmp_path / "restart-20140901_001000.nc4"
@@ -365,7 +574,7 @@ def test_restart_continues_accumulator_without_partial_output_or_final_division(
     expected_float64 = np.zeros(2, dtype=np.float64)
     for scale, weight in zip((1.0, 2.0, 3.0), temporal_weights, strict=True):
         expected_float64 += weight * np.array([scale, 10.0 * scale], dtype=np.float64)
-    np.testing.assert_array_equal(third._active_entries[0].field_values, expected_float64)
+    np.testing.assert_array_equal(_manager_accumulators(third)["continued"], expected_float64)
     third.close(boundary_time=START + timedelta(minutes=30))
 
     with netCDF4.Dataset(tmp_path / "out-20140901_0020.nc4") as dataset:
@@ -376,6 +585,18 @@ def test_restart_continues_accumulator_without_partial_output_or_final_division(
         )
     with netCDF4.Dataset(tmp_path / "restart-20140901_003000.nc4") as dataset:
         assert len(dataset.dimensions["entries"]) == 0
+
+
+def test_per_entry_operator_classes_and_compatibility_functions_are_removed():
+    for name in (
+        "ObsOperatorEntry",
+        "TimeOperator",
+        "HorizontalOperator",
+        "VerticalOperator",
+        "load_obsoperator_entries",
+        "sample_obsoperator_entry",
+    ):
+        assert not hasattr(obsoperator_module, name)
 
 
 def test_restart_schema_preserves_exact_operator_before_first_sample(tmp_path: Path):
@@ -407,13 +628,13 @@ def test_restart_schema_preserves_exact_operator_before_first_sample(tmp_path: P
     path = tmp_path / "restart-20140901_001000.nc4"
     with netCDF4.Dataset(path) as dataset:
         assert dataset.format == "Wombat ObsOperator restart"
-        assert dataset.format_version == 1
+        assert dataset.format_version == 2
         assert dataset.restart_time_us == _time_us(START + timedelta(minutes=10))
         assert dataset.transport_timestep_seconds == 600.0
         assert len(dataset.grid_signature) == 64
         assert set(dataset.dimensions) == {
             "entries", "entry_fields", "remaining_times", "vertical_values", "id_chars", "field_chars",
-            "hash_chars", "horizontal_bound", "vertical_bound",
+            "horizontal_bound", "vertical_bound",
         }
         assert dataset.variables["field_accumulator"].dtype == np.dtype("float64")
         assert dataset.variables["remaining_time_us"].dtype == np.dtype("int64")
@@ -449,11 +670,12 @@ def test_restart_round_trip_preserves_vertical_operator_modes(tmp_path: Path, ve
     entry = _entry_raw(time={"type": "point", "unit": "time_index", "time": 1})
     entry["vertical_operator"] = vertical
     _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
-    expected = sample_obsoperator_entry(_load(tmp_path / "obs-20140901.yml")[0], _snapshot(), _grid())
+    expected = _sample_state(_load(tmp_path / "obs-20140901.yml"), _snapshot(), _grid())[0, :1]
 
     first = _manager(tmp_path)
     first.sample(step_start=START, time_index=0, snapshot=_snapshot())
     first.close(boundary_time=START + timedelta(minutes=10))
+    (tmp_path / "obs-20140901.yml").unlink()
     second = _manager(tmp_path, start=START + timedelta(minutes=10))
     second.sample(step_start=START + timedelta(minutes=10), time_index=0, snapshot=_snapshot())
     second.close(boundary_time=START + timedelta(minutes=20))
@@ -475,15 +697,16 @@ def test_restart_round_trip_preserves_horizontal_weighting_modes(tmp_path: Path,
         "weights": weighting,
     }
     _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
-    expected = sample_obsoperator_entry(
-        _load(tmp_path / "obs-20140901.yml")[0],
+    expected = _sample_state(
+        _load(tmp_path / "obs-20140901.yml"),
         _snapshot(horizontal_gradient=True),
         _grid(),
-    )
+    )[0, :1]
 
     first = _manager(tmp_path)
     first.sample(step_start=START, time_index=0, snapshot=_snapshot())
     first.close(boundary_time=START + timedelta(minutes=10))
+    (tmp_path / "obs-20140901.yml").unlink()
     second = _manager(tmp_path, start=START + timedelta(minutes=10))
     second.sample(
         step_start=START + timedelta(minutes=10),
@@ -514,20 +737,17 @@ def test_restart_resumes_cross_midnight_entry_in_completion_day_output(tmp_path:
         np.testing.assert_allclose(dataset.variables["sample"][:], np.array([2.0], dtype=np.float32))
 
 
-def test_restart_rejects_conflicting_same_day_daily_definition(tmp_path: Path):
+def test_restart_rejects_duplicate_id_from_daily_input(tmp_path: Path):
     entry = _entry_raw(
         entry_id="continued",
         time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
     )
-    path = _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
     first = _manager(tmp_path)
     first.sample(step_start=START, time_index=0, snapshot=_snapshot())
     first.close(boundary_time=START + timedelta(minutes=10))
-    entry["vertical_operator"]["value"] = 2
-    _write_yaml(path, {"entries": [entry]})
-
     second = _manager(tmp_path, start=START + timedelta(minutes=10))
-    with pytest.raises(ValueError, match="conflicts with its restart state"):
+    with pytest.raises(ValueError, match="duplicate active ObsOperator id 'continued'"):
         second.sample(step_start=START + timedelta(minutes=10), time_index=0, snapshot=_snapshot())
 
 
@@ -576,7 +796,7 @@ def test_restart_maps_fields_by_name_across_tracer_reordering_and_additions(tmp_
         tracer_names=("B", "EXTRA", "A"),
         restart_file="restart-20140901_001000.nc4",
     )
-    np.testing.assert_array_equal(restored._active_entries[0].field_indices, np.array([2, 0]))
+    np.testing.assert_array_equal(_entry_field_indices(restored._states[0], 0), np.array([2, 0]))
 
 
 def test_restart_missing_policy_and_corrupt_offsets(tmp_path: Path):
@@ -647,15 +867,19 @@ def test_local_daily_input_contains_restartable_cross_day_entries_if_available(t
     ]
     assert cross_day
     subset = _write_yaml(tmp_path / "cross-day.yml", {"entries": cross_day[:10]})
-    entries = load_obsoperator_entries(
+    state = obsoperator_module._load_obsoperator_array_state(
         subset,
         tracer_names=("CO2",),
         grid=_global_grid(),
         simulation_start=START,
         transport_dt_s=600.0,
     )
-    assert entries
-    assert all(entry.time.times_us[-1] >= _time_us(START + timedelta(days=1)) for entry in entries)
+    assert state.entry_count
+    assert all(
+        state.remaining_time_us[_entry_time_slice(state, entry_index)][-1]
+        >= _time_us(START + timedelta(days=1))
+        for entry_index in range(state.entry_count)
+    )
 
 
 def _manager(
@@ -667,6 +891,8 @@ def _manager(
     grid: TransportGrid | None = None,
     restart_file: str = "restart-YYYYMMDD_hhmmss.nc4",
     restart_missing: str = "ignore",
+    input_mode: str = "sync",
+    writer_mode: str = "sync",
 ) -> ObsOperatorManager:
     return ObsOperatorManager(
         root=tmp_path,
@@ -676,6 +902,8 @@ def _manager(
             output_file="out-YYYYMMDD_hhmm.nc4",
             restart_file=restart_file,
             restart_missing=restart_missing,
+            input_mode=input_mode,
+            writer_mode=writer_mode,
         ),
         start=start,
         transport_dt_s=dt_s,
@@ -685,13 +913,78 @@ def _manager(
 
 
 def _load(path: Path):
-    return load_obsoperator_entries(
+    return obsoperator_module._load_obsoperator_array_state(
         path,
         tracer_names=("A", "B"),
         grid=_grid(),
         simulation_start=START,
         transport_dt_s=600.0,
     )
+
+
+def _entry_field_slice(state, entry_index: int) -> slice:
+    start = int(state.prepared.entry_field_start[entry_index])
+    return slice(start, start + int(state.prepared.entry_field_count[entry_index]))
+
+
+def _entry_field_indices(state, entry_index: int) -> np.ndarray:
+    return state.prepared.field_indices[_entry_field_slice(state, entry_index)]
+
+
+def _entry_time_slice(state, entry_index: int) -> slice:
+    start = int(state.time_start[entry_index])
+    return slice(start, start + int(state.time_count[entry_index]))
+
+
+def _entry_time_indices(state, entry_index: int) -> np.ndarray:
+    times = state.remaining_time_us[_entry_time_slice(state, entry_index)]
+    return (times - _time_us(START)) // (600 * 1_000_000)
+
+
+def _entry_time_weights(state, entry_index: int) -> np.ndarray:
+    return state.remaining_time_weight[_entry_time_slice(state, entry_index)]
+
+
+def _manager_accumulators(manager: ObsOperatorManager) -> dict[str, np.ndarray]:
+    return {
+        state.ids[entry_index]: state.field_accumulator[_entry_field_slice(state, entry_index)].copy()
+        for state in manager._states
+        for entry_index in range(state.entry_count)
+    }
+
+
+def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.ndarray:
+    entries = np.arange(state.entry_count, dtype=np.int64)
+    samples = np.empty((state.entry_count, state.prepared.max_field_count), dtype=np.float64)
+    prepared = state.prepared
+    obsoperator_module._sample_prepared_entries_kernel(
+        np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
+        np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
+        np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
+        np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),
+        grid.hyai_hpa,
+        grid.hybi,
+        entries,
+        prepared.entry_field_start,
+        prepared.entry_field_count,
+        prepared.entry_horizontal_start,
+        prepared.entry_horizontal_count,
+        prepared.entry_vertical_type,
+        prepared.entry_vertical_unit,
+        prepared.entry_vertical_weighting,
+        prepared.entry_vertical_lower,
+        prepared.entry_vertical_upper,
+        prepared.entry_exact_start,
+        prepared.entry_exact_count,
+        prepared.field_indices,
+        prepared.horizontal_lat,
+        prepared.horizontal_lon,
+        prepared.horizontal_weight,
+        prepared.exact_value,
+        prepared.exact_weight,
+        samples,
+    )
+    return samples
 
 
 def _grid() -> TransportGrid:

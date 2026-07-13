@@ -100,8 +100,8 @@ or truthy values enable it when available, and `0`, `false`, `no`, `off`, or
 `WOMBAT_CONVECTION_NUMBA` override the global flag for individual operators.
 
 The project can also be installed with standard Python packaging tools. Core
-runtime dependencies are `numpy`, `netCDF4`, and `PyYAML`; the `dev` extra adds
-`pytest`.
+runtime dependencies are `numpy`, `netCDF4`, `PyYAML`, and `py-yaml12`; the
+`dev` extra adds `pytest`.
 
 Example run configs:
 
@@ -124,12 +124,32 @@ outputs:
     output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
     restart_file: ./Restarts/Wombat.ObsOperator.Restart.YYYYMMDD_hhmmss.nc4
     restart_missing: warn
+    input_mode: threaded
+    writer: threaded
 ```
 
 Relative paths are resolved from the run YAML directory. `YYYY`, `MM`, `DD`,
 `hh`, `mm`, and `ss` are expanded from the current model time. Input files may
 be ordinary YAML or gzip-compressed YAML ending in `.gz`; a missing expanded
 daily input is logged and skipped.
+
+`input_mode` and `writer` may each be `sync` (the default) or `threaded`.
+Threaded input parses the current input in the background during startup and
+prefetches the next day's expanded input while transport continues. Threaded
+output keeps one completed science-output batch in flight, with errors reported
+at the next write or clean shutdown. Restart snapshots are always made durable
+before shutdown returns. The threaded modes do not change sampling order or
+numeric results.
+
+ObsOperator numerical sampling uses the prepared serial Numba kernel when
+Numba is available and `WOMBAT_NUMBA` is enabled. Set
+`WOMBAT_OBSOPERATOR_NUMBA=0` to run the same prepared-array kernel in Python as
+the reference implementation, or set it to `1` to override a disabled global
+mode for focused comparisons.
+The normal path validates daily inputs and restarts directly into flat arrays
+for fields, selections, accumulators, and the time-sorted schedule. There are
+no per-entry time, horizontal, vertical, completion, or restart objects in
+either execution mode.
 
 `restart_file` is required when ObsOperator is active. At startup it is
 expanded using the simulation start time and, when present, restores unfinished
@@ -139,19 +159,24 @@ nothing remains. `restart_missing` may be `warn` (the default), `error`, or
 `ignore`; `error` is useful for continuation runs where losing the restart must
 be fatal.
 
-Each input contains an `entries` sequence. Entries use `fields` with explicit
+ObsOperator input is parsed as YAML 1.2. Each input contains an `entries`
+sequence. Entries use `fields` with explicit
 `SpeciesConcVV_<tracer>` names or the `SpeciesConcVV_?ALL?` and
 `SpeciesConcVV_?ADV?` tokens. The older `species` key is not accepted. Time,
 horizontal, and vertical operators follow the current GEOS-Chem ObsOperator
 format. Pressure is in hPa, altitude is in metres, and `grid_index` and
 `pressure_level` values are one-based. Pressure levels are counted bottom-up.
+Entry IDs are the sole operator identity and must be unique among all active
+entries. A daily input that duplicates an unfinished restart ID is rejected.
 
 Time indices are zero-based and retain GEOS-Chem's end-of-timestep sampling
 semantics: time index `0` samples the concentration after the first transport
 step. Wombat concentrations are already dry volume mixing ratios, so no
 additional molecular-weight conversion is applied. Output uses the current
 compressed ObsOperator NetCDF layout with `id`, `field`, `id_index`,
-`field_index`, and `sample` variables.
+`field_index`, and `sample` variables. Completed entries are staged into bounded
+batches before writing; the fixed v1 storage layout uses chunks of 256 IDs, 64
+field names, and 16,384 samples or lookup indices.
 
 Science output contains completed operators only. An operator spanning a run
 boundary keeps its float64 accumulator, expanded fields, resolved horizontal

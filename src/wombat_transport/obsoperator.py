@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 import gzip
 import hashlib
 import logging
@@ -14,12 +15,19 @@ from typing import Any, TextIO
 
 import netCDF4
 import numpy as np
-import yaml
+from yaml12 import parse_yaml
 
+from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2, H2OMW_G_PER_MOL
 from wombat_transport.grid import TransportGrid
-from wombat_transport.met_diagnostics import airqnt_diagnostics_from_forcing
+from wombat_transport.met_diagnostics import RD_J_PER_KG_K
 from wombat_transport.output import OutputSnapshot
 from wombat_transport.run_config import RunConfig, simulation_start
+from wombat_transport.transport.numba_control import numba_enabled
+
+try:  # Optional acceleration path; the same array kernel runs in Python as the reference fallback.
+    from numba import njit
+except ImportError:  # pragma: no cover - exercised in environments without numba.
+    njit = None
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +37,28 @@ FIELD_PREFIX = "SpeciesConcVV_"
 FIELD_ALL = "SpeciesConcVV_?ALL?"
 FIELD_ADVECTED = "SpeciesConcVV_?ADV?"
 RESTART_FORMAT = "Wombat ObsOperator restart"
-RESTART_FORMAT_VERSION = 1
+RESTART_FORMAT_VERSION = 2
 MICROSECONDS_PER_SECOND = 1_000_000
+OBSOPERATOR_NUMBA_ENV = "WOMBAT_OBSOPERATOR_NUMBA"
+SCIENCE_ENTRY_CHUNK = 256
+SCIENCE_FIELD_CHUNK = 64
+SCIENCE_SAMPLE_CHUNK = 16_384
+SCIENCE_STAGE_ENTRIES = SCIENCE_ENTRY_CHUNK
+SCIENCE_STAGE_SAMPLES = SCIENCE_SAMPLE_CHUNK
 
 HORIZONTAL_WEIGHTING_CODES = {"area": 0, "normalized_area": 1, "normalized": 2, "equal": 3}
 VERTICAL_TYPE_CODES = {"range": 0, "exact": 1}
 VERTICAL_UNIT_CODES = {"pressure": 0, "altitude": 1, "pressure_level": 2}
 VERTICAL_WEIGHTING_CODES = {"normalized_pressure": 0, "pressure": 1, "normalized": 2, "equal": 3}
+_VERTICAL_EXACT = 1
+_VERTICAL_PRESSURE = 0
+_VERTICAL_ALTITUDE = 1
+_VERTICAL_PRESSURE_LEVEL = 2
+_VERTICAL_NORMALIZED_PRESSURE = 0
+_VERTICAL_PRESSURE_WEIGHT = 1
+_VERTICAL_NORMALIZED = 2
 RESTART_VARIABLE_SPECS = {
     "id": ("S1", ("entries", "id_chars")),
-    "definition_hash": ("S1", ("entries", "hash_chars")),
     "field_start": ("i8", ("entries",)),
     "field_count": ("i4", ("entries",)),
     "time_start": ("i8", ("entries",)),
@@ -60,28 +80,6 @@ RESTART_VARIABLE_SPECS = {
 }
 
 
-class _ObsOperatorYamlLoader(yaml.SafeLoader):
-    yaml_implicit_resolvers = {
-        key: list(value) for key, value in yaml.SafeLoader.yaml_implicit_resolvers.items()
-    }
-
-
-def _construct_decimal_int(loader: yaml.SafeLoader, node: yaml.Node) -> int:
-    return int(loader.construct_scalar(node).replace("_", ""), 10)
-
-
-for _resolver_key, _resolvers in _ObsOperatorYamlLoader.yaml_implicit_resolvers.items():
-    _ObsOperatorYamlLoader.yaml_implicit_resolvers[_resolver_key] = [
-        resolver for resolver in _resolvers if resolver[0] != "tag:yaml.org,2002:int"
-    ]
-_ObsOperatorYamlLoader.add_implicit_resolver(
-    "tag:yaml.org,2002:int",
-    re.compile(r"^[-+]?[0-9][0-9_]*$"),
-    list("-+0123456789"),
-)
-_ObsOperatorYamlLoader.add_constructor("tag:yaml.org,2002:int", _construct_decimal_int)
-
-
 @dataclass(frozen=True)
 class ObsOperatorConfig:
     activate: bool = False
@@ -90,46 +88,54 @@ class ObsOperatorConfig:
     output_file: str | None = None
     restart_file: str | None = None
     restart_missing: str = "warn"
+    input_mode: str = "sync"
+    writer_mode: str = "sync"
 
 
 @dataclass(frozen=True)
-class TimeOperator:
-    indices: np.ndarray
-    weights: np.ndarray
-    times_us: np.ndarray
-
-
-@dataclass(frozen=True)
-class HorizontalOperator:
-    indices: np.ndarray
-    weights: np.ndarray
-    weighting: str
-
-
-@dataclass(frozen=True)
-class VerticalOperator:
-    operator_type: str
-    unit: str
-    weights: str | np.ndarray
-    start: float | int | None = None
-    end: float | int | None = None
-    values: np.ndarray | None = None
+class _PreparedObsOperators:
+    entry_field_start: np.ndarray
+    entry_field_count: np.ndarray
+    entry_horizontal_start: np.ndarray
+    entry_horizontal_count: np.ndarray
+    entry_vertical_type: np.ndarray
+    entry_vertical_unit: np.ndarray
+    entry_vertical_weighting: np.ndarray
+    entry_vertical_lower: np.ndarray
+    entry_vertical_upper: np.ndarray
+    entry_exact_start: np.ndarray
+    entry_exact_count: np.ndarray
+    field_indices: np.ndarray
+    horizontal_lat: np.ndarray
+    horizontal_lon: np.ndarray
+    horizontal_weight: np.ndarray
+    exact_value: np.ndarray
+    exact_weight: np.ndarray
+    max_field_count: int
 
 
 @dataclass
-class ObsOperatorEntry:
-    id: str
-    definition_hash: str
-    field_names: tuple[str, ...]
-    field_indices: np.ndarray
-    time: TimeOperator
-    horizontal: HorizontalOperator
-    vertical: VerticalOperator
-    field_values: np.ndarray = field(init=False)
-    active: bool = True
+class _ObsOperatorArrayState:
+    ids: tuple[str, ...]
+    field_names: tuple[tuple[str, ...], ...]
+    prepared: _PreparedObsOperators
+    field_accumulator: np.ndarray
+    horizontal_weighting: np.ndarray
+    time_start: np.ndarray
+    time_count: np.ndarray
+    time_consumed: np.ndarray
+    remaining_time_us: np.ndarray
+    remaining_time_weight: np.ndarray
+    active: np.ndarray
+    schedule_times_us: np.ndarray
+    schedule_start: np.ndarray
+    schedule_count: np.ndarray
+    schedule_entry: np.ndarray
+    schedule_weight: np.ndarray
 
-    def __post_init__(self) -> None:
-        self.field_values = np.zeros(len(self.field_names), dtype=np.float64)
+    @property
+    def entry_count(self) -> int:
+        return len(self.ids)
 
 
 class ObsOperatorManager:
@@ -159,13 +165,20 @@ class ObsOperatorManager:
         self._grid = grid
         self._previous_input_path: Path | None = None
         self._current_output_path: Path | None = None
-        self._writer: _ObsOperatorNetCDFWriter | None = None
-        self._active_entries: list[ObsOperatorEntry] = []
-        self._schedule: dict[int, list[tuple[ObsOperatorEntry, float]]] = {}
+        self._input_executor: ThreadPoolExecutor | None = None
+        self._input_future: Future[_ObsOperatorArrayState | None] | None = None
+        self._input_future_path: Path | None = None
+        self._states: list[_ObsOperatorArrayState] = []
+        self._schedule: dict[int, list[tuple[_ObsOperatorArrayState, int, int]]] = {}
         self._entry_ids: set[str] = set()
-        self._restart_entry_ids: set[str] = set()
+        self._sample_workspace = np.empty((0, 0), dtype=np.float64)
+        self._numba_sampling = numba_enabled(OBSOPERATOR_NUMBA_ENV, available=njit is not None)
         self._closed = False
         self._load_restart()
+        self._output_sink: _ObsOperatorSink = _obsoperator_sink(config.writer_mode)
+        if config.input_mode == "threaded":
+            self._input_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wombat-obs-input")
+            self._prefetch_input(start)
 
     @classmethod
     def from_run_config(
@@ -192,35 +205,158 @@ class ObsOperatorManager:
         self._ensure_open()
         self._initialize_for_date(step_start)
         step_time_us = _datetime_to_microseconds(step_start)
-        for entry, time_weight in self._schedule.pop(step_time_us, ()):
-            if not entry.active:
+        scheduled_groups = self._schedule.pop(step_time_us, ())
+        if not scheduled_groups:
+            return
+        completed: list[tuple[_ObsOperatorArrayState, np.ndarray]] = []
+        for state, schedule_start, schedule_end in scheduled_groups:
+            scheduled_entries = state.schedule_entry[schedule_start:schedule_end]
+            scheduled_weights = state.schedule_weight[schedule_start:schedule_end]
+            active_mask = state.active[scheduled_entries]
+            if not np.all(active_mask):
+                scheduled_entries = scheduled_entries[active_mask]
+                scheduled_weights = scheduled_weights[active_mask]
+            if scheduled_entries.size == 0:
                 continue
-            sampled = sample_obsoperator_entry(entry, snapshot, self._grid)
-            entry.field_values += time_weight * sampled
-            _consume_entry_time(entry, step_time_us)
+            if self._numba_sampling:
+                samples = self._sample_prepared(state, scheduled_entries, snapshot)
+            else:
+                samples = self._sample_reference(state, scheduled_entries, snapshot)
+            _accumulate_prepared_samples_numba(
+                scheduled_entries,
+                scheduled_weights,
+                state.prepared.entry_field_start,
+                state.prepared.entry_field_count,
+                samples,
+                state.field_accumulator,
+            )
+            state.time_consumed[scheduled_entries] += 1
             if self._config.verbose:
-                logger.info("obsoperator_sample id=%s time_index=%d", entry.id, time_index)
-            if entry.time.times_us.size == 0:
-                self._finalize_entry(entry)
+                for entry_index in scheduled_entries:
+                    logger.info("obsoperator_sample id=%s time_index=%d", state.ids[int(entry_index)], time_index)
+            finished = scheduled_entries[
+                state.time_consumed[scheduled_entries] == state.time_count[scheduled_entries]
+            ]
+            finished = finished[state.active[finished]]
+            if finished.size:
+                state.active[finished] = False
+                for entry_index in finished:
+                    self._entry_ids.discard(state.ids[int(entry_index)])
+                completed.append((state, finished.copy()))
+        if completed:
+            assert self._current_output_path is not None
+            self._output_sink.write_array_entries(self._current_output_path, tuple(completed))
+
+    def _sample_prepared(
+        self,
+        state: _ObsOperatorArrayState,
+        scheduled_indices: np.ndarray,
+        snapshot: OutputSnapshot,
+    ) -> np.ndarray:
+        assert _sample_prepared_entries_numba is not None
+        prepared = state.prepared
+        required_shape = (scheduled_indices.size, prepared.max_field_count)
+        if (
+            self._sample_workspace.shape[0] < required_shape[0]
+            or self._sample_workspace.shape[1] < required_shape[1]
+        ):
+            self._sample_workspace = np.empty(required_shape, dtype=np.float64)
+        samples = self._sample_workspace[: required_shape[0], : required_shape[1]]
+        _sample_prepared_entries_numba(
+            np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
+            np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
+            np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
+            np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),
+            self._grid.hyai_hpa,
+            self._grid.hybi,
+            scheduled_indices,
+            prepared.entry_field_start,
+            prepared.entry_field_count,
+            prepared.entry_horizontal_start,
+            prepared.entry_horizontal_count,
+            prepared.entry_vertical_type,
+            prepared.entry_vertical_unit,
+            prepared.entry_vertical_weighting,
+            prepared.entry_vertical_lower,
+            prepared.entry_vertical_upper,
+            prepared.entry_exact_start,
+            prepared.entry_exact_count,
+            prepared.field_indices,
+            prepared.horizontal_lat,
+            prepared.horizontal_lon,
+            prepared.horizontal_weight,
+            prepared.exact_value,
+            prepared.exact_weight,
+            samples,
+        )
+        return samples
+
+    def _sample_reference(
+        self,
+        state: _ObsOperatorArrayState,
+        scheduled_indices: np.ndarray,
+        snapshot: OutputSnapshot,
+    ) -> np.ndarray:
+        required_shape = (scheduled_indices.size, state.prepared.max_field_count)
+        if (
+            self._sample_workspace.shape[0] < required_shape[0]
+            or self._sample_workspace.shape[1] < required_shape[1]
+        ):
+            self._sample_workspace = np.empty(required_shape, dtype=np.float64)
+        samples = self._sample_workspace[: required_shape[0], : required_shape[1]]
+        prepared = state.prepared
+        _sample_prepared_entries_kernel(
+            np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
+            np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
+            np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
+            np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),
+            self._grid.hyai_hpa,
+            self._grid.hybi,
+            scheduled_indices,
+            prepared.entry_field_start,
+            prepared.entry_field_count,
+            prepared.entry_horizontal_start,
+            prepared.entry_horizontal_count,
+            prepared.entry_vertical_type,
+            prepared.entry_vertical_unit,
+            prepared.entry_vertical_weighting,
+            prepared.entry_vertical_lower,
+            prepared.entry_vertical_upper,
+            prepared.entry_exact_start,
+            prepared.entry_exact_count,
+            prepared.field_indices,
+            prepared.horizontal_lat,
+            prepared.horizontal_lon,
+            prepared.horizontal_weight,
+            prepared.exact_value,
+            prepared.exact_weight,
+            samples,
+        )
+        return samples
 
     def close(self, *, boundary_time: datetime) -> None:
         if self._closed:
             return
-        if self._writer is not None:
-            self._writer.close()
-            self._writer = None
+        self._output_sink.close()
+        if self._input_executor is not None:
+            self._input_executor.shutdown(wait=True, cancel_futures=True)
+            self._input_executor = None
         boundary_us = _datetime_to_microseconds(boundary_time)
-        unfinished = tuple(entry for entry in self._active_entries if entry.active)
-        for entry in unfinished:
-            if entry.time.times_us.size == 0 or np.any(entry.time.times_us < boundary_us):
-                raise ValueError(
-                    f"ObsOperator entry {entry.id!r} has an invalid remaining schedule at restart boundary "
-                    f"{boundary_time.isoformat()}"
-                )
+        for state in self._states:
+            for entry_index_value in np.flatnonzero(state.active):
+                entry_index = int(entry_index_value)
+                time_start = int(state.time_start[entry_index] + state.time_consumed[entry_index])
+                time_end = int(state.time_start[entry_index] + state.time_count[entry_index])
+                remaining_times = state.remaining_time_us[time_start:time_end]
+                if remaining_times.size == 0 or np.any(remaining_times < boundary_us):
+                    raise ValueError(
+                        f"ObsOperator entry {state.ids[entry_index]!r} has an invalid remaining schedule at "
+                        f"restart boundary {boundary_time.isoformat()}"
+                    )
         restart_path = _resolve_template_path(self._root, self._config.restart_file, boundary_time)
-        _write_obsoperator_restart(
+        _write_obsoperator_restart_states(
             restart_path,
-            entries=unfinished,
+            states=self._states,
             restart_time=boundary_time,
             transport_dt_s=self._transport_dt_s,
             grid=self._grid,
@@ -233,58 +369,66 @@ class ObsOperatorManager:
             return
         self._previous_input_path = input_path
 
-        if input_path.is_file():
-            entries = load_obsoperator_entries(
-                input_path,
-                tracer_names=self._tracer_names,
-                grid=self._grid,
-                simulation_start=self._start,
-                transport_dt_s=self._transport_dt_s,
-            )
+        state = self._get_input_state(input_path)
+        if state is not None:
             current_time_us = _datetime_to_microseconds(timestamp)
-            for entry in entries:
-                if entry.id in self._restart_entry_ids:
-                    existing = next(value for value in self._active_entries if value.active and value.id == entry.id)
-                    if existing.definition_hash != entry.definition_hash:
-                        raise ValueError(f"daily ObsOperator entry {entry.id!r} conflicts with its restart state")
-                    logger.debug("obsoperator_restart_daily_duplicate_skipped id=%s", entry.id)
-                    continue
-                self._register_entry(entry, earliest_time_us=current_time_us)
-            logger.info("obsoperator_input_loaded path=%s entries=%d", input_path, len(entries))
+            self._register_state(state, earliest_time_us=current_time_us)
+            logger.info("obsoperator_input_loaded path=%s entries=%d", input_path, state.entry_count)
         else:
             logger.info("obsoperator_input_missing path=%s", input_path)
+        self._prefetch_input(timestamp + timedelta(days=1))
 
         output_path = _resolve_template_path(self._root, self._config.output_file, timestamp)
         if output_path != self._current_output_path:
-            if self._writer is not None:
-                self._writer.close()
-            self._writer = None
             self._current_output_path = output_path
+            self._output_sink.rotate(output_path)
 
-    def _register_entry(self, entry: ObsOperatorEntry, *, earliest_time_us: int) -> None:
-        if entry.id in self._entry_ids:
-            raise ValueError(f"duplicate active ObsOperator id {entry.id!r}")
-        if entry.time.times_us.size == 0:
-            raise ValueError(f"ObsOperator entry {entry.id!r} has no remaining sampling times")
-        if np.any(entry.time.times_us < earliest_time_us):
+    def _load_input_state(self, input_path: Path) -> _ObsOperatorArrayState | None:
+        if not input_path.is_file():
+            return None
+        return _load_obsoperator_array_state(
+            input_path,
+            tracer_names=self._tracer_names,
+            grid=self._grid,
+            simulation_start=self._start,
+            transport_dt_s=self._transport_dt_s,
+        )
+
+    def _get_input_state(self, input_path: Path) -> _ObsOperatorArrayState | None:
+        if self._input_future is not None and self._input_future_path == input_path:
+            future = self._input_future
+            self._input_future = None
+            self._input_future_path = None
+            return future.result()
+        return self._load_input_state(input_path)
+
+    def _prefetch_input(self, timestamp: datetime) -> None:
+        if self._input_executor is None or self._input_future is not None:
+            return
+        input_path = _resolve_template_path(self._root, self._config.input_file, timestamp)
+        if input_path == self._previous_input_path:
+            return
+        self._input_future_path = input_path
+        self._input_future = self._input_executor.submit(self._load_input_state, input_path)
+
+    def _register_state(self, state: _ObsOperatorArrayState, *, earliest_time_us: int) -> None:
+        duplicates = self._entry_ids.intersection(state.ids)
+        if duplicates:
+            duplicate = next(entry_id for entry_id in state.ids if entry_id in duplicates)
+            raise ValueError(f"duplicate active ObsOperator id {duplicate!r}")
+        if state.entry_count and (
+            np.any(state.time_count <= 0) or np.any(state.remaining_time_us < earliest_time_us)
+        ):
             raise ValueError(
-                f"ObsOperator entry {entry.id!r} has sampling times before the current run position; "
+                "ObsOperator entries have no remaining times or sampling times before the current run position; "
                 "a matching ObsOperator restart is required"
             )
-        self._active_entries.append(entry)
-        self._entry_ids.add(entry.id)
-        for time_us, time_weight in zip(entry.time.times_us, entry.time.weights, strict=True):
-            self._schedule.setdefault(int(time_us), []).append((entry, float(time_weight)))
-
-    def _finalize_entry(self, entry: ObsOperatorEntry) -> None:
-        if self._current_output_path is None:
-            raise ValueError(f"cannot finalize ObsOperator entry {entry.id!r} without an output path")
-        if self._writer is None:
-            self._writer = _ObsOperatorNetCDFWriter(self._current_output_path)
-        self._writer.write_entry(entry)
-        entry.active = False
-        self._entry_ids.discard(entry.id)
-        self._restart_entry_ids.discard(entry.id)
+        self._states.append(state)
+        self._entry_ids.update(state.ids)
+        for time_index, time_value in enumerate(state.schedule_times_us):
+            start = int(state.schedule_start[time_index])
+            end = start + int(state.schedule_count[time_index])
+            self._schedule.setdefault(int(time_value), []).append((state, start, end))
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -299,7 +443,7 @@ class ObsOperatorManager:
             if self._config.restart_missing == "warn":
                 logger.warning(message)
             return
-        entries = _read_obsoperator_restart(
+        state = _read_obsoperator_restart(
             restart_path,
             restart_time=self._start,
             transport_dt_s=self._transport_dt_s,
@@ -307,10 +451,8 @@ class ObsOperatorManager:
             grid=self._grid,
         )
         start_us = _datetime_to_microseconds(self._start)
-        for entry in entries:
-            self._register_entry(entry, earliest_time_us=start_us)
-            self._restart_entry_ids.add(entry.id)
-        logger.info("obsoperator_restart_loaded path=%s entries=%d", restart_path, len(entries))
+        self._register_state(state, earliest_time_us=start_us)
+        logger.info("obsoperator_restart_loaded path=%s entries=%d", restart_path, state.entry_count)
 
 
 def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
@@ -327,6 +469,12 @@ def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
     restart_missing = str(raw.get("restart_missing", "warn"))
     if restart_missing not in {"warn", "error", "ignore"}:
         raise ValueError("outputs.obsoperator.restart_missing must be 'warn', 'error', or 'ignore'")
+    input_mode = str(raw.get("input_mode", "sync")).lower()
+    writer_mode = str(raw.get("writer", "sync")).lower()
+    if input_mode not in {"sync", "threaded"}:
+        raise ValueError("outputs.obsoperator.input_mode must be 'sync' or 'threaded'")
+    if writer_mode not in {"sync", "threaded"}:
+        raise ValueError("outputs.obsoperator.writer must be 'sync' or 'threaded'")
     if activate and input_file is None:
         raise KeyError("outputs.obsoperator.input_file is required when ObsOperator is active")
     if activate and output_file is None:
@@ -340,6 +488,8 @@ def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
         output_file=output_file,
         restart_file=restart_file,
         restart_missing=restart_missing,
+        input_mode=input_mode,
+        writer_mode=writer_mode,
     )
 
 
@@ -355,17 +505,9 @@ def expand_obsoperator_template(template: str, timestamp: datetime) -> str:
     )
 
 
-def load_obsoperator_entries(
-    path: str | Path,
-    *,
-    tracer_names: tuple[str, ...],
-    grid: TransportGrid,
-    simulation_start: datetime,
-    transport_dt_s: float,
-) -> tuple[ObsOperatorEntry, ...]:
-    input_path = Path(path)
+def _load_obsoperator_raw_entries(input_path: Path) -> list[Any]:
     with _open_yaml_text(input_path) as handle:
-        raw = yaml.load(handle, Loader=_ObsOperatorYamlLoader) or {}
+        raw = parse_yaml(handle.read()) or {}
     if not isinstance(raw, dict):
         raise TypeError(f"ObsOperator input {input_path} must contain a mapping")
     if "entries" not in raw:
@@ -375,146 +517,449 @@ def load_obsoperator_entries(
         entries_raw = []
     if not isinstance(entries_raw, list):
         raise TypeError(f"ObsOperator input {input_path} entries must be a sequence")
-    return tuple(
-        _parse_entry(
-            value,
-            entry_index=index,
-            tracer_names=tracer_names,
-            grid=grid,
-            simulation_start=simulation_start,
-            transport_dt_s=transport_dt_s,
-        )
-        for index, value in enumerate(entries_raw)
-    )
+    return entries_raw
 
 
-def sample_obsoperator_entry(
-    entry: ObsOperatorEntry,
-    snapshot: OutputSnapshot,
-    grid: TransportGrid,
-) -> np.ndarray:
-    state_bottom = np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64)
-    diagnostics = airqnt_diagnostics_from_forcing(snapshot.forcing, grid)
-    wet_edges = diagnostics.wet_pressure_edges_hpa
-    wet_delp = wet_edges[:-1] - wet_edges[1:]
-    box_height = diagnostics.box_height_m
-    result = np.zeros(len(entry.field_names), dtype=np.float64)
-
-    for horizontal_offset, (lat_index, lon_index) in enumerate(entry.horizontal.indices):
-        vertical_value = _sample_vertical(
-            entry.vertical,
-            state_bottom[:, lat_index, lon_index, :][:, entry.field_indices],
-            wet_edges[:, lat_index, lon_index],
-            wet_delp[:, lat_index, lon_index],
-            box_height[:, lat_index, lon_index],
-        )
-        result += entry.horizontal.weights[horizontal_offset] * vertical_value
-    return result
+def _freeze_operator_spec(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple((key, _freeze_operator_spec(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return tuple(_freeze_operator_spec(item) for item in value)
+    return value
 
 
-def _sample_vertical(
-    operator: VerticalOperator,
-    field_values: np.ndarray,
-    pressure_edges_hpa: np.ndarray,
-    pressure_thickness_hpa: np.ndarray,
-    box_height_m: np.ndarray,
-) -> np.ndarray:
-    if operator.operator_type == "exact":
-        if operator.values is None or not isinstance(operator.weights, np.ndarray):
-            raise ValueError("invalid exact vertical operator")
-        result = np.zeros(field_values.shape[1], dtype=np.float64)
-        for value, weight in zip(operator.values, operator.weights, strict=True):
-            level = _vertical_level(operator.unit, value, pressure_edges_hpa, box_height_m)
-            result += float(weight) * field_values[level]
-        return result
-
-    if operator.start is None or operator.end is None or not isinstance(operator.weights, str):
-        raise ValueError("invalid range vertical operator")
-    if operator.unit == "pressure":
-        level_start = _pressure_level(float(operator.end), pressure_edges_hpa)
-        level_end = _pressure_level(float(operator.start), pressure_edges_hpa)
-    else:
-        level_start = _vertical_level(operator.unit, operator.start, pressure_edges_hpa, box_height_m)
-        level_end = _vertical_level(operator.unit, operator.end, pressure_edges_hpa, box_height_m)
-    if level_start > level_end:
-        raise ValueError("vertical operator resolves to an inverted level range")
-
-    selected = field_values[level_start : level_end + 1]
-    if operator.weights in {"pressure", "normalized_pressure"}:
-        weights = pressure_thickness_hpa[level_start : level_end + 1]
-    else:
-        weights = np.ones(selected.shape[0], dtype=np.float64)
-    result = np.sum(selected * weights[:, np.newaxis], axis=0)
-    if operator.weights in {"normalized", "normalized_pressure"}:
-        result /= np.sum(weights)
-    return result
-
-
-def _vertical_level(
-    unit: str,
-    value: float | int,
-    pressure_edges_hpa: np.ndarray,
-    box_height_m: np.ndarray,
-) -> int:
-    if unit == "pressure":
-        return _pressure_level(float(value), pressure_edges_hpa)
-    if unit == "altitude":
-        cumulative = np.cumsum(box_height_m)
-        matches = np.flatnonzero(cumulative >= float(value))
-        if matches.size == 0:
-            raise ValueError(f"vertical altitude {value} m exceeds the modeled column")
-        return int(matches[0])
-    return int(value) - 1
-
-
-def _pressure_level(pressure_hpa: float, pressure_edges_hpa: np.ndarray) -> int:
-    matches = np.flatnonzero(pressure_edges_hpa[:-1] <= pressure_hpa)
-    if matches.size == 0:
-        return pressure_edges_hpa.size - 2
-    return max(int(matches[0]) - 1, 0)
-
-
-def _parse_entry(
-    raw: Any,
+def _load_obsoperator_array_state(
+    path: str | Path,
     *,
-    entry_index: int,
     tracer_names: tuple[str, ...],
     grid: TransportGrid,
     simulation_start: datetime,
     transport_dt_s: float,
-) -> ObsOperatorEntry:
-    label = f"entries[{entry_index}]"
-    mapping = _require_mapping(raw, label)
-    entry_id = str(_required(mapping, "id", label))
-    if not entry_id:
-        raise ValueError(f"{label}.id must not be empty")
-    if len(entry_id) > MAX_ID_LENGTH:
-        raise ValueError(f"{label}.id exceeds {MAX_ID_LENGTH} characters")
-    if "species" in mapping:
-        raise ValueError(f"{label}.species is obsolete; use fields")
-    field_names, field_indices = _parse_fields(_required(mapping, "fields", label), tracer_names, label)
-    return ObsOperatorEntry(
-        id=entry_id,
-        definition_hash=hashlib.sha256(yaml.safe_dump(mapping, sort_keys=True).encode("utf-8")).hexdigest(),
-        field_names=field_names,
-        field_indices=field_indices,
-        time=_parse_time_operator(
-            _required(mapping, "time_operator", label),
-            label=f"{label}.time_operator",
-            simulation_start=simulation_start,
-            transport_dt_s=transport_dt_s,
-        ),
-        horizontal=_parse_horizontal_operator(
-            _required(mapping, "horizontal_operator", label),
-            label=f"{label}.horizontal_operator",
-            grid=grid,
-        ),
-        vertical=_parse_vertical_operator(
-            _required(mapping, "vertical_operator", label),
-            label=f"{label}.vertical_operator",
-            nlev=grid.shape[0],
-        ),
+) -> _ObsOperatorArrayState:
+    entries_raw = _load_obsoperator_raw_entries(Path(path))
+    return _array_state_from_raw_entries(
+        entries_raw,
+        tracer_names=tracer_names,
+        grid=grid,
+        simulation_start=simulation_start,
+        transport_dt_s=transport_dt_s,
     )
+
+
+def _array_state_from_raw_entries(
+    entries_raw: list[Any],
+    *,
+    tracer_names: tuple[str, ...],
+    grid: TransportGrid,
+    simulation_start: datetime,
+    transport_dt_s: float,
+) -> _ObsOperatorArrayState:
+    field_cache: dict[Any, tuple[tuple[str, ...], np.ndarray]] = {}
+    time_cache: dict[Any, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    horizontal_cache: dict[Any, tuple[np.ndarray, np.ndarray, np.ndarray, int]] = {}
+    vertical_cache: dict[Any, tuple[int, int, int, float, float, np.ndarray, np.ndarray]] = {}
+    rows: list[
+        tuple[
+            str,
+            tuple[tuple[str, ...], np.ndarray],
+            tuple[np.ndarray, np.ndarray, np.ndarray],
+            tuple[np.ndarray, np.ndarray, np.ndarray, int],
+            tuple[int, int, int, float, float, np.ndarray, np.ndarray],
+        ]
+    ] = []
+    seen_ids: set[str] = set()
+    for index, raw_entry in enumerate(entries_raw):
+        label = f"entries[{index}]"
+        mapping = _require_mapping(raw_entry, label)
+        entry_id = str(_required(mapping, "id", label))
+        if not entry_id:
+            raise ValueError(f"{label}.id must not be empty")
+        if len(entry_id) > MAX_ID_LENGTH:
+            raise ValueError(f"{label}.id exceeds {MAX_ID_LENGTH} characters")
+        if entry_id in seen_ids:
+            raise ValueError(f"duplicate active ObsOperator id {entry_id!r}")
+        seen_ids.add(entry_id)
+        if "species" in mapping:
+            raise ValueError(f"{label}.species is obsolete; use fields")
+
+        field_raw = _required(mapping, "fields", label)
+        field_key = _freeze_operator_spec(field_raw)
+        fields = field_cache.get(field_key)
+        if fields is None:
+            fields = _parse_fields(field_raw, tracer_names, label)
+            field_cache[field_key] = fields
+
+        time_raw = _required(mapping, "time_operator", label)
+        time_key = _freeze_operator_spec(time_raw)
+        time = time_cache.get(time_key)
+        if time is None:
+            time = _parse_time_arrays(
+                time_raw,
+                label=f"{label}.time_operator",
+                simulation_start=simulation_start,
+                transport_dt_s=transport_dt_s,
+            )
+            time_cache[time_key] = time
+
+        horizontal_raw = _required(mapping, "horizontal_operator", label)
+        horizontal_key = _freeze_operator_spec(horizontal_raw)
+        horizontal = horizontal_cache.get(horizontal_key)
+        if horizontal is None:
+            horizontal = _parse_horizontal_arrays(
+                horizontal_raw,
+                label=f"{label}.horizontal_operator",
+                grid=grid,
+            )
+            horizontal_cache[horizontal_key] = horizontal
+
+        vertical_raw = _required(mapping, "vertical_operator", label)
+        vertical_key = _freeze_operator_spec(vertical_raw)
+        vertical = vertical_cache.get(vertical_key)
+        if vertical is None:
+            vertical = _parse_vertical_arrays(
+                vertical_raw,
+                label=f"{label}.vertical_operator",
+                nlev=grid.shape[0],
+            )
+            vertical_cache[vertical_key] = vertical
+        rows.append((entry_id, fields, time, horizontal, vertical))
+    return _array_state_from_components(rows)
+
+
+def _array_state_from_components(
+    rows: list[
+        tuple[
+            str,
+            tuple[tuple[str, ...], np.ndarray],
+            tuple[np.ndarray, np.ndarray, np.ndarray],
+            tuple[np.ndarray, np.ndarray, np.ndarray, int],
+            tuple[int, int, int, float, float, np.ndarray, np.ndarray],
+        ]
+    ],
+) -> _ObsOperatorArrayState:
+    entry_count = len(rows)
+    field_total = sum(len(row[1][0]) for row in rows)
+    time_total = sum(row[2][2].size for row in rows)
+    horizontal_total = sum(row[3][0].size for row in rows)
+    exact_total = sum(row[4][5].size for row in rows)
+
+    entry_field_start = np.empty(entry_count, dtype=np.int64)
+    entry_field_count = np.empty(entry_count, dtype=np.int32)
+    field_indices = np.empty(field_total, dtype=np.int64)
+    field_accumulator = np.zeros(field_total, dtype=np.float64)
+    time_start = np.empty(entry_count, dtype=np.int64)
+    time_count = np.empty(entry_count, dtype=np.int32)
+    remaining_time_us = np.empty(time_total, dtype=np.int64)
+    remaining_time_weight = np.empty(time_total, dtype=np.float64)
+    schedule_entry = np.empty(time_total, dtype=np.int64)
+    entry_horizontal_start = np.empty(entry_count, dtype=np.int64)
+    entry_horizontal_count = np.empty(entry_count, dtype=np.int32)
+    horizontal_lat = np.empty(horizontal_total, dtype=np.int32)
+    horizontal_lon = np.empty(horizontal_total, dtype=np.int32)
+    horizontal_weight = np.empty(horizontal_total, dtype=np.float64)
+    horizontal_weighting = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_type = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_unit = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_weighting = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_lower = np.empty(entry_count, dtype=np.float64)
+    entry_vertical_upper = np.empty(entry_count, dtype=np.float64)
+    entry_exact_start = np.empty(entry_count, dtype=np.int64)
+    entry_exact_count = np.empty(entry_count, dtype=np.int32)
+    exact_value = np.empty(exact_total, dtype=np.float64)
+    exact_weight = np.empty(exact_total, dtype=np.float64)
+
+    field_offset = 0
+    time_offset = 0
+    horizontal_offset = 0
+    exact_offset = 0
+    max_field_count = 0
+    for entry_index, (_, fields, time, horizontal, vertical) in enumerate(rows):
+        field_names, entry_field_indices = fields
+        count = len(field_names)
+        field_slice = slice(field_offset, field_offset + count)
+        entry_field_start[entry_index] = field_offset
+        entry_field_count[entry_index] = count
+        field_indices[field_slice] = entry_field_indices
+        field_offset += count
+        max_field_count = max(max_field_count, count)
+
+        _, time_weights, time_values_us = time
+        count = time_values_us.size
+        time_slice = slice(time_offset, time_offset + count)
+        time_start[entry_index] = time_offset
+        time_count[entry_index] = count
+        remaining_time_us[time_slice] = time_values_us
+        remaining_time_weight[time_slice] = time_weights
+        schedule_entry[time_slice] = entry_index
+        time_offset += count
+
+        horizontal_lats, horizontal_lons, horizontal_weights, horizontal_code = horizontal
+        count = horizontal_lats.size
+        horizontal_slice = slice(horizontal_offset, horizontal_offset + count)
+        entry_horizontal_start[entry_index] = horizontal_offset
+        entry_horizontal_count[entry_index] = count
+        horizontal_lat[horizontal_slice] = horizontal_lats
+        horizontal_lon[horizontal_slice] = horizontal_lons
+        horizontal_weight[horizontal_slice] = horizontal_weights
+        horizontal_weighting[entry_index] = horizontal_code
+        horizontal_offset += count
+
+        vertical_type, vertical_unit, vertical_weighting, vertical_lower, vertical_upper, values, weights = vertical
+        entry_vertical_type[entry_index] = vertical_type
+        entry_vertical_unit[entry_index] = vertical_unit
+        entry_exact_start[entry_index] = exact_offset
+        if vertical_type == _VERTICAL_EXACT:
+            count = values.size
+            exact_slice = slice(exact_offset, exact_offset + count)
+            entry_vertical_weighting[entry_index] = -1
+            entry_vertical_lower[entry_index] = np.nan
+            entry_vertical_upper[entry_index] = np.nan
+            entry_exact_count[entry_index] = count
+            exact_value[exact_slice] = values
+            exact_weight[exact_slice] = weights
+            exact_offset += count
+        else:
+            entry_vertical_weighting[entry_index] = vertical_weighting
+            entry_vertical_lower[entry_index] = vertical_lower
+            entry_vertical_upper[entry_index] = vertical_upper
+            entry_exact_count[entry_index] = 0
+
+    order = np.argsort(remaining_time_us, kind="stable")
+    sorted_times = remaining_time_us[order]
+    schedule_entry = schedule_entry[order]
+    schedule_weight = remaining_time_weight[order]
+    schedule_times_us, schedule_start, schedule_count = np.unique(
+        sorted_times,
+        return_index=True,
+        return_counts=True,
+    )
+    prepared = _PreparedObsOperators(
+        entry_field_start=entry_field_start,
+        entry_field_count=entry_field_count,
+        entry_horizontal_start=entry_horizontal_start,
+        entry_horizontal_count=entry_horizontal_count,
+        entry_vertical_type=entry_vertical_type,
+        entry_vertical_unit=entry_vertical_unit,
+        entry_vertical_weighting=entry_vertical_weighting,
+        entry_vertical_lower=entry_vertical_lower,
+        entry_vertical_upper=entry_vertical_upper,
+        entry_exact_start=entry_exact_start,
+        entry_exact_count=entry_exact_count,
+        field_indices=field_indices,
+        horizontal_lat=horizontal_lat,
+        horizontal_lon=horizontal_lon,
+        horizontal_weight=horizontal_weight,
+        exact_value=exact_value,
+        exact_weight=exact_weight,
+        max_field_count=max_field_count,
+    )
+    return _ObsOperatorArrayState(
+        ids=tuple(row[0] for row in rows),
+        field_names=tuple(row[1][0] for row in rows),
+        prepared=prepared,
+        field_accumulator=field_accumulator,
+        horizontal_weighting=horizontal_weighting,
+        time_start=time_start,
+        time_count=time_count,
+        time_consumed=np.zeros(entry_count, dtype=np.int32),
+        remaining_time_us=remaining_time_us,
+        remaining_time_weight=remaining_time_weight,
+        active=np.ones(entry_count, dtype=bool),
+        schedule_times_us=schedule_times_us,
+        schedule_start=np.asarray(schedule_start, dtype=np.int64),
+        schedule_count=np.asarray(schedule_count, dtype=np.int32),
+        schedule_entry=schedule_entry,
+        schedule_weight=schedule_weight,
+    )
+
+
+def _sample_prepared_entries_kernel(
+    state_bottom: np.ndarray,
+    wet_surface_pressure_hpa: np.ndarray,
+    specific_humidity_kg_kg: np.ndarray,
+    temperature_k: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+    scheduled_entries: np.ndarray,
+    entry_field_start: np.ndarray,
+    entry_field_count: np.ndarray,
+    entry_horizontal_start: np.ndarray,
+    entry_horizontal_count: np.ndarray,
+    entry_vertical_type: np.ndarray,
+    entry_vertical_unit: np.ndarray,
+    entry_vertical_weighting: np.ndarray,
+    entry_vertical_lower: np.ndarray,
+    entry_vertical_upper: np.ndarray,
+    entry_exact_start: np.ndarray,
+    entry_exact_count: np.ndarray,
+    field_indices: np.ndarray,
+    horizontal_lat: np.ndarray,
+    horizontal_lon: np.ndarray,
+    horizontal_weight: np.ndarray,
+    exact_value: np.ndarray,
+    exact_weight: np.ndarray,
+    samples: np.ndarray,
+) -> None:
+    nlev = state_bottom.shape[0]
+    for schedule_index in range(scheduled_entries.size):
+        entry_index = scheduled_entries[schedule_index]
+        field_start = entry_field_start[entry_index]
+        field_count = entry_field_count[entry_index]
+        for field_offset in range(field_count):
+            samples[schedule_index, field_offset] = 0.0
+
+        horizontal_start = entry_horizontal_start[entry_index]
+        horizontal_end = horizontal_start + entry_horizontal_count[entry_index]
+        vertical_type = entry_vertical_type[entry_index]
+        vertical_unit = entry_vertical_unit[entry_index]
+        vertical_weighting = entry_vertical_weighting[entry_index]
+        lower = entry_vertical_lower[entry_index]
+        upper = entry_vertical_upper[entry_index]
+
+        for horizontal_index in range(horizontal_start, horizontal_end):
+            lat = horizontal_lat[horizontal_index]
+            lon = horizontal_lon[horizontal_index]
+            horizontal_factor = horizontal_weight[horizontal_index]
+            surface_pressure = wet_surface_pressure_hpa[lat, lon]
+
+            if vertical_type == _VERTICAL_EXACT:
+                exact_start = entry_exact_start[entry_index]
+                exact_end = exact_start + entry_exact_count[entry_index]
+                for field_offset in range(field_count):
+                    tracer = field_indices[field_start + field_offset]
+                    vertical_sum = 0.0
+                    for exact_index in range(exact_start, exact_end):
+                        value = exact_value[exact_index]
+                        if vertical_unit == _VERTICAL_PRESSURE_LEVEL:
+                            level = int(value) - 1
+                        elif vertical_unit == _VERTICAL_PRESSURE:
+                            match = -1
+                            for candidate in range(nlev):
+                                edge = hyai_hpa[candidate] + hybi[candidate] * surface_pressure
+                                if edge <= value:
+                                    match = candidate
+                                    break
+                            level = nlev - 1 if match < 0 else max(match - 1, 0)
+                        else:
+                            cumulative_height = 0.0
+                            level = -1
+                            for candidate in range(nlev):
+                                edge_lower = hyai_hpa[candidate] + hybi[candidate] * surface_pressure
+                                edge_upper = hyai_hpa[candidate + 1] + hybi[candidate + 1] * surface_pressure
+                                q = specific_humidity_kg_kg[candidate, lat, lon]
+                                avgw = AIRMW_G_PER_MOL * q / (H2OMW_G_PER_MOL * (1.0 - q))
+                                xh2o = avgw / (1.0 + avgw)
+                                virtual_temperature = temperature_k[candidate, lat, lon] / (
+                                    1.0 - xh2o * (1.0 - H2OMW_G_PER_MOL / AIRMW_G_PER_MOL)
+                                )
+                                cumulative_height += (
+                                    RD_J_PER_KG_K
+                                    / G0_M_PER_S2
+                                    * virtual_temperature
+                                    * math.log(edge_lower / edge_upper)
+                                )
+                                if cumulative_height >= value:
+                                    level = candidate
+                                    break
+                            if level < 0:
+                                raise ValueError("vertical altitude exceeds the modeled column")
+                        vertical_sum += exact_weight[exact_index] * state_bottom[level, lat, lon, tracer]
+                    samples[schedule_index, field_offset] += horizontal_factor * vertical_sum
+                continue
+
+            if vertical_unit == _VERTICAL_PRESSURE_LEVEL:
+                level_start = int(lower) - 1
+                level_end = int(upper) - 1
+            elif vertical_unit == _VERTICAL_PRESSURE:
+                start_match = -1
+                end_match = -1
+                for candidate in range(nlev):
+                    edge = hyai_hpa[candidate] + hybi[candidate] * surface_pressure
+                    if start_match < 0 and edge <= upper:
+                        start_match = candidate
+                    if end_match < 0 and edge <= lower:
+                        end_match = candidate
+                level_start = nlev - 1 if start_match < 0 else max(start_match - 1, 0)
+                level_end = nlev - 1 if end_match < 0 else max(end_match - 1, 0)
+            else:
+                cumulative_height = 0.0
+                level_start = -1
+                level_end = -1
+                for candidate in range(nlev):
+                    edge_lower = hyai_hpa[candidate] + hybi[candidate] * surface_pressure
+                    edge_upper = hyai_hpa[candidate + 1] + hybi[candidate + 1] * surface_pressure
+                    q = specific_humidity_kg_kg[candidate, lat, lon]
+                    avgw = AIRMW_G_PER_MOL * q / (H2OMW_G_PER_MOL * (1.0 - q))
+                    xh2o = avgw / (1.0 + avgw)
+                    virtual_temperature = temperature_k[candidate, lat, lon] / (
+                        1.0 - xh2o * (1.0 - H2OMW_G_PER_MOL / AIRMW_G_PER_MOL)
+                    )
+                    cumulative_height += (
+                        RD_J_PER_KG_K
+                        / G0_M_PER_S2
+                        * virtual_temperature
+                        * math.log(edge_lower / edge_upper)
+                    )
+                    if level_start < 0 and cumulative_height >= lower:
+                        level_start = candidate
+                    if level_end < 0 and cumulative_height >= upper:
+                        level_end = candidate
+                        break
+                if level_start < 0 or level_end < 0:
+                    raise ValueError("vertical altitude exceeds the modeled column")
+
+            normalization = 0.0
+            for level in range(level_start, level_end + 1):
+                if vertical_weighting in (_VERTICAL_NORMALIZED_PRESSURE, _VERTICAL_PRESSURE_WEIGHT):
+                    edge_lower = hyai_hpa[level] + hybi[level] * surface_pressure
+                    edge_upper = hyai_hpa[level + 1] + hybi[level + 1] * surface_pressure
+                    normalization += edge_lower - edge_upper
+                else:
+                    normalization += 1.0
+
+            for field_offset in range(field_count):
+                tracer = field_indices[field_start + field_offset]
+                vertical_sum = 0.0
+                for level in range(level_start, level_end + 1):
+                    if vertical_weighting in (_VERTICAL_NORMALIZED_PRESSURE, _VERTICAL_PRESSURE_WEIGHT):
+                        edge_lower = hyai_hpa[level] + hybi[level] * surface_pressure
+                        edge_upper = hyai_hpa[level + 1] + hybi[level + 1] * surface_pressure
+                        weight = edge_lower - edge_upper
+                    else:
+                        weight = 1.0
+                    vertical_sum += weight * state_bottom[level, lat, lon, tracer]
+                if vertical_weighting in (_VERTICAL_NORMALIZED_PRESSURE, _VERTICAL_NORMALIZED):
+                    vertical_sum /= normalization
+                samples[schedule_index, field_offset] += horizontal_factor * vertical_sum
+
+
+if njit is not None:
+    _sample_prepared_entries_numba = njit(cache=True, nogil=True)(_sample_prepared_entries_kernel)
+else:  # pragma: no cover - exercised in environments without numba.
+    _sample_prepared_entries_numba = None
+
+
+def _accumulate_prepared_samples_kernel(
+    scheduled_entries: np.ndarray,
+    time_weights: np.ndarray,
+    entry_field_start: np.ndarray,
+    entry_field_count: np.ndarray,
+    samples: np.ndarray,
+    field_accumulator: np.ndarray,
+) -> None:
+    for schedule_index in range(scheduled_entries.size):
+        entry_index = scheduled_entries[schedule_index]
+        field_start = entry_field_start[entry_index]
+        field_count = entry_field_count[entry_index]
+        time_weight = time_weights[schedule_index]
+        for field_offset in range(field_count):
+            field_accumulator[field_start + field_offset] += time_weight * samples[schedule_index, field_offset]
+
+
+if njit is not None:
+    _accumulate_prepared_samples_numba = njit(cache=True, nogil=True)(_accumulate_prepared_samples_kernel)
+else:  # pragma: no cover - exercised in environments without numba.
+    _accumulate_prepared_samples_numba = _accumulate_prepared_samples_kernel
 
 
 def _parse_fields(raw: Any, tracer_names: tuple[str, ...], label: str) -> tuple[tuple[str, ...], np.ndarray]:
@@ -546,13 +991,13 @@ def _parse_fields(raw: Any, tracer_names: tuple[str, ...], label: str) -> tuple[
     return names, np.asarray(selected, dtype=np.int64)
 
 
-def _parse_time_operator(
+def _parse_time_arrays(
     raw: Any,
     *,
     label: str,
     simulation_start: datetime,
     transport_dt_s: float,
-) -> TimeOperator:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     mapping = _require_mapping(raw, label)
     operator_type = str(_required(mapping, "type", label))
     if operator_type not in {"point", "range"}:
@@ -583,7 +1028,7 @@ def _parse_time_operator(
     start_us = _datetime_to_microseconds(simulation_start)
     dt_us = _seconds_to_microseconds(transport_dt_s, "transport timestep")
     times_us = start_us + indices * dt_us
-    return TimeOperator(indices=indices, weights=weights, times_us=times_us)
+    return indices, weights, times_us
 
 
 def _parse_time_value(
@@ -606,7 +1051,12 @@ def _parse_time_value(
     return math.floor((timestamp - simulation_start).total_seconds() / float(transport_dt_s))
 
 
-def _parse_horizontal_operator(raw: Any, *, label: str, grid: TransportGrid) -> HorizontalOperator:
+def _parse_horizontal_arrays(
+    raw: Any,
+    *,
+    label: str,
+    grid: TransportGrid,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     mapping = _require_mapping(raw, label)
     operator_type = str(_required(mapping, "type", label))
     if operator_type not in {"point", "box"}:
@@ -629,17 +1079,17 @@ def _parse_horizontal_operator(raw: Any, *, label: str, grid: TransportGrid) -> 
     if lon_start > lon_end or lat_start > lat_end:
         raise ValueError(f"{label} box start must not exceed end")
 
-    indices = np.asarray(
-        [(lat_index, lon_index) for lon_index in range(lon_start, lon_end + 1) for lat_index in range(lat_start, lat_end + 1)],
-        dtype=np.int64,
-    )
+    lon_count = lon_end - lon_start + 1
+    lat_count = lat_end - lat_start + 1
+    lon = np.repeat(np.arange(lon_start, lon_end + 1, dtype=np.int32), lat_count)
+    lat = np.tile(np.arange(lat_start, lat_end + 1, dtype=np.int32), lon_count)
     if weighting in {"area", "normalized_area"}:
-        weights = grid.area_m2[indices[:, 0], indices[:, 1]].astype(np.float64, copy=True)
+        weights = grid.area_m2[lat, lon].astype(np.float64, copy=True)
     else:
-        weights = np.ones(indices.shape[0], dtype=np.float64)
+        weights = np.ones(lat.size, dtype=np.float64)
     if weighting in {"normalized_area", "normalized"}:
         weights /= np.sum(weights)
-    return HorizontalOperator(indices=indices, weights=weights, weighting=weighting)
+    return lat, lon, weights, HORIZONTAL_WEIGHTING_CODES[weighting]
 
 
 def _horizontal_index(
@@ -668,7 +1118,12 @@ def _horizontal_index(
     return min(max(index, 0), centers.size - 1)
 
 
-def _parse_vertical_operator(raw: Any, *, label: str, nlev: int) -> VerticalOperator:
+def _parse_vertical_arrays(
+    raw: Any,
+    *,
+    label: str,
+    nlev: int,
+) -> tuple[int, int, int, float, float, np.ndarray, np.ndarray]:
     mapping = _require_mapping(raw, label)
     operator_type = str(_required(mapping, "type", label))
     if operator_type not in {"point", "range", "exact"}:
@@ -686,7 +1141,15 @@ def _parse_vertical_operator(raw: Any, *, label: str, nlev: int) -> VerticalOper
             raise ValueError(f"{label}.values and weights must have the same length")
         values = _vertical_values(values_raw, unit, nlev, f"{label}.values")
         weights = np.asarray([float(value) for value in weights_raw], dtype=np.float64)
-        return VerticalOperator(operator_type="exact", unit=unit, values=values, weights=weights)
+        return (
+            VERTICAL_TYPE_CODES["exact"],
+            VERTICAL_UNIT_CODES[unit],
+            -1,
+            np.nan,
+            np.nan,
+            values,
+            weights,
+        )
 
     weighting = str(mapping.get("weights", "normalized_pressure"))
     if weighting not in {"normalized_pressure", "pressure", "normalized", "equal"}:
@@ -698,7 +1161,15 @@ def _parse_vertical_operator(raw: Any, *, label: str, nlev: int) -> VerticalOper
         end = _vertical_value(_required(mapping, "end", label), unit, nlev, f"{label}.end")
     if start > end:
         raise ValueError(f"{label} start must not exceed end")
-    return VerticalOperator(operator_type="range", unit=unit, start=start, end=end, weights=weighting)
+    return (
+        VERTICAL_TYPE_CODES["range"],
+        VERTICAL_UNIT_CODES[unit],
+        VERTICAL_WEIGHTING_CODES[weighting],
+        float(start),
+        float(end),
+        np.empty(0, dtype=np.float64),
+        np.empty(0, dtype=np.float64),
+    )
 
 
 def _vertical_values(raw: list[Any], unit: str, nlev: int, label: str) -> np.ndarray:
@@ -717,19 +1188,6 @@ def _vertical_value(raw: Any, unit: str, nlev: int, label: str) -> float | int:
     if value < 0.0:
         raise ValueError(f"{label} must be nonnegative")
     return value
-
-
-def _consume_entry_time(entry: ObsOperatorEntry, time_us: int) -> None:
-    matches = np.flatnonzero(entry.time.times_us == time_us)
-    if matches.size != 1:
-        raise ValueError(f"ObsOperator entry {entry.id!r} does not contain scheduled time {time_us}")
-    keep = np.ones(entry.time.times_us.size, dtype=bool)
-    keep[int(matches[0])] = False
-    entry.time = TimeOperator(
-        indices=entry.time.indices[keep],
-        weights=entry.time.weights[keep],
-        times_us=entry.time.times_us[keep],
-    )
 
 
 def _datetime_to_microseconds(value: datetime) -> int:
@@ -765,21 +1223,22 @@ def _grid_signature(grid: TransportGrid) -> str:
     return digest.hexdigest()
 
 
-def _write_obsoperator_restart(
+def _write_obsoperator_restart_states(
     path: Path,
     *,
-    entries: tuple[ObsOperatorEntry, ...],
+    states: list[_ObsOperatorArrayState],
     restart_time: datetime,
     transport_dt_s: float,
     grid: TransportGrid,
 ) -> None:
+    arrays = _restart_snapshot_arrays_from_states(states)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False) as handle:
         temporary_path = Path(handle.name)
     try:
-        _write_obsoperator_restart_file(
+        _write_obsoperator_restart_arrays_file(
             temporary_path,
-            entries=entries,
+            arrays=arrays,
             restart_time=restart_time,
             transport_dt_s=transport_dt_s,
             grid=grid,
@@ -788,23 +1247,21 @@ def _write_obsoperator_restart(
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
-    logger.info("obsoperator_restart_written path=%s entries=%d", path, len(entries))
+    logger.info("obsoperator_restart_written path=%s entries=%d", path, arrays["field_count"].size)
 
 
-def _write_obsoperator_restart_file(
+def _write_obsoperator_restart_arrays_file(
     path: Path,
     *,
-    entries: tuple[ObsOperatorEntry, ...],
+    arrays: dict[str, np.ndarray],
     restart_time: datetime,
     transport_dt_s: float,
     grid: TransportGrid,
 ) -> None:
-    field_count = sum(len(entry.field_names) for entry in entries)
-    time_count = sum(entry.time.times_us.size for entry in entries)
-    exact_count = sum(
-        0 if entry.vertical.operator_type != "exact" or entry.vertical.values is None else entry.vertical.values.size
-        for entry in entries
-    )
+    field_count = arrays["field_accumulator"].size
+    time_count = arrays["remaining_time_us"].size
+    exact_count = arrays["vertical_value"].size
+    entry_count = arrays["field_count"].size
     with netCDF4.Dataset(path, "w", format="NETCDF4") as dataset:
         dataset.set_fill_off()
         dataset.setncattr("format", RESTART_FORMAT)
@@ -812,55 +1269,104 @@ def _write_obsoperator_restart_file(
         dataset.setncattr("restart_time_us", np.int64(_datetime_to_microseconds(restart_time)))
         dataset.setncattr("transport_timestep_seconds", np.float64(transport_dt_s))
         dataset.setncattr("grid_signature", _grid_signature(grid))
-        _create_restart_dimensions(dataset, len(entries), field_count, time_count, exact_count)
+        _create_restart_dimensions(dataset, entry_count, field_count, time_count, exact_count)
         variables = _create_restart_variables(dataset)
+        for name, values in arrays.items():
+            variables[name][:] = values
 
-        field_offset = 0
-        time_offset = 0
-        exact_offset = 0
-        for entry_index, entry in enumerate(entries):
-            variables["id"][entry_index, :] = _nul_padded_chars(entry.id, MAX_ID_LENGTH)
-            variables["definition_hash"][entry_index, :] = _nul_padded_chars(entry.definition_hash, 64)
-            variables["field_start"][entry_index] = field_offset
-            variables["field_count"][entry_index] = len(entry.field_names)
-            for field_name, accumulator in zip(entry.field_names, entry.field_values, strict=True):
-                variables["field_name"][field_offset, :] = _nul_padded_chars(field_name, MAX_FIELD_NAME_LENGTH)
-                variables["field_accumulator"][field_offset] = accumulator
-                field_offset += 1
 
-            variables["time_start"][entry_index] = time_offset
-            variables["time_count"][entry_index] = entry.time.times_us.size
-            time_slice = slice(time_offset, time_offset + entry.time.times_us.size)
-            variables["remaining_time_us"][time_slice] = entry.time.times_us
-            variables["remaining_time_weight"][time_slice] = entry.time.weights
-            time_offset += entry.time.times_us.size
+def _restart_snapshot_arrays_from_states(states: list[_ObsOperatorArrayState]) -> dict[str, np.ndarray]:
+    active_entries = [
+        (state, int(entry_index))
+        for state in states
+        for entry_index in np.flatnonzero(state.active)
+    ]
+    entry_count = len(active_entries)
+    field_count = sum(int(state.prepared.entry_field_count[index]) for state, index in active_entries)
+    time_count = sum(
+        int(state.time_count[index] - state.time_consumed[index]) for state, index in active_entries
+    )
+    exact_count = sum(int(state.prepared.entry_exact_count[index]) for state, index in active_entries)
+    arrays = {
+        "id": _nul_padded_matrix((state.ids[index] for state, index in active_entries), MAX_ID_LENGTH, entry_count),
+        "field_start": np.empty(entry_count, dtype=np.int64),
+        "field_count": np.empty(entry_count, dtype=np.int32),
+        "time_start": np.empty(entry_count, dtype=np.int64),
+        "time_count": np.empty(entry_count, dtype=np.int32),
+        "horizontal_bounds": np.empty((entry_count, 4), dtype=np.int32),
+        "horizontal_weighting": np.empty(entry_count, dtype=np.int8),
+        "vertical_type": np.empty(entry_count, dtype=np.int8),
+        "vertical_unit": np.empty(entry_count, dtype=np.int8),
+        "vertical_weighting": np.empty(entry_count, dtype=np.int8),
+        "vertical_bounds": np.empty((entry_count, 2), dtype=np.float64),
+        "vertical_start": np.empty(entry_count, dtype=np.int64),
+        "vertical_count": np.empty(entry_count, dtype=np.int32),
+        "field_name": np.empty((field_count, MAX_FIELD_NAME_LENGTH), dtype="S1"),
+        "field_accumulator": np.empty(field_count, dtype=np.float64),
+        "remaining_time_us": np.empty(time_count, dtype=np.int64),
+        "remaining_time_weight": np.empty(time_count, dtype=np.float64),
+        "vertical_value": np.empty(exact_count, dtype=np.float64),
+        "vertical_weight": np.empty(exact_count, dtype=np.float64),
+    }
 
-            lat_indices = entry.horizontal.indices[:, 0]
-            lon_indices = entry.horizontal.indices[:, 1]
-            variables["horizontal_bounds"][entry_index, :] = np.asarray(
-                [lon_indices.min(), lon_indices.max(), lat_indices.min(), lat_indices.max()], dtype=np.int32
-            )
-            variables["horizontal_weighting"][entry_index] = HORIZONTAL_WEIGHTING_CODES[entry.horizontal.weighting]
+    field_offset = 0
+    time_offset = 0
+    exact_offset = 0
+    for output_index, (state, entry_index) in enumerate(active_entries):
+        prepared = state.prepared
+        source_field_start = int(prepared.entry_field_start[entry_index])
+        count = int(prepared.entry_field_count[entry_index])
+        source_field_slice = slice(source_field_start, source_field_start + count)
+        output_field_slice = slice(field_offset, field_offset + count)
+        arrays["field_start"][output_index] = field_offset
+        arrays["field_count"][output_index] = count
+        arrays["field_name"][output_field_slice, :] = _nul_padded_matrix(
+            state.field_names[entry_index], MAX_FIELD_NAME_LENGTH, count
+        )
+        arrays["field_accumulator"][output_field_slice] = state.field_accumulator[source_field_slice]
+        field_offset += count
 
-            vertical = entry.vertical
-            variables["vertical_type"][entry_index] = VERTICAL_TYPE_CODES[vertical.operator_type]
-            variables["vertical_unit"][entry_index] = VERTICAL_UNIT_CODES[vertical.unit]
-            variables["vertical_start"][entry_index] = exact_offset
-            if vertical.operator_type == "exact":
-                assert vertical.values is not None and isinstance(vertical.weights, np.ndarray)
-                count = vertical.values.size
-                variables["vertical_weighting"][entry_index] = -1
-                variables["vertical_bounds"][entry_index, :] = np.asarray([np.nan, np.nan])
-                variables["vertical_count"][entry_index] = count
-                exact_slice = slice(exact_offset, exact_offset + count)
-                variables["vertical_value"][exact_slice] = vertical.values
-                variables["vertical_weight"][exact_slice] = vertical.weights
-                exact_offset += count
-            else:
-                assert vertical.start is not None and vertical.end is not None and isinstance(vertical.weights, str)
-                variables["vertical_weighting"][entry_index] = VERTICAL_WEIGHTING_CODES[vertical.weights]
-                variables["vertical_bounds"][entry_index, :] = np.asarray([vertical.start, vertical.end])
-                variables["vertical_count"][entry_index] = 0
+        source_time_start = int(state.time_start[entry_index] + state.time_consumed[entry_index])
+        source_time_end = int(state.time_start[entry_index] + state.time_count[entry_index])
+        count = source_time_end - source_time_start
+        output_time_slice = slice(time_offset, time_offset + count)
+        arrays["time_start"][output_index] = time_offset
+        arrays["time_count"][output_index] = count
+        arrays["remaining_time_us"][output_time_slice] = state.remaining_time_us[
+            source_time_start:source_time_end
+        ]
+        arrays["remaining_time_weight"][output_time_slice] = state.remaining_time_weight[
+            source_time_start:source_time_end
+        ]
+        time_offset += count
+
+        horizontal_start = int(prepared.entry_horizontal_start[entry_index])
+        horizontal_end = horizontal_start + int(prepared.entry_horizontal_count[entry_index])
+        latitudes = prepared.horizontal_lat[horizontal_start:horizontal_end]
+        longitudes = prepared.horizontal_lon[horizontal_start:horizontal_end]
+        arrays["horizontal_bounds"][output_index, :] = np.asarray(
+            [longitudes.min(), longitudes.max(), latitudes.min(), latitudes.max()], dtype=np.int32
+        )
+        arrays["horizontal_weighting"][output_index] = state.horizontal_weighting[entry_index]
+
+        arrays["vertical_type"][output_index] = prepared.entry_vertical_type[entry_index]
+        arrays["vertical_unit"][output_index] = prepared.entry_vertical_unit[entry_index]
+        count = int(prepared.entry_exact_count[entry_index])
+        arrays["vertical_start"][output_index] = exact_offset
+        arrays["vertical_count"][output_index] = count
+        arrays["vertical_weighting"][output_index] = prepared.entry_vertical_weighting[entry_index]
+        arrays["vertical_bounds"][output_index, :] = np.asarray(
+            [prepared.entry_vertical_lower[entry_index], prepared.entry_vertical_upper[entry_index]],
+            dtype=np.float64,
+        )
+        if count:
+            source_exact_start = int(prepared.entry_exact_start[entry_index])
+            source_exact_slice = slice(source_exact_start, source_exact_start + count)
+            output_exact_slice = slice(exact_offset, exact_offset + count)
+            arrays["vertical_value"][output_exact_slice] = prepared.exact_value[source_exact_slice]
+            arrays["vertical_weight"][output_exact_slice] = prepared.exact_weight[source_exact_slice]
+            exact_offset += count
+    return arrays
 
 
 def _create_restart_dimensions(
@@ -876,7 +1382,6 @@ def _create_restart_dimensions(
     dataset.createDimension("vertical_values", vertical_values or None)
     dataset.createDimension("id_chars", MAX_ID_LENGTH)
     dataset.createDimension("field_chars", MAX_FIELD_NAME_LENGTH)
-    dataset.createDimension("hash_chars", 64)
     dataset.createDimension("horizontal_bound", 4)
     dataset.createDimension("vertical_bound", 2)
 
@@ -906,7 +1411,7 @@ def _read_obsoperator_restart(
     transport_dt_s: float,
     tracer_names: tuple[str, ...],
     grid: TransportGrid,
-) -> tuple[ObsOperatorEntry, ...]:
+) -> _ObsOperatorArrayState:
     try:
         with netCDF4.Dataset(path) as dataset:
             dataset.set_auto_mask(False)
@@ -930,7 +1435,7 @@ def _read_obsoperator_restart_dataset(
     transport_dt_s: float,
     tracer_names: tuple[str, ...],
     grid: TransportGrid,
-) -> tuple[ObsOperatorEntry, ...]:
+) -> _ObsOperatorArrayState:
     if getattr(dataset, "format", None) != RESTART_FORMAT:
         raise ValueError(f"ObsOperator restart {path} has an invalid format")
     if int(getattr(dataset, "format_version", -1)) != RESTART_FORMAT_VERSION:
@@ -948,7 +1453,7 @@ def _read_obsoperator_restart_dataset(
         raise ValueError("ObsOperator restart is incompatible: transport grid changed")
 
     required_dimensions = {
-        "entries", "entry_fields", "remaining_times", "vertical_values", "id_chars", "field_chars", "hash_chars",
+        "entries", "entry_fields", "remaining_times", "vertical_values", "id_chars", "field_chars",
         "horizontal_bound", "vertical_bound",
     }
     required_variables = set(RESTART_VARIABLE_SPECS)
@@ -957,7 +1462,6 @@ def _read_obsoperator_restart_dataset(
     if (
         len(dataset.dimensions["id_chars"]) != MAX_ID_LENGTH
         or len(dataset.dimensions["field_chars"]) != MAX_FIELD_NAME_LENGTH
-        or len(dataset.dimensions["hash_chars"]) != 64
     ):
         raise ValueError(f"ObsOperator restart {path} has invalid string dimensions")
     if len(dataset.dimensions["horizontal_bound"]) != 4 or len(dataset.dimensions["vertical_bound"]) != 2:
@@ -972,9 +1476,8 @@ def _read_obsoperator_restart_dataset(
     time_total = len(dataset.dimensions["remaining_times"])
     vertical_total = len(dataset.dimensions["vertical_values"])
     ids = _decode_nul_padded_rows(dataset.variables["id"][:], MAX_ID_LENGTH, "id")
-    definition_hashes = _decode_nul_padded_rows(dataset.variables["definition_hash"][:], 64, "definition_hash")
     field_names = _decode_nul_padded_rows(dataset.variables["field_name"][:], MAX_FIELD_NAME_LENGTH, "field_name")
-    if len(ids) != entry_count or len(definition_hashes) != entry_count or len(field_names) != field_total:
+    if len(ids) != entry_count or len(field_names) != field_total:
         raise ValueError(f"ObsOperator restart {path} has inconsistent string arrays")
 
     field_starts = _restart_array(dataset, "field_start", np.int64, (entry_count,))
@@ -1009,23 +1512,33 @@ def _read_obsoperator_restart_dataset(
     vertical_weighting_names = _reverse_codes(VERTICAL_WEIGHTING_CODES)
     tracer_by_field = {f"{FIELD_PREFIX}{name}": index for index, name in enumerate(tracer_names)}
     dt_us = _seconds_to_microseconds(transport_dt_s, "transport timestep")
-    entries: list[ObsOperatorEntry] = []
     seen_ids: set[str] = set()
+    entry_field_name_rows: list[tuple[str, ...]] = []
+    field_indices = np.empty(field_total, dtype=np.int64)
+    entry_horizontal_start = np.empty(entry_count, dtype=np.int64)
+    entry_horizontal_count = np.empty(entry_count, dtype=np.int32)
+    horizontal_parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    entry_vertical_type = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_unit = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_weighting = np.empty(entry_count, dtype=np.int8)
+    entry_vertical_lower = np.empty(entry_count, dtype=np.float64)
+    entry_vertical_upper = np.empty(entry_count, dtype=np.float64)
+    max_field_count = 0
+    horizontal_offset = 0
     for index, entry_id in enumerate(ids):
         if not entry_id or entry_id in seen_ids:
             raise ValueError(f"ObsOperator restart {path} contains an empty or duplicate id {entry_id!r}")
         seen_ids.add(entry_id)
-        definition_hash = definition_hashes[index]
-        if not re.fullmatch(r"[0-9a-f]{64}", definition_hash):
-            raise ValueError(f"ObsOperator restart entry {entry_id!r} has an invalid definition hash")
         field_slice = _ragged_slice(field_starts, field_counts, index)
         entry_field_names = tuple(field_names[field_slice])
         if len(set(entry_field_names)) != len(entry_field_names):
             raise ValueError(f"ObsOperator restart entry {entry_id!r} contains duplicate fields")
         try:
-            field_indices = np.asarray([tracer_by_field[name] for name in entry_field_names], dtype=np.int64)
+            field_indices[field_slice] = [tracer_by_field[name] for name in entry_field_names]
         except KeyError as exc:
             raise ValueError(f"ObsOperator restart entry {entry_id!r} requires missing field {exc.args[0]!r}") from exc
+        entry_field_name_rows.append(entry_field_names)
+        max_field_count = max(max_field_count, len(entry_field_names))
 
         time_slice = _ragged_slice(time_starts, time_counts, index)
         entry_times = remaining_times[time_slice].copy()
@@ -1035,12 +1548,20 @@ def _read_obsoperator_restart_dataset(
         deltas = entry_times - expected_time_us
         if np.any(deltas % dt_us != 0):
             raise ValueError(f"ObsOperator restart entry {entry_id!r} has times not aligned to the transport timestep")
-        time = TimeOperator(indices=deltas // dt_us, weights=entry_weights, times_us=entry_times)
-
         horizontal_name = _code_name(horizontal_codes[index], horizontal_names, "horizontal weighting", entry_id)
-        horizontal = _horizontal_from_bounds(horizontal_bounds[index], horizontal_name, grid, entry_id)
+        horizontal_lat, horizontal_lon, horizontal_weight = _horizontal_arrays_from_bounds(
+            horizontal_bounds[index], horizontal_name, grid, entry_id
+        )
+        horizontal_count = horizontal_lat.size
+        entry_horizontal_start[index] = horizontal_offset
+        entry_horizontal_count[index] = horizontal_count
+        horizontal_parts.append((horizontal_lat, horizontal_lon, horizontal_weight))
+        horizontal_offset += horizontal_count
+
         vertical_type = _code_name(vertical_types[index], vertical_type_names, "vertical type", entry_id)
         vertical_unit = _code_name(vertical_units[index], vertical_unit_names, "vertical unit", entry_id)
+        entry_vertical_type[index] = int(vertical_types[index])
+        entry_vertical_unit[index] = int(vertical_units[index])
         vertical_slice = _ragged_slice(vertical_starts, vertical_counts, index)
         if vertical_type == "exact":
             if vertical_counts[index] <= 0 or vertical_weightings[index] != -1:
@@ -1048,7 +1569,9 @@ def _read_obsoperator_restart_dataset(
             values = vertical_values[vertical_slice].copy()
             weights = vertical_weights[vertical_slice].copy()
             _validate_restart_vertical_values(values, weights, vertical_unit, grid.shape[0], entry_id)
-            vertical = VerticalOperator(operator_type="exact", unit=vertical_unit, values=values, weights=weights)
+            entry_vertical_weighting[index] = -1
+            entry_vertical_lower[index] = np.nan
+            entry_vertical_upper[index] = np.nan
         else:
             if vertical_counts[index] != 0:
                 raise ValueError(f"ObsOperator restart entry {entry_id!r} has unexpected exact vertical values")
@@ -1057,22 +1580,67 @@ def _read_obsoperator_restart_dataset(
             )
             start, end = vertical_bounds[index]
             _validate_restart_vertical_bounds(start, end, vertical_unit, grid.shape[0], entry_id)
-            vertical = VerticalOperator(
-                operator_type="range", unit=vertical_unit, weights=weighting, start=float(start), end=float(end)
-            )
+            entry_vertical_weighting[index] = int(vertical_weightings[index])
+            entry_vertical_lower[index] = start
+            entry_vertical_upper[index] = end
 
-        entry = ObsOperatorEntry(
-            id=entry_id,
-            definition_hash=definition_hash,
-            field_names=entry_field_names,
-            field_indices=field_indices,
-            time=time,
-            horizontal=horizontal,
-            vertical=vertical,
-        )
-        entry.field_values[:] = accumulators[field_slice]
-        entries.append(entry)
-    return tuple(entries)
+    if horizontal_parts:
+        horizontal_lat = np.concatenate([part[0] for part in horizontal_parts])
+        horizontal_lon = np.concatenate([part[1] for part in horizontal_parts])
+        horizontal_weight = np.concatenate([part[2] for part in horizontal_parts])
+    else:
+        horizontal_lat = np.empty(0, dtype=np.int32)
+        horizontal_lon = np.empty(0, dtype=np.int32)
+        horizontal_weight = np.empty(0, dtype=np.float64)
+
+    schedule_entry = np.repeat(np.arange(entry_count, dtype=np.int64), time_counts)
+    order = np.argsort(remaining_times, kind="stable")
+    sorted_times = remaining_times[order]
+    schedule_entry = schedule_entry[order]
+    schedule_weight = remaining_weights[order]
+    schedule_times_us, schedule_start, schedule_count = np.unique(
+        sorted_times,
+        return_index=True,
+        return_counts=True,
+    )
+    prepared = _PreparedObsOperators(
+        entry_field_start=field_starts,
+        entry_field_count=field_counts.astype(np.int32, copy=False),
+        entry_horizontal_start=entry_horizontal_start,
+        entry_horizontal_count=entry_horizontal_count,
+        entry_vertical_type=entry_vertical_type,
+        entry_vertical_unit=entry_vertical_unit,
+        entry_vertical_weighting=entry_vertical_weighting,
+        entry_vertical_lower=entry_vertical_lower,
+        entry_vertical_upper=entry_vertical_upper,
+        entry_exact_start=vertical_starts,
+        entry_exact_count=vertical_counts.astype(np.int32, copy=False),
+        field_indices=field_indices,
+        horizontal_lat=horizontal_lat,
+        horizontal_lon=horizontal_lon,
+        horizontal_weight=horizontal_weight,
+        exact_value=vertical_values,
+        exact_weight=vertical_weights,
+        max_field_count=max_field_count,
+    )
+    return _ObsOperatorArrayState(
+        ids=tuple(ids),
+        field_names=tuple(entry_field_name_rows),
+        prepared=prepared,
+        field_accumulator=accumulators,
+        horizontal_weighting=horizontal_codes.astype(np.int8, copy=False),
+        time_start=time_starts,
+        time_count=time_counts.astype(np.int32, copy=False),
+        time_consumed=np.zeros(entry_count, dtype=np.int32),
+        remaining_time_us=remaining_times,
+        remaining_time_weight=remaining_weights,
+        active=np.ones(entry_count, dtype=bool),
+        schedule_times_us=schedule_times_us,
+        schedule_start=np.asarray(schedule_start, dtype=np.int64),
+        schedule_count=np.asarray(schedule_count, dtype=np.int32),
+        schedule_entry=schedule_entry,
+        schedule_weight=schedule_weight,
+    )
 
 
 def _restart_array(
@@ -1139,26 +1707,26 @@ def _code_name(code: int, names: dict[int, str], label: str, entry_id: str) -> s
         raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid {label} code {int(code)}") from exc
 
 
-def _horizontal_from_bounds(
+def _horizontal_arrays_from_bounds(
     bounds: np.ndarray,
     weighting: str,
     grid: TransportGrid,
     entry_id: str,
-) -> HorizontalOperator:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     lon_start, lon_end, lat_start, lat_end = (int(value) for value in bounds)
     if not (0 <= lon_start <= lon_end < grid.lon_deg.size and 0 <= lat_start <= lat_end < grid.lat_deg.size):
         raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid horizontal bounds")
-    indices = np.asarray(
-        [(lat, lon) for lon in range(lon_start, lon_end + 1) for lat in range(lat_start, lat_end + 1)],
-        dtype=np.int64,
-    )
+    lon_count = lon_end - lon_start + 1
+    lat_count = lat_end - lat_start + 1
+    lon = np.repeat(np.arange(lon_start, lon_end + 1, dtype=np.int32), lat_count)
+    lat = np.tile(np.arange(lat_start, lat_end + 1, dtype=np.int32), lon_count)
     if weighting in {"area", "normalized_area"}:
-        weights = grid.area_m2[indices[:, 0], indices[:, 1]].astype(np.float64, copy=True)
+        weights = grid.area_m2[lat, lon].astype(np.float64, copy=True)
     else:
-        weights = np.ones(indices.shape[0], dtype=np.float64)
+        weights = np.ones(lat.size, dtype=np.float64)
     if weighting in {"normalized_area", "normalized"}:
         weights /= np.sum(weights)
-    return HorizontalOperator(indices=indices, weights=weights, weighting=weighting)
+    return lat, lon, weights
 
 
 def _validate_restart_vertical_values(
@@ -1187,6 +1755,105 @@ def _validate_restart_vertical_bounds(start: float, end: float, unit: str, nlev:
         raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid pressure-level bounds")
 
 
+class _ObsOperatorSink:
+    def rotate(self, path: Path) -> None:
+        raise NotImplementedError
+
+    def write_array_entries(
+        self,
+        path: Path,
+        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
+    ) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class _SyncObsOperatorSink(_ObsOperatorSink):
+    def __init__(self) -> None:
+        self._path: Path | None = None
+        self._writer: _ObsOperatorNetCDFWriter | None = None
+
+    def rotate(self, path: Path) -> None:
+        if path != self._path:
+            self.close()
+            self._path = path
+
+    def write_array_entries(
+        self,
+        path: Path,
+        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
+    ) -> None:
+        self.rotate(path)
+        if self._writer is None:
+            self._writer = _ObsOperatorNetCDFWriter(path)
+        self._writer.write_array_entries(batches)
+
+    def close(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+
+
+class _ThreadedObsOperatorSink(_ObsOperatorSink):
+    def __init__(self) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wombat-obs-output")
+        self._pending: Future[None] | None = None
+        self._path: Path | None = None
+        self._writer: _ObsOperatorNetCDFWriter | None = None
+
+    def rotate(self, path: Path) -> None:
+        self._finish_pending()
+        self._pending = self._executor.submit(self._rotate, path)
+
+    def write_array_entries(
+        self,
+        path: Path,
+        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
+    ) -> None:
+        self._finish_pending()
+        self._pending = self._executor.submit(self._write_array_entries, path, batches)
+
+    def close(self) -> None:
+        self._finish_pending()
+        self._executor.submit(self._close_writer).result()
+        self._executor.shutdown(wait=True)
+
+    def _finish_pending(self) -> None:
+        if self._pending is not None:
+            self._pending.result()
+            self._pending = None
+
+    def _write_array_entries(
+        self,
+        path: Path,
+        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
+    ) -> None:
+        self._rotate(path)
+        if self._writer is None:
+            self._writer = _ObsOperatorNetCDFWriter(path)
+        self._writer.write_array_entries(batches)
+
+    def _rotate(self, path: Path) -> None:
+        if path != self._path:
+            self._close_writer()
+            self._path = path
+
+    def _close_writer(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+
+
+def _obsoperator_sink(mode: str) -> _ObsOperatorSink:
+    if mode == "sync":
+        return _SyncObsOperatorSink()
+    if mode == "threaded":
+        return _ThreadedObsOperatorSink()
+    raise ValueError(f"unsupported ObsOperator writer mode {mode!r}")
+
+
 class _ObsOperatorNetCDFWriter:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -1195,31 +1862,103 @@ class _ObsOperatorNetCDFWriter:
         self._field_names: list[str] = []
         self._entry_index = 0
         self._sample_index = 0
+        self._pending_array_batches: list[tuple[_ObsOperatorArrayState, np.ndarray]] = []
+        self._pending_entry_count = 0
+        self._pending_samples = 0
 
-    def write_entry(self, entry: ObsOperatorEntry) -> None:
+    def write_array_entries(
+        self,
+        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
+    ) -> None:
+        for state, entry_indices in batches:
+            indices = np.asarray(entry_indices, dtype=np.int64)
+            offset = 0
+            while offset < indices.size:
+                entry_capacity = SCIENCE_STAGE_ENTRIES - self._pending_entry_count
+                sample_capacity = SCIENCE_STAGE_SAMPLES - self._pending_samples
+                if entry_capacity <= 0 or sample_capacity <= 0:
+                    self.flush()
+                    entry_capacity = SCIENCE_STAGE_ENTRIES
+                    sample_capacity = SCIENCE_STAGE_SAMPLES
+                remaining = indices[offset:]
+                field_counts = state.prepared.entry_field_count[remaining].astype(np.int64, copy=False)
+                cumulative_samples = np.cumsum(field_counts)
+                sample_limit = int(np.searchsorted(cumulative_samples, sample_capacity, side="right"))
+                if sample_limit == 0:
+                    if self._pending_entry_count:
+                        self.flush()
+                        continue
+                    sample_limit = 1
+                take = min(remaining.size, entry_capacity, sample_limit)
+                selected = remaining[:take].copy()
+                selected_samples = int(np.sum(field_counts[:take]))
+                self._pending_array_batches.append((state, selected))
+                self._pending_entry_count += take
+                self._pending_samples += selected_samples
+                offset += take
+                if (
+                    self._pending_entry_count >= SCIENCE_STAGE_ENTRIES
+                    or self._pending_samples >= SCIENCE_STAGE_SAMPLES
+                    or offset < indices.size
+                ):
+                    self.flush()
+
+    def flush(self) -> None:
+        if not self._pending_array_batches:
+            return
+        entry_count = self._pending_entry_count
+        sample_count = self._pending_samples
+        previous_field_count = len(self._field_names)
+
+        field_indices = np.empty(sample_count, dtype=np.int32)
+        id_indices = np.empty(sample_count, dtype=np.int32)
+        samples = np.empty(sample_count, dtype=np.float32)
+        sample_offset = 0
+        array_entry_offset = 0
+        array_ids: list[str] = []
+        for state, entry_indices in self._pending_array_batches:
+            for entry_index_value in entry_indices:
+                entry_index = int(entry_index_value)
+                field_start = int(state.prepared.entry_field_start[entry_index])
+                entry_sample_count = int(state.prepared.entry_field_count[entry_index])
+                field_end = field_start + entry_sample_count
+                entry_slice = slice(sample_offset, sample_offset + entry_sample_count)
+                for field_offset, name in enumerate(state.field_names[entry_index]):
+                    if name not in self._field_indices:
+                        self._field_indices[name] = len(self._field_names) + 1
+                        self._field_names.append(name)
+                    field_indices[sample_offset + field_offset] = self._field_indices[name]
+                id_indices[entry_slice] = self._entry_index + array_entry_offset + 1
+                samples[entry_slice] = state.field_accumulator[field_start:field_end]
+                array_ids.append(state.ids[entry_index])
+                array_entry_offset += 1
+                sample_offset += entry_sample_count
+
         self._ensure_created()
         assert self._dataset is not None
-        field_indices: list[int] = []
-        for name in entry.field_names:
-            if name not in self._field_indices:
-                self._field_indices[name] = len(self._field_names) + 1
-                self._field_names.append(name)
-            field_indices.append(self._field_indices[name])
-
-        self._dataset.variables["id"][self._entry_index, :] = _nul_padded_chars(entry.id, MAX_ID_LENGTH)
-        sample_slice = slice(self._sample_index, self._sample_index + len(entry.field_names))
-        self._dataset.variables["id_index"][sample_slice] = self._entry_index + 1
-        self._dataset.variables["field_index"][sample_slice] = np.asarray(field_indices, dtype=np.int32)
-        self._dataset.variables["sample"][sample_slice] = entry.field_values.astype(np.float32)
-        self._entry_index += 1
-        self._sample_index += len(entry.field_names)
+        if len(self._field_names) > previous_field_count:
+            new_field_names = self._field_names[previous_field_count:]
+            self._dataset.variables["field"][previous_field_count : len(self._field_names), :] = (
+                _nul_padded_matrix(new_field_names, MAX_FIELD_NAME_LENGTH, len(new_field_names))
+            )
+        entry_slice = slice(self._entry_index, self._entry_index + entry_count)
+        sample_slice = slice(self._sample_index, self._sample_index + sample_count)
+        self._dataset.variables["id"][entry_slice, :] = _nul_padded_matrix(
+            array_ids, MAX_ID_LENGTH, entry_count
+        )
+        self._dataset.variables["id_index"][sample_slice] = id_indices
+        self._dataset.variables["field_index"][sample_slice] = field_indices
+        self._dataset.variables["sample"][sample_slice] = samples
+        self._entry_index += entry_count
+        self._sample_index += sample_count
+        self._pending_array_batches = []
+        self._pending_entry_count = 0
+        self._pending_samples = 0
 
     def close(self) -> None:
+        self.flush()
         if self._dataset is None:
             return
-        field_variable = self._dataset.variables["field"]
-        for index, name in enumerate(self._field_names):
-            field_variable[index, :] = _nul_padded_chars(name, MAX_FIELD_NAME_LENGTH)
         self._dataset.close()
         self._dataset = None
 
@@ -1239,6 +1978,7 @@ class _ObsOperatorNetCDFWriter:
             "id",
             "S1",
             ("entries", "id_chars"),
+            chunksizes=(SCIENCE_ENTRY_CHUNK, MAX_ID_LENGTH),
             long_name="ids",
             description="id",
         )
@@ -1247,6 +1987,7 @@ class _ObsOperatorNetCDFWriter:
             "field",
             "S1",
             ("fields", "field_chars"),
+            chunksizes=(SCIENCE_FIELD_CHUNK, MAX_FIELD_NAME_LENGTH),
             long_name="fields",
             description="field name",
         )
@@ -1255,6 +1996,7 @@ class _ObsOperatorNetCDFWriter:
             "id_index",
             "i4",
             ("samples",),
+            chunksizes=(SCIENCE_SAMPLE_CHUNK,),
             long_name="id_index",
             description="index of the id in the id list",
         )
@@ -1263,6 +2005,7 @@ class _ObsOperatorNetCDFWriter:
             "field_index",
             "i4",
             ("samples",),
+            chunksizes=(SCIENCE_SAMPLE_CHUNK,),
             long_name="field_index",
             description="index of the field in the field list",
         )
@@ -1271,6 +2014,7 @@ class _ObsOperatorNetCDFWriter:
             "sample",
             "f4",
             ("samples",),
+            chunksizes=(SCIENCE_SAMPLE_CHUNK,),
             long_name="samples",
             description="sample of the id and field",
         )
@@ -1283,10 +2027,19 @@ def _create_variable(
     dtype: str,
     dimensions: tuple[str, ...],
     *,
+    chunksizes: tuple[int, ...],
     long_name: str,
     description: str,
 ) -> netCDF4.Variable:
-    variable = dataset.createVariable(name, dtype, dimensions, zlib=True, complevel=1, shuffle=True)
+    variable = dataset.createVariable(
+        name,
+        dtype,
+        dimensions,
+        zlib=True,
+        complevel=1,
+        shuffle=True,
+        chunksizes=chunksizes,
+    )
     variable.long_name = long_name
     variable.units = "1"
     variable.description = description
@@ -1299,6 +2052,16 @@ def _nul_padded_chars(value: str, length: int) -> np.ndarray:
         raise ValueError(f"encoded string exceeds fixed width {length}")
     output = np.full(length, b"\x00", dtype="S1")
     output[: len(encoded)] = np.frombuffer(encoded, dtype="S1")
+    return output
+
+
+def _nul_padded_matrix(values: Any, width: int, count: int) -> np.ndarray:
+    output = np.full((count, width), b"\x00", dtype="S1")
+    for index, value in enumerate(values):
+        encoded = value.encode("utf-8")
+        if len(encoded) > width:
+            raise ValueError(f"encoded string exceeds fixed width {width}")
+        output[index, : len(encoded)] = np.frombuffer(encoded, dtype="S1")
     return output
 
 
