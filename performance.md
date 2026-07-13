@@ -1824,3 +1824,91 @@ The next profiling decision should therefore be based on fresh end-to-end runs:
    only if TPCORE's end-to-end share justifies another source investigation;
 3. if TPCORE remains the focus, investigate the serial setup/finalize passes or
    code-generation details in XTP/YTP/FZPPM rather than more DAO2 fusion.
+
+## 2026-07-13 residual reprofile and incremental TPCORE follow-up
+
+A new P-core-pinned, single-thread residual-style profile was run for six hours
+with real nonzero surface emissions and outputs disabled. It used 36 ten-minute
+transport steps and 18 emissions evaluations. The retained VDIFF output reuse
+and convection reciprocal changes were active.
+
+| Tracers | Total s | TPCORE s | VDIFF s | Convection s | TPCORE setup s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 12.76 | 7.77 | 2.31 | 0.72 | 0.59 |
+| 96 | 39.80 | 28.28 | 6.61 | 2.19 | 0.60 |
+
+Compared with the prior steady 96-tracer residual reference (`43.15 s` total,
+`8.44 s` VDIFF), total time improved by about 7.8% and VDIFF by about 21.7%.
+The standalone VDIFF reuse gain therefore survives real nonzero-emissions
+multi-step execution, though it is smaller than the isolated 27.8% result.
+TPCORE now accounts for 60.9% of the 24-tracer run and 71.1% of the 96-tracer
+run, confirming that further small TPCORE improvements have high leverage.
+
+### Retained: remove duplicate TPCORE negative scan
+
+`run_tpcore_one_step_with_setup` and its trace wrapper scanned the complete
+final tracer cube with `tracer[tracer < 0] = 1e-26` after the lower-level
+TPCORE finalize path had already performed the same clipping. Both the Numba
+finalize kernel and NumPy finalize path cover the complete output, including
+the copied polar rows, so the wrapper scan was redundant.
+
+Matched direct timings:
+
+| Tracers | Before s | Without duplicate scan s | Change |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.23062 | 0.23147 | neutral |
+| 96 | 0.79893 | 0.75925 | -5.0% |
+
+Checksums were identical and focused TPCORE, transport-chain, and oracle tests
+passed. In the six-hour 96-tracer residual profile, total time moved from
+`39.80` to `38.14 s` (-4.2%) and attributed TPCORE time from `28.28` to
+`26.61 s` (-5.9%). The cProfile wrapper self-time collapsed from about one
+second across 36 calls to effectively zero, which confirms that the intended
+full-cube Python mask was removed.
+
+### Retained: opt-in TPCORE input consumption
+
+A 96-tracer cube is about 451 MiB. Copying it into TPCORE's reusable `q`
+workspace measured `18.7 ms` on the pinned P-core, or roughly 0.67 seconds over
+36 steps. The long-run runner now calls `run_transport_one_step` with
+`consume_input=True`; this is threaded to TPCORE as `reuse_input=True`, allowing
+the writable contiguous incoming tracer cube to serve directly as TPCORE's
+mutable `q` buffer.
+
+The ownership relaxation is opt-in. Public one-step calls, trace paths, and
+direct TPCORE calls retain copy-safe defaults. The runner immediately replaces
+the consumed state with the returned state, and output recording consumes the
+new state synchronously before the following step. A regression test verifies
+that the default call leaves its input bitwise unchanged, the consume-enabled
+call mutates it, and both produce bitwise-identical transport output.
+
+The follow-up six-hour 96-tracer profile was:
+
+| Variant | Total s | TPCORE s | VDIFF s | Convection s |
+| --- | ---: | ---: | ---: | ---: |
+| After duplicate-scan removal | 38.14 | 26.61 | 6.59 | 2.22 |
+| Consume TPCORE input | 37.79 | 26.24 | 6.65 | 2.18 |
+
+This is a smaller but repeatable target-scale win: about 0.9% total and 1.4%
+within TPCORE. At very large ensemble/run counts it is worth retaining.
+
+### Current next-target assessment
+
+After these changes, the obvious full-cube wrapper traffic has been removed.
+The remaining 96-tracer TPCORE time is almost entirely inside the compiled
+kernel. Stage VTune still says XTP/YTP/FZPPM are relatively healthy, while the
+smaller fixed passes have memory pressure but no single clean source rewrite.
+Already rejected experiments include pole/init fusion, reusable FZPPM scratch,
+limiter rewrites, precomputed-index variants, and DAO2 fusion.
+
+Do not start another broad TPCORE rewrite from the existing profile alone. The
+next productive options are narrower:
+
+1. collect `memory-access` data for the pole/init and cross-term stage workers
+   if exact load/store source attribution is needed;
+2. inspect whether the `qckxyz_needs_fill` scan ever triggers in representative
+   long residual windows before considering any fill-policy change;
+3. revisit the strict-versus-fast-math native TPCORE prototype only as a
+   separately parity-gated longer-term path;
+4. retain sub-percent non-TPCORE improvements, such as caching repeated
+   emissions path resolution, when they are independently measurable.

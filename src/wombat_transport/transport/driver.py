@@ -135,6 +135,7 @@ def run_transport_one_step(
     tpcore_static_terms: TpcoreStaticTerms | None = None,
     include_flux_diagnostics: bool = False,
     validate_tpcore_branches: bool = True,
+    consume_input: bool = False,
 ) -> TransportStepResult:
     """Run one GEOS-Chem-oriented TPCORE + VDIFF + convection transport step."""
 
@@ -158,6 +159,7 @@ def run_transport_one_step(
         tpcore_static_terms=tpcore_static_terms,
         include_flux_diagnostics=include_flux_diagnostics,
         validate_tpcore_branches=validate_tpcore_branches,
+        consume_input=consume_input,
     )
 
 
@@ -376,6 +378,7 @@ def _run_tpcore_one_step_from_mass(
     tpcore_static_terms: TpcoreStaticTerms | None = None,
     include_flux_diagnostics: bool = False,
     validate_tpcore_branches: bool = True,
+    consume_input: bool = False,
 ) -> TransportStepResult:
     if tracer_field.data.shape[0] != 1:
         raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
@@ -407,6 +410,7 @@ def _run_tpcore_one_step_from_mass(
         area_m2=area,
         validate_branches=False,
         reuse_output=True,
+        reuse_input=consume_input,
     )
     next_delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,

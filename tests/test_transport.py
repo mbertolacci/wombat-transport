@@ -693,6 +693,49 @@ def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
     assert diagnostic_result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
 
 
+def test_transport_one_step_consumes_input_only_when_requested(monkeypatch):
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    initialized = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    )
+    original = np.ascontiguousarray(initialized.data[..., :1])
+    forcing = _load_forcing(config, grid=grid)
+
+    safe_field = TracerField(
+        names=initialized.names[:1],
+        data=original.copy(),
+        units=initialized.units[:1],
+        coords=initialized.coords,
+    )
+    safe_before = safe_field.data.copy()
+    safe_result = run_transport_one_step(safe_field, forcing, grid, dt_s=600.0)
+    np.testing.assert_array_equal(safe_field.data, safe_before)
+    safe_output = safe_result.state.data.copy()
+
+    consumed_field = TracerField(
+        names=initialized.names[:1],
+        data=original.copy(),
+        units=initialized.units[:1],
+        coords=initialized.coords,
+    )
+    consumed_before = consumed_field.data.copy()
+    consumed_result = run_transport_one_step(
+        consumed_field,
+        forcing,
+        grid,
+        dt_s=600.0,
+        consume_input=True,
+    )
+
+    assert not np.array_equal(consumed_field.data, consumed_before)
+    np.testing.assert_array_equal(consumed_result.state.data, safe_output)
+
+
 def test_trace_transport_one_step_captures_operator_handoffs(transport_numba_mode):
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)

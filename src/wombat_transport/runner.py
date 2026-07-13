@@ -153,6 +153,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             dry_air_mass_kg=dry_air_mass,
             tpcore_static_terms=tpcore_static_terms,
             validate_tpcore_branches=elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s)),
+            consume_input=True,
         )
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg

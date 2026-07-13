@@ -185,14 +185,20 @@ def _advect_tracers_fused_numba(
     area_m2: np.ndarray,
     fill: bool,
     reuse_output: bool = False,
+    reuse_input: bool = False,
 ) -> np.ndarray:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     nlev, nlat, nlon, ntracer = tracer_conc.shape
     nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
     workspace = _get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer, nthreads)
-    q = workspace.q
-    np.copyto(q, tracer_conc)
+    if reuse_input:
+        if not tracer_conc.flags.c_contiguous or not tracer_conc.flags.writeable:
+            raise ValueError("reuse_input requires a writable C-contiguous tracer array")
+        q = tracer_conc
+    else:
+        q = workspace.q
+        np.copyto(q, tracer_conc)
     dq1 = workspace.dq1 if reuse_output else np.empty_like(q)
     _set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
     _set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
