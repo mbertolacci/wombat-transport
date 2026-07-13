@@ -191,7 +191,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         output_manager.close()
     if obsoperator_manager is not None:
         logger.debug("closing_obsoperator")
-        obsoperator_manager.close()
+        obsoperator_manager.close(boundary_time=current)
 
     logger.info(
         "simulation_complete transport_steps=%d emissions_steps=%d total_emitted_mass_kg=%.8e",

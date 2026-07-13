@@ -122,12 +122,22 @@ outputs:
     verbose: false
     input_file: ./ObsOperator/obsoperator-YYYYMMDD.yml.gz
     output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
+    restart_file: ./Restarts/Wombat.ObsOperator.Restart.YYYYMMDD_hhmmss.nc4
+    restart_missing: warn
 ```
 
 Relative paths are resolved from the run YAML directory. `YYYY`, `MM`, `DD`,
 `hh`, `mm`, and `ss` are expanded from the current model time. Input files may
 be ordinary YAML or gzip-compressed YAML ending in `.gz`; a missing expanded
 daily input is logged and skipped.
+
+`restart_file` is required when ObsOperator is active. At startup it is
+expanded using the simulation start time and, when present, restores unfinished
+operators. At clean shutdown Wombat expands it using the actual stopping time
+and atomically writes all unfinished state, including an empty restart when
+nothing remains. `restart_missing` may be `warn` (the default), `error`, or
+`ignore`; `error` is useful for continuation runs where losing the restart must
+be fatal.
 
 Each input contains an `entries` sequence. Entries use `fields` with explicit
 `SpeciesConcVV_<tracer>` names or the `SpeciesConcVV_?ALL?` and
@@ -143,10 +153,29 @@ additional molecular-weight conversion is applied. Output uses the current
 compressed ObsOperator NetCDF layout with `id`, `field`, `id_index`,
 `field_index`, and `sample` variables.
 
+Science output contains completed operators only. An operator spanning a run
+boundary keeps its float64 accumulator, expanded fields, resolved horizontal
+selection, vertical operator, and remaining absolute times and weights in the
+dedicated NetCDF restart. The following run continues the same weighted sum and
+writes the operator once it is complete; partial science files do not need to
+be merged. Temporal normalization is applied at every sample (`1/N` for
+`normalized`, `1` for `equal`) and there is no final division.
+
+ObsOperator restarts require an exact boundary-time, transport-timestep, and
+grid match. The grid check covers coordinates, cell areas, and hybrid vertical
+coefficients. Fields are restored by name, so tracer reordering and unrelated
+additional tracers are allowed, but a required field may not be removed and a
+previous wildcard expansion is not expanded again. A sample whose model-step
+start equals the restart boundary belongs to the new run and is evaluated after
+that run's first transport step.
+
 For a local GEOS-Chem parity check, set `WOMBAT_GC_OBSOPERATOR_OUTPUT` and
 `WOMBAT_OBSOPERATOR_OUTPUT` to matching generated NetCDF files and run
 `tests/test_obsoperator.py`. The check skips with a clear message when either
 large local artifact is unavailable.
+Set `WOMBAT_OBSOPERATOR_INPUT_DIR` to a directory containing the real daily
+`obsoperator-YYYYMMDD.yml.gz` inputs to enable the optional cross-day restart
+input scenario.
 
 The main runner is available as a module:
 

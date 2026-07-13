@@ -38,6 +38,7 @@ def test_obsoperator_config_and_date_template():
                 "verbose": True,
                 "input_file": "obs-YYYYMMDD.yml.gz",
                 "output_file": "out-YYYYMMDD_hhmmss.nc4",
+                "restart_file": "restart-YYYYMMDD_hhmmss.nc4",
             }
         }
     )
@@ -48,7 +49,13 @@ def test_obsoperator_config_and_date_template():
     )
 
     with pytest.raises(KeyError, match="input_file"):
-        parse_obsoperator_config({"obsoperator": {"activate": True, "output_file": "out.nc4"}})
+        parse_obsoperator_config(
+            {"obsoperator": {"activate": True, "output_file": "out.nc4", "restart_file": "restart.nc4"}}
+        )
+    with pytest.raises(KeyError, match="restart_file"):
+        parse_obsoperator_config(
+            {"obsoperator": {"activate": True, "input_file": "obs.yml", "output_file": "out.nc4"}}
+        )
     with pytest.raises(TypeError, match="must be a mapping"):
         parse_obsoperator_config({"obsoperator": "on"})
 
@@ -252,7 +259,7 @@ def test_manager_writes_fortran_compatible_netcdf_and_first_step_sample(tmp_path
     manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
     second = _snapshot(scale=3.0)
     manager.sample(step_start=START + timedelta(minutes=10), time_index=1, snapshot=second)
-    manager.close()
+    manager.close(boundary_time=START + timedelta(minutes=20))
 
     output = tmp_path / "out-20140901_0000.nc4"
     with netCDF4.Dataset(output) as dataset:
@@ -291,7 +298,7 @@ def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
 
     manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
     manager.sample(step_start=START + timedelta(days=1), time_index=1, snapshot=_snapshot(scale=3.0))
-    manager.close()
+    manager.close(boundary_time=START + timedelta(days=2))
 
     assert not (tmp_path / "out-20140901_0000.nc4").exists()
     with netCDF4.Dataset(tmp_path / "out-20140902_0000.nc4") as dataset:
@@ -299,10 +306,10 @@ def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
         np.testing.assert_allclose(dataset.variables["sample"][:], np.array([2.0, 3.0], dtype=np.float32))
 
 
-def test_manager_skips_missing_day_and_writes_partial_entry_on_close(tmp_path: Path):
+def test_manager_skips_missing_day_and_restarts_incomplete_entry_without_partial_output(tmp_path: Path):
     manager = _manager(tmp_path)
     manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
-    manager.close()
+    manager.close(boundary_time=START + timedelta(minutes=10))
     assert not list(tmp_path.glob("out-*.nc4"))
 
     incomplete = _entry_raw(
@@ -312,9 +319,286 @@ def test_manager_skips_missing_day_and_writes_partial_entry_on_close(tmp_path: P
     _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [incomplete]})
     manager = _manager(tmp_path)
     manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
-    manager.close()
-    with netCDF4.Dataset(tmp_path / "out-20140901_0000.nc4") as dataset:
-        np.testing.assert_allclose(dataset.variables["sample"][:], np.array([1.0], dtype=np.float32))
+    manager.close(boundary_time=START + timedelta(minutes=10))
+    assert not list(tmp_path.glob("out-*.nc4"))
+    assert (tmp_path / "restart-20140901_001000.nc4").is_file()
+
+
+@pytest.mark.parametrize(("weighting", "expected"), [("normalized", 2.0), ("equal", 6.0)])
+def test_restart_continues_accumulator_without_partial_output_or_final_division(
+    tmp_path: Path,
+    weighting: str,
+    expected: float,
+):
+    entry = _entry_raw(
+        entry_id="continued",
+        fields=["SpeciesConcVV_A", "SpeciesConcVV_B"],
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 2, "weights": weighting},
+    )
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+
+    first = _manager(tmp_path)
+    first.sample(step_start=START, time_index=0, snapshot=_snapshot(scale=1.0))
+    first.close(boundary_time=START + timedelta(minutes=10))
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    first_restart = tmp_path / "restart-20140901_001000.nc4"
+    with netCDF4.Dataset(first_restart) as dataset:
+        expected_first = 1.0 / 3.0 if weighting == "normalized" else 1.0
+        np.testing.assert_array_equal(
+            dataset.variables["field_accumulator"][:],
+            np.array([expected_first, 10.0 * expected_first], dtype=np.float64),
+        )
+        np.testing.assert_array_equal(
+            dataset.variables["remaining_time_us"][:],
+            np.array([_time_us(START + timedelta(minutes=10)), _time_us(START + timedelta(minutes=20))]),
+        )
+
+    second = _manager(tmp_path, start=START + timedelta(minutes=10))
+    second.sample(step_start=START + timedelta(minutes=10), time_index=0, snapshot=_snapshot(scale=2.0))
+    second.close(boundary_time=START + timedelta(minutes=20))
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    third = _manager(tmp_path, start=START + timedelta(minutes=20))
+    third.sample(step_start=START + timedelta(minutes=20), time_index=0, snapshot=_snapshot(scale=3.0))
+    temporal_weights = [1.0 / 3.0] * 3 if weighting == "normalized" else [1.0] * 3
+    expected_float64 = np.zeros(2, dtype=np.float64)
+    for scale, weight in zip((1.0, 2.0, 3.0), temporal_weights, strict=True):
+        expected_float64 += weight * np.array([scale, 10.0 * scale], dtype=np.float64)
+    np.testing.assert_array_equal(third._active_entries[0].field_values, expected_float64)
+    third.close(boundary_time=START + timedelta(minutes=30))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0020.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["continued"]
+        np.testing.assert_allclose(
+            dataset.variables["sample"][:],
+            np.array([expected, 10.0 * expected], dtype=np.float32),
+        )
+    with netCDF4.Dataset(tmp_path / "restart-20140901_003000.nc4") as dataset:
+        assert len(dataset.dimensions["entries"]) == 0
+
+
+def test_restart_schema_preserves_exact_operator_before_first_sample(tmp_path: Path):
+    entry = _entry_raw(
+        entry_id="exact",
+        fields="SpeciesConcVV_B",
+        time={"type": "point", "unit": "time_index", "time": 1},
+    )
+    entry["horizontal_operator"] = {
+        "type": "box",
+        "unit": "grid_index",
+        "longitude_start": 1,
+        "longitude_end": 2,
+        "latitude_start": 1,
+        "latitude_end": 3,
+        "weights": "normalized_area",
+    }
+    entry["vertical_operator"] = {
+        "type": "exact",
+        "unit": "pressure_level",
+        "values": [1, 3],
+        "weights": [0.25, 0.75],
+    }
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+
+    path = tmp_path / "restart-20140901_001000.nc4"
+    with netCDF4.Dataset(path) as dataset:
+        assert dataset.format == "Wombat ObsOperator restart"
+        assert dataset.format_version == 1
+        assert dataset.restart_time_us == _time_us(START + timedelta(minutes=10))
+        assert dataset.transport_timestep_seconds == 600.0
+        assert len(dataset.grid_signature) == 64
+        assert set(dataset.dimensions) == {
+            "entries", "entry_fields", "remaining_times", "vertical_values", "id_chars", "field_chars",
+            "hash_chars", "horizontal_bound", "vertical_bound",
+        }
+        assert dataset.variables["field_accumulator"].dtype == np.dtype("float64")
+        assert dataset.variables["remaining_time_us"].dtype == np.dtype("int64")
+        assert dataset.variables["remaining_time_weight"].dtype == np.dtype("float64")
+        assert dataset.variables["field_accumulator"].filters()["zlib"]
+        assert _decode_rows(dataset.variables["id"][:]) == ["exact"]
+        assert _decode_rows(dataset.variables["field_name"][:]) == ["SpeciesConcVV_B"]
+        np.testing.assert_array_equal(dataset.variables["horizontal_bounds"][:], np.array([[0, 1, 0, 2]]))
+        np.testing.assert_array_equal(dataset.variables["vertical_value"][:], np.array([1.0, 3.0]))
+        np.testing.assert_array_equal(dataset.variables["vertical_weight"][:], np.array([0.25, 0.75]))
+
+
+@pytest.mark.parametrize(
+    "vertical",
+    [
+        {"type": "point", "unit": "pressure_level", "value": 1},
+        {"type": "range", "unit": "pressure_level", "start": 1, "end": 3, "weights": "equal"},
+        {"type": "range", "unit": "pressure_level", "start": 1, "end": 3, "weights": "normalized"},
+        {"type": "range", "unit": "pressure", "start": 100.0, "end": 900.0, "weights": "pressure"},
+        {
+            "type": "range",
+            "unit": "pressure",
+            "start": 100.0,
+            "end": 900.0,
+            "weights": "normalized_pressure",
+        },
+        {"type": "range", "unit": "altitude", "start": 0.0, "end": 1000.0, "weights": "normalized"},
+        {"type": "exact", "unit": "pressure", "values": [900.0, 500.0], "weights": [0.25, 0.75]},
+        {"type": "exact", "unit": "altitude", "values": [0.0, 1000.0], "weights": [0.5, 0.5]},
+    ],
+)
+def test_restart_round_trip_preserves_vertical_operator_modes(tmp_path: Path, vertical: dict):
+    entry = _entry_raw(time={"type": "point", "unit": "time_index", "time": 1})
+    entry["vertical_operator"] = vertical
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    expected = sample_obsoperator_entry(_load(tmp_path / "obs-20140901.yml")[0], _snapshot(), _grid())
+
+    first = _manager(tmp_path)
+    first.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    first.close(boundary_time=START + timedelta(minutes=10))
+    second = _manager(tmp_path, start=START + timedelta(minutes=10))
+    second.sample(step_start=START + timedelta(minutes=10), time_index=0, snapshot=_snapshot())
+    second.close(boundary_time=START + timedelta(minutes=20))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0010.nc4") as dataset:
+        np.testing.assert_allclose(dataset.variables["sample"][:], expected.astype(np.float32))
+
+
+@pytest.mark.parametrize("weighting", ["area", "normalized_area", "normalized", "equal"])
+def test_restart_round_trip_preserves_horizontal_weighting_modes(tmp_path: Path, weighting: str):
+    entry = _entry_raw(time={"type": "point", "unit": "time_index", "time": 1})
+    entry["horizontal_operator"] = {
+        "type": "box",
+        "unit": "grid_index",
+        "longitude_start": 1,
+        "longitude_end": 2,
+        "latitude_start": 1,
+        "latitude_end": 2,
+        "weights": weighting,
+    }
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    expected = sample_obsoperator_entry(
+        _load(tmp_path / "obs-20140901.yml")[0],
+        _snapshot(horizontal_gradient=True),
+        _grid(),
+    )
+
+    first = _manager(tmp_path)
+    first.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    first.close(boundary_time=START + timedelta(minutes=10))
+    second = _manager(tmp_path, start=START + timedelta(minutes=10))
+    second.sample(
+        step_start=START + timedelta(minutes=10),
+        time_index=0,
+        snapshot=_snapshot(horizontal_gradient=True),
+    )
+    second.close(boundary_time=START + timedelta(minutes=20))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0010.nc4") as dataset:
+        np.testing.assert_allclose(dataset.variables["sample"][:], expected.astype(np.float32))
+
+
+def test_restart_resumes_cross_midnight_entry_in_completion_day_output(tmp_path: Path):
+    entry = _entry_raw(
+        entry_id="cross-midnight",
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
+    )
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    first = _manager(tmp_path, dt_s=86400.0)
+    first.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    first.close(boundary_time=START + timedelta(days=1))
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    second = _manager(tmp_path, start=START + timedelta(days=1), dt_s=86400.0)
+    second.sample(step_start=START + timedelta(days=1), time_index=0, snapshot=_snapshot(scale=3.0))
+    second.close(boundary_time=START + timedelta(days=2))
+    with netCDF4.Dataset(tmp_path / "out-20140902_0000.nc4") as dataset:
+        np.testing.assert_allclose(dataset.variables["sample"][:], np.array([2.0], dtype=np.float32))
+
+
+def test_restart_rejects_conflicting_same_day_daily_definition(tmp_path: Path):
+    entry = _entry_raw(
+        entry_id="continued",
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
+    )
+    path = _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    first = _manager(tmp_path)
+    first.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    first.close(boundary_time=START + timedelta(minutes=10))
+    entry["vertical_operator"]["value"] = 2
+    _write_yaml(path, {"entries": [entry]})
+
+    second = _manager(tmp_path, start=START + timedelta(minutes=10))
+    with pytest.raises(ValueError, match="conflicts with its restart state"):
+        second.sample(step_start=START + timedelta(minutes=10), time_index=0, snapshot=_snapshot())
+
+
+def test_restart_rejects_incompatible_boundary_timestep_grid_and_fields(tmp_path: Path):
+    entry = _entry_raw(
+        entry_id="continued",
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 2},
+    )
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+    restart = "restart-20140901_001000.nc4"
+
+    with pytest.raises(ValueError, match="timestep changed"):
+        _manager(tmp_path, start=START + timedelta(minutes=10), dt_s=300.0, restart_file=restart)
+    changed_grid = _grid()
+    changed_grid.area_m2[0, 0] += 1.0
+    with pytest.raises(ValueError, match="grid changed"):
+        _manager(tmp_path, start=START + timedelta(minutes=10), grid=changed_grid, restart_file=restart)
+    with pytest.raises(ValueError, match="does not match simulation start"):
+        _manager(tmp_path, start=START + timedelta(minutes=20), restart_file=restart)
+    with pytest.raises(ValueError, match="missing field"):
+        _manager(
+            tmp_path,
+            start=START + timedelta(minutes=10),
+            tracer_names=("B",),
+            restart_file=restart,
+        )
+
+
+def test_restart_maps_fields_by_name_across_tracer_reordering_and_additions(tmp_path: Path):
+    entry = _entry_raw(
+        entry_id="continued",
+        fields=["SpeciesConcVV_A", "SpeciesConcVV_B"],
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
+    )
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+
+    restored = _manager(
+        tmp_path,
+        start=START + timedelta(minutes=10),
+        tracer_names=("B", "EXTRA", "A"),
+        restart_file="restart-20140901_001000.nc4",
+    )
+    np.testing.assert_array_equal(restored._active_entries[0].field_indices, np.array([2, 0]))
+
+
+def test_restart_missing_policy_and_corrupt_offsets(tmp_path: Path):
+    with pytest.raises(FileNotFoundError, match="restart missing"):
+        _manager(tmp_path, restart_missing="error")
+
+    entry = _entry_raw(
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
+    )
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+    restart_path = tmp_path / "restart-20140901_001000.nc4"
+    with netCDF4.Dataset(restart_path, "r+") as dataset:
+        dataset.variables["field_start"][0] = 1
+    with pytest.raises(ValueError, match="invalid contiguous fields offsets"):
+        _manager(
+            tmp_path,
+            start=START + timedelta(minutes=10),
+            restart_file=restart_path.name,
+        )
 
 
 def test_local_geos_chem_obsoperator_output_parity_if_available():
@@ -346,18 +630,57 @@ def test_local_geos_chem_obsoperator_output_parity_if_available():
         np.testing.assert_allclose(actual.variables["sample"][:], expected.variables["sample"][:], rtol=1.0e-6, atol=1.0e-12)
 
 
-def _manager(tmp_path: Path, *, dt_s: float = 600.0) -> ObsOperatorManager:
+def test_local_daily_input_contains_restartable_cross_day_entries_if_available(tmp_path: Path):
+    input_dir = os.environ.get("WOMBAT_OBSOPERATOR_INPUT_DIR")
+    if not input_dir:
+        pytest.skip("set WOMBAT_OBSOPERATOR_INPUT_DIR to the directory containing real daily gzip inputs")
+    path = Path(input_dir) / "obsoperator-20140901.yml.gz"
+    if not path.is_file():
+        pytest.skip(f"local ObsOperator input is unavailable: {path}")
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    cross_day = [
+        entry
+        for entry in raw["entries"]
+        if entry.get("time_operator", {}).get("type") == "range"
+        and entry["time_operator"].get("end", [None])[0] == 20140902
+    ]
+    assert cross_day
+    subset = _write_yaml(tmp_path / "cross-day.yml", {"entries": cross_day[:10]})
+    entries = load_obsoperator_entries(
+        subset,
+        tracer_names=("CO2",),
+        grid=_global_grid(),
+        simulation_start=START,
+        transport_dt_s=600.0,
+    )
+    assert entries
+    assert all(entry.time.times_us[-1] >= _time_us(START + timedelta(days=1)) for entry in entries)
+
+
+def _manager(
+    tmp_path: Path,
+    *,
+    start: datetime = START,
+    dt_s: float = 600.0,
+    tracer_names: tuple[str, ...] = ("A", "B"),
+    grid: TransportGrid | None = None,
+    restart_file: str = "restart-YYYYMMDD_hhmmss.nc4",
+    restart_missing: str = "ignore",
+) -> ObsOperatorManager:
     return ObsOperatorManager(
         root=tmp_path,
         config=ObsOperatorConfig(
             activate=True,
             input_file="obs-YYYYMMDD.yml",
             output_file="out-YYYYMMDD_hhmm.nc4",
+            restart_file=restart_file,
+            restart_missing=restart_missing,
         ),
-        start=START,
+        start=start,
         transport_dt_s=dt_s,
-        tracer_names=("A", "B"),
-        grid=_grid(),
+        tracer_names=tracer_names,
+        grid=grid or _grid(),
     )
 
 
@@ -382,6 +705,20 @@ def _grid() -> TransportGrid:
         area_m2=area,
         hyai_hpa=np.array([1000.0, 700.0, 300.0, 1.0]),
         hybi=np.zeros(4),
+        template_path=Path("unused.nc4"),
+    )
+
+
+def _global_grid() -> TransportGrid:
+    lat = np.concatenate(([-89.5], np.arange(-88.0, 90.0, 2.0), [89.5]))
+    lon = np.arange(-180.0, 180.0, 2.5)
+    return TransportGrid(
+        lat_deg=lat,
+        lon_deg=lon,
+        lev=np.arange(1.0, 48.0),
+        area_m2=np.ones((lat.size, lon.size)),
+        hyai_hpa=np.linspace(1000.0, 0.0, 48),
+        hybi=np.zeros(48),
         template_path=Path("unused.nc4"),
     )
 
@@ -453,3 +790,8 @@ def _filled_chars(values: np.ndarray) -> np.ndarray:
     if np.ma.isMaskedArray(values):
         return values.filled(b"\x00")
     return np.asarray(values)
+
+
+def _time_us(value: datetime) -> int:
+    delta = value - datetime(1970, 1, 1)
+    return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
