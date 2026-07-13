@@ -21,7 +21,13 @@ from wombat_transport.transport.forcing import (
     load_transport_forcing_for_step,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
-from wombat_transport.transport.pbl import RD_J_PER_KG_K, G0_M_PER_S2, VdiffDrResult, run_vdiffdr_one_step
+from wombat_transport.transport.pbl import (
+    RD_J_PER_KG_K,
+    G0_M_PER_S2,
+    VdiffDrResult,
+    _numba_vdiff_enabled,
+    run_vdiffdr_one_step,
+)
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
@@ -34,6 +40,7 @@ from wombat_transport.transport.tpcore import (
     TpcoreState,
     TpcoreStaticTerms,
     _average_const_poles_batch,
+    _numba_tpcore_enabled,
     analyze_tpcore_branches,
     build_tpcore_static_terms,
     run_tpcore_one_step_with_setup,
@@ -406,6 +413,7 @@ def _run_tpcore_one_step_from_mass(
 
     input_tracer = canonical_time_slice(tracer_field.data)
     recycled_tracer = input_tracer if consume_input else None
+    defer_tpcore_finalization = _numba_tpcore_enabled() and _numba_vdiff_enabled()
     tpcore = run_tpcore_one_step_with_setup(
         tracer_conc=input_tracer,
         setup=setup,
@@ -413,6 +421,7 @@ def _run_tpcore_one_step_from_mass(
         validate_branches=False,
         reuse_output=True,
         reuse_input=consume_input,
+        defer_finalization=defer_tpcore_finalization,
     )
     next_delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,
@@ -439,7 +448,12 @@ def _run_tpcore_one_step_from_mass(
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
-    vdiff = _run_vdiff_input(vdiff_input, diagnostics=False, output_buffer=recycled_tracer)
+    vdiff = _run_vdiff_input(
+        vdiff_input,
+        diagnostics=False,
+        output_buffer=recycled_tracer,
+        input_mass_pressure_hpa=setup.delp2_hpa if defer_tpcore_finalization else None,
+    )
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(vdiff.tracer_conc),
@@ -735,6 +749,7 @@ def _run_vdiff_input(
     *,
     diagnostics: bool = False,
     output_buffer: np.ndarray | None = None,
+    input_mass_pressure_hpa: np.ndarray | None = None,
 ) -> VdiffDrResult:
     return run_vdiffdr_one_step(
         tracer_conc=state.tracer_conc,
@@ -757,6 +772,7 @@ def _run_vdiff_input(
         diagnostics=diagnostics,
         reuse_output=not diagnostics,
         output_buffer=output_buffer,
+        input_mass_pressure_hpa=input_mass_pressure_hpa,
     )
 
 

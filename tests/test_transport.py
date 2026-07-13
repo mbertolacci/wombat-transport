@@ -682,6 +682,43 @@ def test_run_vdiffdr_one_step_uses_owned_output_buffer(monkeypatch):
     np.testing.assert_array_equal(result.tracer_conc, expected.tracer_conc)
 
 
+def test_run_vdiffdr_one_step_accepts_deferred_tpcore_pressure_mass(monkeypatch):
+    fixture = _synthetic_vdiff_fixture()
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+    tracer = fixture["tracer_conc"]
+    pressure_mass = fixture["pmid_hpa"] * 0.031 + 1.0
+    tracer_mass = tracer * pressure_mass[..., np.newaxis]
+    finalized = tracer_mass * (1.0 / pressure_mass)[..., np.newaxis]
+    finalized[finalized < 0.0] = 1.0e-26
+    finalized[:, 1, :, :] = finalized[:, 0, :, :]
+    finalized[:, -2, :, :] = finalized[:, -1, :, :]
+
+    expected = run_vdiffdr_one_step(
+        **{**fixture, "tracer_conc": finalized},
+        diagnostics=False,
+    )
+    result = run_vdiffdr_one_step(
+        **{**fixture, "tracer_conc": tracer_mass},
+        diagnostics=False,
+        input_mass_pressure_hpa=pressure_mass,
+    )
+
+    np.testing.assert_array_equal(result.tracer_conc, expected.tracer_conc)
+    np.testing.assert_array_equal(result.specific_humidity_kg_kg, expected.specific_humidity_kg_kg)
+
+    surface_flux = np.full((tracer.shape[1], tracer.shape[2], tracer.shape[3]), 1.0e-15)
+    expected_flux = run_vdiffdr_one_step(
+        **{**fixture, "tracer_conc": finalized, "surface_flux_kg_m2_s": surface_flux},
+        diagnostics=False,
+    )
+    result_flux = run_vdiffdr_one_step(
+        **{**fixture, "tracer_conc": tracer_mass, "surface_flux_kg_m2_s": surface_flux},
+        diagnostics=False,
+        input_mass_pressure_hpa=pressure_mass,
+    )
+    np.testing.assert_array_equal(result_flux.tracer_conc, expected_flux.tracer_conc)
+
+
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
     fixture = _synthetic_vdiff_fixture()
     fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]

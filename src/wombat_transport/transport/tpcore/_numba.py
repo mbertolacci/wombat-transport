@@ -186,6 +186,7 @@ def _advect_tracers_fused_numba(
     fill: bool,
     reuse_output: bool = False,
     reuse_input: bool = False,
+    defer_finalization: bool = False,
 ) -> np.ndarray:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -226,6 +227,7 @@ def _advect_tracers_fused_numba(
         *workspace.x_workspace,
         *workspace.y_workspace,
         *workspace.z_workspace,
+        not defer_finalization,
     )
     return dq1
 
@@ -491,6 +493,7 @@ if njit is not None:
         a6_z: np.ndarray,
         dca_z: np.ndarray,
         prev_flux_z: np.ndarray,
+        finalize_output: bool,
     ) -> None:
         nlev = q.shape[0]
         nlat = q.shape[1]
@@ -549,7 +552,8 @@ if njit is not None:
         if fill:
             if _qckxyz_needs_fill_numba_kernel(dq1):
                 _qckxyz_batch_numba_kernel(dq1)
-        _finalize_tpcore_output_numba_kernel(dq1, delp2)
+        if finalize_output:
+            _finalize_tpcore_output_numba_kernel(dq1, delp2)
 
 
     @njit(cache=True, parallel=True)
@@ -1448,6 +1452,7 @@ else:
         a6_z: np.ndarray,
         dca_z: np.ndarray,
         prev_flux_z: np.ndarray,
+        finalize_output: bool,
     ) -> None:
         raise RuntimeError("numba is not available")
 

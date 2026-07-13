@@ -370,6 +370,7 @@ def run_vdiffdr_one_step(
     diagnostics: bool = True,
     reuse_output: bool = False,
     output_buffer: np.ndarray | None = None,
+    input_mass_pressure_hpa: np.ndarray | None = None,
 ) -> VdiffDrResult:
     """Port GEOS-Chem ``VDIFFDR`` for one non-local PBL mixing step.
 
@@ -378,7 +379,8 @@ def run_vdiffdr_one_step(
     production path to return workspace-owned arrays that are overwritten by
     the next compatible VDIFF call. ``output_buffer`` lets an ownership-aware
     caller supply a dead writable tracer buffer; it is only supported by the
-    diagnostics-light full-grid Numba path.
+    diagnostics-light full-grid Numba path. ``input_mass_pressure_hpa`` is an
+    internal ownership handoff for deferred TPCORE finalization.
     """
 
     tracer = np.asarray(tracer_conc, dtype=np.float64)
@@ -396,6 +398,9 @@ def run_vdiffdr_one_step(
     eflux = np.asarray(eflux_w_m2, dtype=np.float64)
     ustar = np.asarray(ustar_m_s, dtype=np.float64)
     area = np.asarray(area_m2, dtype=np.float64)
+    input_mass_pressure = (
+        None if input_mass_pressure_hpa is None else np.asarray(input_mass_pressure_hpa, dtype=np.float64)
+    )
 
     if tracer.ndim != 4:
         raise ValueError(f"tracer_conc must be 4-D (lev, lat, lon, tracer), found {tracer.shape}")
@@ -417,6 +422,10 @@ def run_vdiffdr_one_step(
             raise ValueError(f"{name} shape {value.shape} does not match tracer grid {grid_shape}")
     if pedge.shape != edge_shape:
         raise ValueError(f"pedge_hpa shape {pedge.shape} does not match tracer edge grid {edge_shape}")
+    if input_mass_pressure is not None and input_mass_pressure.shape != grid_shape:
+        raise ValueError(
+            f"input_mass_pressure_hpa shape {input_mass_pressure.shape} does not match tracer grid {grid_shape}"
+        )
     for name, value in (
         ("pbl_top_m", pblh),
         ("hflux_w_m2", hflux),
@@ -464,9 +473,12 @@ def run_vdiffdr_one_step(
             nthreads=numba_vdiff_threads,
             reuse_output=reuse_output,
             output_buffer=output_buffer,
+            input_mass_pressure_hpa=input_mass_pressure,
         )
     if output_buffer is not None:
         raise ValueError("output_buffer requires diagnostics=False and the full-grid Numba path")
+    if input_mass_pressure is not None:
+        raise ValueError("input_mass_pressure_hpa requires diagnostics=False and the full-grid Numba path")
 
     pmid_pa = pmid * 100.0
     pedge_pa = pedge * 100.0
@@ -883,6 +895,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     nthreads: int,
     reuse_output: bool,
     output_buffer: np.ndarray | None,
+    input_mass_pressure_hpa: np.ndarray | None,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -907,6 +920,8 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     else:
         tracer_out = np.empty_like(tracer_top)
         sphu_out = np.empty_like(sphu_top)
+    if input_mass_pressure_hpa is not None:
+        _finalize_deferred_tpcore_poles_numba_kernel(tracer_top, input_mass_pressure_hpa)
     negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top,
         u_top,
@@ -929,6 +944,8 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         surface_flux_is_zero,
         tracer_out,
         sphu_out,
+        pmid_hpa if input_mass_pressure_hpa is None else input_mass_pressure_hpa,
+        input_mass_pressure_hpa is not None,
         workspace.pmid,
         workspace.pint,
         workspace.rpdel,
@@ -992,6 +1009,26 @@ def _run_vdiffdr_one_step_fullgrid_numba(
 
 if njit is not None:
 
+    @njit(cache=True, parallel=True)
+    def _finalize_deferred_tpcore_poles_numba_kernel(
+        tracer_mass: np.ndarray, pressure_mass_hpa: np.ndarray
+    ) -> None:
+        """Reproduce TPCORE's finalized pole copies before per-latitude VDIFF work."""
+        nlev, nlat, nlon, ntracer = tracer_mass.shape
+        for lev in prange(nlev):
+            for lon in range(nlon):
+                south_inv = 1.0 / pressure_mass_hpa[lev, 0, lon]
+                north_inv = 1.0 / pressure_mass_hpa[lev, nlat - 1, lon]
+                for tracer in range(ntracer):
+                    south = tracer_mass[lev, 0, lon, tracer] * south_inv
+                    north = tracer_mass[lev, nlat - 1, lon, tracer] * north_inv
+                    if south < 0.0:
+                        south = 1.0e-26
+                    if north < 0.0:
+                        north = 1.0e-26
+                    tracer_mass[lev, 1, lon, tracer] = south
+                    tracer_mass[lev, nlat - 2, lon, tracer] = north
+
     @njit(cache=True)
     def _tracer_working_mass_numba_kernel(tracer_conc: np.ndarray, dry_air_mass_top: np.ndarray) -> np.ndarray:
         nlev = tracer_conc.shape[0]
@@ -1031,6 +1068,8 @@ if njit is not None:
         surface_flux_is_zero: bool,
         tracer_out: np.ndarray,
         sphu_out: np.ndarray,
+        input_mass_pressure_hpa: np.ndarray,
+        input_is_pressure_mass: bool,
         pmid_workspace: np.ndarray,
         pint_workspace: np.ndarray,
         rpdel_workspace: np.ndarray,
@@ -1091,6 +1130,8 @@ if njit is not None:
 
         for lat in prange(nlat):
             thread_id = get_thread_id()
+            source_lat = lat
+            input_needs_conversion = input_is_pressure_mass and lat != 1 and lat != nlat - 2
             pmid = pmid_workspace[thread_id]
             pint = pint_workspace[thread_id]
             rpdel = rpdel_workspace[thread_id]
@@ -1346,16 +1387,28 @@ if njit is not None:
                     for tracer in range(ntracer):
                         adjust[lon, tracer] = False
                     for lev in range(nlev):
+                        inv_input_mass = 1.0
+                        if input_needs_conversion:
+                            inv_input_mass = 1.0 / input_mass_pressure_hpa[lev, source_lat, lon]
                         for tracer in range(ntracer):
-                            qmx[lon, lev, tracer] = tracer_top[lev, lat, lon, tracer]
+                            input_value = tracer_top[lev, source_lat, lon, tracer] * inv_input_mass
+                            if input_needs_conversion and input_value < 0.0:
+                                input_value = 1.0e-26
+                            qmx[lon, lev, tracer] = input_value
                 if npbl > 1:
                     for lev in range(start, nlev):
                         for lon in range(nlon):
                             scale = ztodtgor * rpdel[lon, lev]
                             term_next = potbar[lon, lev + 1] * kvh[lon, lev + 1]
                             term_now = potbar[lon, lev] * kvh[lon, lev]
+                            inv_input_mass = 1.0
+                            if input_needs_conversion:
+                                inv_input_mass = 1.0 / input_mass_pressure_hpa[lev, source_lat, lon]
                             for tracer in range(ntracer):
-                                qmx_value = tracer_top[lev, lat, lon, tracer] + scale * (
+                                input_value = tracer_top[lev, source_lat, lon, tracer] * inv_input_mass
+                                if input_needs_conversion and input_value < 0.0:
+                                    input_value = 1.0e-26
+                                qmx_value = input_value + scale * (
                                     term_next * cgq[lon, lev + 1, tracer] - term_now * cgq[lon, lev, tracer]
                                 )
                                 qmx[lon, lev, tracer] = qmx_value
@@ -1365,12 +1418,22 @@ if njit is not None:
                         for tracer in range(ntracer):
                             if adjust[lon, tracer]:
                                 for lev in range(start, nlev):
-                                    qmx[lon, lev, tracer] = tracer_top[lev, lat, lon, tracer]
+                                    input_value = tracer_top[lev, source_lat, lon, tracer]
+                                    if input_needs_conversion:
+                                        input_value *= 1.0 / input_mass_pressure_hpa[lev, source_lat, lon]
+                                        if input_value < 0.0:
+                                            input_value = 1.0e-26
+                                    qmx[lon, lev, tracer] = input_value
 
             for lon in range(nlon):
                 dry_mass = dry_mass_top[ntopfl, lat, lon]
+                inv_input_mass = 1.0
+                if input_needs_conversion:
+                    inv_input_mass = 1.0 / input_mass_pressure_hpa[ntopfl, source_lat, lon]
                 for tracer in range(ntracer):
-                    tracer_value = tracer_top[ntopfl, lat, lon, tracer]
+                    tracer_value = tracer_top[ntopfl, source_lat, lon, tracer] * inv_input_mass
+                    if input_needs_conversion and tracer_value < 0.0:
+                        tracer_value = 1.0e-26
                     tracer_ratio[lon, tracer] = tracer_value * dry_mass
                     tracer_diffused[lon, ntopfl, tracer] = (
                         (tracer_value if surface_flux_is_zero else qmx[lon, ntopfl, tracer]) * termh[lon, ntopfl]
@@ -1380,8 +1443,13 @@ if njit is not None:
                     dry_mass = dry_mass_top[lev, lat, lon]
                     cch_value = cch[lon, lev]
                     termh_value = termh[lon, lev]
+                    inv_input_mass = 1.0
+                    if input_needs_conversion:
+                        inv_input_mass = 1.0 / input_mass_pressure_hpa[lev, source_lat, lon]
                     for tracer in range(ntracer):
-                        tracer_value = tracer_top[lev, lat, lon, tracer]
+                        tracer_value = tracer_top[lev, source_lat, lon, tracer] * inv_input_mass
+                        if input_needs_conversion and tracer_value < 0.0:
+                            tracer_value = 1.0e-26
                         tracer_ratio[lon, tracer] += tracer_value * dry_mass
                         source_value = tracer_value if surface_flux_is_zero else qmx[lon, lev, tracer]
                         tracer_diffused[lon, lev, tracer] = (
@@ -1392,8 +1460,13 @@ if njit is not None:
                 tmp1d = 1.0 / (1.0 + cch[lon, nlev - 1] * (1.0 - zeh[lon, nlev - 2]))
                 dry_mass = dry_mass_top[nlev - 1, lat, lon]
                 cch_bottom = cch[lon, nlev - 1]
+                inv_input_mass = 1.0
+                if input_needs_conversion:
+                    inv_input_mass = 1.0 / input_mass_pressure_hpa[nlev - 1, source_lat, lon]
                 for tracer in range(ntracer):
-                    tracer_value = tracer_top[nlev - 1, lat, lon, tracer]
+                    tracer_value = tracer_top[nlev - 1, source_lat, lon, tracer] * inv_input_mass
+                    if input_needs_conversion and tracer_value < 0.0:
+                        tracer_value = 1.0e-26
                     tracer_ratio[lon, tracer] += tracer_value * dry_mass
                     source_value = tracer_value if surface_flux_is_zero else qmx[lon, nlev - 1, tracer]
                     tracer_diffused[lon, nlev - 1, tracer] = (
@@ -1791,6 +1864,11 @@ if njit is not None:
 
 else:
 
+    def _finalize_deferred_tpcore_poles_numba_kernel(
+        tracer_mass: np.ndarray, pressure_mass_hpa: np.ndarray
+    ) -> None:
+        raise RuntimeError("numba is not available")
+
     def _tracer_working_mass_numba_kernel(tracer_conc: np.ndarray, dry_air_mass_top: np.ndarray) -> np.ndarray:
         raise RuntimeError("numba is not available")
 
@@ -1844,6 +1922,8 @@ else:
         surface_flux_is_zero: bool,
         tracer_out: np.ndarray,
         sphu_out: np.ndarray,
+        input_mass_pressure_hpa: np.ndarray,
+        input_is_pressure_mass: bool,
         *workspace: np.ndarray,
     ) -> int:
         raise RuntimeError("numba is not available")

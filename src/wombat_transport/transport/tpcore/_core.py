@@ -71,6 +71,7 @@ def run_tpcore_one_step_with_setup(
     validate_branches: bool = True,
     reuse_output: bool = False,
     reuse_input: bool = False,
+    defer_finalization: bool = False,
 ) -> TpcoreState:
     """Run TPCORE tracer advection using an already computed setup."""
 
@@ -83,6 +84,7 @@ def run_tpcore_one_step_with_setup(
         fill=fill,
         reuse_output=reuse_output,
         reuse_input=reuse_input,
+        defer_finalization=defer_finalization,
     )
     return _tpcore_state_from_setup(setup, tracer)
 
@@ -428,6 +430,7 @@ def _advect_tracers(
     trace: bool = False,
     reuse_output: bool = False,
     reuse_input: bool = False,
+    defer_finalization: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, TpcoreTrace | None]:
     """Advect canonical tracer arrays in top-level order."""
 
@@ -445,7 +448,11 @@ def _advect_tracers(
             fill=fill,
             reuse_output=reuse_output,
             reuse_input=reuse_input,
+            defer_finalization=defer_finalization,
         )
+
+    if defer_finalization:
+        raise ValueError("defer_finalization requires the Numba TPCORE path")
 
     delp1 = setup.delp1_hpa
     delp2 = setup.delp2_hpa
@@ -1351,6 +1358,7 @@ def _advect_tracers_fused_numba(
     fill: bool,
     reuse_output: bool = False,
     reuse_input: bool = False,
+    defer_finalization: bool = False,
 ) -> np.ndarray:
     from wombat_transport.transport.tpcore._numba import _advect_tracers_fused_numba as _impl
 
@@ -1361,6 +1369,7 @@ def _advect_tracers_fused_numba(
         fill=fill,
         reuse_output=reuse_output,
         reuse_input=reuse_input,
+        defer_finalization=defer_finalization,
     )
 
 
