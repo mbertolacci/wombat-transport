@@ -637,6 +637,20 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path_with_th
     assert result.negative_count_after_clip == 0
 
 
+def test_run_vdiffdr_one_step_reuses_light_output_only_when_requested(monkeypatch):
+    fixture = _synthetic_vdiff_fixture()
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+
+    first = run_vdiffdr_one_step(**fixture, diagnostics=False, reuse_output=True)
+    second = run_vdiffdr_one_step(**fixture, diagnostics=False, reuse_output=True)
+    fresh = run_vdiffdr_one_step(**fixture, diagnostics=False)
+
+    assert second.tracer_conc is first.tracer_conc
+    assert second.specific_humidity_kg_kg is first.specific_humidity_kg_kg
+    assert fresh.tracer_conc is not second.tracer_conc
+    assert fresh.specific_humidity_kg_kg is not second.specific_humidity_kg_kg
+
+
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
     fixture = _synthetic_vdiff_fixture()
     fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]

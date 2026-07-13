@@ -288,6 +288,7 @@ def _benchmark_inputs(
             dt_s=inputs.dt_s,
             surface_flux_kg_m2_s=inputs.surface_flux_kg_m2_s,
             diagnostics=False,
+            reuse_output=True,
         )
         del state
         gc.collect()
@@ -315,6 +316,7 @@ def _benchmark_inputs(
             dt_s=inputs.dt_s,
             surface_flux_kg_m2_s=inputs.surface_flux_kg_m2_s,
             diagnostics=False,
+            reuse_output=True,
         )
         elapsed_values.append(time.perf_counter() - start)
         checksum = float(np.sum(state.tracer_conc))

@@ -1546,3 +1546,281 @@ Validation after backing out the rejected code experiments:
 - `WOMBAT_TPCORE_NUMBA_THREADS=2 WOMBAT_VDIFF_NUMBA_THREADS=2
   WOMBAT_CONVECTION_NUMBA_THREADS=2 pytest tests/test_transport.py -q`:
   `30 passed`.
+
+## 2026-07-13 initial VTune characterization
+
+Intel VTune Profiler 2026.3 was run on the local Intel Core i7-14700KF. The
+single-thread runs were pinned to logical CPU 8, a performance core. Four-thread
+runs were pinned to logical CPUs `0,2,4,6`, which are four distinct performance
+cores rather than SMT siblings. This matters on the hybrid 8-P-core/12-E-core
+host; unpinned results mix different core types and are not directly comparable.
+
+For Numba source/JIT registration, the profile environment used
+`NUMBA_ENABLE_PROFILING=1` and `NUMBA_DEBUGINFO=1`. Compile once into a dedicated
+cache before collecting steady-state results. A first TPCORE trace that included
+fresh debug compilation was dominated by compiler front-end behavior and was not
+representative. The retained traces used the warmed cache and repeated each
+operator long enough to dominate Python startup and fixture loading.
+
+Representative single-thread setup:
+
+```bash
+source /opt/intel/oneapi/vtune/latest/env/vars.sh
+PYTHONPATH=src \
+PYTHONPYCACHEPREFIX=/tmp/wombat-pycache-vtune \
+NUMBA_CACHE_DIR=/tmp/wombat-numba-cache-vtune \
+NUMBA_ENABLE_PROFILING=1 \
+NUMBA_DEBUGINFO=1 \
+NUMBA_NUM_THREADS=1 \
+WOMBAT_NUMBA_THREADS=1 \
+OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+vtune -collect uarch-exploration \
+  -knob collect-memory-bandwidth=true \
+  -cpu-mask=8 \
+  -target-duration-type=short \
+  -finalization-mode=full \
+  -result-dir=/tmp/wombat-vtune-single-tpcore-uarch \
+  -- taskset -c 8 .venv/bin/python tools/benchmark_tpcore_scaling.py \
+    --run-config base_wombat/run.yml \
+    --counts 96 --repeat 20 --warmup 2 \
+    --output /tmp/wombat-vtune-single-tpcore.csv
+```
+
+The warmed 96-tracer microarchitecture summaries were:
+
+| Operator | Retiring | Frontend bound | Bad speculation | Backend bound | Memory bound | Core bound |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPCORE | 52.9% | 16.0% | 1.1% | 29.9% | 22.4% | 7.6% |
+| VDIFF | 30.3% | 4.8% | 0.4% | 64.5% | 50.7% | 13.8% |
+| Convection | 44.0% | 7.4% | 1.2% | 47.4% | 27.4% | 20.0% |
+
+The VTune pass refines the earlier broad backend-bound interpretation:
+
+- TPCORE is mixed rather than overwhelmingly backend bound on this CPU. Within
+  its backend share, the strongest signals are L1 dependency, split loads,
+  store latency, and moderate DRAM pressure. Large speculative algorithmic
+  changes justified only by a generic memory-bound label are unlikely to pay.
+- VDIFF is clearly memory/store bound. Store Bound was 32.3% of clockticks and
+  Store Latency 48.5%, with Memory Bandwidth active for 45.1% of clockticks.
+  This strengthens the case for reducing or combining the final rescale/output
+  writeback and other full-workspace stores. False sharing was 0% in the
+  single-thread trace and is not relevant to this result.
+- Convection has a previously hidden divider bottleneck: Divider was 44.2% of
+  clockticks, nearly all floating-point division. DRAM Bound was 15.0%, Split
+  Loads 14.7%, and Memory Bandwidth active for 45.7% of clockticks. The first
+  source experiment should hoist reciprocal values that are invariant across
+  the tracer loop, especially `1 / cmout`, while preserving operation ordering
+  in a separately parity-checked candidate. The per-level
+  `internal_dt_s / bmass` values are already outside tracer loops but may still
+  be candidates for cached reciprocal multiplication if parity permits.
+
+Four-thread `threading` analysis used the same warmed cache and four pinned
+performance cores. The profile benchmarks and utilization were:
+
+| Operator | 1-thread best s | 4-thread best s | Speedup | Effective use of four pinned cores | Spin/overhead share |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TPCORE | 1.503 | 0.560 | 2.69x | 74% | 0.9% |
+| VDIFF | 0.161 | 0.066 | 2.45x | 71% | 0.0% |
+| Convection | 0.126 | 0.080 | 1.56x | 55% | 0.1% |
+
+These wall times include the debug/profiling build and should not replace the
+normal benchmark numbers elsewhere in this file. They are useful for comparing
+the matched VTune runs. TBB spin and scheduler overhead are small, so the
+sublinear scaling is primarily useful-work imbalance, serial regions, and
+hardware bottlenecks rather than task-runtime overhead. TPCORE worker CPU times
+were closely balanced (`13.31-13.62 s` effective across the three worker
+threads), while the main thread also performs serial/setup work. Convection is
+the weakest threading target and remains a good candidate for process-level
+tracer parallelism unless the divider/memory bottlenecks are reduced first.
+
+VTune result directories from this pass are temporary under `/tmp` and are not
+tracked. Use `uarch-exploration` for single-thread hardware diagnosis,
+`memory-access` only after a source region is narrowed, and `threading` for
+multi-thread waits/utilization. Profila remains useful to map a VTune-identified
+Numba JIT bottleneck to approximate Python source lines, but it should not be
+used for final wall-time decisions.
+
+## 2026-07-13 TPCORE stage-level VTune and unified opportunity report
+
+`tools/profile_tpcore_numba.py` now supports direct, duration-based isolated
+stage workers. `--stage-worker-direct` bypasses the stdin handshake used by the
+older attach-based `perf` workflow, while `--stage-worker-seconds` keeps the
+selected warmed stage active long enough for sampling. The worker performs one
+selected-stage warmup before timing, reports the actual iteration count, and
+retains the checksum output. The original stdin/attach behavior is unchanged
+when `--stage-worker-direct` is absent.
+
+Nine 96-tracer stages were collected for at least six seconds each using
+single-thread `uarch-exploration` pinned to P-core logical CPU 8. The table uses
+the current staged timing shares recorded above to distinguish an expensive
+stage from a dramatic bottleneck in a small stage:
+
+| TPCORE stage | Approx TPCORE share | Retiring | Backend | Memory | Core | Primary VTune signal |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| YTP horizontal mass flux | 22.8% | 54.9% | 27.7% | 21.7% | 6.0% | L1 dependency; mixed/healthy overall |
+| FZPPM vertical | 19.2% | 57.9% | 21.8% | 16.8% | 4.9% | front-end 19.1%; highest retiring |
+| XTP horizontal mass flux | 19.0% | 53.4% | 28.7% | 23.1% | 5.6% | L1 dependency; mixed/healthy overall |
+| poles plus `dq` initialization | 8.8% | 25.6% | 65.9% | 54.9% | 11.0% | split loads, DRAM and store latency |
+| copy/workspace/cross setup | 7.4% | 23.2% | 67.8% | 64.1% | 3.6% | 41.7% Store Bound; 37.2% FB Full |
+| cross terms | 6.9% | 34.7% | 56.8% | 47.1% | 9.7% | L1 dependency and store traffic |
+| final fill/finalize | 6.6% | 33.8% | 57.5% | 36.3% | 21.2% | DRAM/split-load signal; see caveat below |
+| X DAO2 | ~4-5% | 34.1% | 56.8% | 38.5% | 18.3% | DRAM and split accesses |
+| Y DAO2 | ~4-5% | 38.5% | 53.1% | 35.9% | 17.2% | L3/DRAM and split accesses |
+
+This changes the TPCORE interpretation. The three largest PPM/remap kernels are
+not individually dominated by back-end stalls on this CPU. They retire more
+than half of available slots and have low bad speculation. Their size still
+makes small improvements valuable, but VTune does not point to one obvious
+memory-layout rewrite after the earlier scratch work. The strongest hardware
+pathology is instead in the collection of full-grid setup, initialization,
+cross-term, DAO2, and finalize passes. Together these smaller passes are a
+large target even though none dominates alone.
+
+The isolated worker changes its input repeatedly to keep the same machine code
+active. That is representative for XTP, YTP, FZPPM and the other stable kernels,
+but finalization is not idempotent and its checksum grows over many iterations.
+Treat the isolated finalize counters as directional only. A candidate finalize
+change must be judged in whole TPCORE with a fresh input each step.
+
+Matched non-debug isolated timings for 20 stage repetitions gave:
+
+| TPCORE stage | 1 thread s | 4 threads s | Speedup |
+| --- | ---: | ---: | ---: |
+| copy/workspace/cross setup | 1.102 | 1.127 | 0.98x |
+| poles plus `dq` initialization | 0.800 | 0.411 | 1.95x |
+| cross terms | 0.994 | 0.326 | 3.05x |
+| X DAO2 | 0.729 | 0.515 | 1.41x |
+| Y DAO2 | 0.905 | 0.627 | 1.44x |
+| YTP horizontal mass flux | 3.504 | 1.293 | 2.71x |
+| XTP horizontal mass flux | 3.341 | 1.282 | 2.61x |
+| FZPPM vertical | 3.224 | 1.046 | 3.08x |
+| final fill/finalize | 1.013 | 0.976 | 1.04x |
+
+Four-thread VTune `threading` traces on X/Y DAO2, XTP, YTP, and FZPPM showed
+only `0.2-1.4%` spin/overhead. During the whole trace they averaged about
+`2.93-3.25` effective CPUs out of the four pinned P-cores. X/Y DAO2 still scale
+poorly because the stage wrapper launches and synchronizes level-sized parallel
+kernels 47 times; the trace shows waits rather than a TBB spin problem. The
+normal TPCORE path has the same per-level call structure. A fused all-level DAO2
+kernel is therefore a more plausible threading experiment than scheduler or
+chunk-size tuning. It could also improve single-thread instruction/data flow by
+removing dispatcher boundaries, but parity and direct wall time remain decisive.
+
+### Unified operator opportunity matrix
+
+| Area | Runtime importance | VTune diagnosis | Most defensible next experiment | Confidence |
+| --- | --- | --- | --- | --- |
+| TPCORE fixed passes | Highest operator plus roughly one-third of TPCORE across setup/init/cross/DAO2/finalize | memory/store pressure; serial setup/finalize; weak DAO2 scaling | fuse compatible full-grid passes or all-level DAO2 calls without changing arithmetic order within each cell | Medium-high |
+| TPCORE XTP/YTP/FZPPM | About 61% of TPCORE | relatively healthy retiring; diffuse L1/front-end pressure | do not start another broad layout rewrite; use source/assembly inspection only for a narrowly supported traffic or code-size hypothesis | High |
+| VDIFF writeback/solve | Second-tier operator cost but clearest memory pathology | 64.5% backend, 50.7% memory, 32.3% Store Bound | reduce/combine final mass-rescale and output stores; test caller-managed output only if ownership remains safe | High |
+| Convection tracer update | Smallest of the three at high tracer count, but a clear arithmetic issue | 44.2% divider-active clockticks plus DRAM/split loads | hoist `1 / cmout` outside tracer loops and test reciprocal multiply as an explicitly parity-sensitive candidate | High diagnosis, medium acceptance |
+| Multi-thread runtime | Useful but secondary to process-level tracer splitting | negligible TBB spin/overhead; sublinear useful-core occupancy | improve kernel granularity/serial fractions, not TBB scheduler knobs | High |
+
+Suggested experiment order when effort is assigned:
+
+1. Run the small convection reciprocal-hoist experiment first because it is
+   cheap and VTune gives a precise hypothesis. Reject it immediately if strict
+   parity or normal wall time is worse.
+2. Prototype VDIFF writeback/store reduction. It has the strongest confirmed
+   single-thread memory bottleneck and a known hot source region from Profila.
+3. Prototype TPCORE all-level DAO2 fusion, then consider compatible fixed-pass
+   fusion. TPCORE offers the largest end-to-end leverage, but each change is
+   broader and requires the strongest parity coverage.
+4. Leave XTP/YTP/FZPPM unchanged until a more specific source/assembly finding
+   justifies another experiment; the stage-level VTune results do not currently
+   identify a clean dominant defect in those kernels.
+
+This ordering ranks experiment clarity and cost, not just operator runtime.
+If only one larger workstream can be funded, TPCORE still has the greatest
+end-to-end ceiling. If short probes can be run first, convection and VDIFF have
+more sharply diagnosed hypotheses.
+
+## 2026-07-13 VTune-guided experiments 1-3
+
+The three experiments from the unified opportunity report were implemented and
+measured with matched, P-core-pinned, non-debug runs. Two were retained and the
+TPCORE experiment was rejected.
+
+### Retained: convection reciprocal hoists
+
+The diagnostics-light full-grid kernel now computes the reciprocals of
+`denominator`, `denom_qc`, and `cmout` outside their tracer loops, replacing
+per-tracer divisions with multiplication. This directly targets VTune's 44.2%
+divider-active signal.
+
+Matched single-thread timings:
+
+| Tracers | Before s | Reciprocal s | Change |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.03736 | 0.03556 | -4.8% |
+| 96 | 0.12472 | 0.11352 | -9.0% |
+| 192 | 0.23841 | 0.22218 | -6.8% |
+
+The benchmark checksums were unchanged. The diagnostic and light kernels differ
+at one of 564 values in the small active-cloud equivalence fixture, with maximum
+absolute difference `5.42101086e-20`, maximum relative difference
+`1.35452979e-16`, and maximum ULP difference one. The user explicitly accepted
+this bounded one-ULP deviation for the performance win. The equivalence test now
+enforces `maxulp=1`; the tracked real sampled GEOS-Chem convection snapshot still
+uses the diagnostic/reference path and remains exact.
+
+### Retained: VDIFF reusable production output
+
+The diagnostics-light VDIFF path now has an opt-in `reuse_output` mode. The
+transport driver and scaling benchmark enable it; direct API calls default to
+fresh output arrays and preserve safe ownership. Reused tracer and humidity
+outputs live in the existing shape/thread-keyed VDIFF workspace and are
+overwritten by the next compatible reuse-enabled call.
+
+Matched single-thread fresh-output versus reused-output timings:
+
+| Tracers | Fresh s | Reused s | Change |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.05921 | 0.04713 | -20.4% |
+| 96 | 0.16848 | 0.12158 | -27.8% |
+| 192 | 0.30807 | 0.21768 | -29.3% |
+
+Outputs and checksums were unchanged. A regression test confirms that two
+reuse-enabled calls return the same workspace-owned buffers while a default
+call returns fresh buffers. This does not eliminate VDIFF's required final
+rescale store, but it removes repeated allocation/page ownership churn around
+that store and is a much larger win than expected from the source-level pass
+alone.
+
+### Rejected: fused TPCORE X/Y DAO2
+
+A low-memory DAO2 prototype fused the X and Y interior traversal within each
+level, preserving the original X-then-Y additions and avoiding the roughly
+one-gigabyte intermediate cost of a literal all-level `qqu/qqv` design. Focused
+TPCORE/transport tests were bitwise compatible.
+
+Matched 96-tracer results:
+
+| Mode | Separate DAO2 s | Fused DAO2 s | Change |
+| --- | ---: | ---: | ---: |
+| 1 thread | 0.79114 | 0.78227 | -1.1% |
+| 4 P-cores | 0.35779 | 0.38173 | +6.7% |
+
+The single-thread movement is too close to noise and the important four-core
+case regressed, so the fused kernel was removed and the original separate DAO2
+kernels remain in production. A literal all-level design was not pursued after
+the stage analysis showed it would require two additional full tracer-sized
+intermediate arrays plus private pole state to preserve dependencies.
+
+### Updated prioritization
+
+The two clearest VTune findings have now paid off. At 96 tracers the retained
+operator-level improvements are approximately 9% for convection and 28% for
+VDIFF. TPCORE remains the dominant end-to-end cost, but the first DAO2 fusion
+hypothesis did not survive matched multi-thread measurement. Future TPCORE work
+should require a new specific hypothesis rather than extending this fusion.
+
+The next profiling decision should therefore be based on fresh end-to-end runs:
+
+1. quantify how much VDIFF output reuse and convection reciprocals reduce the
+   target multi-step residual workload, including real nonzero emissions;
+2. re-run whole-TPCORE VTune after the retained surrounding-operator changes
+   only if TPCORE's end-to-end share justifies another source investigation;
+3. if TPCORE remains the focus, investigate the serial setup/finalize passes or
+   code-generation details in XTP/YTP/FZPPM rather than more DAO2 fusion.

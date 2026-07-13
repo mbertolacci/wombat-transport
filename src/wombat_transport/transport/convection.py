@@ -646,6 +646,8 @@ if njit is not None:
 
                     cmfmc_base = cmfmc_all[cloud_base + 1, col]
                     denom_qc = mass_below_base + cmfmc_base * internal_dt_s
+                    inv_denominator = 1.0 / denominator
+                    inv_denom_qc = 1.0 / denom_qc
                     for tracer in range(ntracer):
                         qb_num[tracer] = 0.0
                     for level in range(cloud_base + 1, nlev):
@@ -653,11 +655,11 @@ if njit is not None:
                         for tracer in range(ntracer):
                             qb_num[tracer] += q_all[level, col, tracer] * delp_dry
                     for tracer in range(ntracer):
-                        qb = qb_num[tracer] / denominator
+                        qb = qb_num[tracer] * inv_denominator
                         plume = (
                             mass_below_base * qb
                             + cmfmc_base * q_all[cloud_base, col, tracer] * internal_dt_s
-                        ) / denom_qc
+                        ) * inv_denom_qc
                         qc[tracer] = plume
                     for level in range(cloud_base + 1, nlev):
                         for tracer in range(ntracer):
@@ -677,10 +679,11 @@ if njit is not None:
                         tendency_scale = internal_dt_s / bmass_all[level, col]
 
                         if entrains:
+                            inv_cmout = 1.0 / cmout
                             for tracer in range(ntracer):
                                 qc_pres = qc[tracer]
                                 current = q_all[level, col, tracer]
-                                qc_next = (cmfmc_below * qc_pres + entrn * current) / cmout
+                                qc_next = (cmfmc_below * qc_pres + entrn * current) * inv_cmout
 
                                 delq = cmfmc_below * qc_pres
                                 temp = -(cmfmc_current * qc_next)

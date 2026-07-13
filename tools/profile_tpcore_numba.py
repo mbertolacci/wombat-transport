@@ -102,6 +102,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--stage-perf-iterations", type=int, default=20)
     parser.add_argument("--stage-worker", choices=STAGE_PERF_STAGES, help=argparse.SUPPRESS)
     parser.add_argument("--stage-worker-iterations", type=int, default=20, help=argparse.SUPPRESS)
+    parser.add_argument("--stage-worker-seconds", type=float, default=0.0, help=argparse.SUPPRESS)
+    parser.add_argument("--stage-worker-direct", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.tracers <= 0:
         parser.error("--tracers must be positive")
@@ -112,6 +114,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         or args.perf_repeat <= 0
         or args.stage_perf_iterations <= 0
         or args.stage_worker_iterations <= 0
+        or args.stage_worker_seconds < 0.0
     ):
         parser.error("repeat counts must be positive and warmup must be non-negative")
     if args.dt_s <= 0.0:
@@ -280,15 +283,20 @@ def _run_stage_worker(args: argparse.Namespace) -> int:
     setup = _make_setup(inputs)
     _warm_numba(inputs, setup)
     state = _prepare_stage_state(inputs, setup)
-    print("READY", flush=True)
-    sys.stdin.readline()
+    checksum = _run_stage_perf_kernel(args.stage_worker, state)
+    if not args.stage_worker_direct:
+        print("READY", flush=True)
+        sys.stdin.readline()
     start = time.perf_counter()
-    checksum = 0.0
-    for _ in range(args.stage_worker_iterations):
+    iterations = 0
+    while iterations < args.stage_worker_iterations or (
+        args.stage_worker_seconds > 0.0 and time.perf_counter() - start < args.stage_worker_seconds
+    ):
         checksum = _run_stage_perf_kernel(args.stage_worker, state)
+        iterations += 1
     elapsed = time.perf_counter() - start
     print(f"stage,{args.stage_worker}")
-    print(f"iterations,{args.stage_worker_iterations}")
+    print(f"iterations,{iterations}")
     print(f"elapsed_s,{elapsed:.9f}")
     print(f"checksum,{checksum:.16g}")
     return 0

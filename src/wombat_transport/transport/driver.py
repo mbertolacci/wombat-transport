@@ -744,6 +744,7 @@ def _run_vdiff_input(state: VdiffInputState, *, diagnostics: bool = False) -> Vd
         dt_s=state.dt_s,
         surface_flux_kg_m2_s=state.surface_flux_for_vdiff,
         diagnostics=diagnostics,
+        reuse_output=not diagnostics,
     )
 
 

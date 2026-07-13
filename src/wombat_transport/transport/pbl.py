@@ -77,6 +77,8 @@ class VdiffDrResult:
 @dataclass(frozen=True)
 class _VdiffFullGridWorkspace:
     nthreads: int
+    tracer_out: np.ndarray
+    sphu_out: np.ndarray
     pmid: np.ndarray
     pint: np.ndarray
     rpdel: np.ndarray
@@ -126,12 +128,16 @@ class _VdiffFullGridWorkspace:
 _VDIFF_FULLGRID_WORKSPACE: _VdiffFullGridWorkspace | None = None
 
 
-def _get_vdiff_fullgrid_workspace(nthreads: int, nlev: int, nlon: int, ntracer: int) -> _VdiffFullGridWorkspace:
+def _get_vdiff_fullgrid_workspace(
+    nthreads: int, nlev: int, nlat: int, nlon: int, ntracer: int
+) -> _VdiffFullGridWorkspace:
     global _VDIFF_FULLGRID_WORKSPACE
     existing = _VDIFF_FULLGRID_WORKSPACE
     if (
         existing is not None
         and existing.nthreads == nthreads
+        and existing.tracer_out.shape == (nlev, nlat, nlon, ntracer)
+        and existing.sphu_out.shape == (nlev, nlat, nlon)
         and existing.pmid.shape == (nthreads, nlon, nlev)
         and existing.tracer_diffused.shape == (nthreads, nlon, nlev, ntracer)
         and existing.tracer_ratio.shape == (nthreads, nlon, ntracer)
@@ -147,6 +153,8 @@ def _get_vdiff_fullgrid_workspace(nthreads: int, nlev: int, nlon: int, ntracer: 
     edge_tracer_shape = (nthreads, nlon, nlev + 1, ntracer)
     _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
         nthreads=nthreads,
+        tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
+        sphu_out=np.empty((nlev, nlat, nlon), dtype=np.float64),
         pmid=np.empty(lev_shape, dtype=np.float64),
         pint=np.empty(edge_shape, dtype=np.float64),
         rpdel=np.empty(lev_shape, dtype=np.float64),
@@ -360,11 +368,14 @@ def run_vdiffdr_one_step(
     dt_s: float = 600.0,
     surface_flux_kg_m2_s: np.ndarray | None = None,
     diagnostics: bool = True,
+    reuse_output: bool = False,
 ) -> VdiffDrResult:
     """Port GEOS-Chem ``VDIFFDR`` for one non-local PBL mixing step.
 
     Inputs and outputs use canonical transport order: level 0 is the model top
-    and tracer is the last axis.
+    and tracer is the last axis. ``reuse_output`` permits the diagnostics-light
+    production path to return workspace-owned arrays that are overwritten by
+    the next compatible VDIFF call.
     """
 
     tracer = np.asarray(tracer_conc, dtype=np.float64)
@@ -448,6 +459,7 @@ def run_vdiffdr_one_step(
             npbl=_max_pbl_levels_from_pressure(pmid),
             surface_flux_is_zero=surface_flux_is_zero,
             nthreads=numba_vdiff_threads,
+            reuse_output=reuse_output,
         )
 
     pmid_pa = pmid * 100.0
@@ -863,13 +875,18 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     npbl: int,
     surface_flux_is_zero: bool,
     nthreads: int,
+    reuse_output: bool,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
-    nlev, _, nlon, ntracer = tracer_top.shape
-    tracer_out = np.empty_like(tracer_top)
-    sphu_out = np.empty_like(sphu_top)
-    workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlon, ntracer)
+    nlev, nlat, nlon, ntracer = tracer_top.shape
+    workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlat, nlon, ntracer)
+    if reuse_output:
+        tracer_out = workspace.tracer_out
+        sphu_out = workspace.sphu_out
+    else:
+        tracer_out = np.empty_like(tracer_top)
+        sphu_out = np.empty_like(sphu_top)
     negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top,
         u_top,
