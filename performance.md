@@ -2135,3 +2135,76 @@ footprint, and the strict parity flags deliberately prohibit many unsafe
 reassociations. The C++ backend remains useful experimental work on its branch
 but was not integrated because it adds maintenance without improving current
 production performance.
+
+## 2026-07-13 post-A/E VTune and native-compiler follow-up
+
+### Matched VTune confirms the removed transport copy
+
+A clean matched one-hour 96-tracer comparison was collected from the preserved
+pre-A/E worktree and integrated post-A/E main tree. Both used the same dedicated
+profiling cache, Numba debug/profiling build, CPU8 affinity, one thread, six
+transport steps, and VTune `uarch-exploration` with bandwidth collection. An
+earlier post-build capture warned of PMU contention and was discarded; neither
+matched result reported that warning.
+
+| Metric | Pre A/E | Post A/E | Change |
+| --- | ---: | ---: | ---: |
+| profiler total | 11.831 s | 11.522 s | -2.61% |
+| TPCORE | 8.707 s | 8.655 s | -0.6% |
+| VDIFF | 1.231 s | 1.137 s | -7.6% |
+| convection | 0.410 s | 0.260 s | -36.6% |
+| `memmove` self CPU | 0.218 s | 0.090 s | -58.9% |
+| CPI | 0.368 | 0.359 | -2.4% |
+| retiring | 46.9% | 48.0% | +1.1 points |
+| back-end bound | 35.3% | 33.8% | -1.5 points |
+| memory bound | 26.8% | 25.4% | -1.4 points |
+| store bound | 10.6% | 9.9% | -0.7 points |
+
+The lower `memmove` time directly confirms that the full tracer-cube convection
+copy disappeared. The residual `memmove` belongs to other application/runtime
+work. DRAM-bound percentage moved `7.8 -> 8.2%` and bandwidth-active percentage
+`28.0 -> 28.5%`; these are shares of a shorter execution and not evidence of
+more absolute work. The broader memory-bound and store-bound signals both fell.
+
+The profiling/debug build and short window amplify the total movement. Retain
+the non-debug matched six-hour result (about 0.6% total at 96 tracers) as the
+production wall-time claim. After A/E, TPCORE is about 75% of this instrumented
+run, VDIFF about 10%, and convection only 2.3%, further concentrating future
+performance leverage in TPCORE.
+
+### Corrected GCC, Clang, and Intel C++ compiler matrix
+
+The native branch was revisited after Clang 18 and Intel oneAPI 2026.1 became
+available. A serious benchmark-harness problem was found during the study: an
+explicit C++ request could silently fall back to Numba when the extension's
+runtime libraries were unavailable. This produced initially attractive but
+false Intel results. All figures below come from corrected subprocesses that
+asserted the extension-reported compiler and FP mode. The native branch now
+makes explicit `cpp` selection fail with loader detail; only `auto` may fall
+back, and the extension reports compiler, FP model, architecture, and LTO state.
+
+Final locked CPU8, one-thread minimum timings were:
+
+| Backend | FP mode | 24 tracers s | 96 tracers s | Numerical result |
+| --- | --- | ---: | ---: | --- |
+| Numba/LLVM | strict | ~0.204 | ~0.750 | reference |
+| GCC 13.3 C++ | strict | 0.2714 | 1.0665 | bitwise identical |
+| Clang 18.1 C++ | strict | 0.2396 | 0.8281 | bitwise identical |
+| Intel 2026.1 C++ | strict | 0.2829 | 1.1129 | bitwise identical |
+| GCC C++ | fast | 0.2125 | 0.8449 | max 131/137 ULP |
+| Clang C++ | fast | 0.2271 | 0.8058 | max 114/116 ULP |
+| Intel C++ | fast | 0.2648 | 1.0416 | max 126/132 ULP |
+
+Granular relaxations did not provide a useful frontier. GCC contraction reached
+`1.0212 s` at 96 tracers with two ULP error; GCC reciprocal remained bitwise
+but gave no speedup. Clang contraction reached `0.8021 s` with 29 ULP error;
+Clang reciprocal reached `0.8259 s` with two ULP error. No mode within one ULP
+beat strict Clang, and strict Clang remained about 10% slower than Numba.
+
+Source-level `restrict`, alignment, `ivdep`, and LTO experiments were also
+rejected after asserted reruns; none improved the final strict frontier. The
+compiler comparison does show that LLVM explains a large part of the original
+GCC gap (`1.0665 -> 0.8281 s`), but not all of it. Numba's specialized parfor
+lowering still outperformed the same algorithm expressed as strict Clang C++.
+Keep Numba as the production backend. The optional native implementation and
+benchmark-hardening commit remain isolated on the Track D branch.
