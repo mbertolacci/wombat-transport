@@ -651,6 +651,20 @@ def test_run_vdiffdr_one_step_reuses_light_output_only_when_requested(monkeypatc
     assert fresh.specific_humidity_kg_kg is not second.specific_humidity_kg_kg
 
 
+def test_run_vdiffdr_one_step_avoids_aliasing_reused_input_and_output(monkeypatch):
+    fixture = _synthetic_vdiff_fixture()
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+
+    first = run_vdiffdr_one_step(**fixture, diagnostics=False, reuse_output=True)
+    second = run_vdiffdr_one_step(
+        **{**fixture, "tracer_conc": first.tracer_conc},
+        diagnostics=False,
+        reuse_output=True,
+    )
+
+    assert not np.shares_memory(second.tracer_conc, first.tracer_conc)
+
+
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
     fixture = _synthetic_vdiff_fixture()
     fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]

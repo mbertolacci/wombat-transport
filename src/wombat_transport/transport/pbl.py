@@ -78,6 +78,7 @@ class VdiffDrResult:
 class _VdiffFullGridWorkspace:
     nthreads: int
     tracer_out: np.ndarray
+    tracer_out_alternate: np.ndarray
     sphu_out: np.ndarray
     pmid: np.ndarray
     pint: np.ndarray
@@ -154,6 +155,7 @@ def _get_vdiff_fullgrid_workspace(
     _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
         nthreads=nthreads,
         tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
+        tracer_out_alternate=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
         sphu_out=np.empty((nlev, nlat, nlon), dtype=np.float64),
         pmid=np.empty(lev_shape, dtype=np.float64),
         pint=np.empty(edge_shape, dtype=np.float64),
@@ -882,7 +884,10 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     nlev, nlat, nlon, ntracer = tracer_top.shape
     workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlat, nlon, ntracer)
     if reuse_output:
-        tracer_out = workspace.tracer_out
+        if np.shares_memory(tracer_top, workspace.tracer_out):
+            tracer_out = workspace.tracer_out_alternate
+        else:
+            tracer_out = workspace.tracer_out
         sphu_out = workspace.sphu_out
     else:
         tracer_out = np.empty_like(tracer_top)

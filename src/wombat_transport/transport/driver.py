@@ -456,7 +456,7 @@ def _run_tpcore_one_step_from_mass(
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
         include_diagnostics_fields=False,
     )
-    convection = _run_convection_input(convection_input, diagnostics=False)
+    convection = _run_convection_input(convection_input, diagnostics=False, consume_input=True)
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(convection.tracer_conc),
@@ -835,7 +835,12 @@ def _build_convection_input_after_vdiff(
     )
 
 
-def _run_convection_input(state: ConvectionInputState, *, diagnostics: bool = False) -> ConvectionResult:
+def _run_convection_input(
+    state: ConvectionInputState,
+    *,
+    diagnostics: bool = False,
+    consume_input: bool = False,
+) -> ConvectionResult:
     return run_cloud_convection_one_step(
         tracer_conc=state.tracer_conc,
         cmfmc_kg_m2_s=state.cmfmc_kg_m2_s,
@@ -853,6 +858,7 @@ def _run_convection_input(state: ConvectionInputState, *, diagnostics: bool = Fa
         dt_s=state.dt_s,
         diagnostics=diagnostics,
         reuse_output=not diagnostics,
+        consume_input=consume_input,
     )
 
 

@@ -116,13 +116,16 @@ def run_cloud_convection_one_step(
     reconstruct_conv_precip_flux: bool = False,
     diagnostics: bool = True,
     reuse_output: bool = False,
+    consume_input: bool = False,
 ) -> ConvectionResult:
     """Port GEOS-Chem ``DO_CLOUD_CONVECTION`` for transport-only tracers.
 
     Arrays use canonical transport order ``(lev_top, lat, lon, tracer)``. Wet
     scavenging is intentionally disabled by using zero soluble fractions, which
     keeps washout arrays as inert plumbing while preserving the long-lived
-    tracer mass transport path.
+    tracer mass transport path. ``consume_input`` is an explicitly destructive
+    diagnostics-light mode for callers that transfer ownership of a writable,
+    contiguous tracer array to convection.
     """
 
     tracer = np.asarray(tracer_conc, dtype=np.float64)
@@ -170,7 +173,14 @@ def run_cloud_convection_one_step(
 
     internal_steps = max(int(dt_s) // 300, 1)
     internal_dt = float(dt_s) / float(internal_steps)
-    if diagnostics or not reuse_output:
+    if consume_input:
+        if diagnostics:
+            raise ValueError("consume_input requires diagnostics=False")
+        if not tracer.flags.c_contiguous or not tracer.flags.writeable:
+            raise ValueError("consume_input requires a writable C-contiguous tracer_conc array")
+        bmass = delp_dry * G0_100
+        tracer_after_top = tracer
+    elif diagnostics or not reuse_output:
         bmass = delp_dry * G0_100
         tracer_after_top = np.ascontiguousarray(tracer).copy()
     else:

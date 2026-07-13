@@ -801,11 +801,19 @@ def test_convection_diagnostics_light_preserves_tracer_update(tmp_path):
     full = run_cloud_convection_one_step(**kwargs, diagnostics=True)
     light = run_cloud_convection_one_step(**kwargs, diagnostics=False)
     reused = run_cloud_convection_one_step(**kwargs, diagnostics=False, reuse_output=True)
+    consumed_input = kwargs["tracer_conc"].copy()
+    consumed = run_cloud_convection_one_step(
+        **{**kwargs, "tracer_conc": consumed_input},
+        diagnostics=False,
+        consume_input=True,
+    )
 
     # The production light kernel hoists tracer-invariant reciprocals. This is
     # allowed to differ from the diagnostic division path by at most one ULP.
     np.testing.assert_array_max_ulp(light.tracer_conc, full.tracer_conc, maxulp=1)
     np.testing.assert_array_max_ulp(reused.tracer_conc, full.tracer_conc, maxulp=1)
+    np.testing.assert_array_max_ulp(consumed.tracer_conc, full.tracer_conc, maxulp=1)
+    assert consumed.tracer_conc is consumed_input
     assert light.diag14_mass_flux.shape == (0,)
     assert light.initial_tracer_mass.shape == (0,)
     assert light.final_tracer_mass.shape == (0,)
