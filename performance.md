@@ -1912,3 +1912,103 @@ next productive options are narrower:
    separately parity-gated longer-term path;
 4. retain sub-percent non-TPCORE improvements, such as caching repeated
    emissions path resolution, when they are independently measurable.
+
+## 2026-07-13 fresh convection VTune profile after reciprocal hoists
+
+Convection was collected again from the current tree rather than relying on the
+older pre-hoist result. The matched synthetic case has 96 tracers, uses the
+diagnostics-light full-grid Numba path, and is pinned to one P-core. Numba
+profiling/debug information was enabled in a dedicated warm cache. The VTune
+run used 120 timed calls after two warmups.
+
+| Metric | Before reciprocal hoists | Current |
+| --- | ---: | ---: |
+| Retiring | 44.0% | 47.2% |
+| Front-end bound | 7.4% | 7.9% |
+| Bad speculation | 1.2% | 1.1% |
+| Back-end bound | 47.4% | 43.8% |
+| Memory bound | 27.4% | 30.2% |
+| Core bound | 20.0% | 13.5% |
+| Divider active | 44.2% of clockticks | 1.7% |
+| DRAM bound | 15.0% of clockticks | 16.6% |
+| Store bound | not previously decisive | 3.2% |
+
+The retained reciprocal rewrite therefore removed the intended bottleneck:
+divider activity fell by about 96%. Convection is now principally a
+memory-traffic problem, with nearly half of the sampled clockticks seeing
+memory-bandwidth activity. The 16% FPU vector-capacity figure is not evidence
+that a C++ rewrite alone would help; the generated Numba loop is already
+retiring efficiently and is increasingly constrained by data movement.
+
+The timed benchmark was `0.11486 s` best and `0.11646 s` mean. VTune attributed
+`11.58 s` across the 120 calls to the compiled parallel gufunc. The hottest
+resolved source locations are the entraining tracer update at lines 683-697 and
+its clamp/writeback pass at lines 712-717. In particular, the calculation of
+`qc_next`, the several flux terms, filling `current_work`/`delq_work`, and then
+rereading those scratch arrays dominate the resolved kernel samples.
+
+The collection also attributed `2.30 s` to `memmove`, about `19.2 ms` per call.
+This agrees with copying the 451 MiB 96-tracer input into convection's reusable
+output buffer. Unlike pairwise checksum work in the benchmark harness, that
+copy is inside the timed production-style call. An opt-in consume/in-place
+handoff from VDIFF to convection could therefore have an approximate 16%
+standalone convection ceiling and roughly a 1% six-hour end-to-end ceiling,
+before implementation overhead and measurement noise.
+
+The current four-P-core run was `0.05539 s` best and `0.06167 s` mean, versus
+`0.11486 s` and `0.11646 s` on one P-core: 2.07x best-time and 1.89x mean-time
+scaling. VTune reported only 0.9% spin/overhead. The poor scaling is therefore
+not primarily a Numba scheduler problem; it is consistent with shared memory
+bandwidth pressure. Do not spend another round on manual convection scheduling
+without a new contrary measurement.
+
+### Revised cross-operator opportunity list
+
+Rank these by a mixture of evidence, plausible end-to-end value, and experiment
+cost rather than by speculative maximum alone:
+
+1. **Consume the VDIFF result in-place in convection.** This directly removes
+   the measured 451 MiB copy and is the clearest new convection experiment.
+   Preserve safe public defaults, as with TPCORE input consumption.
+2. **Remove convection's `current_work`/`delq_work` round trip.** Test a fused
+   arithmetic, clamp, and writeback tracer loop. The exact hot lines and the
+   new memory-bound diagnosis both support this, but parity and vectorization
+   must be checked because the split loop may help LLVM.
+3. **Instrument TPCORE's `qckxyz_needs_fill` decision over representative
+   residual windows.** If the slow fill is never needed, replace repeated
+   checking with a justified policy or cheaper invariant. Measure first.
+4. **Use VTune memory-access on TPCORE's fixed passes.** Pole/init, cross-term,
+   DAO, and finalize are more memory-bound than XTP/YTP/FZPPM. Exact load/store
+   attribution is needed before another fusion attempt.
+5. **Attack VDIFF's final rescale/writeback traffic.** Output allocation is
+   already reused, but the final full-cube mass-to-mixing-ratio pass remains.
+   Test whether it can be combined with its producer or the downstream
+   convection handoff without changing GEOS-Chem ordering.
+6. **Tile VDIFF by columns and tracer blocks.** The aim is to retain its
+   vertical coefficients and working state in cache while reducing full-array
+   rereads; test single-thread first and retain only if four-core scaling is not
+   harmed.
+7. **Formalize whole-chain buffer ownership.** TPCORE already consumes its
+   input and VDIFF reuses output; a two-buffer/ping-pong contract could eliminate
+   remaining operator-boundary copies and allocations across all three stages.
+8. **Cache convection forcing classification for an A3 block.** Active-column
+   and cloud-base discovery uses forcing that is often repeated for three
+   transport steps. This targets scalar setup rather than the dominant tracer
+   loop and ranks below the two newly measured convection ideas.
+9. **Investigate TPCORE code generation, specialization, and instruction
+   footprint in XTP/YTP/FZPPM.** These stages retire reasonably well, so use
+   assembly/code-size evidence and narrow variants rather than broad algebraic
+   rewrites.
+10. **Maintain a parity-gated native TPCORE prototype.** C++ may provide more
+    control over alignment, restrict/alias contracts, vector reports, and
+    streaming stores, but Numba is already producing bare native loops. Native
+    code is most justified for TPCORE's large remaining share, not as a blanket
+    rewrite of all three operators.
+
+The recommended parallel experiment tracks are: (A) convection in-place
+handoff followed by scratch-loop fusion; (B) TPCORE fill instrumentation plus a
+targeted memory-access collection; (C) VDIFF final-writeback fusion and tiling;
+and (D) a separately maintained native TPCORE feasibility prototype. A fifth
+design-only track can specify whole-chain buffer ownership, then feed concrete
+changes into A-C. Tracks A-C are production Numba work; D is a benchmark and
+parity probe until it demonstrates a compelling advantage.
