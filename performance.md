@@ -2012,3 +2012,126 @@ and (D) a separately maintained native TPCORE feasibility prototype. A fifth
 design-only track can specify whole-chain buffer ownership, then feed concrete
 changes into A-C. Tracks A-C are production Numba work; D is a benchmark and
 parity probe until it demonstrates a compelling advantage.
+
+## 2026-07-13 parallel A-E experiment follow-up
+
+Five isolated worktrees investigated the opportunity list. Production retained
+only the convection handoff and two-buffer ownership work from Tracks A and E.
+The TPCORE fill instrumentation, local VDIFF variants, and native C++ backend
+remain out of the integrated production tree.
+
+### Retained: in-place convection and two-buffer transport ownership
+
+Track A added an explicitly destructive diagnostics-light convection mode.
+The transport driver transfers ownership of VDIFF's output to convection, so
+convection mutates it directly instead of copying a complete tracer cube. Safe
+public calls remain non-destructive. The standalone 96-tracer result was:
+
+| Mode | 1 P-core best s | 1 P-core mean s | 4 P-core best s |
+| --- | ---: | ---: | ---: |
+| reusable output with copy | 0.11960 | 0.12164 | 0.08076 |
+| consume input | 0.10099 | 0.10136 | 0.06361 |
+| change | -15.6% | -16.7% | -21.2% |
+
+Checksums were exact and the existing diagnostics/light comparison remained
+within the explicitly accepted one ULP. A separate attempt to fuse convection's
+arithmetic, clamp, and writeback loops regressed `0.11774 -> 0.16342 s` (39%)
+and was removed. The split pass evidently gives LLVM a substantially better
+loop/vectorization shape despite its scratch traffic.
+
+Track E then removed the extra persistent VDIFF cube introduced by ownership
+alternation. Production already allows TPCORE to consume the incoming state.
+After TPCORE writes its output, that old input allocation is dead; it is now
+passed as VDIFF's explicit output and subsequently consumed by convection. The
+steady chain therefore uses two tracer-sized cubes rather than three:
+
+1. incoming TPCORE state, later recycled as VDIFF output and convection state;
+2. reusable TPCORE output.
+
+At 96 tracers one cube is 451.09 MiB. A matched three-hour RSS measurement fell
+from `2,100,052` to `1,594,940 KiB`, a reduction of `505,112 KiB` or about
+493.3 MiB including allocator/page effects. Isolated virtual allocation was
+only about four microseconds; touched-memory capacity and the removed copy are
+the material benefits.
+
+Two matched, serialized, CPU8-pinned six-hour nonzero-emissions comparisons
+were run around the integrated commits. Each includes 36 transport steps:
+
+| Tracers | Pair | Before total s | After total s | Change | Before convection s | After convection s | Convection change |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 1 | 12.310 | 12.096 | -1.74% | 0.715 | 0.520 | -27.3% |
+| 24 | 2, reverse order | 12.253 | 12.025 | -1.86% | 0.727 | 0.512 | -29.6% |
+| 96 | 1 | 36.999 | 36.769 | -0.62% | 2.289 | 1.484 | -35.2% |
+| 96 | 2, reverse order | 37.553 | 37.335 | -0.58% | 2.175 | 1.475 | -32.2% |
+
+The convection saving is stable and directly attributable. At 96 tracers the
+roughly `0.7-0.8 s` stage saving is partly masked in total time by run-to-run
+TPCORE/VDIFF and shared-memory-system variation. Report the measured whole-run
+gain as about 0.6% for this six-hour 96-tracer workload, not the larger isolated
+ceiling. The deterministic 493 MiB RSS reduction is independently valuable for
+running many processes. The full integrated suite passed: 229 tests, two skips.
+
+### Track B: TPCORE fill remains enabled
+
+The `QCKXYZ` correction was needed zero times in 216 representative smooth
+residual steps (24 tracers for six hours and one day; 96 tracers for six hours).
+Skipping its full-cube negative scan has a roughly 3.1% standalone TPCORE
+ceiling. Deliberately discontinuous step and point tracers did trigger the
+correction, however, so disabling it globally would change GEOS-Chem semantics
+for valid sharp tracer fields. The user rejected that risk. Neither an opt-out
+nor the profiling instrumentation was integrated.
+
+Fresh memory-access collections found pole/init 51.9% memory-bound, cross-term
+45.6%, X DAO2 35.8%, Y DAO2 32.4%, and directional finalize 35.0%. An all-level
+dq initialization experiment sometimes improved 96-tracer and four-core runs
+by 2-5%, but its thresholded confirmation was neutral/noisy and regressed the
+important 24-tracer single-thread case. It was removed.
+
+### Track C: no retained local VDIFF rewrite
+
+All tested VDIFF variants preserved exact checksums but failed performance
+confirmation:
+
+- Writing the vertical solve directly into canonical output doubled the
+  96-tracer single-thread time (`~0.121 -> ~0.247 s`) because the recurrence
+  became badly strided.
+- Tracer blocks of 32 were neutral; blocks of 64 moved 96-tracer time only
+  0.2-0.7% and were not reproducible enough to retain.
+- Avoiding untouched upper-level `qmx` copies improved an initial 24-tracer
+  probe but regressed the 96-tracer nonzero-emissions case by 4-8%.
+
+The existing longitude-major scratch layout and tracer-contiguous whole-stage
+passes are already strong. The retained cross-operator buffer ownership work is
+more productive than another local VDIFF loop-order rewrite.
+
+### Track D: full native C++ TPCORE is correct but slower
+
+A complete optional single-thread C++17 TPCORE backend was implemented and
+tuned in its isolated branch, including pole handling, cross/DAO2, X/Y PPM and
+large-Courant branches, vertical PPM, fill, and finalize. It used GCC `-O3
+-march=native -fno-fast-math -ffp-contract=off`, explicit 64-byte scratch
+alignment, vectorization reports, and VTune. Full synthetic 24/96 results were
+bitwise identical to one-thread Numba; a compact fixture differed at 16 of
+5,264 values by at most one ULP.
+
+| Tracers | Numba s | Tuned strict C++ s | C++ change |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.2067 | 0.2428 | +17.5% |
+| 96 | 0.7423 | 0.9682 | +30.4% |
+
+Alignment and dead-store work improved the strict C++ baseline by about 4.7%.
+PGO was neutral. Relaxed reassociation/reciprocal transformations were slower
+and changed roughly 24 million cells, so they were rejected. C++ VTune reported
+63.6% retiring, 16.1% front-end-bound, 17.6% backend-bound, 11.8% memory-bound,
+and 23.5% FPU vector-capacity use. GCC reported widespread AVX2, but sampled
+uops were still dominated by scalar FP (20.5% scalar versus 6.9% vector).
+
+This result does not mean Python interpretation beat C++. Numba compiles the
+TPCORE kernel ahead of execution into specialized native machine code, so both
+paths are native-code compiler outputs. Numba/LLVM had the better code shape
+for this dependency-heavy PPM implementation. C++ syntax alone cannot remove
+the vertical recurrences, limiters, branches, alias questions, or instruction
+footprint, and the strict parity flags deliberately prohibit many unsafe
+reassociations. The C++ backend remains useful experimental work on its branch
+but was not integrated because it adds maintenance without improving current
+production performance.
