@@ -404,8 +404,10 @@ def _run_tpcore_one_step_from_mass(
             report = analyze_tpcore_branches(setup)
             raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
+    input_tracer = canonical_time_slice(tracer_field.data)
+    recycled_tracer = input_tracer if consume_input else None
     tpcore = run_tpcore_one_step_with_setup(
-        tracer_conc=canonical_time_slice(tracer_field.data),
+        tracer_conc=input_tracer,
         setup=setup,
         area_m2=area,
         validate_branches=False,
@@ -437,7 +439,7 @@ def _run_tpcore_one_step_from_mass(
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
     )
-    vdiff = _run_vdiff_input(vdiff_input, diagnostics=False)
+    vdiff = _run_vdiff_input(vdiff_input, diagnostics=False, output_buffer=recycled_tracer)
     state = TracerField(
         names=tracer_field.names,
         data=transport_tracer_to_canonical(vdiff.tracer_conc),
@@ -728,7 +730,12 @@ def _surface_flux_from_active_emissions(
     return np.ascontiguousarray(data[0, -1, :, :, :])
 
 
-def _run_vdiff_input(state: VdiffInputState, *, diagnostics: bool = False) -> VdiffDrResult:
+def _run_vdiff_input(
+    state: VdiffInputState,
+    *,
+    diagnostics: bool = False,
+    output_buffer: np.ndarray | None = None,
+) -> VdiffDrResult:
     return run_vdiffdr_one_step(
         tracer_conc=state.tracer_conc,
         u_m_s=state.u_m_s,
@@ -749,6 +756,7 @@ def _run_vdiff_input(state: VdiffInputState, *, diagnostics: bool = False) -> Vd
         surface_flux_kg_m2_s=state.surface_flux_for_vdiff,
         diagnostics=diagnostics,
         reuse_output=not diagnostics,
+        output_buffer=output_buffer,
     )
 
 

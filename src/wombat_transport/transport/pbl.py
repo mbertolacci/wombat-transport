@@ -78,7 +78,6 @@ class VdiffDrResult:
 class _VdiffFullGridWorkspace:
     nthreads: int
     tracer_out: np.ndarray
-    tracer_out_alternate: np.ndarray
     sphu_out: np.ndarray
     pmid: np.ndarray
     pint: np.ndarray
@@ -155,7 +154,6 @@ def _get_vdiff_fullgrid_workspace(
     _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
         nthreads=nthreads,
         tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
-        tracer_out_alternate=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
         sphu_out=np.empty((nlev, nlat, nlon), dtype=np.float64),
         pmid=np.empty(lev_shape, dtype=np.float64),
         pint=np.empty(edge_shape, dtype=np.float64),
@@ -371,13 +369,16 @@ def run_vdiffdr_one_step(
     surface_flux_kg_m2_s: np.ndarray | None = None,
     diagnostics: bool = True,
     reuse_output: bool = False,
+    output_buffer: np.ndarray | None = None,
 ) -> VdiffDrResult:
     """Port GEOS-Chem ``VDIFFDR`` for one non-local PBL mixing step.
 
     Inputs and outputs use canonical transport order: level 0 is the model top
     and tracer is the last axis. ``reuse_output`` permits the diagnostics-light
     production path to return workspace-owned arrays that are overwritten by
-    the next compatible VDIFF call.
+    the next compatible VDIFF call. ``output_buffer`` lets an ownership-aware
+    caller supply a dead writable tracer buffer; it is only supported by the
+    diagnostics-light full-grid Numba path.
     """
 
     tracer = np.asarray(tracer_conc, dtype=np.float64)
@@ -462,7 +463,10 @@ def run_vdiffdr_one_step(
             surface_flux_is_zero=surface_flux_is_zero,
             nthreads=numba_vdiff_threads,
             reuse_output=reuse_output,
+            output_buffer=output_buffer,
         )
+    if output_buffer is not None:
+        raise ValueError("output_buffer requires diagnostics=False and the full-grid Numba path")
 
     pmid_pa = pmid * 100.0
     pedge_pa = pedge * 100.0
@@ -878,16 +882,27 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     surface_flux_is_zero: bool,
     nthreads: int,
     reuse_output: bool,
+    output_buffer: np.ndarray | None,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     nlev, nlat, nlon, ntracer = tracer_top.shape
     workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlat, nlon, ntracer)
-    if reuse_output:
-        if np.shares_memory(tracer_top, workspace.tracer_out):
-            tracer_out = workspace.tracer_out_alternate
-        else:
-            tracer_out = workspace.tracer_out
+    if output_buffer is not None:
+        tracer_out = np.asarray(output_buffer)
+        if tracer_out.shape != tracer_top.shape or tracer_out.dtype != np.float64:
+            raise ValueError("output_buffer must match tracer_conc shape and float64 dtype")
+        if not tracer_out.flags.c_contiguous or not tracer_out.flags.writeable:
+            raise ValueError("output_buffer must be writable and C-contiguous")
+        if np.shares_memory(tracer_out, tracer_top):
+            raise ValueError("output_buffer must not overlap tracer_conc")
+        sphu_out = workspace.sphu_out
+    elif reuse_output:
+        tracer_out = (
+            np.empty_like(tracer_top)
+            if np.shares_memory(tracer_top, workspace.tracer_out)
+            else workspace.tracer_out
+        )
         sphu_out = workspace.sphu_out
     else:
         tracer_out = np.empty_like(tracer_top)

@@ -665,6 +665,23 @@ def test_run_vdiffdr_one_step_avoids_aliasing_reused_input_and_output(monkeypatc
     assert not np.shares_memory(second.tracer_conc, first.tracer_conc)
 
 
+def test_run_vdiffdr_one_step_uses_owned_output_buffer(monkeypatch):
+    fixture = _synthetic_vdiff_fixture()
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+    output = np.empty_like(fixture["tracer_conc"])
+
+    expected = run_vdiffdr_one_step(**fixture, diagnostics=False)
+    result = run_vdiffdr_one_step(
+        **fixture,
+        diagnostics=False,
+        reuse_output=True,
+        output_buffer=output,
+    )
+
+    assert result.tracer_conc is output
+    np.testing.assert_array_equal(result.tracer_conc, expected.tracer_conc)
+
+
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
     fixture = _synthetic_vdiff_fixture()
     fixture["pedge_hpa"] = fixture["pedge_hpa"][:-1]
@@ -747,6 +764,7 @@ def test_transport_one_step_consumes_input_only_when_requested(monkeypatch):
     )
 
     assert not np.array_equal(consumed_field.data, consumed_before)
+    assert np.shares_memory(consumed_result.state.data, consumed_field.data)
     np.testing.assert_array_equal(consumed_result.state.data, safe_output)
 
 
