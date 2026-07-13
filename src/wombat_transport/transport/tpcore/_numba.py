@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import numpy as np
 
+from wombat_transport.transport.numba_control import apply_numba_thread_count
 from wombat_transport.transport.numba_control import numba_enabled
 from wombat_transport.transport.numba_control import numba_mode
 from wombat_transport.transport.tpcore.types import TpcoreSetup
 
 try:  # Optional acceleration dependency.
+    from numba import get_thread_id
     from numba import njit
+    from numba import prange
 except ImportError:  # pragma: no cover - exercised in environments without numba.
+    get_thread_id = None
     njit = None
+    prange = range
 
 
 _NUMBA_AVAILABLE = njit is not None
@@ -24,28 +29,50 @@ _TPCORE_NUMBA_WORKSPACE = None
 
 
 class _TpcoreNumbaWorkspace:
-    __slots__ = ("shape", "q", "dq1", "qqu", "qqv", "x_workspace", "y_workspace", "ua", "va", "jn", "js")
+    __slots__ = (
+        "shape",
+        "nthreads",
+        "q",
+        "dq1",
+        "qqu",
+        "qqv",
+        "x_workspace",
+        "y_workspace",
+        "z_workspace",
+        "ua",
+        "va",
+        "jn",
+        "js",
+    )
 
-    def __init__(self, nlev: int, nlat: int, nlon: int, ntracer: int) -> None:
+    def __init__(self, nlev: int, nlat: int, nlon: int, ntracer: int, nthreads: int) -> None:
         self.shape = (nlev, nlat, nlon, ntracer)
+        self.nthreads = nthreads
         self.q = np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64)
         self.dq1 = np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64)
         self.qqu = np.empty((nlat, nlon, ntracer), dtype=np.float64)
         self.qqv = np.empty((nlat, nlon, ntracer), dtype=np.float64)
-        self.x_workspace = _make_xtp_numba_workspace(nlat, nlon, ntracer)
-        self.y_workspace = _make_ytp_numba_workspace(nlat, nlon, ntracer)
+        self.x_workspace = _make_xtp_numba_workspace(nthreads, nlat, nlon, ntracer)
+        self.y_workspace = _make_ytp_numba_workspace(nthreads, nlat, nlon, ntracer)
+        self.z_workspace = _make_fzppm_numba_workspace(nthreads, nlev, ntracer)
         self.ua = np.empty((nlev, nlat, nlon), dtype=np.float64)
         self.va = np.empty((nlev, nlat, nlon), dtype=np.float64)
         self.jn = np.empty(nlev, dtype=np.int64)
         self.js = np.empty(nlev, dtype=np.int64)
 
 
-def _get_tpcore_numba_workspace(nlev: int, nlat: int, nlon: int, ntracer: int) -> _TpcoreNumbaWorkspace:
+def _get_tpcore_numba_workspace(
+    nlev: int,
+    nlat: int,
+    nlon: int,
+    ntracer: int,
+    nthreads: int,
+) -> _TpcoreNumbaWorkspace:
     global _TPCORE_NUMBA_WORKSPACE
     shape = (nlev, nlat, nlon, ntracer)
     workspace = _TPCORE_NUMBA_WORKSPACE
-    if workspace is None or workspace.shape != shape:
-        workspace = _TpcoreNumbaWorkspace(nlev, nlat, nlon, ntracer)
+    if workspace is None or workspace.shape != shape or workspace.nthreads != nthreads:
+        workspace = _TpcoreNumbaWorkspace(nlev, nlat, nlon, ntracer, nthreads)
         _TPCORE_NUMBA_WORKSPACE = workspace
     return workspace
 
@@ -114,11 +141,24 @@ def _make_tpcore_prepass_numba_workspace(nlat: int, nlon: int, ntracer: int) -> 
     )
 
 
-def _make_xtp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.ndarray, ...]:
+def _make_xtp_numba_workspace(nthreads: int, nlat: int, nlon: int, ntracer: int) -> tuple[np.ndarray, ...]:
     return (
-        np.empty((nlon, ntracer), dtype=np.float64),
-        np.empty((nlon, ntracer), dtype=np.float64),
-        np.empty((nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlon, ntracer), dtype=np.float64),
+    )
+
+
+def _make_ytp_numba_workspace(nthreads: int, nlat: int, nlon: int, ntracer: int) -> tuple[np.ndarray, ...]:
+    return (
+        np.empty((nthreads, nlat, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlat, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlat, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlat, ntracer), dtype=np.float64),
         np.empty((nlon, ntracer), dtype=np.float64),
         np.empty((nlon, ntracer), dtype=np.float64),
         np.empty((nlon, ntracer), dtype=np.float64),
@@ -126,12 +166,15 @@ def _make_xtp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.nd
     )
 
 
-def _make_ytp_numba_workspace(nlat: int, nlon: int, ntracer: int) -> tuple[np.ndarray, ...]:
+def _make_fzppm_numba_workspace(nthreads: int, nlev: int, ntracer: int) -> tuple[np.ndarray, ...]:
     return (
-        np.empty((nlat, ntracer), dtype=np.float64),
-        np.empty((nlat, ntracer), dtype=np.float64),
-        np.empty((nlat, ntracer), dtype=np.float64),
-        np.empty((nlat, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlev, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlev, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlev, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlev, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlev, ntracer), dtype=np.float64),
+        np.empty((nthreads, nlev, ntracer), dtype=np.float64),
+        np.empty((nthreads, ntracer), dtype=np.float64),
     )
 
 
@@ -146,7 +189,8 @@ def _advect_tracers_fused_numba(
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     nlev, nlat, nlon, ntracer = tracer_conc.shape
-    workspace = _get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer)
+    nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
+    workspace = _get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer, nthreads)
     q = workspace.q
     np.copyto(q, tracer_conc)
     dq1 = workspace.dq1 if reuse_output else np.empty_like(q)
@@ -175,6 +219,7 @@ def _advect_tracers_fused_numba(
         workspace.qqv,
         *workspace.x_workspace,
         *workspace.y_workspace,
+        *workspace.z_workspace,
     )
     return dq1
 
@@ -212,19 +257,21 @@ def _finalize_tpcore_output_numba(dq1: np.ndarray, delp2: np.ndarray) -> None:
 def _fzppm_batch_numba(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
-    _fzppm_batch_numba_kernel(delp1, wz, dq1, q)
+    nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
+    workspace = _make_fzppm_numba_workspace(nthreads, q.shape[0], q.shape[3])
+    _fzppm_batch_numba_kernel(delp1, wz, dq1, q, *workspace)
 
 
 if njit is not None:
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _set_cross_terms_numba_kernel(cx: np.ndarray, cy: np.ndarray, ua: np.ndarray, va: np.ndarray) -> None:
         nlev = cx.shape[0]
         nlat = cx.shape[1]
         nlon = cx.shape[2]
         j1p = 2
         j2p = nlat - 3
-        for level in range(nlev):
+        for level in prange(nlev):
             for j in range(nlat):
                 for i in range(nlon):
                     ua[level, j, i] = 0.0
@@ -271,7 +318,7 @@ if njit is not None:
             js[level] = js_value
             jn[level] = jn_value
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _average_const_poles_batch_numba_kernel(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) -> None:
         nlat = q.shape[0]
         nlon = q.shape[1]
@@ -288,7 +335,7 @@ if njit is not None:
             for i in range(nlon):
                 north_denom += delp1[j, i] * area
 
-        for tracer in range(ntracer):
+        for tracer in prange(ntracer):
             south = 0.0
             north = 0.0
             for j in range(2):
@@ -307,6 +354,19 @@ if njit is not None:
             for j in range(nlat - 2, nlat):
                 for i in range(nlon):
                     q[j, i, tracer] = north
+
+
+    @njit(cache=True, parallel=True)
+    def _init_dq_mass_numba_kernel(q: np.ndarray, dq1: np.ndarray, delp1: np.ndarray) -> None:
+        nlat = q.shape[0]
+        nlon = q.shape[1]
+        ntracer = q.shape[2]
+        for cell in prange(nlat * nlon):
+            j = cell // nlon
+            i = cell - j * nlon
+            mass = delp1[j, i]
+            for tracer in range(ntracer):
+                dq1[j, i, tracer] = q[j, i, tracer] * mass
 
 
     @njit(cache=True)
@@ -357,14 +417,14 @@ if njit is not None:
         return False
 
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _finalize_tpcore_output_numba_kernel(dq1: np.ndarray, delp2: np.ndarray) -> None:
         nlev = dq1.shape[0]
         nlat = dq1.shape[1]
         nlon = dq1.shape[2]
         ntracer = dq1.shape[3]
 
-        for lev in range(nlev):
+        for lev in prange(nlev):
             for lat in range(nlat):
                 if lat == 1 or lat == nlat - 2:
                     continue
@@ -414,6 +474,17 @@ if njit is not None:
         al_y: np.ndarray,
         ar_y: np.ndarray,
         a6_y: np.ndarray,
+        south_flux_y: np.ndarray,
+        north_flux_y: np.ndarray,
+        south_dao2_y: np.ndarray,
+        north_dao2_y: np.ndarray,
+        dpi_z: np.ndarray,
+        dc_z: np.ndarray,
+        al_z: np.ndarray,
+        ar_z: np.ndarray,
+        a6_z: np.ndarray,
+        dca_z: np.ndarray,
+        prev_flux_z: np.ndarray,
     ) -> None:
         nlev = q.shape[0]
         nlat = q.shape[1]
@@ -422,11 +493,7 @@ if njit is not None:
 
         for level in range(nlev):
             _average_const_poles_batch_numba_kernel(q[level], delp1[level], area_1d)
-            for j in range(nlat):
-                for i in range(nlon):
-                    mass = delp1[level, j, i]
-                    for tracer in range(ntracer):
-                        dq1[level, j, i, tracer] = q[level, j, i, tracer] * mass
+            _init_dq_mass_numba_kernel(q[level], dq1[level], delp1[level])
 
             _calc_advec_cross_terms_batch_numba_kernel(
                 q[level],
@@ -438,7 +505,7 @@ if njit is not None:
                 qqv,
             )
             _xadv_dao2_apply_batch_numba_kernel(q[level], qqv, ua[level], int(jn[level]), int(js[level]))
-            _yadv_dao2_apply_batch_numba_kernel(q[level], qqu, va[level])
+            _yadv_dao2_apply_batch_numba_kernel(q[level], qqu, va[level], south_dao2_y, north_dao2_y)
 
             _xtp_batch_numba_kernel(
                 dq1[level],
@@ -468,16 +535,18 @@ if njit is not None:
                 al_y,
                 ar_y,
                 a6_y,
+                south_flux_y,
+                north_flux_y,
             )
 
-        _fzppm_batch_numba_kernel(delp1, wz, dq1, q)
+        _fzppm_batch_numba_kernel(delp1, wz, dq1, q, dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z)
         if fill:
             if _qckxyz_needs_fill_numba_kernel(dq1):
                 _qckxyz_batch_numba_kernel(dq1)
         _finalize_tpcore_output_numba_kernel(dq1, delp2)
 
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _calc_advec_cross_terms_batch_numba_kernel(
         q: np.ndarray,
         ua: np.ndarray,
@@ -493,18 +562,18 @@ if njit is not None:
         j1p = 2
         j2p = nlat - 3
 
-        for j in range(j1p):
+        for j in prange(j1p):
             for i in range(nlon):
                 for tracer in range(ntracer):
                     qqu[j, i, tracer] = q[j, i, tracer]
                     qqv[j, i, tracer] = q[j, i, tracer]
-        for j in range(j2p + 1, nlat):
+        for j in prange(j2p + 1, nlat):
             for i in range(nlon):
                 for tracer in range(ntracer):
                     qqu[j, i, tracer] = q[j, i, tracer]
                     qqv[j, i, tracer] = q[j, i, tracer]
 
-        for j in range(j1p, j2p + 1):
+        for j in prange(j1p, j2p + 1):
             if j <= js or j >= jn:
                 for i in range(nlon):
                     ua_value = ua[j, i]
@@ -701,7 +770,7 @@ if njit is not None:
                 ady[nlat - 1, i, tracer] = north
 
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _xadv_dao2_apply_batch_numba_kernel(
         q: np.ndarray,
         qqv: np.ndarray,
@@ -715,7 +784,7 @@ if njit is not None:
         j1p = 2
         j2p = nlat - 3
 
-        for j in range(j1p, j2p + 1):
+        for j in prange(j1p, j2p + 1):
             for i in range(nlon):
                 iu0 = int(np.rint(ua[j, i]))
                 ru = float(iu0) - ua[j, i]
@@ -733,15 +802,21 @@ if njit is not None:
                     q[j, i, tracer] += ru * (a1 * ru + b1) + c1
 
 
-    @njit(cache=True)
-    def _yadv_dao2_apply_batch_numba_kernel(q: np.ndarray, qqu: np.ndarray, va: np.ndarray) -> None:
+    @njit(cache=True, parallel=True)
+    def _yadv_dao2_apply_batch_numba_kernel(
+        q: np.ndarray,
+        qqu: np.ndarray,
+        va: np.ndarray,
+        south_flux: np.ndarray,
+        north_flux: np.ndarray,
+    ) -> None:
         nlat = qqu.shape[0]
         nlon = qqu.shape[1]
         ntracer = qqu.shape[2]
         j1p = 2
         j2p = nlat - 3
 
-        for j in range(j1p, j2p + 1):
+        for j in prange(j1p, j2p + 1):
             for i in range(nlon):
                 jv0 = int(np.rint(va[j, i]))
                 rv = float(jv0) - va[j, i]
@@ -760,37 +835,43 @@ if njit is not None:
                     c1 = q_j - qqu[j, i, tracer]
                     q[j, i, tracer] += rv * (a1 * rv + b1) + c1
 
+        for i in prange(nlon):
+            j = 1
+            jv0 = int(np.rint(va[j, i]))
+            rv = float(jv0) - va[j, i]
+            jv = j - jv0
+            jm1 = jv - 1
+            jp1 = jv + 1
+            for tracer in range(ntracer):
+                q_j = qqu[jv, i, tracer] if jv >= 0 and jv < nlat else 0.0
+                q_jp1 = qqu[jp1, i, tracer] if jp1 >= 0 and jp1 < nlat else 0.0
+                q_jm1 = qqu[jm1, i, tracer] if jm1 >= 0 and jm1 < nlat else 0.0
+                a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+                b1 = 0.5 * (q_jp1 - q_jm1)
+                c1 = q_j - qqu[j, i, tracer]
+                south_flux[i, tracer] = rv * (a1 * rv + b1) + c1
+
+            j = nlat - 2
+            jv0 = int(np.rint(va[j, i]))
+            rv = float(jv0) - va[j, i]
+            jv = j - jv0
+            jm1 = jv - 1
+            jp1 = jv + 1
+            for tracer in range(ntracer):
+                q_j = qqu[jv, i, tracer] if jv >= 0 and jv < nlat else 0.0
+                q_jp1 = qqu[jp1, i, tracer] if jp1 >= 0 and jp1 < nlat else 0.0
+                q_jm1 = qqu[jm1, i, tracer] if jm1 >= 0 and jm1 < nlat else 0.0
+                a1 = 0.5 * (q_jp1 + q_jm1) - q_j
+                b1 = 0.5 * (q_jp1 - q_jm1)
+                c1 = q_j - qqu[j, i, tracer]
+                north_flux[i, tracer] = rv * (a1 * rv + b1) + c1
+
         for tracer in range(ntracer):
             south = 0.0
             north = 0.0
             for i in range(nlon):
-                j = 1
-                jv0 = int(np.rint(va[j, i]))
-                rv = float(jv0) - va[j, i]
-                jv = j - jv0
-                jm1 = jv - 1
-                jp1 = jv + 1
-                q_j = qqu[jv, i, tracer] if jv >= 0 and jv < nlat else 0.0
-                q_jp1 = qqu[jp1, i, tracer] if jp1 >= 0 and jp1 < nlat else 0.0
-                q_jm1 = qqu[jm1, i, tracer] if jm1 >= 0 and jm1 < nlat else 0.0
-                a1 = 0.5 * (q_jp1 + q_jm1) - q_j
-                b1 = 0.5 * (q_jp1 - q_jm1)
-                c1 = q_j - qqu[j, i, tracer]
-                south += rv * (a1 * rv + b1) + c1
-
-                j = nlat - 2
-                jv0 = int(np.rint(va[j, i]))
-                rv = float(jv0) - va[j, i]
-                jv = j - jv0
-                jm1 = jv - 1
-                jp1 = jv + 1
-                q_j = qqu[jv, i, tracer] if jv >= 0 and jv < nlat else 0.0
-                q_jp1 = qqu[jp1, i, tracer] if jp1 >= 0 and jp1 < nlat else 0.0
-                q_jm1 = qqu[jm1, i, tracer] if jm1 >= 0 and jm1 < nlat else 0.0
-                a1 = 0.5 * (q_jp1 + q_jm1) - q_j
-                b1 = 0.5 * (q_jp1 - q_jm1)
-                c1 = q_j - qqu[j, i, tracer]
-                north += rv * (a1 * rv + b1) + c1
+                south += south_flux[i, tracer]
+                north += north_flux[i, tracer]
             south /= float(nlon)
             north /= float(nlon)
             for i in range(nlon):
@@ -800,7 +881,7 @@ if njit is not None:
                 q[nlat - 1, i, tracer] += north
 
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _xtp_batch_numba_kernel(
         dq1: np.ndarray,
         qqv: np.ndarray,
@@ -827,7 +908,15 @@ if njit is not None:
         r23 = 2.0 / 3.0
         r24 = 1.0 / 24.0
 
-        for j in range(j1p, j2p + 1):
+        for j in prange(j1p, j2p + 1):
+            thread_id = get_thread_id()
+            dcx_row = dcx[thread_id]
+            fx_row = fx[thread_id]
+            al_row = al[thread_id]
+            ar_row = ar[thread_id]
+            a6_row = a6[thread_id]
+            dc_row = dc[thread_id]
+            qa_row = qa[thread_id]
             if j > j1p and j < j2p:
                 for i in range(nlon):
                     im1 = (i - 1) % nlon
@@ -842,65 +931,67 @@ if njit is not None:
                         pmax = max(q_im1, q_i, q_ip1) - q_i
                         pmin = q_i - min(q_im1, q_i, q_ip1)
                         bounded = min(abs(tmp), pmin, pmax)
-                        dcx[i, tracer] = bounded if tmp >= 0.0 else -bounded
+                        dcx_row[i, tracer] = bounded if tmp >= 0.0 else -bounded
 
             if j > js and j < jn:
                 if j == j1p or j == j2p:
                     for i in range(nlon):
                         iu = (int((i + 1.0) - cx[j, i]) - 1) % nlon
                         for tracer in range(ntracer):
-                            fx[i, tracer] = qqv[j, iu, tracer]
+                            fx_row[i, tracer] = qqv[j, iu, tracer]
                 elif j <= j1p + jvan or j >= j2p - jvan:
                     for i in range(nlon):
                         iu = (int((i + 1.0) - cx[j, i]) - 1) % nlon
                         sign_value = 1.0 if cx[j, i] >= 0.0 else -1.0
                         for tracer in range(ntracer):
-                            fx[i, tracer] = qqv[j, iu, tracer] + dcx[iu, tracer] * (sign_value - cx[j, i])
+                            fx_row[i, tracer] = qqv[j, iu, tracer] + dcx_row[iu, tracer] * (sign_value - cx[j, i])
                 else:
                     for i in range(nlon):
                         im1 = (i - 1) % nlon
                         for tracer in range(ntracer):
                             rval = 0.5 * (qqv[j, im1, tracer] + qqv[j, i, tracer])
-                            rval += (dcx[im1, tracer] - dcx[i, tracer]) * r13
-                            al[i, tracer] = rval
-                            ar[im1, tracer] = rval
-                            dc[i, tracer] = dcx[i, tracer]
-                            qa[i, tracer] = qqv[j, i, tracer]
+                            rval += (dcx_row[im1, tracer] - dcx_row[i, tracer]) * r13
+                            al_row[i, tracer] = rval
+                            ar_row[im1, tracer] = rval
+                            dc_row[i, tracer] = dcx_row[i, tracer]
+                            qa_row[i, tracer] = qqv[j, i, tracer]
                     for i in range(nlon):
                         for tracer in range(ntracer):
-                            a6[i, tracer] = 3.0 * (qa[i, tracer] + qa[i, tracer] - (al[i, tracer] + ar[i, tracer]))
-                            if dc[i, tracer] == 0.0:
-                                a6[i, tracer] = 0.0
-                                al[i, tracer] = qa[i, tracer]
-                                ar[i, tracer] = qa[i, tracer]
+                            a6_row[i, tracer] = 3.0 * (
+                                qa_row[i, tracer] + qa_row[i, tracer] - (al_row[i, tracer] + ar_row[i, tracer])
+                            )
+                            if dc_row[i, tracer] == 0.0:
+                                a6_row[i, tracer] = 0.0
+                                al_row[i, tracer] = qa_row[i, tracer]
+                                ar_row[i, tracer] = qa_row[i, tracer]
                             else:
-                                da1 = ar[i, tracer] - al[i, tracer]
+                                da1 = ar_row[i, tracer] - al_row[i, tracer]
                                 da2 = da1 * da1
-                                a6da = a6[i, tracer] * da1
+                                a6da = a6_row[i, tracer] * da1
                                 if a6da < -da2:
-                                    a6[i, tracer] = 3.0 * (al[i, tracer] - qa[i, tracer])
-                                    ar[i, tracer] = al[i, tracer] - a6[i, tracer]
+                                    a6_row[i, tracer] = 3.0 * (al_row[i, tracer] - qa_row[i, tracer])
+                                    ar_row[i, tracer] = al_row[i, tracer] - a6_row[i, tracer]
                                 elif a6da > da2:
-                                    a6[i, tracer] = 3.0 * (ar[i, tracer] - qa[i, tracer])
-                                    al[i, tracer] = ar[i, tracer] - a6[i, tracer]
+                                    a6_row[i, tracer] = 3.0 * (ar_row[i, tracer] - qa_row[i, tracer])
+                                    al_row[i, tracer] = ar_row[i, tracer] - a6_row[i, tracer]
                     for i in range(nlon):
                         c = cx[j, i]
                         if c > 0.0:
                             im1 = (i - 1) % nlon
                             for tracer in range(ntracer):
-                                fx[i, tracer] = ar[im1, tracer] + 0.5 * c * (
-                                    al[im1, tracer]
-                                    - ar[im1, tracer]
-                                    + a6[im1, tracer] * (1.0 - r23 * c)
+                                fx_row[i, tracer] = ar_row[im1, tracer] + 0.5 * c * (
+                                    al_row[im1, tracer]
+                                    - ar_row[im1, tracer]
+                                    + a6_row[im1, tracer] * (1.0 - r23 * c)
                                 )
                         else:
                             for tracer in range(ntracer):
-                                fx[i, tracer] = al[i, tracer] - 0.5 * c * (
-                                    ar[i, tracer] - al[i, tracer] + a6[i, tracer] * (1.0 + r23 * c)
+                                fx_row[i, tracer] = al_row[i, tracer] - 0.5 * c * (
+                                    ar_row[i, tracer] - al_row[i, tracer] + a6_row[i, tracer] * (1.0 + r23 * c)
                                 )
                 for i in range(nlon):
                     for tracer in range(ntracer):
-                        fx[i, tracer] *= xmass[j, i]
+                        fx_row[i, tracer] *= xmass[j, i]
             else:
                 for i in range(nlon):
                     ic = int(cx[j, i])
@@ -914,43 +1005,43 @@ if njit is not None:
                                 val = rc * qqv[j, iu_mod, tracer]
                                 for ix in range(isav, i):
                                     val += qqv[j, ix % nlon, tracer]
-                                fx[i, tracer] = pu[j, i] * val
+                                fx_row[i, tracer] = pu[j, i] * val
                         elif cx[j, i] < -1.0:
                             for tracer in range(ntracer):
                                 val = rc * qqv[j, iu_mod, tracer]
                                 for ix in range(i, isav):
                                     val -= qqv[j, ix % nlon, tracer]
-                                fx[i, tracer] = pu[j, i] * val
+                                fx_row[i, tracer] = pu[j, i] * val
                         else:
                             for tracer in range(ntracer):
-                                fx[i, tracer] = pu[j, i] * (rc * qqv[j, iu_mod, tracer])
+                                fx_row[i, tracer] = pu[j, i] * (rc * qqv[j, iu_mod, tracer])
                     else:
                         if cx[j, i] > 1.0:
                             for tracer in range(ntracer):
-                                val = rc * (qqv[j, iu_mod, tracer] + dcx[iu_mod, tracer] * (sign_value - rc))
+                                val = rc * (qqv[j, iu_mod, tracer] + dcx_row[iu_mod, tracer] * (sign_value - rc))
                                 for ix in range(isav, i):
                                     val += qqv[j, ix % nlon, tracer]
-                                fx[i, tracer] = pu[j, i] * val
+                                fx_row[i, tracer] = pu[j, i] * val
                         elif cx[j, i] < -1.0:
                             for tracer in range(ntracer):
-                                val = rc * (qqv[j, iu_mod, tracer] + dcx[iu_mod, tracer] * (sign_value - rc))
+                                val = rc * (qqv[j, iu_mod, tracer] + dcx_row[iu_mod, tracer] * (sign_value - rc))
                                 for ix in range(i, isav):
                                     val -= qqv[j, ix % nlon, tracer]
-                                fx[i, tracer] = pu[j, i] * val
+                                fx_row[i, tracer] = pu[j, i] * val
                         else:
                             for tracer in range(ntracer):
-                                fx[i, tracer] = pu[j, i] * (
-                                    rc * (qqv[j, iu_mod, tracer] + dcx[iu_mod, tracer] * (sign_value - rc))
+                                fx_row[i, tracer] = pu[j, i] * (
+                                    rc * (qqv[j, iu_mod, tracer] + dcx_row[iu_mod, tracer] * (sign_value - rc))
                                 )
 
             for i in range(nlon - 1):
                 for tracer in range(ntracer):
-                    dq1[j, i, tracer] += fx[i, tracer] - fx[i + 1, tracer]
+                    dq1[j, i, tracer] += fx_row[i, tracer] - fx_row[i + 1, tracer]
             for tracer in range(ntracer):
-                dq1[j, nlon - 1, tracer] += fx[nlon - 1, tracer] - fx[0, tracer]
+                dq1[j, nlon - 1, tracer] += fx_row[nlon - 1, tracer] - fx_row[0, tracer]
 
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _ytp_batch_numba_kernel(
         dq1: np.ndarray,
         qqu: np.ndarray,
@@ -963,6 +1054,8 @@ if njit is not None:
         al: np.ndarray,
         ar: np.ndarray,
         a6: np.ndarray,
+        south_flux: np.ndarray,
+        north_flux: np.ndarray,
     ) -> None:
         nlat = dq1.shape[0]
         nlon = dq1.shape[1]
@@ -973,14 +1066,15 @@ if njit is not None:
         r23 = 2.0 / 3.0
         r24 = 1.0 / 24.0
 
-        for tracer in range(ntracer):
-            al[0, tracer] = 0.0
-            ar[nlat - 1, tracer] = 0.0
-
-        for i in range(nlon):
+        for i in prange(nlon):
+            thread_id = get_thread_id()
+            dcy_col = dcy[thread_id]
+            al_col = al[thread_id]
+            ar_col = ar[thread_id]
+            a6_col = a6[thread_id]
             for tracer in range(ntracer):
-                dcy[0, tracer] = 0.0
-                dcy[nlat - 1, tracer] = 0.0
+                dcy_col[0, tracer] = 0.0
+                dcy_col[nlat - 1, tracer] = 0.0
 
             for j in range(1, nlat - 1):
                 for tracer in range(ntracer):
@@ -993,48 +1087,48 @@ if njit is not None:
                     pmax = max(qjm1, qj, qjp1) - qj
                     pmin = qj - min(qjm1, qj, qjp1)
                     bounded = min(abs(tmp), pmin, pmax)
-                    dcy[j, tracer] = bounded if tmp >= 0.0 else -bounded
+                    dcy_col[j, tracer] = bounded if tmp >= 0.0 else -bounded
 
             for j in range(1, nlat):
                 for tracer in range(ntracer):
-                    al[j, tracer] = 0.5 * (qqu[j - 1, i, tracer] + qqu[j, i, tracer])
-                    al[j, tracer] += (dcy[j - 1, tracer] - dcy[j, tracer]) * r13
-                    ar[j - 1, tracer] = al[j, tracer]
+                    al_col[j, tracer] = 0.5 * (qqu[j - 1, i, tracer] + qqu[j, i, tracer])
+                    al_col[j, tracer] += (dcy_col[j - 1, tracer] - dcy_col[j, tracer]) * r13
+                    ar_col[j - 1, tracer] = al_col[j, tracer]
 
             for j in range(1, nlat - 1):
                 for tracer in range(ntracer):
-                    a6[j, tracer] = 3.0 * (
-                        qqu[j, i, tracer] + qqu[j, i, tracer] - (al[j, tracer] + ar[j, tracer])
+                    a6_col[j, tracer] = 3.0 * (
+                        qqu[j, i, tracer] + qqu[j, i, tracer] - (al_col[j, tracer] + ar_col[j, tracer])
                     )
-                    if dcy[j, tracer] == 0.0:
-                        a6[j, tracer] = 0.0
-                        al[j, tracer] = qqu[j, i, tracer]
-                        ar[j, tracer] = qqu[j, i, tracer]
+                    if dcy_col[j, tracer] == 0.0:
+                        a6_col[j, tracer] = 0.0
+                        al_col[j, tracer] = qqu[j, i, tracer]
+                        ar_col[j, tracer] = qqu[j, i, tracer]
                     else:
-                        da1 = ar[j, tracer] - al[j, tracer]
+                        da1 = ar_col[j, tracer] - al_col[j, tracer]
                         da2 = da1 * da1
-                        a6da = a6[j, tracer] * da1
+                        a6da = a6_col[j, tracer] * da1
                         if a6da < -da2:
-                            a6[j, tracer] = 3.0 * (al[j, tracer] - qqu[j, i, tracer])
-                            ar[j, tracer] = al[j, tracer] - a6[j, tracer]
+                            a6_col[j, tracer] = 3.0 * (al_col[j, tracer] - qqu[j, i, tracer])
+                            ar_col[j, tracer] = al_col[j, tracer] - a6_col[j, tracer]
                         elif a6da > da2:
-                            a6[j, tracer] = 3.0 * (ar[j, tracer] - qqu[j, i, tracer])
-                            al[j, tracer] = ar[j, tracer] - a6[j, tracer]
+                            a6_col[j, tracer] = 3.0 * (ar_col[j, tracer] - qqu[j, i, tracer])
+                            al_col[j, tracer] = ar_col[j, tracer] - a6_col[j, tracer]
 
             for j in range(j1p, j2p + 2):
                 jm1 = j - 1
                 c = cy[j, i]
                 if c > 0.0:
                     for tracer in range(ntracer):
-                        qqv[j, i, tracer] = ar[jm1, tracer] + 0.5 * c * (
-                            al[jm1, tracer]
-                            - ar[jm1, tracer]
-                            + a6[jm1, tracer] * (1.0 - r23 * c)
+                        qqv[j, i, tracer] = ar_col[jm1, tracer] + 0.5 * c * (
+                            al_col[jm1, tracer]
+                            - ar_col[jm1, tracer]
+                            + a6_col[jm1, tracer] * (1.0 - r23 * c)
                         )
                 else:
                     for tracer in range(ntracer):
-                        qqv[j, i, tracer] = al[j, tracer] - 0.5 * c * (
-                            ar[j, tracer] - al[j, tracer] + a6[j, tracer] * (1.0 + r23 * c)
+                        qqv[j, i, tracer] = al_col[j, tracer] - 0.5 * c * (
+                            ar_col[j, tracer] - al_col[j, tracer] + a6_col[j, tracer] * (1.0 + r23 * c)
                         )
 
             for tracer in range(ntracer):
@@ -1044,12 +1138,15 @@ if njit is not None:
                     qqv[j + 1, i, tracer] *= ymass[j + 1, i]
                     dq1[j, i, tracer] += (qqv[j, i, tracer] - qqv[j + 1, i, tracer]) * geofac[j]
             for tracer in range(ntracer):
-                al[0, tracer] += qqv[j1p, i, tracer]
-                ar[nlat - 1, tracer] += qqv[j2p + 1, i, tracer]
+                south_flux[i, tracer] = qqv[j1p, i, tracer]
+                north_flux[i, tracer] = qqv[j2p + 1, i, tracer]
 
         for tracer in range(ntracer):
-            sumsp = al[0, tracer]
-            sumnp = ar[nlat - 1, tracer]
+            sumsp = 0.0
+            sumnp = 0.0
+            for i in range(nlon):
+                sumsp += south_flux[i, tracer]
+                sumnp += north_flux[i, tracer]
             dq_sp = dq1[0, 0, tracer] - sumsp / float(nlon) * geofac_pc
             dq_np = dq1[nlat - 1, 0, tracer] + sumnp / float(nlon) * geofac_pc
             for i in range(nlon):
@@ -1059,8 +1156,20 @@ if njit is not None:
                 dq1[nlat - 2, i, tracer] = dq_np
 
 
-    @njit(cache=True)
-    def _fzppm_batch_numba_kernel(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
+    @njit(cache=True, parallel=True)
+    def _fzppm_batch_numba_kernel(
+        delp1: np.ndarray,
+        wz: np.ndarray,
+        dq1: np.ndarray,
+        q: np.ndarray,
+        dpi_workspace: np.ndarray,
+        dc_workspace: np.ndarray,
+        al_workspace: np.ndarray,
+        ar_workspace: np.ndarray,
+        a6_workspace: np.ndarray,
+        dca_workspace: np.ndarray,
+        prev_flux_workspace: np.ndarray,
+    ) -> None:
         nlev = q.shape[0]
         nlat = q.shape[1]
         nlon = q.shape[2]
@@ -1068,17 +1177,17 @@ if njit is not None:
         r13 = 1.0 / 3.0
         r23 = 2.0 / 3.0
 
-        dpi = np.empty((nlev, ntracer), dtype=np.float64)
-        dc = np.empty((nlev, ntracer), dtype=np.float64)
-        al = np.empty((nlev, ntracer), dtype=np.float64)
-        ar = np.empty((nlev, ntracer), dtype=np.float64)
-        a6 = np.empty((nlev, ntracer), dtype=np.float64)
-        dca = np.empty((nlev, ntracer), dtype=np.float64)
-        prev_flux = np.empty(ntracer, dtype=np.float64)
-
-        for j in range(nlat):
+        for j in prange(nlat):
             if j == 1 or j == nlat - 2:
                 continue
+            thread_id = get_thread_id()
+            dpi = dpi_workspace[thread_id]
+            dc = dc_workspace[thread_id]
+            al = al_workspace[thread_id]
+            ar = ar_workspace[thread_id]
+            a6 = a6_workspace[thread_id]
+            dca = dca_workspace[thread_id]
+            prev_flux = prev_flux_workspace[thread_id]
 
             for i in range(nlon):
                 for k in range(nlev - 1):
@@ -1322,9 +1431,32 @@ else:
         al_y: np.ndarray,
         ar_y: np.ndarray,
         a6_y: np.ndarray,
+        south_flux_y: np.ndarray,
+        north_flux_y: np.ndarray,
+        south_dao2_y: np.ndarray,
+        north_dao2_y: np.ndarray,
+        dpi_z: np.ndarray,
+        dc_z: np.ndarray,
+        al_z: np.ndarray,
+        ar_z: np.ndarray,
+        a6_z: np.ndarray,
+        dca_z: np.ndarray,
+        prev_flux_z: np.ndarray,
     ) -> None:
         raise RuntimeError("numba is not available")
 
 
-    def _fzppm_batch_numba_kernel(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
+    def _fzppm_batch_numba_kernel(
+        delp1: np.ndarray,
+        wz: np.ndarray,
+        dq1: np.ndarray,
+        q: np.ndarray,
+        dpi_workspace: np.ndarray,
+        dc_workspace: np.ndarray,
+        al_workspace: np.ndarray,
+        ar_workspace: np.ndarray,
+        a6_workspace: np.ndarray,
+        dca_workspace: np.ndarray,
+        prev_flux_workspace: np.ndarray,
+    ) -> None:
         raise RuntimeError("numba is not available")

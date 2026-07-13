@@ -4,13 +4,18 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.transport.numba_control import apply_numba_thread_count
 from wombat_transport.transport.numba_control import numba_enabled
 from wombat_transport.transport.numba_control import numba_mode
 
 try:  # Optional acceleration path; NumPy remains the reference fallback.
+    from numba import get_thread_id
+    from numba import prange
     from numba import njit
 except ImportError:  # pragma: no cover - exercised in environments without numba.
+    get_thread_id = None
     njit = None
+    prange = range
 
 
 G0_M_PER_S2 = 9.80665
@@ -71,6 +76,7 @@ class VdiffDrResult:
 
 @dataclass(frozen=True)
 class _VdiffFullGridWorkspace:
+    nthreads: int
     pmid: np.ndarray
     pint: np.ndarray
     rpdel: np.ndarray
@@ -120,24 +126,27 @@ class _VdiffFullGridWorkspace:
 _VDIFF_FULLGRID_WORKSPACE: _VdiffFullGridWorkspace | None = None
 
 
-def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffFullGridWorkspace:
+def _get_vdiff_fullgrid_workspace(nthreads: int, nlev: int, nlon: int, ntracer: int) -> _VdiffFullGridWorkspace:
     global _VDIFF_FULLGRID_WORKSPACE
     existing = _VDIFF_FULLGRID_WORKSPACE
     if (
         existing is not None
-        and existing.pmid.shape == (nlon, nlev)
-        and existing.tracer_diffused.shape == (nlon, nlev, ntracer)
-        and existing.tracer_ratio.shape == (nlon, ntracer)
-        and existing.tracer_after_mass.shape == (nlon, ntracer)
+        and existing.nthreads == nthreads
+        and existing.pmid.shape == (nthreads, nlon, nlev)
+        and existing.tracer_diffused.shape == (nthreads, nlon, nlev, ntracer)
+        and existing.tracer_ratio.shape == (nthreads, nlon, ntracer)
+        and existing.tracer_after_mass.shape == (nthreads, nlon, ntracer)
     ):
         return existing
 
-    lev_shape = (nlon, nlev)
-    edge_shape = (nlon, nlev + 1)
-    tracer_shape = (nlon, ntracer)
-    lev_tracer_shape = (nlon, nlev, ntracer)
-    edge_tracer_shape = (nlon, nlev + 1, ntracer)
+    lev_shape = (nthreads, nlon, nlev)
+    edge_shape = (nthreads, nlon, nlev + 1)
+    scalar_shape = (nthreads, nlon)
+    tracer_shape = (nthreads, nlon, ntracer)
+    lev_tracer_shape = (nthreads, nlon, nlev, ntracer)
+    edge_tracer_shape = (nthreads, nlon, nlev + 1, ntracer)
     _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
+        nthreads=nthreads,
         pmid=np.empty(lev_shape, dtype=np.float64),
         pint=np.empty(edge_shape, dtype=np.float64),
         rpdel=np.empty(lev_shape, dtype=np.float64),
@@ -149,25 +158,25 @@ def _get_vdiff_fullgrid_workspace(nlev: int, nlon: int, ntracer: int) -> _VdiffF
         kvm=np.empty(edge_shape, dtype=np.float64),
         cgsh=np.empty(edge_shape, dtype=np.float64),
         cgs=np.empty(edge_shape, dtype=np.float64),
-        tpert=np.empty(nlon, dtype=np.float64),
-        qpert=np.empty(nlon, dtype=np.float64),
-        tmp1=np.empty(nlon, dtype=np.float64),
-        dshbot=np.empty(nlon, dtype=np.float64),
+        tpert=np.empty(scalar_shape, dtype=np.float64),
+        qpert=np.empty(scalar_shape, dtype=np.float64),
+        tmp1=np.empty(scalar_shape, dtype=np.float64),
+        dshbot=np.empty(scalar_shape, dtype=np.float64),
         dqbot=np.empty(tracer_shape, dtype=np.float64),
-        rrho=np.empty(nlon, dtype=np.float64),
-        khfs=np.empty(nlon, dtype=np.float64),
-        kshfs=np.empty(nlon, dtype=np.float64),
-        thvsrf=np.empty(nlon, dtype=np.float64),
-        heatv=np.empty(nlon, dtype=np.float64),
-        obklen=np.empty(nlon, dtype=np.float64),
-        fak1=np.empty(nlon, dtype=np.float64),
-        phiminv=np.empty(nlon, dtype=np.float64),
-        phihinv=np.empty(nlon, dtype=np.float64),
-        wm=np.empty(nlon, dtype=np.float64),
-        fak2=np.empty(nlon, dtype=np.float64),
-        fak3=np.empty(nlon, dtype=np.float64),
-        pblk=np.empty(nlon, dtype=np.float64),
-        pr=np.empty(nlon, dtype=np.float64),
+        rrho=np.empty(scalar_shape, dtype=np.float64),
+        khfs=np.empty(scalar_shape, dtype=np.float64),
+        kshfs=np.empty(scalar_shape, dtype=np.float64),
+        thvsrf=np.empty(scalar_shape, dtype=np.float64),
+        heatv=np.empty(scalar_shape, dtype=np.float64),
+        obklen=np.empty(scalar_shape, dtype=np.float64),
+        fak1=np.empty(scalar_shape, dtype=np.float64),
+        phiminv=np.empty(scalar_shape, dtype=np.float64),
+        phihinv=np.empty(scalar_shape, dtype=np.float64),
+        wm=np.empty(scalar_shape, dtype=np.float64),
+        fak2=np.empty(scalar_shape, dtype=np.float64),
+        fak3=np.empty(scalar_shape, dtype=np.float64),
+        pblk=np.empty(scalar_shape, dtype=np.float64),
+        pr=np.empty(scalar_shape, dtype=np.float64),
         potbar=np.empty(edge_shape, dtype=np.float64),
         cah=np.empty(lev_shape, dtype=np.float64),
         cch=np.empty(lev_shape, dtype=np.float64),
@@ -416,6 +425,7 @@ def run_vdiffdr_one_step(
 
     numba_vdiff = _numba_vdiff_enabled()
     surface_flux_is_zero = bool(not np.any(surface_flux != 0.0)) if numba_vdiff else False
+    numba_vdiff_threads = apply_numba_thread_count("WOMBAT_VDIFF_NUMBA", available=_NUMBA_AVAILABLE) if numba_vdiff else 1
     if numba_vdiff and not diagnostics:
         return _run_vdiffdr_one_step_fullgrid_numba(
             tracer_top=tracer,
@@ -437,6 +447,7 @@ def run_vdiffdr_one_step(
             dt_s=float(dt_s),
             npbl=_max_pbl_levels_from_pressure(pmid),
             surface_flux_is_zero=surface_flux_is_zero,
+            nthreads=numba_vdiff_threads,
         )
 
     pmid_pa = pmid * 100.0
@@ -851,13 +862,14 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     dt_s: float,
     npbl: int,
     surface_flux_is_zero: bool,
+    nthreads: int,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     nlev, _, nlon, ntracer = tracer_top.shape
     tracer_out = np.empty_like(tracer_top)
     sphu_out = np.empty_like(sphu_top)
-    workspace = _get_vdiff_fullgrid_workspace(nlev, nlon, ntracer)
+    workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlon, ntracer)
     negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top,
         u_top,
@@ -959,7 +971,7 @@ if njit is not None:
         return total
 
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top: np.ndarray,
         u_top: np.ndarray,
@@ -982,50 +994,50 @@ if njit is not None:
         surface_flux_is_zero: bool,
         tracer_out: np.ndarray,
         sphu_out: np.ndarray,
-        pmid: np.ndarray,
-        pint: np.ndarray,
-        rpdel: np.ndarray,
-        rpdeli: np.ndarray,
-        zm: np.ndarray,
-        thp: np.ndarray,
-        kvf: np.ndarray,
-        kvh: np.ndarray,
-        kvm: np.ndarray,
-        cgsh: np.ndarray,
-        cgs: np.ndarray,
-        tpert: np.ndarray,
-        qpert: np.ndarray,
-        tmp1: np.ndarray,
-        dshbot: np.ndarray,
-        dqbot: np.ndarray,
-        rrho: np.ndarray,
-        khfs: np.ndarray,
-        kshfs: np.ndarray,
-        thvsrf: np.ndarray,
-        heatv: np.ndarray,
-        obklen: np.ndarray,
-        fak1: np.ndarray,
-        phiminv: np.ndarray,
-        phihinv: np.ndarray,
-        wm: np.ndarray,
-        fak2: np.ndarray,
-        fak3: np.ndarray,
-        pblk: np.ndarray,
-        pr: np.ndarray,
-        potbar: np.ndarray,
-        cah: np.ndarray,
-        cch: np.ndarray,
-        zeh: np.ndarray,
-        termh: np.ndarray,
-        cgq: np.ndarray,
-        qmx: np.ndarray,
-        adjust: np.ndarray,
-        tracer_diffused: np.ndarray,
-        tracer_ratio: np.ndarray,
-        tracer_after_mass: np.ndarray,
-        shmx: np.ndarray,
-        zfq_scalar: np.ndarray,
-        sphu_diffused: np.ndarray,
+        pmid_workspace: np.ndarray,
+        pint_workspace: np.ndarray,
+        rpdel_workspace: np.ndarray,
+        rpdeli_workspace: np.ndarray,
+        zm_workspace: np.ndarray,
+        thp_workspace: np.ndarray,
+        kvf_workspace: np.ndarray,
+        kvh_workspace: np.ndarray,
+        kvm_workspace: np.ndarray,
+        cgsh_workspace: np.ndarray,
+        cgs_workspace: np.ndarray,
+        tpert_workspace: np.ndarray,
+        qpert_workspace: np.ndarray,
+        tmp1_workspace: np.ndarray,
+        dshbot_workspace: np.ndarray,
+        dqbot_workspace: np.ndarray,
+        rrho_workspace: np.ndarray,
+        khfs_workspace: np.ndarray,
+        kshfs_workspace: np.ndarray,
+        thvsrf_workspace: np.ndarray,
+        heatv_workspace: np.ndarray,
+        obklen_workspace: np.ndarray,
+        fak1_workspace: np.ndarray,
+        phiminv_workspace: np.ndarray,
+        phihinv_workspace: np.ndarray,
+        wm_workspace: np.ndarray,
+        fak2_workspace: np.ndarray,
+        fak3_workspace: np.ndarray,
+        pblk_workspace: np.ndarray,
+        pr_workspace: np.ndarray,
+        potbar_workspace: np.ndarray,
+        cah_workspace: np.ndarray,
+        cch_workspace: np.ndarray,
+        zeh_workspace: np.ndarray,
+        termh_workspace: np.ndarray,
+        cgq_workspace: np.ndarray,
+        qmx_workspace: np.ndarray,
+        adjust_workspace: np.ndarray,
+        tracer_diffused_workspace: np.ndarray,
+        tracer_ratio_workspace: np.ndarray,
+        tracer_after_mass_workspace: np.ndarray,
+        shmx_workspace: np.ndarray,
+        zfq_scalar_workspace: np.ndarray,
+        sphu_diffused_workspace: np.ndarray,
     ) -> int:
         nlev = tracer_top.shape[0]
         nlat = tracer_top.shape[1]
@@ -1040,7 +1052,52 @@ if njit is not None:
         ztodtgor = dt_s * G0_M_PER_S2 / RD_J_PER_KG_K
         gorsq = (G0_M_PER_S2 / RD_J_PER_KG_K) ** 2
 
-        for lat in range(nlat):
+        for lat in prange(nlat):
+            thread_id = get_thread_id()
+            pmid = pmid_workspace[thread_id]
+            pint = pint_workspace[thread_id]
+            rpdel = rpdel_workspace[thread_id]
+            rpdeli = rpdeli_workspace[thread_id]
+            zm = zm_workspace[thread_id]
+            thp = thp_workspace[thread_id]
+            kvf = kvf_workspace[thread_id]
+            kvh = kvh_workspace[thread_id]
+            kvm = kvm_workspace[thread_id]
+            cgsh = cgsh_workspace[thread_id]
+            cgs = cgs_workspace[thread_id]
+            tpert = tpert_workspace[thread_id]
+            qpert = qpert_workspace[thread_id]
+            tmp1 = tmp1_workspace[thread_id]
+            dshbot = dshbot_workspace[thread_id]
+            dqbot = dqbot_workspace[thread_id]
+            rrho = rrho_workspace[thread_id]
+            khfs = khfs_workspace[thread_id]
+            kshfs = kshfs_workspace[thread_id]
+            thvsrf = thvsrf_workspace[thread_id]
+            heatv = heatv_workspace[thread_id]
+            obklen = obklen_workspace[thread_id]
+            fak1 = fak1_workspace[thread_id]
+            phiminv = phiminv_workspace[thread_id]
+            phihinv = phihinv_workspace[thread_id]
+            wm = wm_workspace[thread_id]
+            fak2 = fak2_workspace[thread_id]
+            fak3 = fak3_workspace[thread_id]
+            pblk = pblk_workspace[thread_id]
+            pr = pr_workspace[thread_id]
+            potbar = potbar_workspace[thread_id]
+            cah = cah_workspace[thread_id]
+            cch = cch_workspace[thread_id]
+            zeh = zeh_workspace[thread_id]
+            termh = termh_workspace[thread_id]
+            cgq = cgq_workspace[thread_id]
+            qmx = qmx_workspace[thread_id]
+            adjust = adjust_workspace[thread_id]
+            tracer_diffused = tracer_diffused_workspace[thread_id]
+            tracer_ratio = tracer_ratio_workspace[thread_id]
+            tracer_after_mass = tracer_after_mass_workspace[thread_id]
+            shmx = shmx_workspace[thread_id]
+            zfq_scalar = zfq_scalar_workspace[thread_id]
+            sphu_diffused = sphu_diffused_workspace[thread_id]
             for lon in range(nlon):
                 cumulative_height = 0.0
                 for lev_down in range(nlev - 1, -1, -1):
@@ -1742,9 +1799,14 @@ else:
         pblh_m: np.ndarray,
         hflux_w_m2: np.ndarray,
         water_flux_kg_m2_s: np.ndarray,
+        surface_flux_kg_m2_s: np.ndarray,
         ustar_m_s: np.ndarray,
+        area_m2: np.ndarray,
         dt_s: float,
         npbl: int,
+        surface_flux_is_zero: bool,
+        tracer_out: np.ndarray,
+        sphu_out: np.ndarray,
         *workspace: np.ndarray,
     ) -> int:
         raise RuntimeError("numba is not available")

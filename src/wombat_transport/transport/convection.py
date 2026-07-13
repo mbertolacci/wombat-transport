@@ -4,18 +4,24 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.transport.numba_control import apply_numba_thread_count
 from wombat_transport.transport.numba_control import numba_enabled
 from wombat_transport.transport.numba_control import numba_mode
 
 try:  # Optional acceleration path; NumPy remains the reference fallback.
+    from numba import get_thread_id
     from numba import njit
+    from numba import prange
 except ImportError:  # pragma: no cover - exercised in environments without numba.
+    get_thread_id = None
     njit = None
+    prange = range
 
 
 G0_100 = 100.0 / 9.80665
 _TINYNUM = 1.0e-14
 _MAX_GROUP_TRACER_BYTES = 1024**3
+_CONVECTION_SCRATCH_PAD_TRACERS = 32
 _NUMBA_AVAILABLE = njit is not None
 _EMPTY_FLOAT64 = np.empty(0, dtype=np.float64)
 
@@ -26,7 +32,17 @@ class _ConvectionLightWorkspace:
     bmass: np.ndarray
 
 
+@dataclass(frozen=True)
+class _ConvectionKernelWorkspace:
+    shape: tuple[int, int]
+    qc: np.ndarray
+    qb_num: np.ndarray
+    delq_work: np.ndarray
+    current_work: np.ndarray
+
+
 _CONVECTION_LIGHT_WORKSPACE: _ConvectionLightWorkspace | None = None
+_CONVECTION_KERNEL_WORKSPACE: _ConvectionKernelWorkspace | None = None
 
 
 def _get_convection_light_workspace(
@@ -48,6 +64,23 @@ def _get_convection_light_workspace(
         bmass=np.empty((nlev, nlat, nlon), dtype=np.float64),
     )
     return _CONVECTION_LIGHT_WORKSPACE
+
+
+def _get_convection_kernel_workspace(nthreads: int, ntracer: int) -> _ConvectionKernelWorkspace:
+    global _CONVECTION_KERNEL_WORKSPACE
+    stride = max(ntracer, _CONVECTION_SCRATCH_PAD_TRACERS)
+    shape = (nthreads, stride)
+    existing = _CONVECTION_KERNEL_WORKSPACE
+    if existing is not None and existing.shape == shape:
+        return existing
+    _CONVECTION_KERNEL_WORKSPACE = _ConvectionKernelWorkspace(
+        shape=shape,
+        qc=np.empty(shape, dtype=np.float64),
+        qb_num=np.empty(shape, dtype=np.float64),
+        delq_work=np.empty(shape, dtype=np.float64),
+        current_work=np.empty(shape, dtype=np.float64),
+    )
+    return _CONVECTION_KERNEL_WORKSPACE
 
 
 @dataclass(frozen=True)
@@ -132,6 +165,8 @@ def run_cloud_convection_one_step(
         )
     if dt_s <= 0.0:
         raise ValueError("dt_s must be positive")
+    if np.any(delp_dry <= 0.0):
+        raise ValueError("delp_dry_hpa must be positive")
 
     internal_steps = max(int(dt_s) // 300, 1)
     internal_dt = float(dt_s) / float(internal_steps)
@@ -466,6 +501,9 @@ def _convect_fullgrid_top_numba(
 ) -> None:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
+    ntracer = q_all.shape[2]
+    nthreads = apply_numba_thread_count("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
+    workspace = _get_convection_kernel_workspace(nthreads, ntracer)
     _convect_fullgrid_top_numba_kernel(
         q_all,
         cmfmc_all,
@@ -478,6 +516,10 @@ def _convect_fullgrid_top_numba(
         reconstruct_conv_precip_flux,
         internal_steps,
         internal_dt_s,
+        workspace.qc,
+        workspace.qb_num,
+        workspace.delq_work,
+        workspace.current_work,
     )
 
 
@@ -530,7 +572,7 @@ def _convect_column_group_top_numba(
 
 if njit is not None:
 
-    @njit(cache=True)
+    @njit(cache=True, parallel=True)
     def _convect_fullgrid_top_numba_kernel(
         q_all: np.ndarray,
         cmfmc_all: np.ndarray,
@@ -543,17 +585,22 @@ if njit is not None:
         reconstruct_conv_precip_flux: bool,
         internal_steps: int,
         internal_dt_s: float,
+        qc_workspace: np.ndarray,
+        qb_num_workspace: np.ndarray,
+        delq_work_workspace: np.ndarray,
+        current_work_workspace: np.ndarray,
     ) -> None:
         nlev = q_all.shape[0]
         ncol = q_all.shape[1]
         ntracer = q_all.shape[2]
         bottom_index = nlev - 1
-        qc = np.empty(ntracer, dtype=np.float64)
-        qb_num = np.empty(ntracer, dtype=np.float64)
-        delq_work = np.empty(ntracer, dtype=np.float64)
-        current_work = np.empty(ntracer, dtype=np.float64)
 
-        for col in range(ncol):
+        for col in prange(ncol):
+            thread_id = get_thread_id()
+            qc = qc_workspace[thread_id]
+            qb_num = qb_num_workspace[thread_id]
+            delq_work = delq_work_workspace[thread_id]
+            current_work = current_work_workspace[thread_id]
             active = False
             for level in range(nlev):
                 cmfmc_value = cmfmc_all[level, col]
@@ -566,9 +613,6 @@ if njit is not None:
                 ):
                     active = True
                     break
-            if not active:
-                continue
-
             cloud_base = bottom_index
             for level in range(bottom_index, -1, -1):
                 dqrcu_value = 0.0
@@ -598,7 +642,7 @@ if njit is not None:
                         denominator += delp_dry_all[level, col]
                         mass_below_base += bmass_all[level, col]
                     if denominator <= 0.0:
-                        raise ValueError("dry pressure below cloud base must be positive")
+                        denominator = 1.0
 
                     cmfmc_base = cmfmc_all[cloud_base + 1, col]
                     denom_qc = mass_below_base + cmfmc_base * internal_dt_s
@@ -636,9 +680,7 @@ if njit is not None:
                             for tracer in range(ntracer):
                                 qc_pres = qc[tracer]
                                 current = q_all[level, col, tracer]
-                                qc_next = (
-                                    cmfmc_below * qc_pres + entrn * current
-                                ) / cmout
+                                qc_next = (cmfmc_below * qc_pres + entrn * current) / cmout
 
                                 delq = cmfmc_below * qc_pres
                                 temp = -(cmfmc_current * qc_next)
@@ -809,6 +851,10 @@ else:
         reconstruct_conv_precip_flux: bool,
         internal_steps: int,
         internal_dt_s: float,
+        qc_workspace: np.ndarray,
+        qb_num_workspace: np.ndarray,
+        delq_work_workspace: np.ndarray,
+        current_work_workspace: np.ndarray,
     ) -> None:
         raise RuntimeError("numba is not available")
 

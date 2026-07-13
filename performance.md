@@ -1353,3 +1353,196 @@ does not automatically help. That work is not tracer-inner, and the additional
 kernel/code shape or memory traffic can cost more than the saved integer
 operations. Future X/Y work needs to target a larger structural change than
 precomputing one index array or duplicating the low-Courant branch.
+
+## 2026-07-12 TPCORE Numba threading stage 1-2
+
+The first Numba threading pass parallelized the largest independent TPCORE
+kernels over horizontal rows/columns. That helped, but the 8-thread 96-tracer
+profile then became dominated by formerly serial support stages:
+`poles_plus_dq_init`, `calc_cross_terms`, `xadv_dao2`, and `yadv_dao2`.
+
+Two follow-up groups were implemented and retained:
+
+1. Parallelize pole averaging over tracers and replace the profiler's
+   standalone `dq1 = q * delp1` helper with the production
+   `_init_dq_mass_numba_kernel`.
+2. Parallelize cross-term setup plus X/Y DAO2 application. Y DAO2 needs
+   deterministic pole treatment, so it writes per-longitude south/north pole
+   increments to workspace buffers and reduces those in fixed longitude order.
+
+The focused transport/TPCORE test subset passed with
+`WOMBAT_TPCORE_NUMBA_THREADS=8`: `55 passed`.
+
+Direct TPCORE scaling after the change:
+
+| Threads | 1 tracer best s | 8 tracer best s | 24 tracer best s | 96 tracer best s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.0700 | 0.1205 | 0.2355 | 0.7996 |
+| 2 | 0.0537 | 0.0914 | 0.1717 | 0.5155 |
+| 4 | 0.0449 | 0.0700 | 0.1267 | 0.3617 |
+| 8 | 0.0393 | 0.0607 | 0.0968 | 0.3015 |
+
+For the target 96-tracer case, this improves the 8-thread path from the
+previous post-YTP-threading `~0.438 s` profile to `0.303 s` best, while the
+1-thread path stays effectively unchanged at `~0.80 s`.
+
+The new 8-thread staged profile for 96 tracers is:
+
+| Stage | Mean s | Share |
+| --- | ---: | ---: |
+| `python_copy_workspace_cross_terms` | 0.0567 | 20.0% |
+| `qckxyz_fill_finalize` | 0.0489 | 17.3% |
+| `poles_plus_dq_init` | 0.0436 | 15.4% |
+| `ytp_horizontal_mass_flux` | 0.0333 | 11.7% |
+| `xtp_horizontal_mass_flux` | 0.0332 | 11.7% |
+| `fzppm_vertical` | 0.0297 | 10.5% |
+| `calc_cross_terms` | 0.0215 | 7.6% |
+| `yadv_dao2` | 0.0105 | 3.7% |
+| `xadv_dao2` | 0.0062 | 2.2% |
+
+The remaining obvious bottlenecks are no longer the main X/Y/Z transport
+kernels. `python_copy_workspace_cross_terms` is mostly setup/copy overhead,
+`qckxyz_fill_finalize` is mostly global scan/finalize traffic, and
+`poles_plus_dq_init` still contains pole reductions plus full-grid mass
+initialization. Further improvement probably needs larger structural changes
+than simply adding more `prange`: reduce full-grid passes, avoid normal
+negative-fill scans when validated safe, or move more of the whole TPCORE step
+into a single compiled/native flow.
+
+## 2026-07-12 VDIFF full-grid threading
+
+The diagnostics-light VDIFF production path now uses the full-grid Numba kernel
+for all configured VDIFF thread counts. The previous multi-thread path used the
+older latitude helper shape; the new path parallelizes the tuned full-grid
+kernel directly over latitude and expands its scratch workspace with a leading
+`nthreads` dimension. Each worker uses `get_thread_id()` to select private
+`(lon, lev, tracer)` work arrays, so the per-latitude algorithm and tracer-inner
+loop order stay unchanged.
+
+The old latitude-parallel dispatch helper was removed from the production code.
+Diagnostics/debug fallback paths still use the scalar latitude implementation
+when full diagnostics are requested or Numba is unavailable.
+
+Validation:
+
+- `WOMBAT_VDIFF_NUMBA_THREADS=2 pytest tests/test_transport.py -q`:
+  `30 passed`.
+- `WOMBAT_VDIFF_NUMBA_THREADS=8 pytest -q`: `225 passed, 2 skipped`.
+
+Direct VDIFF scaling after the change:
+
+| Threads | 1 tracer best s | 8 tracer best s | 24 tracer best s | 96 tracer best s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.0264 | 0.0364 | 0.0582 | 0.1582 |
+| 2 | 0.0155 | 0.0227 | 0.0367 | 0.0934 |
+| 4 | 0.0085 | 0.0131 | 0.0223 | 0.0713 |
+| 8 | 0.0050 | 0.0088 | 0.0168 | 0.0674 |
+
+The 96-tracer case improves from `0.158 s` at one thread to `0.067 s` at eight
+threads, about `2.35x`. Scaling tapers after four threads, which is consistent
+with the kernel becoming memory/cache-bandwidth limited rather than scheduler
+limited. Checksums were stable across all thread counts in the benchmark.
+
+## 2026-07-12 Convection scratch padding
+
+Convection initially showed pathological 2-thread behavior at low and moderate
+tracer counts. A quick `numba.set_parallel_chunksize()` experiment did not fix
+the pattern consistently: chunk size `1` helped 8 tracers but regressed 24 and
+96 tracers, so scheduler imbalance was not the dominant issue.
+
+The retained fix pads the per-thread convection scratch rows to at least 32
+tracers. The kernel still loops over the logical tracer count; the padding only
+separates each thread's `qc`, `qb_num`, `delq_work`, and `current_work` rows in
+memory. This strongly suggests false sharing was a major part of the bad
+2-thread behavior.
+
+Convection best times before and after 32-wide scratch padding:
+
+| Threads | Tracers | Before s | Padded s | Ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 1 | 0.0345 | 0.0060 | 0.17 |
+| 2 | 8 | 0.0764 | 0.0113 | 0.15 |
+| 2 | 24 | 0.0363 | 0.0237 | 0.65 |
+| 2 | 96 | 0.1270 | 0.0843 | 0.66 |
+| 4 | 24 | 0.0545 | 0.0152 | 0.28 |
+| 8 | 24 | 0.0292 | 0.0120 | 0.41 |
+| 8 | 96 | 0.0525 | 0.0554 | 1.06 |
+
+A smaller 16-wide pad was rejected because it regressed the 24-tracer cases
+badly (`2` threads: `0.0568 s`, `8` threads: `0.0344 s`) and did not recover
+the 96-tracer 8-thread result. With 32-wide padding, low/moderate tracer
+threading is much healthier. The 96-tracer 8-thread case is approximately
+flat to slightly slower in the standalone benchmark, so the best production
+thread mix may still differ by tracer count and workload.
+
+Validation after retaining the padding:
+
+- `WOMBAT_CONVECTION_NUMBA_THREADS=8 pytest tests/test_transport.py -q`:
+  `30 passed`.
+
+## 2026-07-12 Modest-thread follow-up experiments
+
+Three follow-up experiments targeted the poor or sublinear modest-thread
+behavior, especially for a future strategy where tracers may be split across
+multiple processes with a small thread count per process.
+
+Rejected code experiments:
+
+- TPCORE shared pole/reduction buffer padding. The YTP and Y-DAO2 shared
+  south/north pole buffers were padded from `(nlon, ntracer)` to
+  `(nlon, max(ntracer, 32))` to test for false sharing between longitude
+  workers. It did not help the important 2-thread cases and was backed out:
+
+| Threads | Tracers | Before s | Padded s | Ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 1 | 0.0537 | 0.0545 | 1.02 |
+| 2 | 8 | 0.0914 | 0.0920 | 1.01 |
+| 2 | 24 | 0.1717 | 0.1777 | 1.03 |
+| 2 | 96 | 0.5155 | 0.5023 | 0.97 |
+
+- Manual-block convection scheduling. Replacing Numba's `prange(col)` scheduler
+  with `prange(worker)` and contiguous manual column blocks helped some small
+  tracer cases and the 8-thread/96-tracer case, but it regressed the 2- and
+  4-thread 96-tracer cases badly. It was backed out because the goal was one
+  implementation that scales acceptably up to 8 threads:
+
+| Threads | Tracers | Padded scheduler s | Manual block s | Ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 8 | 0.0113 | 0.0108 | 0.95 |
+| 2 | 24 | 0.0237 | 0.0233 | 0.99 |
+| 2 | 96 | 0.0843 | 0.1281 | 1.52 |
+| 4 | 96 | 0.0645 | 0.0741 | 1.15 |
+| 8 | 96 | 0.0554 | 0.0464 | 0.84 |
+
+Process-level concurrency experiment:
+
+A fixed total of 96 tracers was split across 1, 2, or 4 concurrent benchmark
+processes, with either 1 or 2 Numba threads per process. Each process ran the
+full synthetic TPCORE + VDIFF + convection driver. The effective step time is
+the slowest process's reported best timed step, excluding warmup/compilation.
+
+| Processes | Tracers/process | Threads/process | Effective step s | Aggregate tracers/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 96 | 1 | 1.0674 | 89.9 |
+| 2 | 48 | 1 | 0.6101 | 157.3 |
+| 4 | 24 | 1 | 0.4191 | 229.1 |
+| 1 | 96 | 2 | 0.8092 | 118.6 |
+| 2 | 48 | 2 | 0.4708 | 203.9 |
+| 4 | 24 | 2 | 0.3343 | 287.1 |
+| 8 | 12 | 1 | 0.3357 | 285.9 |
+
+This is encouraging for the split-tracer strategy: at least up to four
+concurrent processes and eight total worker threads, aggregate throughput
+continued improving. Adding the core-count-equivalent `8 processes x 12 tracers
+x 1 thread` point gave `286 tracer-steps/s`, essentially the same as
+`4 processes x 24 tracers x 2 threads` at `287 tracer-steps/s`. That suggests
+the tested workload is close to saturating useful eight-worker throughput, but
+that either process-only or modest per-process threading can reach that point.
+The next concurrency sweep should include CPU affinity/SMT placement controls
+before drawing a deployment policy from it.
+
+Validation after backing out the rejected code experiments:
+
+- `WOMBAT_TPCORE_NUMBA_THREADS=2 WOMBAT_VDIFF_NUMBA_THREADS=2
+  WOMBAT_CONVECTION_NUMBA_THREADS=2 pytest tests/test_transport.py -q`:
+  `30 passed`.

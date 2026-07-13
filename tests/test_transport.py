@@ -574,6 +574,7 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path(monkeyp
         return 7
 
     monkeypatch.setattr(pbl_module, "_NUMBA_AVAILABLE", True)
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
     monkeypatch.setattr(pbl_module, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
 
     result = run_vdiffdr_one_step(**fixture, diagnostics=False)
@@ -587,6 +588,53 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path(monkeyp
     assert result.kvm_m2_s.shape == (0,)
     assert result.initial_tracer_mass.shape == (0,)
     assert result.final_tracer_mass.shape == (0,)
+
+
+def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path_with_threads(monkeypatch):
+    fixture = _synthetic_vdiff_fixture()
+    calls = []
+
+    def fake_fullgrid_kernel(
+        tracer_top,
+        u_top,
+        v_top,
+        temperature_top,
+        sphu_top,
+        pmid_hpa,
+        pint_hpa,
+        virtual_temperature_top,
+        bxheight_top,
+        dry_mass_top,
+        pblh_m,
+        hflux_w_m2,
+        water_flux_kg_m2_s,
+        surface_flux_kg_m2_s,
+        ustar_m_s,
+        area_m2,
+        dt_s,
+        npbl,
+        surface_flux_is_zero,
+        tracer_out,
+        sphu_out,
+        *workspace,
+    ):
+        calls.append((tracer_top.shape, sphu_top.shape, npbl, surface_flux_is_zero))
+        tracer_out[:] = tracer_top + 3.0
+        sphu_out[:] = sphu_top + 4.0
+        assert len(workspace) > 0
+        return 11
+
+    monkeypatch.setattr(pbl_module, "_NUMBA_AVAILABLE", True)
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "2")
+    monkeypatch.setattr(pbl_module, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
+
+    result = run_vdiffdr_one_step(**fixture, diagnostics=False)
+
+    assert calls == [(fixture["tracer_conc"].shape, fixture["specific_humidity_kg_kg"].shape, 30, True)]
+    np.testing.assert_allclose(result.tracer_conc, fixture["tracer_conc"] + 3.0)
+    np.testing.assert_allclose(result.specific_humidity_kg_kg, fixture["specific_humidity_kg_kg"] + 4.0)
+    assert result.negative_count_before_clip == 11
+    assert result.negative_count_after_clip == 0
 
 
 def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
