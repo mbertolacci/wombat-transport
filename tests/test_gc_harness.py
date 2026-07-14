@@ -88,7 +88,7 @@ from wombat_transport.gc_harness import (
     write_pjc_input,
     _tpcore_pressure_branch_gap,
 )
-from wombat_transport.transport import convection as convection_mod
+from wombat_transport.transport.convection import _native as convection_native
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport import pjc_mass_flux_hpa
@@ -897,7 +897,7 @@ def test_convection_column_chunking_preserves_results(monkeypatch):
         area_m2=area,
         dt_s=600.0,
     )
-    monkeypatch.setattr(convection_mod, "_MAX_GROUP_TRACER_BYTES", nlev * ntracer * np.dtype(np.float64).itemsize)
+    monkeypatch.setattr(convection_native, "_MAX_GROUP_TRACER_BYTES", nlev * ntracer * np.dtype(np.float64).itemsize)
     chunked = run_cloud_convection_one_step(
         tracer_conc=tracer,
         cmfmc_kg_m2_s=cmfmc,
