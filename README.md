@@ -100,7 +100,7 @@ or truthy values enable it when available, and `0`, `false`, `no`, `off`, or
 `WOMBAT_CONVECTION_NUMBA` override the global flag for individual operators.
 
 The project can also be installed with standard Python packaging tools. Core
-runtime dependencies are `numpy`, `netCDF4`, `PyYAML`, and `py-yaml12`; the
+runtime dependencies are `numpy`, `netCDF4`, and `py-yaml12`; the
 `dev` extra adds `pytest`.
 
 Example run configs:

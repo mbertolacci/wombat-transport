@@ -129,3 +129,27 @@ def test_run_configs_resolve_fixture_paths():
     assert residual.initial_restart is None
     assert residual.grid_template.exists()
     assert residual.species_database.exists()
+
+
+def test_run_config_uses_yaml_12_core_scalar_semantics(tmp_path):
+    path = tmp_path / "run.yml"
+    path.write_text(
+        """\
+name: yes
+source_run_dir: .
+species_database: species.yml
+grid_template: grid.nc
+output_dir: output
+comparison:
+  legacy_flag: off
+simulation:
+  leading_zero: 0123
+""",
+        encoding="utf-8",
+    )
+
+    config = load_run_config(path)
+
+    assert config.name == "yes"
+    assert config.comparison["legacy_flag"] == "off"
+    assert config.simulation["leading_zero"] == 123

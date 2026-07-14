@@ -6,7 +6,7 @@ from datetime import datetime
 import netCDF4
 import numpy as np
 import pytest
-import yaml
+from yaml12 import read_yaml
 
 from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.hemco_harness import (
@@ -46,7 +46,7 @@ def test_hemco_harness_generates_expected_run_directory(tmp_path):
 
 def test_hemco_harness_wombat_config_mirrors_scenario(tmp_path):
     run_dir = write_scenario_run_directory("constant_and_file_scale", tmp_path / "run")
-    config = yaml.safe_load((run_dir / "wombat_emissions.yml").read_text(encoding="utf-8"))
+    config = read_yaml(run_dir / "wombat_emissions.yml")
 
     assert config["unit_conversion"] == "none"
     assert config["missing_species"] == "zero"

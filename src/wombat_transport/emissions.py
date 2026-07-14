@@ -7,11 +7,11 @@ from typing import Any
 
 import netCDF4
 import numpy as np
+from yaml12 import read_yaml
 
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import TransportGrid
 from wombat_transport.species import Species
-from wombat_transport.yaml_io import load_yaml
 
 
 @dataclass(frozen=True)
@@ -92,8 +92,7 @@ class EmissionsOperator:
         grid: TransportGrid,
     ) -> "EmissionsOperator":
         config_path = _resolve_path(root, str(path))
-        with config_path.open("r", encoding="utf-8") as handle:
-            raw = load_yaml(handle) or {}
+        raw = read_yaml(config_path) or {}
         return cls.from_mapping(raw, root=config_path.parent, species=species, grid=grid)
 
     @classmethod

@@ -11,7 +11,7 @@ import sys
 import netCDF4
 import numpy as np
 import pytest
-import yaml
+from yaml12 import write_yaml
 
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
 from wombat_transport.emissions import EmissionsOperator
@@ -257,7 +257,7 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
     ).names[0]
     input_path = tmp_path / "obsoperator-20140901.yml.gz"
     with gzip.open(input_path, "wt", encoding="utf-8") as handle:
-        yaml.safe_dump(
+        write_yaml(
             {
                 "entries": [
                     {
@@ -592,5 +592,5 @@ def _write_temp_residual_run_config(tmp_path, *, log_level: str):
         "comparison": {},
     }
     path = tmp_path / "run.yml"
-    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    write_yaml(raw, path)
     return path

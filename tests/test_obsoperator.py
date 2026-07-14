@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import netCDF4
 import numpy as np
 import pytest
-import yaml
+from yaml12 import read_yaml, write_yaml
 
 import wombat_transport.obsoperator as obsoperator_module
 from wombat_transport.fields import TracerField
@@ -164,9 +164,9 @@ def test_plain_and_gzip_yaml_parse_identically_and_deduplicate_fields(tmp_path: 
     }
     plain = tmp_path / "obs.yml"
     compressed = tmp_path / "obs.yml.gz"
-    plain.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    write_yaml(raw, plain)
     with gzip.open(compressed, "wt", encoding="utf-8") as handle:
-        yaml.safe_dump(raw, handle)
+        write_yaml(raw, handle)
 
     plain_state = _load(plain)
     gzip_state = _load(compressed)
@@ -839,7 +839,7 @@ def test_local_daily_input_contains_restartable_cross_day_entries_if_available(t
     if not path.is_file():
         pytest.skip(f"local ObsOperator input is unavailable: {path}")
     with gzip.open(path, "rt", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
+        raw = read_yaml(handle)
     cross_day = [
         entry
         for entry in raw["entries"]
@@ -1045,7 +1045,7 @@ def _entry_raw(
 
 
 def _write_yaml(path: Path, raw: dict) -> Path:
-    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    write_yaml(raw, path)
     return path
 
 

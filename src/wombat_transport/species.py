@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from wombat_transport.yaml_io import load_yaml
+from yaml12 import read_yaml
 
 
 @dataclass(frozen=True)
@@ -19,8 +19,7 @@ def load_species_database(path: str | Path) -> list[Species]:
     """Load the subset of GEOS-Chem species metadata needed for transport."""
 
     path = Path(path)
-    with path.open("r", encoding="utf-8") as handle:
-        raw: dict[str, dict[str, Any]] = load_yaml(handle) or {}
+    raw: dict[str, dict[str, Any]] = read_yaml(path) or {}
 
     species: list[Species] = []
     for name, attrs in raw.items():

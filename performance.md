@@ -624,7 +624,7 @@ project dependency:
 ```bash
 UV_CACHE_DIR=/tmp/wombat-uv-cache \
 uv run --no-project --python 3.11 \
-  --with numpy --with netCDF4 --with PyYAML --with numba --with profila \
+  --with numpy --with netCDF4 --with py-yaml12 --with numba --with profila \
   python -m profila setup
 ```
 
@@ -644,7 +644,7 @@ NUMBA_NUM_THREADS=1 \
 OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 uv run --no-project --python 3.11 \
-  --with numpy --with netCDF4 --with PyYAML --with numba --with profila \
+  --with numpy --with netCDF4 --with py-yaml12 --with numba --with profila \
   python -m profila annotate -- /tmp/profile_vdiff_profila.py --tracers 96 --seconds 12
 ```
 
