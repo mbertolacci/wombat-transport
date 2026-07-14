@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 from wombat_transport.transport.numba_control import apply_numba_thread_count
 from wombat_transport.transport.tpcore import _numba as nb
-from wombat_transport.transport.tpcore._core import setup_tpcore_terms
+from wombat_transport.transport.tpcore._native import setup_tpcore_terms
 
 
 DEFAULT_RUN_CONFIG = Path("base_wombat/run.yml")

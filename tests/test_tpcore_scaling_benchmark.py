@@ -87,6 +87,8 @@ def test_operator_numba_flags_override_global_flag(monkeypatch):
     from wombat_transport.transport import convection
     from wombat_transport.transport import pbl
     from wombat_transport.transport import tpcore
+    from wombat_transport.transport.convection import _numba as convection_numba
+    from wombat_transport.transport.pbl import _numba as pbl_numba
     from wombat_transport.transport.tpcore import _numba as tpcore_numba
 
     monkeypatch.setenv("WOMBAT_NUMBA", "0")
@@ -98,8 +100,8 @@ def test_operator_numba_flags_override_global_flag(monkeypatch):
     assert pbl._numba_vdiff_mode() == "1"
     assert convection._numba_convection_mode() == "1"
     assert tpcore._numba_tpcore_enabled() is tpcore_numba._NUMBA_AVAILABLE
-    assert pbl._numba_vdiff_enabled() is pbl._NUMBA_AVAILABLE
-    assert convection._numba_convection_enabled() is convection._NUMBA_AVAILABLE
+    assert pbl._numba_vdiff_enabled() is pbl_numba._NUMBA_AVAILABLE
+    assert convection._numba_convection_enabled() is convection_numba._NUMBA_AVAILABLE
 
 
 def test_operator_numba_falsey_flag_overrides_global_enabled(monkeypatch):

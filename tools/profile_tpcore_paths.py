@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from wombat_transport.transport.tpcore import _numba as nb
-from wombat_transport.transport.tpcore._core import setup_tpcore_terms
+from wombat_transport.transport.tpcore._native import setup_tpcore_terms
 
 
 def main(argv: list[str] | None = None) -> int:

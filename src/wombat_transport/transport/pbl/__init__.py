@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from wombat_transport.transport.tpcore import _native as _native
+from wombat_transport.transport.pbl import _native as _native
 
 for _name in dir(_native):
     if _name in {"__builtins__", "__cached__", "__doc__", "__file__", "__loader__", "__name__", "__package__", "__spec__"}:

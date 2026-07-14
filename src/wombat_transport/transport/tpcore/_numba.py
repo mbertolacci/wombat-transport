@@ -1,7 +1,7 @@
 """Numba-accelerated TPCORE kernels.
 
 This module owns the optional compiled path. The reference implementation and
-public API stay in ``_core.py`` so WOMBAT_TPCORE_NUMBA=0 remains a plain NumPy
+public API stay in ``_native.py`` so WOMBAT_TPCORE_NUMBA=0 remains a plain NumPy
 path. WOMBAT_NUMBA provides the shared transport-wide default.
 """
 

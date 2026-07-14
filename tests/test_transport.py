@@ -44,7 +44,7 @@ from wombat_transport.transport import (
     load_transport_forcing_for_step,
 )
 import wombat_transport.transport.forcing as forcing_module
-import wombat_transport.transport.pbl as pbl_module
+import wombat_transport.transport.pbl._numba as pbl_numba
 from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
@@ -573,9 +573,9 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path(monkeyp
         assert len(workspace) > 0
         return 7
 
-    monkeypatch.setattr(pbl_module, "_NUMBA_AVAILABLE", True)
+    monkeypatch.setattr(pbl_numba, "_NUMBA_AVAILABLE", True)
     monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
-    monkeypatch.setattr(pbl_module, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
+    monkeypatch.setattr(pbl_numba, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
 
     result = run_vdiffdr_one_step(**fixture, diagnostics=False)
 
@@ -624,9 +624,9 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path_with_th
         assert len(workspace) > 0
         return 11
 
-    monkeypatch.setattr(pbl_module, "_NUMBA_AVAILABLE", True)
+    monkeypatch.setattr(pbl_numba, "_NUMBA_AVAILABLE", True)
     monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "2")
-    monkeypatch.setattr(pbl_module, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
+    monkeypatch.setattr(pbl_numba, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
 
     result = run_vdiffdr_one_step(**fixture, diagnostics=False)
 
