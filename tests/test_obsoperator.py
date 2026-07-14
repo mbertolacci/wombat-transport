@@ -822,13 +822,25 @@ def test_local_geos_chem_obsoperator_output_parity_if_available():
             assert actual_variable.ncattrs() == expected_variable.ncattrs()
             for attribute in expected_variable.ncattrs():
                 assert getattr(actual_variable, attribute) == getattr(expected_variable, attribute)
-        np.testing.assert_array_equal(_filled_chars(actual.variables["id"][:]), _filled_chars(expected.variables["id"][:]))
-        np.testing.assert_array_equal(
-            _filled_chars(actual.variables["field"][:]), _filled_chars(expected.variables["field"][:])
-        )
-        np.testing.assert_array_equal(actual.variables["id_index"][:], expected.variables["id_index"][:])
-        np.testing.assert_array_equal(actual.variables["field_index"][:], expected.variables["field_index"][:])
-        np.testing.assert_allclose(actual.variables["sample"][:], expected.variables["sample"][:], rtol=1.0e-6, atol=1.0e-12)
+        expected_samples = _obsoperator_output_samples(expected)
+        actual_samples = _obsoperator_output_samples(actual)
+        assert actual_samples.keys() == expected_samples.keys()
+        keys = sorted(expected_samples)
+        expected_values = np.asarray([expected_samples[key] for key in keys])
+        actual_values = np.asarray([actual_samples[key] for key in keys])
+        close = np.isclose(actual_values, expected_values, rtol=1.0e-6, atol=1.0e-12)
+        if not np.all(close):
+            absolute_error = np.abs(actual_values - expected_values)
+            worst = np.argsort(absolute_error)[-5:][::-1]
+            details = "; ".join(
+                f"{keys[index]!r}: GC={expected_values[index]:.9g}, "
+                f"Wombat={actual_values[index]:.9g}, abs={absolute_error[index]:.3g}"
+                for index in worst
+            )
+            pytest.fail(
+                f"{np.count_nonzero(~close)}/{len(keys)} canonical ObsOperator samples differ; "
+                f"max abs error={np.max(absolute_error):.3g}; worst: {details}"
+            )
 
 
 def test_local_daily_input_contains_restartable_cross_day_entries_if_available(tmp_path: Path):
@@ -1060,6 +1072,18 @@ def _filled_chars(values: np.ndarray) -> np.ndarray:
     if np.ma.isMaskedArray(values):
         return values.filled(b"\x00")
     return np.asarray(values)
+
+
+def _obsoperator_output_samples(dataset: netCDF4.Dataset) -> dict[tuple[str, str], float]:
+    ids = _decode_rows(_filled_chars(dataset.variables["id"][:]))
+    fields = _decode_rows(_filled_chars(dataset.variables["field"][:]))
+    id_index = np.asarray(dataset.variables["id_index"][:], dtype=np.int64) - 1
+    field_index = np.asarray(dataset.variables["field_index"][:], dtype=np.int64) - 1
+    samples = np.asarray(dataset.variables["sample"][:], dtype=np.float64)
+    return {
+        (ids[int(id_value)], fields[int(field_value)]): float(sample)
+        for id_value, field_value, sample in zip(id_index, field_index, samples, strict=True)
+    }
 
 
 def _time_us(value: datetime) -> int:
