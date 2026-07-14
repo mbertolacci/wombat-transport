@@ -11,7 +11,7 @@ from typing import Any
 
 import netCDF4
 import numpy as np
-import yaml
+from yaml12 import read_yaml
 
 
 class ValidationRunError(RuntimeError):
@@ -35,8 +35,7 @@ class MetricRow:
 
 def load_case_manifest(case_dir: str | Path) -> dict[str, Any]:
     path = Path(case_dir) / "case.yml"
-    with path.open("r", encoding="utf-8") as handle:
-        manifest = yaml.safe_load(handle) or {}
+    manifest = read_yaml(path) or {}
     if int(manifest.get("schema_version", 0)) != 1:
         raise ValidationRunError(f"{path} must declare schema_version: 1")
     if not manifest.get("name"):

@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator
 
-import yaml
+from yaml12 import read_yaml, write_yaml
 
 from wombat_transport import emissions as emissions_mod
 from wombat_transport import output as output_mod
@@ -242,21 +242,18 @@ def _prepare_run_dir(
     run_dir.mkdir(parents=True)
 
     source_root = source_config_path.parent
-    with source_config_path.open("r", encoding="utf-8") as handle:
-        run_config = yaml.safe_load(handle) or {}
-    with (source_root / str(run_config["species_database"])).open("r", encoding="utf-8") as handle:
-        source_species = yaml.safe_load(handle) or {}
+    run_config = read_yaml(source_config_path) or {}
+    source_species = read_yaml(source_root / str(run_config["species_database"])) or {}
     emissions_ref = run_config["emissions"]
     if not isinstance(emissions_ref, str):
         raise TypeError("source config must reference an emissions YAML file")
-    with (source_root / emissions_ref).open("r", encoding="utf-8") as handle:
-        source_emissions = yaml.safe_load(handle) or {}
+    source_emissions = read_yaml(source_root / emissions_ref) or {}
 
     species = _build_species(source_species, tracer_count)
     emissions = _build_emissions(source_emissions, tuple(species.keys()), field_offset=field_offset)
 
-    (run_dir / "species_database.yml").write_text(yaml.safe_dump(species, sort_keys=False), encoding="utf-8")
-    (run_dir / "emissions.yml").write_text(yaml.safe_dump(emissions, sort_keys=False), encoding="utf-8")
+    write_yaml(species, run_dir / "species_database.yml")
+    write_yaml(emissions, run_dir / "emissions.yml")
 
     run_config["name"] = f"profile_multistep_{tracer_count:03d}_tracers"
     run_config["source_run_dir"] = "."
@@ -309,7 +306,7 @@ def _prepare_run_dir(
                 if species_conc_duration:
                     collection["duration"] = species_conc_duration
 
-    (run_dir / "run.yml").write_text(yaml.safe_dump(run_config, sort_keys=False), encoding="utf-8")
+    write_yaml(run_config, run_dir / "run.yml")
     return run_dir
 
 

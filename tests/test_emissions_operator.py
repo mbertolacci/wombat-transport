@@ -5,7 +5,7 @@ from pathlib import Path
 
 import netCDF4
 import numpy as np
-import yaml
+from yaml12 import write_yaml
 
 from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.grid import TransportGrid
@@ -400,17 +400,15 @@ def _write_config(
     scales: dict[str, dict[str, object]] | None = None,
 ) -> Path:
     path = root / "emissions.yml"
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(
-            {
-                "unit_conversion": "none",
-                "missing_species": "zero",
-                "scales": scales or {},
-                "fields": fields,
-            },
-            handle,
-            sort_keys=False,
-        )
+    write_yaml(
+        {
+            "unit_conversion": "none",
+            "missing_species": "zero",
+            "scales": scales or {},
+            "fields": fields,
+        },
+        path,
+    )
     return path
 
 

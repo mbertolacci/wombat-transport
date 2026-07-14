@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from wombat_transport.yaml_io import load_yaml
+from yaml12 import read_yaml
 
 CONFIG_TIME_FORMAT = "%Y-%m-%d %H:%M"
 
@@ -31,8 +31,7 @@ class RunConfig:
 
 def load_run_config(path: str | Path) -> RunConfig:
     path = Path(path)
-    with path.open("r", encoding="utf-8") as handle:
-        raw: dict[str, Any] = load_yaml(handle) or {}
+    raw: dict[str, Any] = read_yaml(path) or {}
 
     root = path.parent
 
