@@ -14,7 +14,6 @@ from typing import Any, TextIO
 
 import netCDF4
 import numpy as np
-from yaml12 import parse_yaml
 
 from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2, H2OMW_G_PER_MOL
 from wombat_transport.grid import TransportGrid
@@ -22,6 +21,7 @@ from wombat_transport.met_diagnostics import RD_J_PER_KG_K
 from wombat_transport.output import OutputSnapshot
 from wombat_transport.run_config import RunConfig, simulation_start
 from wombat_transport.transport.numba_control import numba_enabled
+from wombat_transport.yaml_io import load_yaml12
 
 try:  # Optional acceleration path; the same array kernel runs in Python as the reference fallback.
     from numba import njit
@@ -429,7 +429,7 @@ def expand_obsoperator_template(template: str, timestamp: datetime) -> str:
 
 def _load_obsoperator_raw_entries(input_path: Path) -> list[Any]:
     with _open_yaml_text(input_path) as handle:
-        raw = parse_yaml(handle.read()) or {}
+        raw = load_yaml12(handle, source_name=input_path) or {}
     if not isinstance(raw, dict):
         raise TypeError(f"ObsOperator input {input_path} must contain a mapping")
     if "entries" not in raw:

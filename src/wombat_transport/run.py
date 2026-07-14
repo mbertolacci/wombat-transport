@@ -28,6 +28,7 @@ from wombat_transport.transport import (
     run_transport_one_step,
     run_transport_window,
 )
+from wombat_transport.transport.numba_control import warn_if_transport_numba_disabled
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -45,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_run_config(args.run_config)
     _configure_logging(config)
+    if args.mode in {"transport-one-step", "transport-window"}:
+        warn_if_transport_numba_disabled(logging.getLogger(__name__))
     if args.mode == "run":
         result = run_tracer_simulation(config, max_steps=args.max_steps)
         state = result.state

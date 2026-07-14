@@ -36,6 +36,7 @@ from wombat_transport.transport import (
     TransportForcingProvider,
     run_transport_one_step,
 )
+from wombat_transport.transport.numba_control import warn_if_transport_numba_disabled
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
@@ -67,6 +68,7 @@ class TracerSimulationResult:
 
 
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
+    warn_if_transport_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
     _write_run_metadata(config)
     species = load_species_database(config.species_database)
