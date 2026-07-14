@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 import gzip
 import hashlib
 import logging
@@ -88,8 +87,6 @@ class ObsOperatorConfig:
     output_file: str | None = None
     restart_file: str | None = None
     restart_missing: str = "warn"
-    input_mode: str = "sync"
-    writer_mode: str = "sync"
 
 
 @dataclass(frozen=True)
@@ -165,20 +162,17 @@ class ObsOperatorManager:
         self._grid = grid
         self._previous_input_path: Path | None = None
         self._current_output_path: Path | None = None
-        self._input_executor: ThreadPoolExecutor | None = None
-        self._input_future: Future[_ObsOperatorArrayState | None] | None = None
-        self._input_future_path: Path | None = None
         self._states: list[_ObsOperatorArrayState] = []
         self._schedule: dict[int, list[tuple[_ObsOperatorArrayState, int, int]]] = {}
         self._entry_ids: set[str] = set()
         self._sample_workspace = np.empty((0, 0), dtype=np.float64)
-        self._numba_sampling = numba_enabled(OBSOPERATOR_NUMBA_ENV, available=njit is not None)
+        use_numba = numba_enabled(OBSOPERATOR_NUMBA_ENV, available=njit is not None)
+        self._sampling_kernel = (
+            _sample_prepared_entries_numba if use_numba else _sample_prepared_entries_kernel
+        )
+        self._writer: _ObsOperatorNetCDFWriter | None = None
         self._closed = False
         self._load_restart()
-        self._output_sink: _ObsOperatorSink = _obsoperator_sink(config.writer_mode)
-        if config.input_mode == "threaded":
-            self._input_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wombat-obs-input")
-            self._prefetch_input(start)
 
     @classmethod
     def from_run_config(
@@ -218,10 +212,7 @@ class ObsOperatorManager:
                 scheduled_weights = scheduled_weights[active_mask]
             if scheduled_entries.size == 0:
                 continue
-            if self._numba_sampling:
-                samples = self._sample_prepared(state, scheduled_entries, snapshot)
-            else:
-                samples = self._sample_reference(state, scheduled_entries, snapshot)
+            samples = self._evaluate_entries(state, scheduled_entries, snapshot)
             _accumulate_prepared_samples_numba(
                 scheduled_entries,
                 scheduled_weights,
@@ -245,15 +236,16 @@ class ObsOperatorManager:
                 completed.append((state, finished.copy()))
         if completed:
             assert self._current_output_path is not None
-            self._output_sink.write_array_entries(self._current_output_path, tuple(completed))
+            if self._writer is None:
+                self._writer = _ObsOperatorNetCDFWriter(self._current_output_path)
+            self._writer.write_array_entries(tuple(completed))
 
-    def _sample_prepared(
+    def _evaluate_entries(
         self,
         state: _ObsOperatorArrayState,
         scheduled_indices: np.ndarray,
         snapshot: OutputSnapshot,
     ) -> np.ndarray:
-        assert _sample_prepared_entries_numba is not None
         prepared = state.prepared
         required_shape = (scheduled_indices.size, prepared.max_field_count)
         if (
@@ -262,50 +254,7 @@ class ObsOperatorManager:
         ):
             self._sample_workspace = np.empty(required_shape, dtype=np.float64)
         samples = self._sample_workspace[: required_shape[0], : required_shape[1]]
-        _sample_prepared_entries_numba(
-            np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
-            np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
-            np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
-            np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),
-            self._grid.hyai_hpa,
-            self._grid.hybi,
-            scheduled_indices,
-            prepared.entry_field_start,
-            prepared.entry_field_count,
-            prepared.entry_horizontal_start,
-            prepared.entry_horizontal_count,
-            prepared.entry_vertical_type,
-            prepared.entry_vertical_unit,
-            prepared.entry_vertical_weighting,
-            prepared.entry_vertical_lower,
-            prepared.entry_vertical_upper,
-            prepared.entry_exact_start,
-            prepared.entry_exact_count,
-            prepared.field_indices,
-            prepared.horizontal_lat,
-            prepared.horizontal_lon,
-            prepared.horizontal_weight,
-            prepared.exact_value,
-            prepared.exact_weight,
-            samples,
-        )
-        return samples
-
-    def _sample_reference(
-        self,
-        state: _ObsOperatorArrayState,
-        scheduled_indices: np.ndarray,
-        snapshot: OutputSnapshot,
-    ) -> np.ndarray:
-        required_shape = (scheduled_indices.size, state.prepared.max_field_count)
-        if (
-            self._sample_workspace.shape[0] < required_shape[0]
-            or self._sample_workspace.shape[1] < required_shape[1]
-        ):
-            self._sample_workspace = np.empty(required_shape, dtype=np.float64)
-        samples = self._sample_workspace[: required_shape[0], : required_shape[1]]
-        prepared = state.prepared
-        _sample_prepared_entries_kernel(
+        self._sampling_kernel(
             np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
             np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
             np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
@@ -337,10 +286,9 @@ class ObsOperatorManager:
     def close(self, *, boundary_time: datetime) -> None:
         if self._closed:
             return
-        self._output_sink.close()
-        if self._input_executor is not None:
-            self._input_executor.shutdown(wait=True, cancel_futures=True)
-            self._input_executor = None
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
         boundary_us = _datetime_to_microseconds(boundary_time)
         for state in self._states:
             for entry_index_value in np.flatnonzero(state.active):
@@ -369,47 +317,27 @@ class ObsOperatorManager:
             return
         self._previous_input_path = input_path
 
-        state = self._get_input_state(input_path)
+        state = None
+        if input_path.is_file():
+            state = _load_obsoperator_array_state(
+                input_path,
+                tracer_names=self._tracer_names,
+                grid=self._grid,
+                simulation_start=self._start,
+                transport_dt_s=self._transport_dt_s,
+            )
         if state is not None:
             current_time_us = _datetime_to_microseconds(timestamp)
             self._register_state(state, earliest_time_us=current_time_us)
             logger.info("obsoperator_input_loaded path=%s entries=%d", input_path, state.entry_count)
         else:
             logger.info("obsoperator_input_missing path=%s", input_path)
-        self._prefetch_input(timestamp + timedelta(days=1))
-
         output_path = _resolve_template_path(self._root, self._config.output_file, timestamp)
         if output_path != self._current_output_path:
+            if self._writer is not None:
+                self._writer.close()
+                self._writer = None
             self._current_output_path = output_path
-            self._output_sink.rotate(output_path)
-
-    def _load_input_state(self, input_path: Path) -> _ObsOperatorArrayState | None:
-        if not input_path.is_file():
-            return None
-        return _load_obsoperator_array_state(
-            input_path,
-            tracer_names=self._tracer_names,
-            grid=self._grid,
-            simulation_start=self._start,
-            transport_dt_s=self._transport_dt_s,
-        )
-
-    def _get_input_state(self, input_path: Path) -> _ObsOperatorArrayState | None:
-        if self._input_future is not None and self._input_future_path == input_path:
-            future = self._input_future
-            self._input_future = None
-            self._input_future_path = None
-            return future.result()
-        return self._load_input_state(input_path)
-
-    def _prefetch_input(self, timestamp: datetime) -> None:
-        if self._input_executor is None or self._input_future is not None:
-            return
-        input_path = _resolve_template_path(self._root, self._config.input_file, timestamp)
-        if input_path == self._previous_input_path:
-            return
-        self._input_future_path = input_path
-        self._input_future = self._input_executor.submit(self._load_input_state, input_path)
 
     def _register_state(self, state: _ObsOperatorArrayState, *, earliest_time_us: int) -> None:
         duplicates = self._entry_ids.intersection(state.ids)
@@ -469,12 +397,8 @@ def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
     restart_missing = str(raw.get("restart_missing", "warn"))
     if restart_missing not in {"warn", "error", "ignore"}:
         raise ValueError("outputs.obsoperator.restart_missing must be 'warn', 'error', or 'ignore'")
-    input_mode = str(raw.get("input_mode", "sync")).lower()
-    writer_mode = str(raw.get("writer", "sync")).lower()
-    if input_mode not in {"sync", "threaded"}:
-        raise ValueError("outputs.obsoperator.input_mode must be 'sync' or 'threaded'")
-    if writer_mode not in {"sync", "threaded"}:
-        raise ValueError("outputs.obsoperator.writer must be 'sync' or 'threaded'")
+    if "input_mode" in raw or "writer" in raw:
+        raise ValueError("outputs.obsoperator async input_mode/writer options are no longer supported")
     if activate and input_file is None:
         raise KeyError("outputs.obsoperator.input_file is required when ObsOperator is active")
     if activate and output_file is None:
@@ -488,8 +412,6 @@ def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
         output_file=output_file,
         restart_file=restart_file,
         restart_missing=restart_missing,
-        input_mode=input_mode,
-        writer_mode=writer_mode,
     )
 
 
@@ -1755,105 +1677,6 @@ def _validate_restart_vertical_bounds(start: float, end: float, unit: str, nlev:
         raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid pressure-level bounds")
 
 
-class _ObsOperatorSink:
-    def rotate(self, path: Path) -> None:
-        raise NotImplementedError
-
-    def write_array_entries(
-        self,
-        path: Path,
-        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
-    ) -> None:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        raise NotImplementedError
-
-
-class _SyncObsOperatorSink(_ObsOperatorSink):
-    def __init__(self) -> None:
-        self._path: Path | None = None
-        self._writer: _ObsOperatorNetCDFWriter | None = None
-
-    def rotate(self, path: Path) -> None:
-        if path != self._path:
-            self.close()
-            self._path = path
-
-    def write_array_entries(
-        self,
-        path: Path,
-        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
-    ) -> None:
-        self.rotate(path)
-        if self._writer is None:
-            self._writer = _ObsOperatorNetCDFWriter(path)
-        self._writer.write_array_entries(batches)
-
-    def close(self) -> None:
-        if self._writer is not None:
-            self._writer.close()
-            self._writer = None
-
-
-class _ThreadedObsOperatorSink(_ObsOperatorSink):
-    def __init__(self) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wombat-obs-output")
-        self._pending: Future[None] | None = None
-        self._path: Path | None = None
-        self._writer: _ObsOperatorNetCDFWriter | None = None
-
-    def rotate(self, path: Path) -> None:
-        self._finish_pending()
-        self._pending = self._executor.submit(self._rotate, path)
-
-    def write_array_entries(
-        self,
-        path: Path,
-        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
-    ) -> None:
-        self._finish_pending()
-        self._pending = self._executor.submit(self._write_array_entries, path, batches)
-
-    def close(self) -> None:
-        self._finish_pending()
-        self._executor.submit(self._close_writer).result()
-        self._executor.shutdown(wait=True)
-
-    def _finish_pending(self) -> None:
-        if self._pending is not None:
-            self._pending.result()
-            self._pending = None
-
-    def _write_array_entries(
-        self,
-        path: Path,
-        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
-    ) -> None:
-        self._rotate(path)
-        if self._writer is None:
-            self._writer = _ObsOperatorNetCDFWriter(path)
-        self._writer.write_array_entries(batches)
-
-    def _rotate(self, path: Path) -> None:
-        if path != self._path:
-            self._close_writer()
-            self._path = path
-
-    def _close_writer(self) -> None:
-        if self._writer is not None:
-            self._writer.close()
-            self._writer = None
-
-
-def _obsoperator_sink(mode: str) -> _ObsOperatorSink:
-    if mode == "sync":
-        return _SyncObsOperatorSink()
-    if mode == "threaded":
-        return _ThreadedObsOperatorSink()
-    raise ValueError(f"unsupported ObsOperator writer mode {mode!r}")
-
-
 class _ObsOperatorNetCDFWriter:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -2044,15 +1867,6 @@ def _create_variable(
     variable.units = "1"
     variable.description = description
     return variable
-
-
-def _nul_padded_chars(value: str, length: int) -> np.ndarray:
-    encoded = value.encode("utf-8")
-    if len(encoded) > length:
-        raise ValueError(f"encoded string exceeds fixed width {length}")
-    output = np.full(length, b"\x00", dtype="S1")
-    output[: len(encoded)] = np.frombuffer(encoded, dtype="S1")
-    return output
 
 
 def _nul_padded_matrix(values: Any, width: int, count: int) -> np.ndarray:

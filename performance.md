@@ -2377,11 +2377,10 @@ and altitude diagnostics. The equivalent object sampler plus full-grid
 diagnostics took about 1.9 s. Cython is not justified for preparation or
 sampling at these costs.
 
-ObsOperator `input_mode: threaded` and `writer: threaded` are available but
-remain opt-in. The object-sampler measurements found synchronous execution
-faster than input prefetch on the pinned CPU, while threaded science writing
-was effectively neutral. The prepared kernel removes sampling as a reason to
-enable either mode.
+Experiments with background input prefetch and threaded science writing found
+the synchronous path faster or effectively neutral on the pinned CPU. Those
+options were subsequently removed; daily input, batched science output, and
+restart snapshots now use one straightforward synchronous path.
 
 The science writer now stages at most 256 completed entries or 16,384 samples,
 flattens each batch into contiguous arrays, and performs one slice assignment

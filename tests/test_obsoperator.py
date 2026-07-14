@@ -38,15 +38,11 @@ def test_obsoperator_config_and_date_template():
                 "input_file": "obs-YYYYMMDD.yml.gz",
                 "output_file": "out-YYYYMMDD_hhmmss.nc4",
                 "restart_file": "restart-YYYYMMDD_hhmmss.nc4",
-                "input_mode": "threaded",
-                "writer": "threaded",
             }
         }
     )
     assert config.activate
     assert config.verbose
-    assert config.input_mode == "threaded"
-    assert config.writer_mode == "threaded"
     assert expand_obsoperator_template(config.output_file or "", datetime(2014, 9, 2, 3, 4, 5)) == (
         "out-20140902_030405.nc4"
     )
@@ -61,25 +57,10 @@ def test_obsoperator_config_and_date_template():
         )
     with pytest.raises(TypeError, match="must be a mapping"):
         parse_obsoperator_config({"obsoperator": "on"})
-    with pytest.raises(ValueError, match="input_mode"):
-        parse_obsoperator_config({"obsoperator": {"input_mode": "process"}})
-    with pytest.raises(ValueError, match="writer"):
-        parse_obsoperator_config({"obsoperator": {"writer": "process"}})
-
-
-def test_threaded_input_and_output_match_synchronous_contract(tmp_path: Path):
-    _write_yaml(
-        tmp_path / "obs-20140901.yml",
-        {"entries": [_entry_raw(entry_id="first"), _entry_raw(entry_id="second", fields="SpeciesConcVV_B")]},
-    )
-    manager = _manager(tmp_path, input_mode="threaded", writer_mode="threaded")
-    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
-    manager.close(boundary_time=START + timedelta(minutes=10))
-
-    with netCDF4.Dataset(tmp_path / "out-20140901_0000.nc4") as dataset:
-        assert _decode_rows(dataset.variables["id"][:]) == ["first", "second"]
-        assert _decode_rows(dataset.variables["field"][:]) == ["SpeciesConcVV_A", "SpeciesConcVV_B"]
-        np.testing.assert_array_equal(dataset.variables["id_index"][:], np.array([1, 2], dtype=np.int32))
+    with pytest.raises(ValueError, match="no longer supported"):
+        parse_obsoperator_config({"obsoperator": {"input_mode": "threaded"}})
+    with pytest.raises(ValueError, match="no longer supported"):
+        parse_obsoperator_config({"obsoperator": {"writer": "threaded"}})
 
 
 def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(tmp_path: Path, monkeypatch):
@@ -891,8 +872,6 @@ def _manager(
     grid: TransportGrid | None = None,
     restart_file: str = "restart-YYYYMMDD_hhmmss.nc4",
     restart_missing: str = "ignore",
-    input_mode: str = "sync",
-    writer_mode: str = "sync",
 ) -> ObsOperatorManager:
     return ObsOperatorManager(
         root=tmp_path,
@@ -902,8 +881,6 @@ def _manager(
             output_file="out-YYYYMMDD_hhmm.nc4",
             restart_file=restart_file,
             restart_missing=restart_missing,
-            input_mode=input_mode,
-            writer_mode=writer_mode,
         ),
         start=start,
         transport_dt_s=dt_s,

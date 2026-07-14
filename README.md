@@ -124,8 +124,6 @@ outputs:
     output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
     restart_file: ./Restarts/Wombat.ObsOperator.Restart.YYYYMMDD_hhmmss.nc4
     restart_missing: warn
-    input_mode: threaded
-    writer: threaded
 ```
 
 Relative paths are resolved from the run YAML directory. `YYYY`, `MM`, `DD`,
@@ -133,13 +131,9 @@ Relative paths are resolved from the run YAML directory. `YYYY`, `MM`, `DD`,
 be ordinary YAML or gzip-compressed YAML ending in `.gz`; a missing expanded
 daily input is logged and skipped.
 
-`input_mode` and `writer` may each be `sync` (the default) or `threaded`.
-Threaded input parses the current input in the background during startup and
-prefetches the next day's expanded input while transport continues. Threaded
-output keeps one completed science-output batch in flight, with errors reported
-at the next write or clean shutdown. Restart snapshots are always made durable
-before shutdown returns. The threaded modes do not change sampling order or
-numeric results.
+Daily input and batched science output are synchronous. Restart snapshots are
+made durable before shutdown returns. The former `input_mode` and `writer`
+options are no longer supported.
 
 ObsOperator numerical sampling uses the prepared serial Numba kernel when
 Numba is available and `WOMBAT_NUMBA` is enabled. Set
