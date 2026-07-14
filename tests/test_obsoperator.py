@@ -222,7 +222,7 @@ def test_array_loader_builds_flat_selection_and_schedule_tables(tmp_path: Path):
     np.testing.assert_array_equal(state.prepared.entry_exact_count, [0, 2])
 
 
-def test_time_date_values_are_zero_based_and_floor_to_timestep(tmp_path: Path):
+def test_time_date_ranges_are_half_open_model_periods(tmp_path: Path):
     raw = _entry_raw()
     raw["time_operator"] = {
         "type": "range",
@@ -234,8 +234,41 @@ def test_time_date_values_are_zero_based_and_floor_to_timestep(tmp_path: Path):
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
     state = _load(path)
 
-    np.testing.assert_array_equal(_entry_time_indices(state, 0), np.array([0, 1, 2]))
-    np.testing.assert_allclose(_entry_time_weights(state, 0), np.full(3, 1.0 / 3.0))
+    np.testing.assert_array_equal(_entry_time_indices(state, 0), np.array([0, 1]))
+    np.testing.assert_allclose(_entry_time_weights(state, 0), np.full(2, 1.0 / 2.0))
+
+
+def test_time_date_exact_boundaries_map_to_period_ending_there(tmp_path: Path):
+    entries = [
+        _entry_raw(
+            entry_id="hour",
+            time={
+                "type": "range",
+                "unit": "time",
+                "start": [20140901, 0],
+                "end": [20140901, 100],
+            },
+        ),
+        _entry_raw(
+            entry_id="point",
+            time={"type": "point", "unit": "time", "time": [20140901, 110]},
+        ),
+        _entry_raw(
+            entry_id="degenerate-range",
+            time={
+                "type": "range",
+                "unit": "time",
+                "start": [20140901, 120],
+                "end": [20140901, 120],
+            },
+        ),
+    ]
+    state = _load(_write_yaml(tmp_path / "obs.yml", {"entries": entries}))
+
+    np.testing.assert_array_equal(_entry_time_indices(state, 0), np.arange(6))
+    np.testing.assert_allclose(_entry_time_weights(state, 0), np.full(6, 1.0 / 6.0))
+    np.testing.assert_array_equal(_entry_time_indices(state, 1), np.array([6]))
+    np.testing.assert_array_equal(_entry_time_indices(state, 2), np.array([7]))
 
 
 def test_yaml_clock_with_leading_zero_is_read_as_decimal(tmp_path: Path):

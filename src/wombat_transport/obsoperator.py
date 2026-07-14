@@ -929,17 +929,38 @@ def _parse_time_arrays(
         raise ValueError(f"{label}.unit must be 'time' or 'time_index'")
     if operator_type == "point":
         start = end = _parse_time_value(
-            _required(mapping, "time", label), unit, label, simulation_start, transport_dt_s
+            _required(mapping, "time", label),
+            unit,
+            label,
+            simulation_start,
+            transport_dt_s,
+            interval_end=True,
         )
         weighting = "normalized"
     else:
+        raw_start = _required(mapping, "start", label)
+        raw_end = _required(mapping, "end", label)
         start = _parse_time_value(
-            _required(mapping, "start", label), unit, label, simulation_start, transport_dt_s
+            raw_start,
+            unit,
+            label,
+            simulation_start,
+            transport_dt_s,
+            interval_end=False,
         )
-        end = _parse_time_value(_required(mapping, "end", label), unit, label, simulation_start, transport_dt_s)
+        end = _parse_time_value(
+            raw_end,
+            unit,
+            label,
+            simulation_start,
+            transport_dt_s,
+            interval_end=True,
+        )
         weighting = str(mapping.get("weights", "normalized"))
         if weighting not in {"normalized", "equal"}:
             raise ValueError(f"{label}.weights must be 'normalized' or 'equal'")
+        if unit == "time" and raw_start == raw_end:
+            start = end
     if start > end:
         raise ValueError(f"{label} start must not exceed end")
     indices = np.arange(start, end + 1, dtype=np.int64)
@@ -959,6 +980,8 @@ def _parse_time_value(
     label: str,
     simulation_start: datetime,
     transport_dt_s: float,
+    *,
+    interval_end: bool,
 ) -> int:
     if unit == "time_index":
         return _integer(raw, f"{label} time index")
@@ -970,7 +993,10 @@ def _parse_time_value(
         timestamp = datetime.strptime(f"{date_value:08d} {clock_value:04d}", "%Y%m%d %H%M")
     except ValueError as exc:
         raise ValueError(f"{label} contains invalid date/time {raw!r}") from exc
-    return math.floor((timestamp - simulation_start).total_seconds() / float(transport_dt_s))
+    elapsed = (timestamp - simulation_start).total_seconds()
+    if interval_end:
+        return max(math.ceil(elapsed / float(transport_dt_s)) - 1, 0)
+    return math.floor(elapsed / float(transport_dt_s))
 
 
 def _parse_horizontal_arrays(

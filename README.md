@@ -165,7 +165,10 @@ entries. A daily input that duplicates an unfinished restart ID is rejected.
 
 Time indices are zero-based and retain GEOS-Chem's end-of-timestep sampling
 semantics: time index `0` samples the concentration after the first transport
-step. Wombat concentrations are already dry volume mixing ratios, so no
+step. Date-time ranges are half-open model periods, so `00:00`–`01:00` at a
+10-minute timestep averages indices `0`–`5`; point timestamps and zero-duration
+date-time ranges sample the period ending at that timestamp. Wombat
+concentrations are already dry volume mixing ratios, so no
 additional molecular-weight conversion is applied. Output uses the current
 compressed ObsOperator NetCDF layout with `id`, `field`, `id_index`,
 `field_index`, and `sample` variables. Completed entries are staged into bounded
