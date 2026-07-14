@@ -14,7 +14,12 @@ from urllib.request import urlretrieve
 import netCDF4
 import numpy as np
 
-from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2
+from wombat_transport.constants import (
+    AIRMW_G_PER_MOL,
+    G0_M_PER_S2,
+    H2OMW_G_PER_MOL,
+    RD_J_PER_KG_K,
+)
 from wombat_transport.fields import (
     TracerField,
     canonical_time_slice,
@@ -800,7 +805,7 @@ def write_synthetic_vdiff_input(
     sphu = 0.010 * np.exp(-lev / 18.0) * (1.0 + 0.03 * lat_term) * np.ones((1, 1, lon.size))
     tv = temperature * (1.0 + ZVIR * sphu)
     bxheight = np.full((nlev, lat.size, lon.size), 125.0, dtype=np.float64)
-    dry_mass = (pedge[1:] - pedge[:-1]) * 100.0 / 9.80665
+    dry_mass = (pedge[1:] - pedge[:-1]) * 100.0 / G0_M_PER_S2
     u = (4.0 + 0.05 * lev + 0.2 * lon_term) * np.ones((1, lat.size, 1), dtype=np.float64)
     v = (0.3 * np.sin((lev + 1.0) / nlev * np.pi) + 0.02 * lat_term) * np.ones((1, 1, lon.size))
     tracer = 4.0e-4 + 1.0e-7 * tracer_index + 4.0e-9 * lev[..., np.newaxis]
@@ -1094,7 +1099,7 @@ def _read_met_3d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_i
 
 
 def _hydrostatic_box_height_from_temperature(pedge_hpa: np.ndarray, temperature_k: np.ndarray) -> np.ndarray:
-    return (287.0 / 9.80665) * temperature_k * np.log(pedge_hpa[:-1] / pedge_hpa[1:])
+    return (RD_J_PER_KG_K / G0_M_PER_S2) * temperature_k * np.log(pedge_hpa[:-1] / pedge_hpa[1:])
 
 
 def _select_real_convection_columns(cmfmc_upper: np.ndarray, *, active_columns: int) -> tuple[np.ndarray, np.ndarray]:
@@ -2674,10 +2679,10 @@ def write_python_met_airqnt_output(input_path: str | Path, output_path: str | Pa
     wet_pressure_thickness = wet_edges[:-1] - wet_edges[1:]
     wet_pressure_mid = 0.5 * (wet_edges[:-1] + wet_edges[1:])
     delp_dry = dry_pressure_thickness_from_surface_hpa(psc2_dry[np.newaxis, :, :], hyai, hybi)[0]
-    water_vapor_vv_dry = AIRMW_G_PER_MOL * sphu / (18.016 * (1.0 - sphu))
+    water_vapor_vv_dry = AIRMW_G_PER_MOL * sphu / (H2OMW_G_PER_MOL * (1.0 - sphu))
     xh2o = water_vapor_vv_dry / (1.0 + water_vapor_vv_dry)
-    virtual_temperature = temperature / (1.0 - xh2o * (1.0 - 18.016 / AIRMW_G_PER_MOL))
-    bxheight = (287.0 / G0_M_PER_S2) * virtual_temperature * np.log(wet_edges[:-1] / wet_edges[1:])
+    virtual_temperature = temperature / (1.0 - xh2o * (1.0 - H2OMW_G_PER_MOL / AIRMW_G_PER_MOL))
+    bxheight = (RD_J_PER_KG_K / G0_M_PER_S2) * virtual_temperature * np.log(wet_edges[:-1] / wet_edges[1:])
     dry_partial_edges = np.empty_like(wet_edges)
     dry_partial_edges[:-1] = wet_edges[:-1] * (1.0 - xh2o)
     dry_partial_edges[-1] = wet_edges[-1] * (1.0 - xh2o[-1])

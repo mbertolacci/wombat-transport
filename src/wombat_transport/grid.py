@@ -6,7 +6,7 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
-EARTH_RADIUS_M = 6.3710072e6
+from wombat_transport.constants import EARTH_RADIUS_M
 
 
 @dataclass(frozen=True)

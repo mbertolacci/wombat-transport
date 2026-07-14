@@ -4,13 +4,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.constants import AIRMW_G_PER_MOL, G0_M_PER_S2, H2OMW_G_PER_MOL
+from wombat_transport.constants import (
+    AIRMW_G_PER_MOL,
+    G0_M_PER_S2,
+    H2OMW_G_PER_MOL,
+    RD_J_PER_KG_K,
+)
 from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.forcing import TransportForcing
 from wombat_transport.transport.pressure import pressure_edges_from_surface_hpa
-
-RD_J_PER_KG_K = 287.0
-
 
 @dataclass(frozen=True)
 class AirQuantityDiagnostics:

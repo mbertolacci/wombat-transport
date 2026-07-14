@@ -6,7 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from wombat_transport.constants import AIRMW_G_PER_MOL, H2OMW_G_PER_MOL
+from wombat_transport.constants import (
+    AIRMW_G_PER_MOL,
+    G0_M_PER_S2,
+    H2OMW_G_PER_MOL,
+    RD_J_PER_KG_K,
+)
 from wombat_transport.fields import (
     TracerField,
     canonical_time_slice,
@@ -22,12 +27,9 @@ from wombat_transport.transport.convection import (
 from wombat_transport.transport.forcing import (
     TransportForcing,
     TransportForcingProvider,
-    load_transport_forcing_for_step,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import (
-    RD_J_PER_KG_K,
-    G0_M_PER_S2,
     VdiffDrResult,
     _numba_vdiff_enabled,
     run_vdiffdr_one_step,
@@ -35,9 +37,7 @@ from wombat_transport.transport.pbl import (
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
-    dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
-    pressure_edges_hpa,
     pressure_edges_from_surface_hpa,
 )
 from wombat_transport.transport.tpcore import (
@@ -300,7 +300,6 @@ def run_transport_window(
             grid.hyai_hpa,
             grid.hybi,
             dt_s=dt_s,
-            max_courant=max_courant,
             tpcore_static_terms=tpcore_static_terms,
             validate_tpcore_branches=step == 0,
         )
@@ -346,7 +345,6 @@ def _run_transport_one_step_with_mass(
     hybi: np.ndarray,
     *,
     dt_s: float,
-    max_courant: float,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
@@ -453,7 +451,6 @@ def _run_tpcore_one_step_from_mass(
         area,
         hyai_hpa=hyai,
         hybi=hybi,
-        top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
@@ -477,7 +474,6 @@ def _run_tpcore_one_step_from_mass(
         area,
         hyai_hpa=hyai,
         hybi=hybi,
-        top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
         include_diagnostics_fields=False,
@@ -575,7 +571,6 @@ def _trace_tpcore_one_step_from_mass(
         area,
         hyai_hpa=hyai,
         hybi=hybi,
-        top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         active_emissions=active_emissions,
         surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
@@ -594,7 +589,6 @@ def _trace_tpcore_one_step_from_mass(
         area,
         hyai_hpa=hyai,
         hybi=hybi,
-        top_edge_hpa=float(hyai[-1]),
         dt_s=dt_s,
         specific_humidity_top=vdiff.specific_humidity_kg_kg,
         include_diagnostics_fields=True,
@@ -625,38 +619,6 @@ def _trace_tpcore_one_step_from_mass(
     )
 
 
-def _run_vdiff_after_tpcore(
-    tracer_field: TracerField,
-    forcing: TransportForcing,
-    dry_air_mass: np.ndarray,
-    delp_dry_hpa: np.ndarray,
-    area: np.ndarray,
-    hyai_hpa: np.ndarray,
-    hybi: np.ndarray,
-    *,
-    top_edge_hpa: float,
-    dt_s: float,
-    active_emissions: TracerField | SurfaceEmissions | None = None,
-    surface_flux_to_vmr_factor: np.ndarray | None = None,
-):
-    return _run_vdiff_input(
-        _build_vdiff_input_after_tpcore(
-            tracer_field,
-            forcing,
-            dry_air_mass,
-            delp_dry_hpa,
-            area,
-            hyai_hpa,
-            hybi,
-            top_edge_hpa=top_edge_hpa,
-            dt_s=dt_s,
-            active_emissions=active_emissions,
-            surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
-        ),
-        diagnostics=False,
-    )
-
-
 def _build_vdiff_input_after_tpcore(
     tracer_field: TracerField,
     forcing: TransportForcing,
@@ -666,7 +628,6 @@ def _build_vdiff_input_after_tpcore(
     hyai_hpa: np.ndarray,
     hybi: np.ndarray,
     *,
-    top_edge_hpa: float,
     dt_s: float,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
@@ -790,33 +751,6 @@ def _run_vdiff_input(
     )
 
 
-def _run_convection_after_vdiff(
-    tracer_field: TracerField,
-    forcing: TransportForcing,
-    delp_dry_hpa: np.ndarray,
-    area: np.ndarray,
-    hyai_hpa: np.ndarray,
-    hybi: np.ndarray,
-    *,
-    top_edge_hpa: float,
-    dt_s: float,
-    include_diagnostics_fields: bool = True,
-):
-    return _run_convection_input(
-        _build_convection_input_after_vdiff(
-            tracer_field,
-            forcing,
-            delp_dry_hpa,
-            area,
-            hyai_hpa,
-            hybi,
-            top_edge_hpa=top_edge_hpa,
-            dt_s=dt_s,
-            include_diagnostics_fields=include_diagnostics_fields,
-        )
-    )
-
-
 def _build_convection_input_after_vdiff(
     tracer_field: TracerField,
     forcing: TransportForcing,
@@ -825,7 +759,6 @@ def _build_convection_input_after_vdiff(
     hyai_hpa: np.ndarray,
     hybi: np.ndarray,
     *,
-    top_edge_hpa: float,
     dt_s: float,
     specific_humidity_top: np.ndarray | None = None,
     include_diagnostics_fields: bool = True,
