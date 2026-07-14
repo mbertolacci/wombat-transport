@@ -2341,3 +2341,89 @@ stage by 11.5-14.5%, but that projects to only 17-27 ms over 36 steps
 (0.05-0.07% of the whole run) and retains another 18.8 MiB per A3 block. It was
 rejected and reverted. Do not retry broad setup/coefficient caching unless the
 forcing interpolation cadence or semantics change.
+
+## ObsOperator profiling (2026-07-13)
+
+Two-day real-input runs used the global 2x2.5 grid, 47 levels, 10-minute
+transport, CPU8 pinning, one Numba thread, and synchronous compressed HISTORY
+(three-hour species concentration plus daily restart). The enabled cases read
+the parent checkout's daily gzip YAML inputs. Fresh matched results were:
+
+| Tracers | Off s | Object sampler s | Prepared Numba s | Batched output s | ID-only restart s | YAML 1.2 s | Array state s | Array added s | Array added wall |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 97.92 | 117.60 | 103.29 | 102.69 | 100.68 | 98.71 | 99.20 | 1.28 | 1.3% |
+| 1 | 35.40 | 55.05 | 40.63 | 38.77 | 37.84 | 36.56 | 35.69 | 0.29 | 0.8% |
+
+Before this pass, enabled wall time was 458.64 s for 24 tracers and 398.12 s
+for one tracer. The main correction computes the full-grid wet-pressure and
+box-height diagnostics once per timestep instead of once per observation.
+The Rust-based `py-yaml12` loader and bulk restart arrays remove most of the
+remaining startup and shutdown cost.
+
+The production path now validates daily YAML directly into a struct-of-arrays
+state: flattened fields, selections, accumulators, and a stable time-sorted
+schedule. Restart loading rebuilds the same state directly from NetCDF, and
+completion passes array slices to the batched science writer. It no longer
+creates one Python entry/time/horizontal/vertical object per observation. One
+serial nopython kernel per timestep evaluates all scheduled entries directly
+from the tracer and forcing arrays. With `WOMBAT_OBSOPERATOR_NUMBA=0`, the same
+kernel function runs directly in Python over those arrays; there is no separate
+object parser, adapter, or sampler.
+
+Preparing 5,144 entries took about 8 ms; rebuilding tables for 12,770 active
+entries took about 22 ms. Across the first six hours, 36 kernel calls covering
+7,653 scheduled observations took 15 ms, including selective dynamic pressure
+and altitude diagnostics. The equivalent object sampler plus full-grid
+diagnostics took about 1.9 s. Cython is not justified for preparation or
+sampling at these costs.
+
+Experiments with background input prefetch and threaded science writing found
+the synchronous path faster or effectively neutral on the pinned CPU. Those
+options were subsequently removed; daily input, batched science output, and
+restart snapshots now use one straightforward synchronous path.
+
+The science writer now stages at most 256 completed entries or 16,384 samples,
+flattens each batch into contiguous arrays, and performs one slice assignment
+per NetCDF variable. The fixed v1 chunks are 256 IDs, 64 field names, and
+16,384 samples or lookup indices (roughly 64 KiB for each main chunk). An
+instrumented six-hour 24-tracer run completed five compressed flushes in 5.9 ms
+and spent 1.9 ms closing the writer. The daily science files shrank from
+794 KiB and 1.2 MiB with library-selected chunks to 139 KiB and 172 KiB. Their
+dimensions, attributes, registry/index order, and every stored value were
+identical to the pre-batching products; only physical chunk layout changed.
+
+For comparison, before batching the final two-day Numba run spent 1.77 s on
+12,584 individual science-entry writes. The matched batched wall times above
+show a 0.60 s improvement at 24 tracers and a 1.86 s improvement at one tracer;
+the difference between internal write time and wall improvement includes
+compression behavior and ordinary run-to-run variation. In the instrumented
+six-hour batched run, gzip YAML load and resolution was 1.14 s of the manager's
+1.22 s. Restart/daily identity now uses the required unique entry ID directly;
+removing canonical YAML serialization for definition hashes reduced the final
+PyYAML measurements to 100.68 s and 37.84 s. The 24-tracer movement is larger
+than the isolated 0.72 s two-day hash cost, so it includes run variation.
+
+The real daily inputs were also parsed with the Rust-based `py-yaml12` 0.1.0.
+It produced equal Python structures and numerically identical resolved entries.
+Parse time fell from 0.575 s and 1.038 s to about 0.058 s and 0.085 s. Direct
+validation and array/schedule construction takes about 0.055 s for 5,144
+entries and 0.117 s for 7,626 entries, down from about 0.221 s and 0.325 s for
+object construction, registration, and flattening. Disabling repeated-operator
+resolution caching was tested and was slower (0.208 s and 0.306 s for array
+construction), so the small per-file caches remain.
+
+A 36-step cProfile run attributed 0.216 s to YAML plus array construction,
+0.007 s to all 36 prepared sampling calls, 0.007 s to five batched science
+flushes, and 0.156 s to shutdown. Of shutdown, 0.127 s prepared the compressed
+restart snapshot and 0.014 s wrote it. The direct two-day 24-tracer science
+files matched the saved pre-array files exactly for IDs, field registry,
+one-based lookup indices, and float32 samples. The end-to-end figures are
+single matched runs and retain ordinary wall-time noise, especially in the
+transport-dominated 24-tracer case.
+
+After removing the compatibility classes entirely, a matched 36-step,
+24-tracer run took 12.97 s with the Numba array kernel and 13.45 s with that
+same function executed directly in Python. Their logical science-output
+SHA-256 digests were identical. The Python reference therefore adds about
+0.48 s to this full run while retaining exactly one sampling implementation
+and one in-memory representation.

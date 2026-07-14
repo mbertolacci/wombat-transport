@@ -86,6 +86,11 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
   pure NumPy and Numba paths by default; the Numba case skips when `numba` is
   unavailable.
 
+## Git Workflow
+
+- Prefer explicit merge commits when integrating finished feature branches into
+  `main`, unless the user requests a fast-forward, rebase, or squash.
+
 ## Coding Constraints
 
 - Preserve user changes and unrelated untracked outputs. Do not clean, reset, or

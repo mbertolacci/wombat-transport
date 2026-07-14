@@ -28,6 +28,12 @@ from wombat_transport.io import (
     load_species_conc,
     write_restart_like,
 )
+from wombat_transport.obsoperator import (
+    ObsOperatorConfig,
+    ObsOperatorManager,
+    expand_obsoperator_template,
+    parse_obsoperator_config,
+)
 from wombat_transport.output import (
     HistoryInterval,
     HistoryOutputManager,
@@ -94,6 +100,8 @@ __all__ = [
     "EmissionsStep",
     "HistoryInterval",
     "HistoryOutputManager",
+    "ObsOperatorConfig",
+    "ObsOperatorManager",
     "OutputChunkingConfig",
     "OutputCompressionConfig",
     "OutputCollectionConfig",
@@ -125,6 +133,7 @@ __all__ = [
     "dry_surface_pressure_hpa",
     "emissions_timestep_s",
     "expand_history_template",
+    "expand_obsoperator_template",
     "initialize_tracers",
     "load_base_met",
     "load_hemco_emissions",
@@ -141,6 +150,7 @@ __all__ = [
     "meteorology_root",
     "mix_full_pbl",
     "parse_history_interval",
+    "parse_obsoperator_config",
     "parse_output_storage",
     "pjc_mass_flux_hpa",
     "pressure_edges_from_surface_hpa",
