@@ -12,12 +12,12 @@ from typing import Any
 
 import netCDF4
 import numpy as np
-import yaml
 
 from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import public_tracer5_to_canonical
 from wombat_transport.grid import TransportGrid
 from wombat_transport.species import Species
+from wombat_transport.yaml_io import dump_yaml, load_yaml
 
 
 HARNESS_START = datetime(2014, 9, 1, 0)
@@ -105,7 +105,7 @@ def compare_scenario(run_dir: str | Path, hemco_diagnostic: str | Path | None = 
     """Compare a HEMCO standalone diagnostic with Wombat emissions output."""
 
     root = Path(run_dir)
-    metadata = yaml.safe_load((root / "scenario.yml").read_text(encoding="utf-8"))
+    metadata = load_yaml((root / "scenario.yml").read_text(encoding="utf-8"))
     scenario = str(metadata["scenario"])
     diagnostic_path = Path(hemco_diagnostic) if hemco_diagnostic is not None else _find_hemco_diagnostic(root)
     hemco = _load_hemco_diagnostic(diagnostic_path)
@@ -514,7 +514,7 @@ def _write_wombat_config(root: Path, config: dict[str, Any]) -> None:
             }
         )
     with (root / "wombat_emissions.yml").open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(
+        dump_yaml(
             {
                 "unit_conversion": "none",
                 "missing_species": "zero",
@@ -528,7 +528,7 @@ def _write_wombat_config(root: Path, config: dict[str, Any]) -> None:
 
 def _write_scenario_metadata(root: Path, scenario: str, config: dict[str, Any]) -> None:
     with (root / "scenario.yml").open("w", encoding="utf-8") as handle:
-        yaml.safe_dump({"scenario": scenario, "fields": config["fields"], "scales": config["scales"]}, handle, sort_keys=False)
+        dump_yaml({"scenario": scenario, "fields": config["fields"], "scales": config["scales"]}, handle, sort_keys=False)
 
 
 def _write_xy_file(

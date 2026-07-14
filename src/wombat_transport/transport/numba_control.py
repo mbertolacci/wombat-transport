@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 
@@ -9,6 +10,9 @@ try:  # Optional acceleration dependency.
     from numba import set_num_threads
 except ImportError:  # pragma: no cover - exercised in environments without numba.
     set_num_threads = None
+
+
+_transport_warning_emitted = False
 
 
 def numba_mode(operator_env: str) -> str:
@@ -48,3 +52,30 @@ def apply_numba_thread_count(operator_env: str, *, available: bool) -> int:
     if available and set_num_threads is not None:
         set_num_threads(count)
     return count
+
+
+def warn_if_transport_numba_disabled(logger: logging.Logger) -> None:
+    """Emit one prominent warning when production transport will use native paths."""
+
+    global _transport_warning_emitted
+    if _transport_warning_emitted:
+        return
+
+    operator_envs = (
+        "WOMBAT_TPCORE_NUMBA",
+        "WOMBAT_VDIFF_NUMBA",
+        "WOMBAT_CONVECTION_NUMBA",
+    )
+    if set_num_threads is None:
+        reason = "Numba is unavailable"
+    else:
+        disabled = [name for name in operator_envs if numba_mode(name) in FALSEY_NUMBA_VALUES]
+        if not disabled:
+            return
+        reason = f"Numba is disabled for {', '.join(disabled)}"
+
+    logger.warning(
+        "MAJOR PERFORMANCE WARNING: %s; production transport will use much slower native paths.",
+        reason,
+    )
+    _transport_warning_emitted = True
