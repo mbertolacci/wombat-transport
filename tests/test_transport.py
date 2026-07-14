@@ -746,6 +746,7 @@ def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
     assert result.state.shape == field.shape
     assert result.transport_operators == ("tpcore", "vdiff", "convection")
     assert result.delp_dry_hpa.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert result.specific_humidity_kg_kg.shape == result.delp_dry_hpa.shape
     assert result.xmass_hpa is None
     assert result.ymass_hpa is None
     assert result.zmass_hpa is None

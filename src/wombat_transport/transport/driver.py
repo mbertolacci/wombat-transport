@@ -65,6 +65,7 @@ class TransportStepResult:
     state: TracerField
     dry_air_mass_kg: np.ndarray
     delp_dry_hpa: np.ndarray
+    specific_humidity_kg_kg: np.ndarray
     xmass_hpa: np.ndarray | None
     ymass_hpa: np.ndarray | None
     zmass_hpa: np.ndarray | None
@@ -500,6 +501,7 @@ def _run_tpcore_one_step_from_mass(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
         delp_dry_hpa=next_delp,
+        specific_humidity_kg_kg=vdiff.specific_humidity_kg_kg[np.newaxis, ::-1, :, :],
         xmass_hpa=xmass_hpa,
         ymass_hpa=ymass_hpa,
         zmass_hpa=zmass_hpa,
@@ -604,6 +606,7 @@ def _trace_tpcore_one_step_from_mass(
         state=state,
         dry_air_mass_kg=next_dry_air_mass,
         delp_dry_hpa=next_delp,
+        specific_humidity_kg_kg=vdiff.specific_humidity_kg_kg[np.newaxis, ::-1, :, :],
         xmass_hpa=tpcore.xmass_hpa[np.newaxis, ::-1, :, :],
         ymass_hpa=tpcore.ymass_hpa[np.newaxis, ::-1, :, :],
         zmass_hpa=_tpcore_vertical_flux_edges(tpcore.vertical_mass_flux_hpa[::-1]),

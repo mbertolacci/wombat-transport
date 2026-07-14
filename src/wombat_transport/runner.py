@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from datetime import timezone
 import json
@@ -171,11 +171,15 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         step_end = current + timedelta(seconds=transport_dt_s)
         snapshot: OutputSnapshot | None = None
         if output_manager is not None or obsoperator_manager is not None:
+            snapshot_forcing = replace(
+                forcing,
+                specific_humidity_kg_kg=transport_result.specific_humidity_kg_kg,
+            )
             snapshot = OutputSnapshot(
                 timestamp=step_end,
                 state=state,
                 delp_dry_hpa=transport_result.delp_dry_hpa,
-                forcing=forcing,
+                forcing=snapshot_forcing,
             )
         if obsoperator_manager is not None:
             assert snapshot is not None
