@@ -133,6 +133,53 @@ stages:
         compare_validation_run.compare_case(case_dir, mode="quick", work_dir=tmp_path / "work")
 
 
+def test_compare_validation_run_checks_obsoperator_identity_and_samples(tmp_path):
+    case_dir = tmp_path / "cases" / "synthetic_obsoperator"
+    case_dir.mkdir(parents=True)
+    (case_dir / "case.yml").write_text(
+        """
+schema_version: 1
+name: synthetic_obsoperator
+modes:
+  quick:
+    comparisons: [obsoperator]
+stages:
+  - id: main
+    engines:
+      geoschem:
+        work_dir: "{work}/main/geoschem"
+      wombat:
+        work_dir: "{work}/main/wombat"
+    comparisons:
+      - id: obsoperator
+        kind: obsoperator
+        geoschem_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        fields: [id_index, field_index, sample]
+""",
+        encoding="utf-8",
+    )
+    work_case = tmp_path / "work" / "synthetic_obsoperator" / "main"
+    filename = "GEOSChem.ObsOperator.20140901_0000z.nc4"
+    _write_obsoperator(work_case / "geoschem" / "OutputDir" / filename, sample=1.0)
+    _write_obsoperator(work_case / "wombat" / "OutputDir" / filename, sample=1.25)
+
+    rows, _ = compare_validation_run.compare_case(case_dir, mode="quick", work_dir=tmp_path / "work")
+    by_variable = {row.variable: row for row in rows}
+    assert by_variable["sample"].max_abs_error == 0.25
+    assert by_variable["sample_tolerance_failures"].max_abs_error == 1.0
+    assert by_variable["missing_samples_in_candidate"].max_abs_error == 0.0
+    assert by_variable["extra_samples_in_candidate"].max_abs_error == 0.0
+
+    path = work_case / "wombat" / "OutputDir" / filename
+    with netCDF4.Dataset(path, "r+") as dataset:
+        dataset.variables["id"][0, 0] = b"x"
+    changed_rows, _ = compare_validation_run.compare_case(case_dir, mode="quick", work_dir=tmp_path / "work")
+    changed = {row.variable: row for row in changed_rows}
+    assert changed["missing_samples_in_candidate"].max_abs_error == 1.0
+    assert changed["extra_samples_in_candidate"].max_abs_error == 1.0
+
+
 def _write_species_conc(path: Path, *, value: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with netCDF4.Dataset(path, "w") as dataset:
@@ -155,3 +202,23 @@ def _write_restart(path: Path, *, value: float) -> None:
         species[:] = value
         delp = dataset.createVariable("Met_DELPDRY", "f8", ("time", "lev", "lat", "lon"))
         delp[:] = value + 10.0
+
+
+def _write_obsoperator(path: Path, *, sample: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(path, "w", format="NETCDF4") as dataset:
+        dataset.createDimension("entries", None)
+        dataset.createDimension("id_chars", 8)
+        dataset.createDimension("fields", None)
+        dataset.createDimension("field_chars", 16)
+        dataset.createDimension("samples", None)
+        ids = dataset.createVariable("id", "S1", ("entries", "id_chars"))
+        fields = dataset.createVariable("field", "S1", ("fields", "field_chars"))
+        id_index = dataset.createVariable("id_index", "i4", ("samples",))
+        field_index = dataset.createVariable("field_index", "i4", ("samples",))
+        samples = dataset.createVariable("sample", "f4", ("samples",))
+        ids[0, :] = netCDF4.stringtochar(np.asarray(["entry"], dtype="S8"))[0]
+        fields[0, :] = netCDF4.stringtochar(np.asarray(["SpeciesConcVV_A"], dtype="S16"))[0]
+        id_index[0] = 1
+        field_index[0] = 1
+        samples[0] = sample

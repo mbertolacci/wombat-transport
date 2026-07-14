@@ -19,6 +19,13 @@ emissions:
 logging:
   level: info
 outputs:
+  obsoperator:
+    activate: true
+    verbose: false
+    input_file: ./ObsOperator/obsoperator-YYYYMMDD.yml.gz
+    output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
+    restart_file: ./Restarts/Wombat.ObsOperator.Restart.YYYYMMDD_hhmmss.nc4
+    restart_missing: warn
   expid: OutputDir/GEOSChem
   dtype: float32
   compression:

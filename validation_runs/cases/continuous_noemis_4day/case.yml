@@ -14,9 +14,9 @@ defaults:
 
 modes:
   quick:
-    comparisons: [species_conc]
+    comparisons: [species_conc, obsoperator]
   restart:
-    comparisons: [species_conc, restart]
+    comparisons: [species_conc, obsoperator, restart]
 
 stages:
   - id: main
@@ -40,6 +40,12 @@ stages:
         geoschem_glob: "OutputDir/GEOSChem.SpeciesConcThreeHourly.*.nc4"
         wombat_glob: "OutputDir/GEOSChem.SpeciesConcThreeHourly.*.nc4"
         fields: ["SpeciesConcVV_?ALL?"]
+        tolerance_mode: report
+      - id: obsoperator
+        kind: obsoperator
+        geoschem_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        fields: [id_index, field_index, sample]
         tolerance_mode: report
       - id: restart
         kind: restart

@@ -64,7 +64,7 @@ extra_diagnostics:
   planeflight:
     activate: false
   obsoperator:
-    activate: false
+    activate: true
     verbose: false
-    input_file: ../../../../3a_transport_gc/intermediates/obsoperator-entries/obsoperator-YYYYMMDD.yml
+    input_file: ./ObsOperator/obsoperator-YYYYMMDD.yml
     output_file: OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
