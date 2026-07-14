@@ -4,9 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.constants import G0_M_PER_S2, RD_J_PER_KG_K
 
-G0_M_PER_S2 = 9.80665
-RD_J_PER_KG_K = 287.0
 RV_J_PER_KG_K = 461.0
 CPAIR_J_PER_KG_K = 1004.64
 LATVAP_J_PER_KG = 2.5104e6

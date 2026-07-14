@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.constants import G0_M_PER_S2
 
-G0_100 = 100.0 / 9.80665
+G0_100 = 100.0 / G0_M_PER_S2
 _TINYNUM = 1.0e-14
 _MAX_GROUP_TRACER_BYTES = 1024**3
 _CONVECTION_SCRATCH_PAD_TRACERS = 32

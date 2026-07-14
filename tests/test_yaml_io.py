@@ -35,4 +35,3 @@ def test_load_yaml12_warns_once_when_falling_back_to_pyyaml(monkeypatch, caplog)
     warnings = [record.message for record in caplog.records if "MAJOR PERFORMANCE WARNING" in record.message]
     assert len(warnings) == 1
     assert "observations.yml" in warnings[0]
-
