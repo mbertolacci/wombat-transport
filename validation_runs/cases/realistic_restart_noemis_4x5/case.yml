@@ -1,0 +1,67 @@
+schema_version: 1
+name: realistic_restart_noemis_4x5
+title: Realistic 4x5 restart, no emissions
+purpose: >
+  Transport the shared regridded CO2 restart for two days on the GEOS 4x5,
+  47-level grid and compare HISTORY, ObsOperator, and restart output.
+tags: [4x5, noemis, restart-initialized, quick-history]
+
+defaults:
+  grid: geos_4x5_47
+  transport_timestep_s: 600
+  meteorology_root: "{repo}/external_data/geoschem/GEOS_4x5/MERRA2"
+
+modes:
+  quick:
+    comparisons: [species_conc, obsoperator]
+  restart:
+    comparisons: [species_conc, obsoperator, restart]
+
+stages:
+  - id: main
+    start: "2014-09-01 00:00"
+    end: "2014-09-03 00:00"
+    engines:
+      geoschem:
+        template_dir: ../realistic_restart_noemis/geoschem/main
+        work_dir: "{work}/main/geoschem"
+        compile_script: compile_geoschem.sh
+        run_script: run_geoschem.sh
+        materialize_replacements:
+          geoschem_config.yml:
+            "resolution: 2.0x2.5": "resolution: 4.0x5.0"
+          HEMCO_Config.rc:
+            "external_data/geoschem/GEOS_2x2.5/MERRA2": "external_data/geoschem/GEOS_4x5/MERRA2"
+            "external_data/restarts/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4": "external_data/restarts/4x5/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4"
+      wombat:
+        template_dir: ../realistic_restart_noemis/wombat/main
+        work_dir: "{work}/main/wombat"
+        materialize_replacements:
+          run.yml:
+            "initial_restart: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4": "initial_restart: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+            "grid_template: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4": "grid_template: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+            "external_data/geoschem/GEOS_2x2.5/MERRA2": "external_data/geoschem/GEOS_4x5/MERRA2"
+            "rank3: [1, 91, 144]": "rank3: [1, 46, 72]"
+            "rank4: [1, 1, 91, 144]": "rank4: [1, 1, 46, 72]"
+    initial_restart:
+      geoschem: "{repo}/external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+      wombat: "{repo}/external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+    comparisons:
+      - id: species_conc
+        kind: species_conc
+        geoschem_glob: "OutputDir/GEOSChem.SpeciesConcThreeHourly.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.SpeciesConcThreeHourly.*.nc4"
+        fields: ["SpeciesConcVV_?ALL?"]
+        tolerance_mode: report
+      - id: obsoperator
+        kind: obsoperator
+        geoschem_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        fields: [id_index, field_index, sample]
+        tolerance_mode: report
+      - id: restart
+        kind: restart
+        geoschem_glob: "Restarts/GEOSChem.Restart.20140903_0000z.nc4"
+        wombat_glob: "Restarts/GEOSChem.Restart.20140903_0000z.nc4"
+        fields: ["SpeciesRst_?ALL?"]
+        tolerance_mode: report

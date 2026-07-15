@@ -42,7 +42,7 @@ from wombat_transport.run_config import (
     transport_timestep_s,
 )
 from wombat_transport.transport import (
-    MERRA2_FILENAME,
+    merra2_filename,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
@@ -1038,12 +1038,11 @@ def _load_real_convection_met(
 ) -> dict[str, np.ndarray]:
     met_root = Path(met_root)
     day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
-    date = timestamp.strftime("%Y%m%d")
-    a1_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A1")
-    a3dyn_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3dyn")
-    a3mstc_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstC")
-    a3mste_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstE")
-    i3_path = day_dir / MERRA2_FILENAME.format(date=date, collection="I3")
+    a1_path = day_dir / merra2_filename(timestamp, "A1", grid)
+    a3dyn_path = day_dir / merra2_filename(timestamp, "A3dyn", grid)
+    a3mstc_path = day_dir / merra2_filename(timestamp, "A3mstC", grid)
+    a3mste_path = day_dir / merra2_filename(timestamp, "A3mstE", grid)
+    i3_path = day_dir / merra2_filename(timestamp, "I3", grid)
     a1_time_index = int(time_index) * 3
 
     with (

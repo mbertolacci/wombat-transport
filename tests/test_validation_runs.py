@@ -24,6 +24,19 @@ def _load_compare_module():
 compare_validation_run = _load_compare_module()
 
 
+def _load_matrix_module():
+    path = Path(__file__).parents[1] / "tools" / "run_validation_matrix.py"
+    spec = importlib.util.spec_from_file_location("run_validation_matrix", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+run_validation_matrix = _load_matrix_module()
+
+
 def test_validation_case_external_paths_use_external_data_tree():
     repo = Path(__file__).parents[1]
     cases = repo / "validation_runs" / "cases"
@@ -43,6 +56,21 @@ def test_validation_case_external_paths_use_external_data_tree():
             manifest = read_yaml(path) or {}
             meteorology_root = str(manifest.get("defaults", {}).get("meteorology_root", ""))
             assert meteorology_root.startswith("{repo}/external_data/geoschem/"), path
+
+
+def test_matrix_materialization_uses_short_external_data_link(tmp_path):
+    repo = tmp_path / "repo"
+    external_data = repo / "external_data"
+    destination = tmp_path / "run"
+    external_data.mkdir(parents=True)
+    destination.mkdir()
+    config = destination / "run.yml"
+    config.write_text("root: ../../../../../external_data/geoschem/GEOS_4x5/MERRA2\n", encoding="utf-8")
+
+    run_validation_matrix._link_external_data_paths(destination, repo)
+
+    assert (destination / "ExternalData").resolve() == external_data.resolve()
+    assert config.read_text(encoding="utf-8") == "root: ./ExternalData/geoschem/GEOS_4x5/MERRA2\n"
 
 
 def test_compare_validation_run_reports_species_conc_and_restart_metrics(tmp_path):

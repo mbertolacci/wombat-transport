@@ -16,7 +16,7 @@ import wombat_transport.obsoperator.input as obsoperator_input
 import wombat_transport.obsoperator.sampling as obsoperator_sampling
 import wombat_transport.obsoperator.writer as obsoperator_writer
 from wombat_transport.fields import TracerField
-from wombat_transport.grid import TransportGrid
+from wombat_transport.grid import TransportGrid, geos_chem_horizontal_centers
 from wombat_transport.obsoperator import (
     ObsOperatorConfig,
     ObsOperatorManager,
@@ -376,6 +376,42 @@ def test_geos_polar_degree_boundaries(tmp_path: Path, latitude: float, expected_
         "type": "point",
         "unit": "degrees",
         "longitude": -180.0,
+        "latitude": latitude,
+    }
+    path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
+
+    state = obsoperator_input._load_obsoperator_array_state(
+        path,
+        tracer_names=("A", "B"),
+        grid=grid,
+        simulation_start=START,
+        transport_dt_s=600.0,
+    )
+
+    np.testing.assert_array_equal(state.prepared.horizontal_lat, np.array([expected_index]))
+    np.testing.assert_array_equal(state.prepared.horizontal_lon, np.array([0]))
+
+
+@pytest.mark.parametrize(
+    ("latitude", "expected_index"),
+    [(-90.0, 0), (-89.0, 0), (-88.0, 1), (86.0, 44), (88.0, 45), (90.0, 45)],
+)
+def test_geos_4x5_polar_degree_boundaries(tmp_path: Path, latitude: float, expected_index: int):
+    lat, lon = geos_chem_horizontal_centers("4x5")
+    grid = TransportGrid(
+        lat_deg=lat,
+        lon_deg=lon,
+        lev=np.array([1.0, 2.0, 3.0]),
+        area_m2=np.ones((lat.size, lon.size)),
+        hyai_hpa=np.array([1000.0, 700.0, 300.0, 1.0]),
+        hybi=np.zeros(4),
+        template_path=Path("unused.nc4"),
+    )
+    raw = _entry_raw()
+    raw["horizontal_operator"] = {
+        "type": "point",
+        "unit": "degrees",
+        "longitude": 180.0,
         "latitude": latitude,
     }
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})

@@ -8,12 +8,11 @@ from typing import Any
 import netCDF4
 import numpy as np
 
-from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.pressure import dry_surface_pressure_hpa, wet_surface_pressure_hpa
 
-from wombat_transport.io import FIXED_GRID
+from wombat_transport.grid import MODEL_LEVELS, TransportGrid
 
-MERRA2_FILENAME = "MERRA2.{date}.{collection}.2x25.nc4"
+MERRA2_FILENAME = "MERRA2.{date}.{collection}.{resolution}.nc4"
 
 MERRA2_72_AP_HPA = np.array(
     [
@@ -381,6 +380,7 @@ class TransportForcingProvider:
                 self._start_day,
                 _block_start(index, block_size),
                 block_size,
+                self._grid,
             )
         return self._a1_block.field(index)
 
@@ -392,6 +392,7 @@ class TransportForcingProvider:
                 self._start_day,
                 _block_start(index, block_size),
                 block_size,
+                self._grid,
             )
         return self._a3_block.field(index)
 
@@ -554,9 +555,17 @@ def _record_day_and_index(start_day: datetime, absolute_index: int, records_per_
     return start_day + timedelta(days=absolute_index // records_per_day), absolute_index % records_per_day
 
 
-def _met_path(met_root: Path, timestamp: datetime, collection: str) -> Path:
+def merra2_filename(timestamp: datetime, collection: str, grid: TransportGrid) -> str:
+    return MERRA2_FILENAME.format(
+        date=timestamp.strftime("%Y%m%d"),
+        collection=collection,
+        resolution=grid.horizontal_resolution,
+    )
+
+
+def _met_path(met_root: Path, timestamp: datetime, collection: str, grid: TransportGrid) -> Path:
     day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
-    return day_dir / MERRA2_FILENAME.format(date=timestamp.strftime("%Y%m%d"), collection=collection)
+    return day_dir / merra2_filename(timestamp, collection, grid)
 
 
 def _block_start(index: int, block_size: int) -> int:
@@ -565,7 +574,9 @@ def _block_start(index: int, block_size: int) -> int:
     return index // block_size * block_size
 
 
-def _load_a1_block(met_root: Path, start_day: datetime, start_index: int, count: int) -> _A1Block:
+def _load_a1_block(
+    met_root: Path, start_day: datetime, start_index: int, count: int, grid: TransportGrid
+) -> _A1Block:
     pblh = []
     hflux = []
     eflux = []
@@ -573,8 +584,9 @@ def _load_a1_block(met_root: Path, start_day: datetime, start_index: int, count:
     precccon = []
     paths = []
     for day, day_index, records in _record_spans(start_day, start_index, count, MERRA2_A1_RECORDS_PER_DAY):
-        a1_path = _met_path(met_root, day, "A1")
+        a1_path = _met_path(met_root, day, "A1", grid)
         with netCDF4.Dataset(a1_path) as a1:
+            _assert_met_horizontal_shape(a1, grid, a1_path)
             selector = slice(day_index, day_index + records)
             pblh.append(np.asarray(a1.variables["PBLH"][selector], dtype=np.float64))
             hflux.append(np.asarray(a1.variables["HFLUX"][selector], dtype=np.float64))
@@ -594,7 +606,9 @@ def _load_a1_block(met_root: Path, start_day: datetime, start_index: int, count:
     )
 
 
-def _load_a3_block(met_root: Path, start_day: datetime, start_index: int, count: int) -> _A3Block:
+def _load_a3_block(
+    met_root: Path, start_day: datetime, start_index: int, count: int, grid: TransportGrid
+) -> _A3Block:
     u = []
     v = []
     omega = []
@@ -608,15 +622,18 @@ def _load_a3_block(met_root: Path, start_day: datetime, start_index: int, count:
     a3mstc_paths = []
     a3mste_paths = []
     for day, day_index, records in _record_spans(start_day, start_index, count, MERRA2_A3_RECORDS_PER_DAY):
-        a3dyn_path = _met_path(met_root, day, "A3dyn")
-        a3mstc_path = _met_path(met_root, day, "A3mstC")
-        a3mste_path = _met_path(met_root, day, "A3mstE")
+        a3dyn_path = _met_path(met_root, day, "A3dyn", grid)
+        a3mstc_path = _met_path(met_root, day, "A3mstC", grid)
+        a3mste_path = _met_path(met_root, day, "A3mstE", grid)
         selector = slice(day_index, day_index + records)
         with (
             netCDF4.Dataset(a3dyn_path) as a3dyn,
             netCDF4.Dataset(a3mstc_path) as a3mstc,
             netCDF4.Dataset(a3mste_path) as a3mste,
         ):
+            _assert_met_horizontal_shape(a3dyn, grid, a3dyn_path)
+            _assert_met_horizontal_shape(a3mstc, grid, a3mstc_path)
+            _assert_met_horizontal_shape(a3mste, grid, a3mste_path)
             u.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["U"][selector], dtype=np.float64)))
             v.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["V"][selector], dtype=np.float64)))
             omega.append(_map_met_levels_to_47(np.asarray(a3dyn.variables["OMEGA"][selector], dtype=np.float64)))
@@ -654,9 +671,10 @@ def _load_i3_block(met_root: Path, start_day: datetime, start_index: int, count:
     paths = []
     read_count = count + 1
     for day, day_index, records in _record_spans(start_day, start_index, read_count, MERRA2_A3_RECORDS_PER_DAY):
-        i3_path = _met_path(met_root, day, "I3")
+        i3_path = _met_path(met_root, day, "I3", grid)
         selector = slice(day_index, day_index + records)
         with netCDF4.Dataset(i3_path) as i3:
+            _assert_met_horizontal_shape(i3, grid, i3_path)
             surface_pressure.append(np.asarray(i3.variables["PS"][selector], dtype=np.float64))
             qv.append(_map_met_levels_to_47(np.asarray(i3.variables["QV"][selector], dtype=np.float64)))
             temperature.append(_map_met_levels_to_47(np.asarray(i3.variables["T"][selector], dtype=np.float64)))
@@ -709,8 +727,9 @@ def _load_a1_fields(
     key = ("A1", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
     if cache is not None and key in cache:
         return cache[key]
-    a1_path = _met_path(met_root, timestamp, "A1")
+    a1_path = _met_path(met_root, timestamp, "A1", grid)
     with netCDF4.Dataset(a1_path) as a1:
+        _assert_met_horizontal_shape(a1, grid, a1_path)
         fields = _A1Fields(
             pblh=_read_2d_time_slice(a1, "PBLH", time_index),
             hflux=_read_2d_time_slice(a1, "HFLUX", time_index),
@@ -734,14 +753,17 @@ def _load_a3_fields(
     key = ("A3", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
     if cache is not None and key in cache:
         return cache[key]
-    a3dyn_path = _met_path(met_root, timestamp, "A3dyn")
-    a3mstc_path = _met_path(met_root, timestamp, "A3mstC")
-    a3mste_path = _met_path(met_root, timestamp, "A3mstE")
+    a3dyn_path = _met_path(met_root, timestamp, "A3dyn", grid)
+    a3mstc_path = _met_path(met_root, timestamp, "A3mstC", grid)
+    a3mste_path = _met_path(met_root, timestamp, "A3mstE", grid)
     with (
         netCDF4.Dataset(a3dyn_path) as a3dyn,
         netCDF4.Dataset(a3mstc_path) as a3mstc,
         netCDF4.Dataset(a3mste_path) as a3mste,
     ):
+        _assert_met_horizontal_shape(a3dyn, grid, a3dyn_path)
+        _assert_met_horizontal_shape(a3mstc, grid, a3mstc_path)
+        _assert_met_horizontal_shape(a3mste, grid, a3mste_path)
         fields = _A3Fields(
             u=_map_met_levels_to_47(_read_3d_time_slice(a3dyn, "U", time_index)),
             v=_map_met_levels_to_47(_read_3d_time_slice(a3dyn, "V", time_index)),
@@ -771,8 +793,9 @@ def _load_i3_fields(
     key = ("I3", datetime(timestamp.year, timestamp.month, timestamp.day), int(time_index))
     if cache is not None and key in cache:
         return cache[key]
-    i3_path = _met_path(met_root, timestamp, "I3")
+    i3_path = _met_path(met_root, timestamp, "I3", grid)
     with netCDF4.Dataset(i3_path) as i3:
+        _assert_met_horizontal_shape(i3, grid, i3_path)
         surface_pressure = np.asarray(i3.variables["PS"][time_index : time_index + 1], dtype=np.float64)
         qv = _map_met_levels_to_47(_read_3d_time_slice(i3, "QV", time_index))
         fields = _I3Fields(
@@ -821,10 +844,10 @@ def _read_2d_time_slice(dataset: netCDF4.Dataset, variable_name: str, time_index
     return np.asarray(dataset.variables[variable_name][time_index : time_index + 1], dtype=np.float64)
 
 def _map_met_levels_to_47(data: np.ndarray) -> np.ndarray:
-    if data.shape[1] == FIXED_GRID["lev"]:
+    if data.shape[1] == MODEL_LEVELS:
         return data
     if data.shape[1] == 72:
-        mapped = np.empty((data.shape[0], FIXED_GRID["lev"], data.shape[2], data.shape[3]), dtype=np.float64)
+        mapped = np.empty((data.shape[0], MODEL_LEVELS, data.shape[2], data.shape[3]), dtype=np.float64)
         mapped[:, :36, :, :] = data[:, :36, :, :]
         for target_level, (start, end) in enumerate(MERRA2_72_TO_47_GROUPS, start=36):
             weights = MERRA2_72_AP_HPA[start:end] - MERRA2_72_AP_HPA[start + 1 : end + 1]
@@ -833,7 +856,7 @@ def _map_met_levels_to_47(data: np.ndarray) -> np.ndarray:
                 axis=1,
             ) / np.sum(weights)
         return mapped
-    raise ValueError(f"cannot map {data.shape[1]} met levels to {FIXED_GRID['lev']}")
+    raise ValueError(f"cannot map {data.shape[1]} met levels to {MODEL_LEVELS}")
 
 
 def _map_met_edges_to_48(data: np.ndarray) -> np.ndarray:
@@ -844,12 +867,21 @@ def _map_met_edges_to_48(data: np.ndarray) -> np.ndarray:
         edge_axis = 1
     else:
         raise ValueError(f"edge field must be 3-D or 4-D, found {edges.shape}")
-    if edges.shape[edge_axis] == FIXED_GRID["lev"] + 1:
+    if edges.shape[edge_axis] == MODEL_LEVELS + 1:
         return edges
     if edges.shape[edge_axis] != 73:
-        raise ValueError(f"cannot map {edges.shape[edge_axis]} met edges to {FIXED_GRID['lev'] + 1} target edges")
+        raise ValueError(f"cannot map {edges.shape[edge_axis]} met edges to {MODEL_LEVELS + 1} target edges")
     target_indices = np.array(
         list(range(37)) + [38, 40, 42, 44, 48, 52, 56, 60, 64, 68, 72],
         dtype=np.int64,
     )
     return np.take(edges, target_indices, axis=edge_axis)
+
+
+def _assert_met_horizontal_shape(
+    dataset: netCDF4.Dataset, grid: TransportGrid, path: Path
+) -> None:
+    expected = (grid.lat_deg.size, grid.lon_deg.size)
+    actual = (len(dataset.dimensions["lat"]), len(dataset.dimensions["lon"]))
+    if actual != expected:
+        raise ValueError(f"{path} horizontal grid {actual} does not match template grid {expected}")

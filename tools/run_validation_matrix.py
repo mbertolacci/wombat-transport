@@ -6,6 +6,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,8 @@ def _materialize_stage(
             raise ValidationMatrixError(f"refusing to overwrite existing run directory: {destination}")
         template = case_dir / str(stage["engines"][engine]["template_dir"])
         shutil.copytree(template, destination)
+        _apply_materialization_replacements(destination, stage["engines"][engine])
+        _link_external_data_paths(destination, repo)
         obs_target = uncompressed_inputs if engine == "geoschem" else compressed_inputs
         (destination / "ObsOperator").symlink_to(obs_target, target_is_directory=True)
         if engine == "geoschem":
@@ -77,6 +80,37 @@ def _materialize_stage(
             (destination / "gcclassic").symlink_to(binary)
         result[engine] = destination
     return result
+
+
+def _apply_materialization_replacements(destination: Path, engine: dict[str, Any]) -> None:
+    replacements = engine.get("materialize_replacements") or {}
+    for relative_path, substitutions in replacements.items():
+        path = (destination / str(relative_path)).resolve()
+        if not path.is_relative_to(destination.resolve()) or not path.is_file():
+            raise ValidationMatrixError(f"invalid materialization replacement path: {relative_path}")
+        text = path.read_text(encoding="utf-8")
+        for old, new in substitutions.items():
+            count = text.count(str(old))
+            if count != 1:
+                raise ValidationMatrixError(
+                    f"expected one occurrence of {old!r} in {path}, found {count}"
+                )
+            text = text.replace(str(old), str(new))
+        path.write_text(text, encoding="utf-8")
+
+
+def _link_external_data_paths(destination: Path, repo: Path) -> None:
+    link = destination / "ExternalData"
+    link.symlink_to((repo / "external_data").resolve(), target_is_directory=True)
+    replacement = "./ExternalData/"
+    pattern = re.compile(r"(?:\.\./)+external_data/")
+    for path in destination.rglob("*"):
+        if not path.is_file() or path.suffix not in {".yml", ".rc"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        updated = pattern.sub(replacement, text)
+        if updated != text:
+            path.write_text(updated, encoding="utf-8")
 
 
 def _dates_for_stage(stage: dict[str, Any]) -> list[datetime]:

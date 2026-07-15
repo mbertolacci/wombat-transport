@@ -90,11 +90,11 @@ def test_transport_forcing_provider_uses_block_cadences(monkeypatch):
     calls = []
     grid = _fake_grid()
 
-    def fake_a1_block(met_root, start_day, start_index, count):
+    def fake_a1_block(met_root, start_day, start_index, count, grid):
         calls.append(("A1", start_index, count))
         return _fake_a1_block(start_index, count)
 
-    def fake_a3_block(met_root, start_day, start_index, count):
+    def fake_a3_block(met_root, start_day, start_index, count, grid):
         calls.append(("A3", start_index, count))
         return _fake_a3_block(start_index, count)
 

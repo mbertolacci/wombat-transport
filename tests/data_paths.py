@@ -11,6 +11,8 @@ BASE_CONFIG = REPO_ROOT / "validation_runs/cases/realistic_restart_noemis/wombat
 RESIDUAL_CONFIG = REPO_ROOT / "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"
 INITIAL_RESTART = EXTERNAL_DATA / "restarts/GEOSChem.Restart.20140901_0000z.nc4"
 MERRA2_ROOT = EXTERNAL_DATA / "geoschem/GEOS_2x2.5/MERRA2"
+FOUR_BY_FIVE_RESTART = EXTERNAL_DATA / "restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+MERRA2_4X5_ROOT = EXTERNAL_DATA / "geoschem/GEOS_4x5/MERRA2"
 FLUX_ROOT = EXTERNAL_DATA / "fluxes"
 SCALING_GRID_ROOT = EXTERNAL_DATA / "scaling-grids"
 OBSOPERATOR_ROOT = EXTERNAL_DATA / "obsoperator"
@@ -24,6 +26,9 @@ def _skip_marker(label: str, *paths: Path):
 
 requires_restart = _skip_marker("full-grid test", INITIAL_RESTART)
 requires_transport_data = _skip_marker("real transport test", INITIAL_RESTART, MERRA2_ROOT)
+requires_4x5_transport_data = _skip_marker(
+    "real 4x5 transport test", FOUR_BY_FIVE_RESTART, MERRA2_4X5_ROOT
+)
 requires_residual_data = _skip_marker(
     "residual emissions test",
     INITIAL_RESTART,
