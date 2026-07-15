@@ -12,16 +12,18 @@ import pytest
 from yaml12 import read_yaml, write_yaml
 
 import wombat_transport.obsoperator as obsoperator_module
+import wombat_transport.obsoperator.input as obsoperator_input
+import wombat_transport.obsoperator.sampling as obsoperator_sampling
+import wombat_transport.obsoperator.writer as obsoperator_writer
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import TransportGrid
 from wombat_transport.obsoperator import (
-    MAX_FIELD_NAME_LENGTH,
-    MAX_ID_LENGTH,
     ObsOperatorConfig,
     ObsOperatorManager,
     expand_obsoperator_template,
     parse_obsoperator_config,
 )
+from wombat_transport.obsoperator.state import MAX_FIELD_NAME_LENGTH, MAX_ID_LENGTH
 from wombat_transport.output import OutputSnapshot
 
 
@@ -69,7 +71,7 @@ def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(t
         tmp_path / "obs-20140901.yml",
         {"entries": [_entry_raw(entry_id="first"), _entry_raw(entry_id="second")]},
     )
-    original = obsoperator_module._sample_prepared_entries_kernel
+    original = obsoperator_sampling._sample_prepared_entries_kernel
     calls = 0
 
     def counted(*args, **kwargs):
@@ -77,7 +79,7 @@ def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(t
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(obsoperator_module, "_sample_prepared_entries_kernel", counted)
+    monkeypatch.setattr(obsoperator_sampling, "_sample_prepared_entries_kernel", counted)
     manager = _manager(tmp_path)
     manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
     manager.close(boundary_time=START + timedelta(minutes=10))
@@ -378,7 +380,7 @@ def test_geos_polar_degree_boundaries(tmp_path: Path, latitude: float, expected_
     }
     path = _write_yaml(tmp_path / "obs.yml", {"entries": [raw]})
 
-    state = obsoperator_module._load_obsoperator_array_state(
+    state = obsoperator_input._load_obsoperator_array_state(
         path,
         tracer_names=("A", "B"),
         grid=grid,
@@ -464,9 +466,9 @@ def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
     tmp_path: Path,
     monkeypatch,
 ):
-    monkeypatch.setattr(obsoperator_module, "SCIENCE_STAGE_ENTRIES", 2)
+    monkeypatch.setattr(obsoperator_writer, "SCIENCE_STAGE_ENTRIES", 2)
     output = tmp_path / "staged.nc4"
-    writer = obsoperator_module._ObsOperatorNetCDFWriter(output)
+    writer = obsoperator_writer._ObsOperatorNetCDFWriter(output)
     path = _write_yaml(
         tmp_path / "obs.yml",
         {
@@ -477,7 +479,7 @@ def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
             ]
         },
     )
-    state = obsoperator_module._load_obsoperator_array_state(
+    state = obsoperator_input._load_obsoperator_array_state(
         path,
         tracer_names=("A", "B", "C"),
         grid=_grid(),
@@ -893,7 +895,7 @@ def test_local_daily_input_contains_restartable_cross_day_entries_if_available(t
     ]
     assert cross_day
     subset = _write_yaml(tmp_path / "cross-day.yml", {"entries": cross_day[:10]})
-    state = obsoperator_module._load_obsoperator_array_state(
+    state = obsoperator_input._load_obsoperator_array_state(
         subset,
         tracer_names=("CO2",),
         grid=_global_grid(),
@@ -935,7 +937,7 @@ def _manager(
 
 
 def _load(path: Path):
-    return obsoperator_module._load_obsoperator_array_state(
+    return obsoperator_input._load_obsoperator_array_state(
         path,
         tracer_names=("A", "B"),
         grid=_grid(),
@@ -979,7 +981,7 @@ def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.nd
     entries = np.arange(state.entry_count, dtype=np.int64)
     samples = np.empty((state.entry_count, state.prepared.max_field_count), dtype=np.float64)
     prepared = state.prepared
-    obsoperator_module._sample_prepared_entries_kernel(
+    obsoperator_sampling._sample_prepared_entries_kernel(
         np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
         np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
         np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
