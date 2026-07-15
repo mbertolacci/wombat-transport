@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from wombat_transport.io import (
@@ -14,15 +16,15 @@ from wombat_transport.io import (
 from wombat_transport.run_config import load_run_config
 from wombat_transport.species import load_species_database
 
-BASE_RESTART = "base/Restarts/GEOSChem.Restart.20140901_0000z.nc4"
-BASE_SPECIES = "base/species_database.yml"
-RESIDUAL_SPECIES = "residual_20140901_part001_split01/species_database.yml"
-RESIDUAL_MONTHLY_RESTART = "residual_20140901_part001_split01/Restarts/GEOSChem.Restart.20141001_0000z.nc4"
-BASE_SPECIES_CONC = "base/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
-RESIDUAL_SPECIES_CONC = "residual_20140901_part001_split01/OutputDir/GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
-RESIDUAL_HEMCO = "residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409010030.nc"
-BASE_LEVEL_EDGE = "base/OutputDir/GEOSChem.LevelEdgeDiagsThreeHourly.20140901_0000z.nc4"
-BASE_STATE_MET = "base/OutputDir/GEOSChem.StateMetThreeHourly.20140901_0000z.nc4"
+FIXTURE_ROOT = "tests/fixtures/io_readers_v1"
+BASE_RESTART = f"{FIXTURE_ROOT}/restart.nc4"
+BASE_SPECIES = "validation_runs/cases/realistic_restart_noemis/wombat/main/species_database.yml"
+RESIDUAL_SPECIES = "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/species_database.yml"
+RESIDUAL_MONTHLY_RESTART = BASE_RESTART
+BASE_SPECIES_CONC = f"{FIXTURE_ROOT}/base_species_conc.nc4"
+RESIDUAL_SPECIES_CONC = f"{FIXTURE_ROOT}/residual_species_conc.nc4"
+RESIDUAL_HEMCO = f"{FIXTURE_ROOT}/hemco.nc4"
+BASE_MET = f"{FIXTURE_ROOT}/met_diagnostics.nc4"
 
 
 def test_species_database_parses_backgrounds():
@@ -96,9 +98,9 @@ def test_species_conc_readers_stack_base_and_residual():
     residual = load_species_conc(RESIDUAL_SPECIES_CONC)
 
     assert base.names == ("CO2",)
-    assert base.shape == (8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
+    assert base.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
     assert len(residual.names) == 24
-    assert residual.shape == (8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
+    assert residual.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
 
 
 def test_hemco_reader_stacks_residual_emissions():
@@ -110,24 +112,26 @@ def test_hemco_reader_stacks_residual_emissions():
 
 
 def test_base_met_reader_loads_expected_variables():
-    level_edge = load_base_met(BASE_LEVEL_EDGE)
-    state_met = load_base_met(BASE_STATE_MET)
+    level_edge = load_base_met(BASE_MET)
+    state_met = load_base_met(BASE_MET)
 
-    assert set(level_edge) == {"Met_PEDGE", "Met_PEDGEDRY"}
-    assert set(state_met) == {"Met_BXHEIGHT", "Met_AVGW"}
-    assert level_edge["Met_PEDGE"].shape == (8, 48, FIXED_GRID["lat"], FIXED_GRID["lon"])
-    assert state_met["Met_AVGW"].shape == (8, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
+    expected = {"Met_PEDGE", "Met_PEDGEDRY", "Met_BXHEIGHT", "Met_AVGW"}
+    assert set(level_edge) == expected
+    assert set(state_met) == expected
+    assert level_edge["Met_PEDGE"].shape == (1, 48, FIXED_GRID["lat"], FIXED_GRID["lon"])
+    assert state_met["Met_AVGW"].shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
 
 
 def test_run_configs_resolve_fixture_paths():
-    base = load_run_config("base_wombat/run.yml")
-    residual = load_run_config("residual_20140901_part001_split01_wombat/run.yml")
+    base = load_run_config("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
+    residual = load_run_config("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml")
 
     assert base.initial_restart is not None
-    assert base.initial_restart.exists()
+    external_root = (Path.cwd() / "external_data").resolve()
+    assert base.initial_restart.is_relative_to(external_root)
     assert base.species_database.exists()
     assert residual.initial_restart is None
-    assert residual.grid_template.exists()
+    assert residual.grid_template.is_relative_to(external_root)
     assert residual.species_database.exists()
 
 

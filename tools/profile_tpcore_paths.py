@@ -15,7 +15,7 @@ from wombat_transport.transport.tpcore._native import setup_tpcore_terms
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Count geometry-dependent TPCORE Numba hot-kernel paths.")
-    parser.add_argument("--run-config", type=Path, default=Path("base_wombat/run.yml"))
+    parser.add_argument("--run-config", type=Path, default=Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
     parser.add_argument("--tracers", type=int, default=24)
     parser.add_argument("--dt-s", type=float, default=600.0)
     parser.add_argument("--output", type=Path)

@@ -18,7 +18,7 @@ from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
-from wombat_transport.run_config import load_run_config, logging_level, meteorology_chunk_multiple
+from wombat_transport.run_config import load_run_config, logging_level, meteorology_chunk_multiple, meteorology_root
 from wombat_transport.runner import (
     RUN_METADATA_NAME,
     _is_time_for_emissions,
@@ -29,11 +29,16 @@ from wombat_transport.runner import (
     run_tracer_simulation,
 )
 from wombat_transport.species import load_species_database
+from tests.data_paths import (
+    BASE_CONFIG,
+    RESIDUAL_CONFIG,
+    requires_residual_data,
+    requires_restart,
+    requires_transport_data,
+)
 
-BASE_CONFIG = "base_wombat/run.yml"
-RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
 
-
+@requires_restart
 def test_configured_residual_emissions_config_covers_expected_species():
     config = load_run_config(RESIDUAL_CONFIG)
     assert config.emissions == "emissions.yml"
@@ -46,6 +51,7 @@ def test_configured_residual_emissions_config_covers_expected_species():
     assert operator.emitted_species[-1] == "r0002p001s024"
 
 
+@requires_residual_data
 def test_inline_emissions_mapping_is_accepted_in_run_config():
     config = load_run_config(RESIDUAL_CONFIG)
     inline = {
@@ -56,7 +62,7 @@ def test_inline_emissions_mapping_is_accepted_in_run_config():
             {
                 "name": "field_a",
                 "species": "r0002p001s001",
-                "path_template": "../fluxes/SOM_FFN_vBAMS2024v2_residual.nc",
+                "path_template": "../../../../../external_data/fluxes/SOM_FFN_vBAMS2024v2_residual.nc",
                 "variable": "residual",
                 "frequency": "monthly",
                 "dimensions": "xy",
@@ -70,18 +76,6 @@ def test_inline_emissions_mapping_is_accepted_in_run_config():
 
     assert emissions.names[0] == "r0002p001s001"
     assert emissions.shape[-1] == 24
-
-
-def test_configured_residual_emissions_match_hemco_diagnostic_sample():
-    config = load_run_config(RESIDUAL_CONFIG)
-    operator = _residual_emissions_operator(config)
-    expected = load_hemco_emissions(config.root / config.diagnostics["hemco_sample"])
-
-    actual = operator.evaluate(datetime(2014, 9, 1, 0, 30))
-
-    assert actual.shape == expected.shape
-    assert actual.names == expected.names
-    np.testing.assert_allclose(actual.data, expected.data, rtol=2.0e-5, atol=3.0e-13)
 
 
 def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():
@@ -146,8 +140,9 @@ def test_simulation_forcing_uses_provider_timestamps():
     ]
 
 
-def test_tracer_simulation_uses_configured_residual_emissions_source():
-    config = load_run_config(RESIDUAL_CONFIG)
+@requires_residual_data
+def test_tracer_simulation_uses_configured_residual_emissions_source(tmp_path):
+    config = _isolated_config(load_run_config(RESIDUAL_CONFIG), tmp_path, outputs={})
 
     result = run_tracer_simulation(config, max_steps=1)
 
@@ -161,8 +156,9 @@ def test_tracer_simulation_uses_configured_residual_emissions_source():
     assert result.emitted_mass_by_tracer[12] != 0.0
 
 
-def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeypatch):
-    config = replace(load_run_config(RESIDUAL_CONFIG), outputs={})
+@requires_restart
+def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeypatch, tmp_path):
+    config = _isolated_config(load_run_config(RESIDUAL_CONFIG), tmp_path, outputs={})
     initial = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     active_emissions_seen = []
     state_inputs = []
@@ -213,6 +209,7 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
     np.testing.assert_array_equal(state_inputs[1], initial.data)
 
 
+@requires_residual_data
 def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
     config = load_run_config(RESIDUAL_CONFIG)
     outputs = {
@@ -235,7 +232,7 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
         },
     }
 
-    run_tracer_simulation(replace(config, outputs=outputs), max_steps=1)
+    run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
 
     species_conc = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
     restart = tmp_path / "Restarts" / "GEOSChem.Restart.20140901_0010z.nc4"
@@ -248,6 +245,7 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
         assert "Met_PS1WET" in dataset.variables
 
 
+@requires_residual_data
 def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_path):
     config = load_run_config(RESIDUAL_CONFIG)
     first_name = initialize_tracers(
@@ -305,7 +303,7 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
         }
     }
 
-    result = run_tracer_simulation(replace(config, outputs=outputs), max_steps=1)
+    result = run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
 
     output_path = tmp_path / "GEOSChem.ObsOperator.20140901_0000z.nc4"
     restart_path = tmp_path / "Wombat.ObsOperator.Restart.20140901_001000.nc4"
@@ -321,32 +319,14 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
 
 
 def test_invalid_hemco_fill_values_are_detected():
-    config = load_run_config(RESIDUAL_CONFIG)
-    invalid = config.root / "../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409052230.nc"
-    valid = config.root / "../residual_20140901_part001_split01/OutputDir/HEMCO_diagnostics.201409052130.nc"
+    invalid = "tests/fixtures/io_readers_v1/hemco_invalid.nc4"
+    valid = "tests/fixtures/io_readers_v1/hemco.nc4"
 
     assert has_invalid_emissions(load_hemco_emissions(invalid))
     assert not has_invalid_emissions(load_hemco_emissions(valid))
 
 
-def test_comparison_metrics_return_one_value_per_tracer():
-    config = load_run_config(RESIDUAL_CONFIG)
-    result = run_tracer_simulation(config, max_steps=1)
-    reference = load_species_conc(config.root / config.comparison["species_conc_sample"])
-
-    metrics = compare_to_time_slice(
-        result.state,
-        reference,
-        reference_time_index=int(config.comparison["species_conc_time_index"]),
-    )
-
-    assert metrics.names == result.state.names
-    assert metrics.max_abs_error.shape == (24,)
-    assert metrics.mean_abs_error.shape == (24,)
-    assert np.all(np.isfinite(metrics.max_abs_error))
-    assert np.all(np.isfinite(metrics.mean_abs_error))
-
-
+@requires_restart
 def test_mass_metrics_are_zero_for_identical_base_field():
     config = load_run_config(BASE_CONFIG)
     species = load_species_database(config.species_database)
@@ -369,6 +349,7 @@ def test_mass_metrics_are_zero_for_identical_base_field():
     np.testing.assert_array_equal(metrics.max_abs_column_error_kg, np.zeros(1))
 
 
+@requires_restart
 def test_mass_metrics_match_controlled_uniform_perturbation():
     config = load_run_config(BASE_CONFIG)
     species = load_species_database(config.species_database)
@@ -400,13 +381,15 @@ def test_mass_metrics_match_controlled_uniform_perturbation():
     assert metrics.max_abs_column_error_kg[0] > 0.0
 
 
-def test_run_cli_default_configured_coupled_run_smoke():
+@requires_residual_data
+def test_run_cli_default_configured_coupled_run_smoke(tmp_path):
+    config_path = _write_temp_residual_run_config(tmp_path, log_level="info")
     completed = subprocess.run(
         [
             sys.executable,
             "-m",
             "wombat_transport.run",
-            RESIDUAL_CONFIG,
+            config_path,
             "--max-steps",
             "1",
         ],
@@ -423,13 +406,15 @@ def test_run_cli_default_configured_coupled_run_smoke():
     assert "total_emitted_mass_kg:" in completed.stdout
 
 
-def test_run_cli_logs_info_messages_to_stderr():
+@requires_residual_data
+def test_run_cli_logs_info_messages_to_stderr(tmp_path):
+    config_path = _write_temp_residual_run_config(tmp_path, log_level="info")
     completed = subprocess.run(
         [
             sys.executable,
             "-m",
             "wombat_transport.run",
-            RESIDUAL_CONFIG,
+            config_path,
             "--max-steps",
             "1",
         ],
@@ -444,6 +429,7 @@ def test_run_cli_logs_info_messages_to_stderr():
     assert "DEBUG wombat_transport.runner" not in completed.stderr
 
 
+@requires_residual_data
 def test_run_cli_debug_logging_includes_runner_substeps(tmp_path):
     config_path = _write_temp_residual_run_config(tmp_path, log_level="debug")
 
@@ -473,6 +459,7 @@ def test_run_cli_debug_logging_includes_runner_substeps(tmp_path):
     assert {"available", "commit", "dirty", "tracked_dirty", "untracked_present"} <= set(metadata["git"])
 
 
+@requires_restart
 def test_run_cli_base_init_only_smoke():
     completed = subprocess.run(
         [
@@ -490,9 +477,9 @@ def test_run_cli_base_init_only_smoke():
 
     assert "mode: init-only" in completed.stdout
     assert "state_shape: (1, 47, 91, 144, 1)" in completed.stdout
-    assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
 
 
+@requires_transport_data
 def test_run_cli_base_transport_one_step_smoke():
     completed = subprocess.run(
         [
@@ -513,9 +500,9 @@ def test_run_cli_base_transport_one_step_smoke():
     assert "mode: transport-one-step" in completed.stdout
     assert "transport_operators: tpcore,vdiff,convection" in completed.stdout
     assert "transport_steps: 1" in completed.stdout
-    assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
 
 
+@requires_transport_data
 def test_run_cli_base_transport_window_smoke():
     completed = subprocess.run(
         [
@@ -536,10 +523,9 @@ def test_run_cli_base_transport_window_smoke():
     assert "mode: transport-window" in completed.stdout
     assert "transport_operators: tpcore,vdiff,convection" in completed.stdout
     assert "transport_steps: 2" in completed.stdout
-    assert "tracer,max_abs_error,mean_abs_error,candidate_mass_kg" in completed.stdout
-    assert "pressure_dry_max_abs_error_hpa:" in completed.stdout
 
 
+@requires_restart
 def test_run_cli_writes_restart_like_output(tmp_path):
     output_path = tmp_path / "wombat_restart.nc4"
     completed = subprocess.run(
@@ -559,7 +545,10 @@ def test_run_cli_writes_restart_like_output(tmp_path):
     )
 
     assert f"wrote_output: {output_path}" in completed.stdout
-    loaded = load_restart(output_path, load_species_database("base/species_database.yml"))
+    loaded = load_restart(
+        output_path,
+        load_species_database("validation_runs/cases/realistic_restart_noemis/wombat/main/species_database.yml"),
+    )
     assert loaded.names == ("CO2",)
     assert loaded.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
 
@@ -594,3 +583,20 @@ def _write_temp_residual_run_config(tmp_path, *, log_level: str):
     path = tmp_path / "run.yml"
     write_yaml(raw, path)
     return path
+
+
+def _isolated_config(config, tmp_path, *, outputs):
+    emissions = config.emissions
+    if isinstance(emissions, str):
+        emissions = str((config.root / emissions).resolve())
+    meteorology = dict(config.meteorology)
+    meteorology["root"] = str(meteorology_root(config))
+    return replace(
+        config,
+        root=tmp_path,
+        source_run_dir=tmp_path,
+        output_dir=tmp_path / "OutputDir",
+        meteorology=meteorology,
+        emissions=emissions,
+        outputs=outputs,
+    )

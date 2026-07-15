@@ -2,8 +2,8 @@
 ### BEGIN SECTION SETTINGS
 ###############################################################################
 
-ROOT: ../../../../../ExtData/HEMCO
-METDIR: ../../../../../ExtData/GEOS_2x2.5/MERRA2
+ROOT: ../../../../../external_data/geoschem/HEMCO
+METDIR: ../../../../../external_data/geoschem/GEOS_2x2.5/MERRA2
 GCAPSCENARIO: not_used
 GCAPVERTRES: 47
 Logfile: OutputDir/HEMCO.log

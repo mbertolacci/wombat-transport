@@ -1,8 +1,0 @@
-CO2:
-  Formula: CO2
-  Is_Gas: true
-  MW_g: 44.01
-  Src_Mode: HEMCO
-  Is_Tracer: true
-  Background_VV: 0.000355
-  FullName: Carbon dioxide

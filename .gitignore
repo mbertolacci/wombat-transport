@@ -1,6 +1,5 @@
-fluxes/
-scaling-grids/
-ExtData
+external_data/*
+!external_data/README.md
 GCClassic/
 OutputDir/
 Restarts/

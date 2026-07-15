@@ -47,7 +47,7 @@ Instrumented tracing remains separate and opt-in via the GC harness tools.
 ## ObsOperator timing matrix
 
 The checked-in validation configs enable ObsOperator for both engines. Daily
-gzip inputs live outside Git under `obsoperator/`; the matrix runner expands
+gzip inputs live outside Git under `external_data/obsoperator/`; the matrix runner expands
 the same files to ordinary YAML for GEOS-Chem and keeps the gzip inputs for
 Wombat. It reuses the compiled executables from `validation_runs/work/` and
 creates fresh sibling work roots for each thread count:

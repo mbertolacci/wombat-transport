@@ -10,7 +10,7 @@ simulation:
   transport_timestep_s: 600
   emissions_timestep_s: 1200
 meteorology:
-  root: ../../../../../ExtData/GEOS_2x2.5/MERRA2
+  root: ../../../../../external_data/geoschem/GEOS_2x2.5/MERRA2
 emissions:
   unit_conversion: none
   missing_species: zero

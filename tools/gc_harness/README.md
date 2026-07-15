@@ -27,13 +27,13 @@ one-step and window modes through the NumPy TPCORE port.
 
 ```bash
 python -m wombat_transport.gc_harness write-pjc-input \
-  base_wombat/run.yml tools/gc_harness/work/pjc_input.nc
+  validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml tools/gc_harness/work/pjc_input.nc
 
 python -m wombat_transport.gc_harness compare-pjc-output \
   tools/gc_harness/work/pjc_input.nc tools/gc_harness/work/pjc_output.nc
 
 python -m wombat_transport.gc_harness transport-step \
-  base_wombat/run.yml --max-tracers 1
+  validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml --max-tracers 1
 
 python -m wombat_transport.gc_harness snapshot-pjc \
   tests/fixtures/pjc_snapshot_v1
@@ -125,12 +125,12 @@ handoff tests show pressure or tracer mismatches between cached stages.
 
 The first registered large fixture was `base_initial_tpcore_v1`: a full-grid
 one-tracer base-run initial-condition `DO_PJC_PFIX` plus `TPCORE_FVDAS` oracle.
-It is generated from `base_wombat/run.yml`, the base restart, and local MERRA2
+It is generated from `validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml`, the base restart, and local MERRA2
 met. It is a full-grid one-tracer TPCORE parity fixture.
 
 `residual_initial_tpcore_v1` is the matching full-grid 24-tracer residual
 initial-condition oracle generated from
-`residual_20140901_part001_split01_wombat/run.yml`. It exercises the residual
+`validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml`. It exercises the residual
 species ordering and `Background_VV` initialization path used when restart
 variables are absent.
 
@@ -274,9 +274,10 @@ uses 1-based GEOS-Chem `(I,J)` indices.
 
 ## Build Sketch
 
-`build_pjc_pfix_harness.sh` links against the existing `base/build` tree. The
-script is intentionally narrow and may need adjustment if the GEOS-Chem build
-tree moves or was produced with different compiler wrappers.
+The build scripts link against
+`validation_runs/work/realistic_restart_noemis/main/geoschem/build` by default.
+Set `GC_BUILD_ROOT=/path/to/geoschem/build` to use another compatible build
+tree.
 
 ```bash
 tools/gc_harness/build_pjc_pfix_harness.sh
@@ -299,7 +300,7 @@ The VDIFF build similarly generates a local copy of `vdiff_mod.F90` with
 Then run:
 
 ```bash
-python -m wombat_transport.gc_harness pjc-pfix base_wombat/run.yml
+python -m wombat_transport.gc_harness pjc-pfix validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml
 
 tools/gc_harness/build/vdiff_harness \
   tests/fixtures/vdiff_snapshot_v1/vdiff_input.nc \
@@ -310,8 +311,8 @@ tools/gc_harness/build/convection_harness \
   tools/gc_harness/work/convection_output.nc
 ```
 
-Current smoke result on `base_wombat/run.yml` after building against
-`base/build`:
+Current smoke result on `validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml` after building against
+`validation_runs/work/realistic_restart_noemis/main/geoschem/build`:
 
 ```text
 metric,value
@@ -321,7 +322,7 @@ ymass_max_abs_error_hpa,1.77635684e-15
 ymass_mean_abs_error_hpa,2.66716245e-17
 ```
 
-Current one-tracer transport-step smoke result on `base_wombat/run.yml`:
+Current one-tracer transport-step smoke result on `validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml`:
 
 ```text
 metric,value

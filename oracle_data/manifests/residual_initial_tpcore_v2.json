@@ -16,7 +16,7 @@
     }
   ],
   "source": {
-    "run_config": "residual_20140901_part001_split01_wombat/run.yml",
+    "run_config": "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml",
     "time_index": 0,
     "tracer_time_index": 0,
     "max_tracers": 24,

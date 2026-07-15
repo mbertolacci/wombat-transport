@@ -7,6 +7,7 @@ import sys
 import netCDF4
 import numpy as np
 import pytest
+from yaml12 import read_yaml
 
 
 def _load_compare_module():
@@ -21,6 +22,27 @@ def _load_compare_module():
 
 
 compare_validation_run = _load_compare_module()
+
+
+def test_validation_case_external_paths_use_external_data_tree():
+    repo = Path(__file__).parents[1]
+    cases = repo / "validation_runs" / "cases"
+    forbidden = (
+        "/" + "base" + "/",
+        "../../../../../" + "Ext" + "Data",
+        "../../../../../" + "flux" + "es",
+        "../../../../../" + "scaling" + "-grids",
+    )
+
+    for path in cases.rglob("*"):
+        if not path.is_file() or path.suffix not in {".yml", ".rc", ".md", ".sh"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert not any(value in text for value in forbidden), path
+        if path.name == "case.yml":
+            manifest = read_yaml(path) or {}
+            meteorology_root = str(manifest.get("defaults", {}).get("meteorology_root", ""))
+            assert meteorology_root.startswith("{repo}/external_data/geoschem/"), path
 
 
 def test_compare_validation_run_reports_species_conc_and_restart_metrics(tmp_path):

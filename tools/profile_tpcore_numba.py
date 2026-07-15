@@ -19,7 +19,7 @@ from wombat_transport.transport.tpcore import _numba as nb
 from wombat_transport.transport.tpcore._native import setup_tpcore_terms
 
 
-DEFAULT_RUN_CONFIG = Path("base_wombat/run.yml")
+DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
 DEFAULT_OUTPUT_DIR = Path("/tmp/wombat-tpcore-numba-profile")
 DEFAULT_DT_S = 600.0
 STAGE_PERF_STAGES = (

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timedelta
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
 import netCDF4
 import numpy as np
+import pytest
 
 from wombat_transport.fields import TracerField
 from wombat_transport.emissions import SurfaceEmissions
@@ -45,16 +47,14 @@ from wombat_transport.transport import (
 )
 import wombat_transport.transport.forcing as forcing_module
 import wombat_transport.transport.pbl._numba as pbl_numba
+from tests.data_paths import BASE_CONFIG, RESIDUAL_CONFIG, requires_restart, requires_transport_data
 from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
 )
 from wombat_transport.transport.driver import _load_window_forcing, _surface_flux_from_active_emissions
 
-BASE_CONFIG = "base_wombat/run.yml"
-RESIDUAL_CONFIG = "residual_20140901_part001_split01_wombat/run.yml"
-
-
+@requires_transport_data
 def test_transport_forcing_loads_merra2_on_47_level_grid():
     config = load_run_config(BASE_CONFIG)
     forcing = _load_forcing(config)
@@ -151,6 +151,7 @@ def test_transport_forcing_provider_interpolates_i3_like_geos_chem(monkeypatch):
     np.testing.assert_allclose(forcing.restart_surface_pressure_pa, 0.0)
 
 
+@requires_restart
 def test_load_transport_grid_reads_template_metadata():
     config = load_run_config(BASE_CONFIG)
 
@@ -166,6 +167,7 @@ def test_load_transport_grid_reads_template_metadata():
     assert np.all(grid.area_m2 > 0.0)
 
 
+@requires_restart
 def test_load_transport_grid_uses_geos_chem_area_formula():
     config = load_run_config(BASE_CONFIG)
 
@@ -180,6 +182,7 @@ def test_load_transport_grid_uses_geos_chem_area_formula():
     np.testing.assert_allclose(grid.area_m2[0, 0], 2.697411986535481e8)
 
 
+@requires_transport_data
 def test_transport_forcing_accepts_preloaded_grid():
     config = load_run_config(BASE_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -190,6 +193,7 @@ def test_transport_forcing_accepts_preloaded_grid():
     np.testing.assert_array_equal(forcing.lon_deg, grid.lon_deg)
 
 
+@requires_transport_data
 def test_transport_forcing_provider_chunk_multiple_is_numerically_equivalent():
     config = load_run_config(BASE_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -406,6 +410,7 @@ def test_dry_surface_pressure_reconstructs_geos_chem_style_column():
     np.testing.assert_allclose(wet_surface_pressure_hpa(wet_ps), expected_wet)
 
 
+@requires_restart
 def test_pressure_bookkeeping_returns_positive_dry_air_mass():
     config = load_run_config(BASE_CONFIG)
     forcing = _load_forcing(config)
@@ -731,6 +736,7 @@ def test_run_vdiffdr_one_step_rejects_non_wombat_shapes():
         raise AssertionError("run_vdiffdr_one_step accepted a malformed edge grid")
 
 
+@requires_transport_data
 def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -762,6 +768,37 @@ def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
     assert diagnostic_result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
 
 
+@pytest.mark.parametrize("tracer_count", (1, 24))
+@requires_transport_data
+def test_transport_one_step_numpy_numba_parity(monkeypatch, tracer_count):
+    if importlib.util.find_spec("numba") is None:
+        pytest.skip("numba is not available")
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    initialized = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    )
+    field = TracerField(
+        names=initialized.names[:tracer_count],
+        data=np.ascontiguousarray(initialized.data[..., :tracer_count]),
+        units=initialized.units[:tracer_count],
+        coords=initialized.coords,
+    )
+    forcing = _load_forcing(config, grid=grid)
+
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
+    numpy_result = run_transport_one_step(field, forcing, grid, dt_s=600.0)
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
+    numba_result = run_transport_one_step(field, forcing, grid, dt_s=600.0)
+
+    np.testing.assert_allclose(numba_result.state.data, numpy_result.state.data, rtol=2.0e-14, atol=1.0e-20)
+    np.testing.assert_array_equal(numba_result.delp_dry_hpa, numpy_result.delp_dry_hpa)
+
+
+@requires_transport_data
 def test_transport_one_step_consumes_input_only_when_requested(monkeypatch):
     monkeypatch.setenv("WOMBAT_NUMBA", "1")
     monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
@@ -806,6 +843,7 @@ def test_transport_one_step_consumes_input_only_when_requested(monkeypatch):
     np.testing.assert_array_equal(consumed_result.state.data, safe_output)
 
 
+@requires_transport_data
 def test_transport_one_step_keeps_pure_reference_path_non_destructive(monkeypatch):
     monkeypatch.setenv("WOMBAT_NUMBA", "0")
     config = load_run_config(RESIDUAL_CONFIG)
@@ -846,6 +884,7 @@ def test_transport_one_step_keeps_pure_reference_path_non_destructive(monkeypatc
     np.testing.assert_array_equal(reference_result.state.data, safe_result.state.data)
 
 
+@requires_transport_data
 def test_trace_transport_one_step_captures_operator_handoffs(transport_numba_mode):
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -872,6 +911,7 @@ def test_trace_transport_one_step_captures_operator_handoffs(transport_numba_mod
     np.testing.assert_allclose(stage_masses[-1].final_scalar_mass, stage_masses[0].initial_scalar_mass, rtol=1e-13)
 
 
+@requires_transport_data
 def test_trace_transport_one_step_passes_active_surface_emissions_to_vdiff():
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -892,6 +932,7 @@ def test_trace_transport_one_step_passes_active_surface_emissions_to_vdiff():
     np.testing.assert_array_equal(trace.vdiff_input.surface_flux_kg_m2_s, expected_surface_flux)
 
 
+@requires_transport_data
 def test_trace_transport_one_step_scales_active_surface_emissions_for_vdiff_solver():
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -960,6 +1001,7 @@ def test_surface_emissions_are_accepted_without_full_5d_field():
     np.testing.assert_array_equal(surface, values)
 
 
+@requires_transport_data
 def test_transport_window_accumulates_average_state():
     config = load_run_config(BASE_CONFIG)
     grid = load_transport_grid(config.grid_template)
@@ -981,6 +1023,7 @@ def test_transport_window_accumulates_average_state():
     assert np.all(np.isfinite(result.average_state.data))
 
 
+@requires_transport_data
 def test_transport_forcing_loads_convection_fields_on_target_grid():
     config = load_run_config(BASE_CONFIG)
     forcing = _load_forcing(config)

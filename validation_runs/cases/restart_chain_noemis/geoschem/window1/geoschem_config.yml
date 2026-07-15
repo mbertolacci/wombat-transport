@@ -6,7 +6,7 @@ simulation:
   end_date:
   - 20140903
   - 0
-  root_data_dir: ../../../../../ExtData
+  root_data_dir: ../../../../../external_data/geoschem
   met_field: MERRA2
   species_database_file: ./species_database.yml
   species_metadata_output_file: OutputDir/geoschem_species_metadata.yml

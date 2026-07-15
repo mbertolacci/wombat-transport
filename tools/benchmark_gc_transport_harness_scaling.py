@@ -128,8 +128,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--run-config",
         type=Path,
-        default=Path("base_wombat/run.yml"),
-        help="Run config used to locate the grid template. Defaults to base_wombat/run.yml.",
+        default=Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"),
+        help="Run config used to locate the grid template. Defaults to validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml.",
     )
     parser.add_argument("--counts", type=_positive_int, nargs="+", default=list(DEFAULT_COUNTS))
     parser.add_argument("--repeat", type=_positive_int, default=DEFAULT_REPEAT)
@@ -148,8 +148,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--build-root",
         type=Path,
-        default=Path("base/build"),
-        help="GEOS-Chem build directory with compiled libraries. Defaults to base/build.",
+        default=Path(
+            os.environ.get(
+                "GC_BUILD_ROOT",
+                "validation_runs/work/realistic_restart_noemis/main/geoschem/build",
+            )
+        ),
+        help="GEOS-Chem build directory with compiled libraries. Defaults to GC_BUILD_ROOT or the realistic-restart validation build.",
     )
     parser.add_argument(
         "--harness-build-dir",

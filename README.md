@@ -44,15 +44,9 @@ multi-week/month transport-only behavior still need explicit comparison.
   - `output.py`: HISTORY-like output writer.
   - `io.py`, `fields.py`, `grid.py`, `species.py`: restart, diagnostic, grid,
     and species helpers.
-- `base/`: one-tracer GEOS-Chem reference run with restart and short-window
-  diagnostics.
-- `residual_20140901_part001_split01/`: 24-tracer residual GEOS-Chem reference
-  run.
-- `base_wombat/` and `residual_20140901_part001_split01_wombat/`: matching
-  Wombat run configs.
-- `fluxes/`: local emissions/flux inputs for the residual target.
+- `external_data/`: documented, ignored local inputs including GEOS-Chem
+  ExtData, fluxes, scaling grids, ObsOperator inputs, and the initial restart.
 - `GCClassic/`: vendored GEOS-Chem Classic reference source.
-- `ExtData`: symlink to local GEOS-Chem meteorology and input data.
 - `tools/gc_harness/`: GEOS-Chem-backed operator, output, met, oracle, and
   full-run trace harnesses.
 - `tools/hemco_harness/`: standalone HEMCO emissions comparison scenarios.
@@ -79,7 +73,7 @@ deviations.
 - `performance.md` records benchmark and profiling results.
 
 The strongest current validation chain is operator-by-operator GEOS-Chem
-harness parity plus short-window comparison against archived GEOS-Chem outputs.
+harness parity plus short-window comparison through the named validation cases.
 Use monthly restarts and longer transport windows before making any stronger
 long-run parity claim.
 
@@ -109,8 +103,8 @@ runtime dependencies are `numpy`, `netCDF4`, and `py-yaml12`; the
 Example run configs:
 
 ```text
-base_wombat/run.yml
-residual_20140901_part001_split01_wombat/run.yml
+validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml
+validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml
 ```
 
 ### ObsOperator output

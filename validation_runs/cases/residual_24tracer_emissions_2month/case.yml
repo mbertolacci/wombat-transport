@@ -9,7 +9,7 @@ tags: [residual, emissions, multi-tracer, long-history]
 defaults:
   grid: geos_2x25_47
   transport_timestep_s: 600
-  meteorology_root: "{repo}/ExtData/GEOS_2x2.5/MERRA2"
+  meteorology_root: "{repo}/external_data/geoschem/GEOS_2x2.5/MERRA2"
 
 modes:
   quick:

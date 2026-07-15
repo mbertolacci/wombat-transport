@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_RUN_CONFIG = Path("base_wombat/run.yml")
+DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
 DEFAULT_OUTPUT_DIR = Path("/tmp/wombat-transport-operator-profile")
 DEFAULT_DT_S = 600.0
 OPERATORS = ("vdiff", "convection")

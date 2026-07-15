@@ -86,7 +86,11 @@ def test_convection_write_csv_records_skipped_rows():
 
 
 def test_convection_synthetic_builder_uses_canonical_fullgrid_shape():
-    inputs = benchmark._build_synthetic_convection_inputs(Path("base_wombat/run.yml"), 3, dt_s=600.0)
+    inputs = benchmark._build_synthetic_convection_inputs(
+        Path("tests/fixtures/io_readers_v1/run.yml"),
+        3,
+        dt_s=600.0,
+    )
 
     assert inputs.tracer_conc.shape == (47, 91, 144, 3)
     assert inputs.cmfmc_kg_m2_s.shape == (47, 91, 144)

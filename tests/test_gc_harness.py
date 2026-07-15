@@ -6,6 +6,7 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 import pytest
+from tests.data_paths import requires_transport_data
 
 from wombat_transport.gc_harness import (
     BASE_INITIAL_CONVECTION_FULLGRID_FIXTURE_ID,
@@ -461,6 +462,7 @@ def test_fullgrid_convection_oracle_fixture_if_cached_reports_convection_metrics
     assert int(metrics["negative_count_after_actual"]) == 0
 
 
+@requires_transport_data
 def test_transport_chain_oracle_fixture_if_cached_reports_common_and_reported_mass_metrics():
     check = check_large_oracle_fixture(BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID)
     if not check.is_available:
@@ -476,6 +478,7 @@ def test_transport_chain_oracle_fixture_if_cached_reports_common_and_reported_ma
     assert int(metrics["negative_count_actual"]) == 0
 
 
+@requires_transport_data
 def test_transport_chain_handoff_report_if_cached_locates_stage_interfaces():
     required = (
         BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID,
@@ -940,7 +943,7 @@ def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_
 def test_write_real_convection_input_records_sampled_47_level_contract(tmp_path):
     _require_real_convection_inputs()
     input_path = write_real_convection_input_from_config(
-        Path("residual_20140901_part001_split01_wombat/run.yml"),
+        Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"),
         tmp_path / "convection_input.nc",
         mode="sampled-columns",
     )
@@ -965,7 +968,7 @@ def test_write_real_convection_input_records_sampled_47_level_contract(tmp_path)
 def test_python_real_convection_sampled_output_has_finite_mass(tmp_path):
     _require_real_convection_inputs()
     input_path = write_real_convection_input_from_config(
-        Path("residual_20140901_part001_split01_wombat/run.yml"),
+        Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"),
         tmp_path / "convection_input.nc",
         mode="sampled-columns",
         max_tracers=3,
@@ -1660,12 +1663,12 @@ def _write_synthetic_pjc_input(path):
 
 def _require_real_convection_inputs() -> None:
     required = (
-        Path("residual_20140901_part001_split01_wombat/run.yml"),
-        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A1.2x25.nc4"),
-        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3dyn.2x25.nc4"),
-        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstC.2x25.nc4"),
-        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstE.2x25.nc4"),
-        Path("ExtData/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.I3.2x25.nc4"),
+        Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"),
+        Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A1.2x25.nc4"),
+        Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3dyn.2x25.nc4"),
+        Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstC.2x25.nc4"),
+        Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstE.2x25.nc4"),
+        Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.I3.2x25.nc4"),
     )
     missing = [str(path) for path in required if not path.exists()]
     if missing:

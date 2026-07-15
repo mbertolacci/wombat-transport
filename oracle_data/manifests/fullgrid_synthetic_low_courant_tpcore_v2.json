@@ -16,7 +16,7 @@
     }
   ],
   "source": {
-    "run_config": "base_wombat/run.yml",
+    "run_config": "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml",
     "dt_s": 600.0,
     "ntracer": 2,
     "grid": {

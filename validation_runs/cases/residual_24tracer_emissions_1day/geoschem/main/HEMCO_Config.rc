@@ -2,8 +2,8 @@
 ### BEGIN SECTION SETTINGS
 ###############################################################################
 
-ROOT: ../../../../../ExtData/HEMCO
-METDIR: ../../../../../ExtData/GEOS_2x2.5/MERRA2
+ROOT: ../../../../../external_data/geoschem/HEMCO
+METDIR: ../../../../../external_data/geoschem/GEOS_2x2.5/MERRA2
 GCAPSCENARIO: not_used
 GCAPVERTRES: 47
 Logfile: OutputDir/HEMCO.log
@@ -38,19 +38,19 @@ END SECTION EXTENSION SWITCHES
 ###############################################################################
 
 # ExtNr Name sourceFile sourceVar sourceTime C/R/E SrcDim SrcUnit Species ScalIDs Cat Hier
-0 bio_gpp_residual_pft02_regionRegion07_month2014-09 ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=2" kgCO2/m2/s r0002p001s013 12/21 1 1
-0 bio_gpp_residual_pft03_regionRegion07_month2014-09 ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=3" kgCO2/m2/s r0002p001s014 12/22 1 1
-0 bio_gpp_residual_pft04_regionRegion03_month2014-09 ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=4" kgCO2/m2/s r0002p001s015 13/23 1 1
+0 bio_gpp_residual_pft02_regionRegion07_month2014-09 ../../../../../external_data/fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=2" kgCO2/m2/s r0002p001s013 12/21 1 1
+0 bio_gpp_residual_pft03_regionRegion07_month2014-09 ../../../../../external_data/fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=3" kgCO2/m2/s r0002p001s014 12/22 1 1
+0 bio_gpp_residual_pft04_regionRegion03_month2014-09 ../../../../../external_data/fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=4" kgCO2/m2/s r0002p001s015 13/23 1 1
 0 bio_gpp_residual_pft04_regionRegion04_month2014-09 - - - - - - r0002p001s016 14/24 1 1
 0 bio_gpp_residual_pft04_regionRegion05_month2014-09 - - - - - - r0002p001s017 15/25 1 1
 0 bio_gpp_residual_pft04_regionRegion06_month2014-09 - - - - - - r0002p001s018 16/26 1 1
 0 bio_gpp_residual_pft04_regionRegion08_month2014-09 - - - - - - r0002p001s019 17/27 1 1
 0 bio_gpp_residual_pft04_regionRegion09_month2014-09 - - - - - - r0002p001s020 18/28 1 1
 0 bio_gpp_residual_pft04_regionRegion10_month2014-09 - - - - - - r0002p001s021 19/29 1 1
-0 bio_gpp_residual_pft05_regionRegion02_month2014-09 ../../../../../fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=5" kgCO2/m2/s r0002p001s022 20/30 1 1
+0 bio_gpp_residual_pft05_regionRegion02_month2014-09 ../../../../../external_data/fluxes/sib4-residual-gpp/$YYYY/sib4-residual-gpp-$YYYY-$MM-$DD.nc residual 2014-2024/1-12/1-31/0-23 RF xy+"npft=5" kgCO2/m2/s r0002p001s022 20/30 1 1
 0 bio_gpp_residual_pft05_regionRegion03_month2014-09 - - - - - - r0002p001s023 13/31 1 1
 0 bio_gpp_residual_pft05_regionRegion04_month2014-09 - - - - - - r0002p001s024 14/32 1 1
-0 ocean_residual_regionRegion12_month2014-09 ../../../../../fluxes/SOM_FFN_vBAMS2024v2_residual.nc residual 2014-2024/1-12/1/0 RF xy kgCO2/m2/s r0002p001s002 1 1 1
+0 ocean_residual_regionRegion12_month2014-09 ../../../../../external_data/fluxes/SOM_FFN_vBAMS2024v2_residual.nc residual 2014-2024/1-12/1/0 RF xy kgCO2/m2/s r0002p001s002 1 1 1
 0 ocean_residual_regionRegion13_month2014-09 - - - - - - r0002p001s003 2 1 1
 0 ocean_residual_regionRegion14_month2014-09 - - - - - - r0002p001s004 3 1 1
 0 ocean_residual_regionRegion15_month2014-09 - - - - - - r0002p001s005 4 1 1
@@ -293,26 +293,26 @@ END SECTION EXTENSION SWITCHES
 ###############################################################################
 
 # ScalID Name sourceFile sourceVar sourceTime C/R/E SrcDim SrcUnit Oper
-1 regionRegion12_month2014-09 ../../../../../scaling-grids/regionRegion12_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-2 regionRegion13_month2014-09 ../../../../../scaling-grids/regionRegion13_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-3 regionRegion14_month2014-09 ../../../../../scaling-grids/regionRegion14_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-4 regionRegion15_month2014-09 ../../../../../scaling-grids/regionRegion15_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-5 regionRegion16_month2014-09 ../../../../../scaling-grids/regionRegion16_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-6 regionRegion17_month2014-09 ../../../../../scaling-grids/regionRegion17_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-7 regionRegion18_month2014-09 ../../../../../scaling-grids/regionRegion18_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-8 regionRegion19_month2014-09 ../../../../../scaling-grids/regionRegion19_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-9 regionRegion20_month2014-09 ../../../../../scaling-grids/regionRegion20_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-10 regionRegion21_month2014-09 ../../../../../scaling-grids/regionRegion21_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-11 regionRegion22_month2014-09 ../../../../../scaling-grids/regionRegion22_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-12 regionRegion07_month2014-09 ../../../../../scaling-grids/regionRegion07_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-13 regionRegion03_month2014-09 ../../../../../scaling-grids/regionRegion03_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-14 regionRegion04_month2014-09 ../../../../../scaling-grids/regionRegion04_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-15 regionRegion05_month2014-09 ../../../../../scaling-grids/regionRegion05_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-16 regionRegion06_month2014-09 ../../../../../scaling-grids/regionRegion06_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-17 regionRegion08_month2014-09 ../../../../../scaling-grids/regionRegion08_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-18 regionRegion09_month2014-09 ../../../../../scaling-grids/regionRegion09_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-19 regionRegion10_month2014-09 ../../../../../scaling-grids/regionRegion10_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
-20 regionRegion02_month2014-09 ../../../../../scaling-grids/regionRegion02_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+1 regionRegion12_month2014-09 ../../../../../external_data/scaling-grids/regionRegion12_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+2 regionRegion13_month2014-09 ../../../../../external_data/scaling-grids/regionRegion13_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+3 regionRegion14_month2014-09 ../../../../../external_data/scaling-grids/regionRegion14_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+4 regionRegion15_month2014-09 ../../../../../external_data/scaling-grids/regionRegion15_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+5 regionRegion16_month2014-09 ../../../../../external_data/scaling-grids/regionRegion16_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+6 regionRegion17_month2014-09 ../../../../../external_data/scaling-grids/regionRegion17_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+7 regionRegion18_month2014-09 ../../../../../external_data/scaling-grids/regionRegion18_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+8 regionRegion19_month2014-09 ../../../../../external_data/scaling-grids/regionRegion19_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+9 regionRegion20_month2014-09 ../../../../../external_data/scaling-grids/regionRegion20_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+10 regionRegion21_month2014-09 ../../../../../external_data/scaling-grids/regionRegion21_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+11 regionRegion22_month2014-09 ../../../../../external_data/scaling-grids/regionRegion22_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+12 regionRegion07_month2014-09 ../../../../../external_data/scaling-grids/regionRegion07_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+13 regionRegion03_month2014-09 ../../../../../external_data/scaling-grids/regionRegion03_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+14 regionRegion04_month2014-09 ../../../../../external_data/scaling-grids/regionRegion04_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+15 regionRegion05_month2014-09 ../../../../../external_data/scaling-grids/regionRegion05_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+16 regionRegion06_month2014-09 ../../../../../external_data/scaling-grids/regionRegion06_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+17 regionRegion08_month2014-09 ../../../../../external_data/scaling-grids/regionRegion08_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+18 regionRegion09_month2014-09 ../../../../../external_data/scaling-grids/regionRegion09_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+19 regionRegion10_month2014-09 ../../../../../external_data/scaling-grids/regionRegion10_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
+20 regionRegion02_month2014-09 ../../../../../external_data/scaling-grids/regionRegion02_month2014-09.nc value 2014-2024/1-12/1/0 RF xy 1 1
 21 bio_gpp_residual_pft02_regionRegion07_month2014-09_MULTIPLY_BY -1.0 - 2000/1/1/0 C xy 1 1
 22 bio_gpp_residual_pft03_regionRegion07_month2014-09_MULTIPLY_BY -1.0 - 2000/1/1/0 C xy 1 1
 23 bio_gpp_residual_pft04_regionRegion03_month2014-09_MULTIPLY_BY -1.0 - 2000/1/1/0 C xy 1 1

@@ -9,7 +9,7 @@ tags: [noemis, restart-initialized, quick-history]
 defaults:
   grid: geos_2x25_47
   transport_timestep_s: 600
-  meteorology_root: "{repo}/ExtData/GEOS_2x2.5/MERRA2"
+  meteorology_root: "{repo}/external_data/geoschem/GEOS_2x2.5/MERRA2"
 
 modes:
   quick:
@@ -31,8 +31,8 @@ stages:
         template_dir: wombat/main
         work_dir: "{work}/main/wombat"
     initial_restart:
-      geoschem: "{repo}/base/Restarts/GEOSChem.Restart.20140901_0000z.nc4"
-      wombat: "{repo}/base/Restarts/GEOSChem.Restart.20140901_0000z.nc4"
+      geoschem: "{repo}/external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4"
+      wombat: "{repo}/external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4"
     comparisons:
       - id: species_conc
         kind: species_conc

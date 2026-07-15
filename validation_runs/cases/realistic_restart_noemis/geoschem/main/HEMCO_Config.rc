@@ -2,8 +2,8 @@
 ### BEGIN SECTION SETTINGS
 ###############################################################################
 
-ROOT: ../../../../../ExtData/HEMCO
-METDIR: ../../../../../ExtData/GEOS_2x2.5/MERRA2
+ROOT: ../../../../../external_data/geoschem/HEMCO
+METDIR: ../../../../../external_data/geoschem/GEOS_2x2.5/MERRA2
 GCAPSCENARIO: not_used
 GCAPVERTRES: 47
 Logfile: OutputDir/HEMCO.log
@@ -259,7 +259,7 @@ END SECTION EXTENSION SWITCHES
 0 XLAI71 $ROOT/Yuan_XLAI/v2021-06/Yuan_proc_MODIS_XLAI.025x025.$YYYY.nc XLAI71 2000-2020/1-12/1-31/0 I xy cm2/cm2 * - 1 1
 0 XLAI72 $ROOT/Yuan_XLAI/v2021-06/Yuan_proc_MODIS_XLAI.025x025.$YYYY.nc XLAI72 2000-2020/1-12/1-31/0 I xy cm2/cm2 * - 1 1
 (((GC_RESTART
-* SPC_ ../../../../../base/Restarts/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4 SpeciesRst_?ALL? $YYYY/$MM/$DD/$HH EFYO xyz 1 * - 1 1
+* SPC_ ../../../../../external_data/restarts/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4 SpeciesRst_?ALL? $YYYY/$MM/$DD/$HH EFYO xyz 1 * - 1 1
 )))GC_RESTART
 
 

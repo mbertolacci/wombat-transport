@@ -29,7 +29,7 @@ OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
 tools/benchmark_transport_driver_scaling.py \
-  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/base_wombat/run.yml \
+  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml \
   --counts 1 24 96 \
   --repeat 2 \
   --warmup 1 \
@@ -96,7 +96,7 @@ Result: 24 passed, 2 deselected.
 
 The large GEOS-Chem fixture files are available in the original checkout, not
 copied into this sibling worktree. Benchmark commands therefore used the
-original checkout's `base_wombat/run.yml` so grid-template paths resolved to the
+original checkout's `validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml` so grid-template paths resolved to the
 real files.
 
 ## 2026-07-09 fused TPCORE update
@@ -239,7 +239,7 @@ OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
 tools/profile_tpcore_numba.py \
-  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/base_wombat/run.yml \
+  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml \
   --tracers 96 \
   --repeat 5 \
   --warmup 2 \
@@ -266,7 +266,7 @@ OMP_NUM_THREADS=1 \
 OPENBLAS_NUM_THREADS=1 \
 /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/.venv/bin/python \
 tools/profile_tpcore_numba.py \
-  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/base_wombat/run.yml \
+  --run-config /home/mgnb/Projects/UWA/FluxInversion/wombat-transport/validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml \
   --tracers 96 \
   --repeat 3 \
   --warmup 2 \
@@ -1582,7 +1582,7 @@ vtune -collect uarch-exploration \
   -finalization-mode=full \
   -result-dir=/tmp/wombat-vtune-single-tpcore-uarch \
   -- taskset -c 8 .venv/bin/python tools/benchmark_tpcore_scaling.py \
-    --run-config base_wombat/run.yml \
+    --run-config validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml \
     --counts 96 --repeat 20 --warmup 2 \
     --output /tmp/wombat-vtune-single-tpcore.csv
 ```

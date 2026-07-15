@@ -1461,7 +1461,7 @@ def generate_large_oracle_fixture(
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     definition = _load_large_oracle_definition(paths.definition_path)
     source = dict(definition.get("source", {}))
-    run_config_path = Path(run_config or source.get("run_config", "base_wombat/run.yml"))
+    run_config_path = Path(run_config or source.get("run_config", "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
     paths.directory.mkdir(parents=True, exist_ok=True)
     fixture_dt_s = float(source["dt_s"]) if dt_s is None and "dt_s" in source else dt_s
     if fixture_id in {BASE_INITIAL_TPCORE_FIXTURE_ID, RESIDUAL_INITIAL_TPCORE_FIXTURE_ID}:
@@ -2062,9 +2062,8 @@ def compare_transport_chain_oracle_fixture(
     if fixture_id != BASE_INITIAL_TRANSPORT_CHAIN_FIXTURE_ID:
         raise ValueError(f"{fixture_id!r} is not a transport-chain oracle fixture")
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
-    definition = _load_large_oracle_definition(paths.manifest_path if paths.manifest_path.exists() else paths.definition_path)
-    source = dict(definition.get("source", {}))
-    config = load_run_config(source.get("run_config", "base_wombat/run.yml"))
+    source = _large_oracle_source(paths)
+    config = load_run_config(source.get("run_config", "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
     tracer_names = _read_transport_step_tracer_names(paths.input_path)
     with netCDF4.Dataset(paths.input_path) as dataset:
         tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
@@ -2215,9 +2214,8 @@ def compare_transport_chain_handoffs(
 
 
 def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
-    definition = _load_large_oracle_definition(paths.manifest_path if paths.manifest_path.exists() else paths.definition_path)
-    source = dict(definition.get("source", {}))
-    config = load_run_config(source.get("run_config", "base_wombat/run.yml"))
+    source = _large_oracle_source(paths)
+    config = load_run_config(source.get("run_config", "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
     tracer_names = _read_transport_step_tracer_names(paths.input_path)
     with netCDF4.Dataset(paths.input_path) as dataset:
         tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
@@ -3956,6 +3954,16 @@ def _load_large_oracle_definition(path: Path) -> dict[str, object]:
     return data
 
 
+def _large_oracle_source(paths: LargeOracleFixturePaths) -> dict[str, object]:
+    """Return canonical tracked provenance, independent of a stale local cache manifest."""
+
+    definition = _load_large_oracle_definition(paths.definition_path)
+    source = definition.get("source", {})
+    if not isinstance(source, dict):
+        raise ValueError(f"{paths.definition_path} source must be a mapping")
+    return dict(source)
+
+
 def _large_oracle_file_entries(manifest: dict[str, object]) -> tuple[dict[str, object], ...]:
     files = manifest.get("files")
     if not isinstance(files, list):
@@ -4480,7 +4488,7 @@ def main(argv: list[str] | None = None) -> int:
 
     write_real_convection_parser = subparsers.add_parser("write-real-convection-input")
     write_real_convection_parser.add_argument("output", type=Path)
-    write_real_convection_parser.add_argument("--run-config", type=Path, default=Path("residual_20140901_part001_split01_wombat/run.yml"))
+    write_real_convection_parser.add_argument("--run-config", type=Path, default=Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"))
     write_real_convection_parser.add_argument("--mode", choices=REAL_CONVECTION_MODES, default="sampled-columns")
     write_real_convection_parser.add_argument("--time-index", type=int, default=None)
     write_real_convection_parser.add_argument("--tracer-time-index", type=int, default=0)

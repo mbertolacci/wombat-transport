@@ -48,23 +48,19 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 
 ## Local Fixtures and Data
 
-- `base/` is the one-tracer GEOS-Chem reference run with a restart file and
-  short-window SpeciesConc, LevelEdge, StateMet, and HEMCO diagnostics.
-- `residual_20140901_part001_split01/` is the 24-tracer residual reference run;
-  missing restart species initialize from `Background_VV = 0.0004`.
-- `base_wombat/run.yml` and
-  `residual_20140901_part001_split01_wombat/run.yml` are the matching Wombat
-  configs.
-- `fluxes/` contains local flux files used by the residual emissions config.
-- `ExtData` is a symlink to `/home/mgnb/GEOS_Chem/ExtData`; use `find -L` when
-  inspecting it.
-- Local generated run/debug directories such as `base_noemis*`,
-  `residual_trace/`, and `*_wombat/one_day_debug/` are working artifacts unless
-  the user explicitly asks to track them.
+- `external_data/` is the only supported local input root. Its tracked README
+  documents the GEOS-Chem ExtData, flux, scaling-grid, ObsOperator, and restart
+  contract; payloads below it remain ignored.
+- The canonical initial restart is
+  `external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4`.
+- `validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml` and
+  `validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml`
+  are the canonical one- and 24-tracer Wombat configs.
+- Local generated run/debug directories are working artifacts unless the user
+  explicitly asks to track them.
 - When working from a separate Git worktree, check the parent
-  `wombat-transport/` checkout for missing large local artifacts before
-  regenerating them. Oracle payloads, `validation_runs/work/` outputs, and
-  other long-run NetCDF products are often present only in the primary checkout.
+  `wombat-transport/` checkout for missing ignored `external_data/`, oracle
+  payloads, and `validation_runs/work/` products before regenerating them.
 
 ## Validation Pointers
 

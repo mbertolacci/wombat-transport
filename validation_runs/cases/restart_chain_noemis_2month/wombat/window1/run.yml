@@ -1,8 +1,8 @@
 name: restart_chain_noemis_2month_window1_wombat
 source_run_dir: .
 species_database: ./species_database.yml
-initial_restart: ../../../../../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4
-grid_template: ../../../../../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4
+initial_restart: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4
+grid_template: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4
 output_dir: ./OutputDir
 simulation:
   start: "2014-09-01 00:00"
@@ -10,7 +10,7 @@ simulation:
   transport_timestep_s: 600
   emissions_timestep_s: 1200
 meteorology:
-  root: ../../../../../ExtData/GEOS_2x2.5/MERRA2
+  root: ../../../../../external_data/geoschem/GEOS_2x2.5/MERRA2
 emissions:
   unit_conversion: none
   missing_species: zero
