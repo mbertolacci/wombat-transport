@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 python="${PYTHON:-.venv/bin/python}"
-run_config="${RUN_CONFIG:-validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml}"
+run_config="${RUN_CONFIG:-validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml}"
 output_root="${OUT_DIR:-validation_runs/work/hpc_fixed_total_frontier}"
 numa_node="${NUMA_NODE:-0}"
 first_cpu="${FIRST_CPU:-0}"

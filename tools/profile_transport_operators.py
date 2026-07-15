@@ -10,7 +10,7 @@ from typing import Any
 from _perf_support import parse_perf_stat_summary, profile_environment, run_perf_bundle
 
 
-DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
+DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml")
 DEFAULT_OUTPUT_DIR = Path("/tmp/wombat-transport-operator-profile")
 DEFAULT_DT_S = 600.0
 OPERATORS = ("vdiff", "convection")

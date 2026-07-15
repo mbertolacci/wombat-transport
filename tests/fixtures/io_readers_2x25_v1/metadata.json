@@ -1,0 +1,8 @@
+{
+  "fixture_id": "io_readers_2x25_v1",
+  "description": "Compact synthetic global-grid fixtures for GEOS-Chem restart, HISTORY, HEMCO, and meteorology readers.",
+  "resolution": "2x25",
+  "generator": "generate.py",
+  "grid": {"lev": 47, "lat": 91, "lon": 144},
+  "provenance": "Synthetic values; no numerical reference data copied from GEOS-Chem."
+}

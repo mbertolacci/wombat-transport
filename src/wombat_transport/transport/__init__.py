@@ -24,6 +24,7 @@ from wombat_transport.transport.forcing import (
     _map_met_levels_to_47,
     load_transport_forcing,
     load_transport_forcing_for_step,
+    merra2_filename,
 )
 from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import (
@@ -63,6 +64,7 @@ __all__ = [
     "MERRA2_72_TO_47_GROUPS",
     "MERRA2_72_TO_47_MAPPING",
     "MERRA2_FILENAME",
+    "merra2_filename",
     "TransportForcing",
     "TransportForcingProvider",
     "TransportGrid",

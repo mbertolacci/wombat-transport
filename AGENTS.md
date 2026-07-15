@@ -52,9 +52,9 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
   documents the GEOS-Chem ExtData, flux, scaling-grid, ObsOperator, and restart
   contract; payloads below it remain ignored.
 - The canonical initial restart is
-  `external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4`.
-- `validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml` and
-  `validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml`
+  `external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4`.
+- `validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml` and
+  `validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml`
   are the canonical one- and 24-tracer Wombat configs.
 - Local generated run/debug directories are working artifacts unless the user
   explicitly asks to track them.

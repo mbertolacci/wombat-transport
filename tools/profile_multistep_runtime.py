@@ -29,7 +29,7 @@ from wombat_transport.transport import driver as driver_mod
 DEFAULT_COUNTS = (1, 24, 96)
 DEFAULT_START = "2014-09-01 00:00"
 DEFAULT_END = "2014-09-03 00:00"
-DEFAULT_SOURCE_CONFIG = Path("validation_runs/cases/residual_24tracer_emissions_2month/wombat/main/run.yml")
+DEFAULT_SOURCE_CONFIG = Path("validation_runs/cases/residual_24tracer_emissions_2month_2x25/wombat/main/run.yml")
 
 
 @dataclass

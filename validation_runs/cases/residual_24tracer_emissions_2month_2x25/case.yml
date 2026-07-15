@@ -1,0 +1,60 @@
+schema_version: 1
+name: residual_24tracer_emissions_2month_2x25
+title: Residual 24-tracer emissions, two months
+purpose: >
+  Run the 24-tracer residual emissions configuration for two months and
+  compare daily averaged SpeciesConc HISTORY output and monthly restarts.
+tags: [2x25, residual, emissions, multi-tracer, long-history]
+
+defaults:
+  grid: geos_2x25_47
+  transport_timestep_s: 600
+  meteorology_root: "{repo}/external_data/geoschem/GEOS_2x2.5/MERRA2"
+
+modes:
+  quick:
+    comparisons: [species_conc, obsoperator]
+  restart:
+    comparisons: [species_conc, obsoperator, restart]
+
+stages:
+  - id: main
+    start: "2014-09-01 00:00"
+    end: "2014-11-01 00:00"
+    engines:
+      geoschem:
+        template_dir: geoschem/main
+        work_dir: "{work}/main/geoschem"
+        compile_script: compile_geoschem.sh
+        run_script: run_geoschem.sh
+      wombat:
+        template_dir: wombat/main
+        work_dir: "{work}/main/wombat"
+    initial_restart:
+      geoschem: null
+      wombat: null
+    comparisons:
+      - id: species_conc
+        kind: species_conc
+        geoschem_glob: "OutputDir/GEOSChem.SpeciesConcDaily.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.SpeciesConcDaily.*.nc4"
+        fields: ["SpeciesConcVV_?ALL?"]
+        tolerance_mode: report
+      - id: obsoperator
+        kind: obsoperator
+        geoschem_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        wombat_glob: "OutputDir/GEOSChem.ObsOperator.*.nc4"
+        fields: [id_index, field_index, sample]
+        tolerance_mode: report
+      - id: restart
+        kind: restart
+        geoschem_glob: "Restarts/GEOSChem.Restart.20141101_0000z.nc4"
+        wombat_glob: "Restarts/GEOSChem.Restart.20141101_0000z.nc4"
+        fields:
+          - SpeciesRst_?ALL?
+          - Met_DELPDRY
+          - Met_PS1DRY
+          - Met_PS1WET
+          - Met_SPHU1
+          - Met_TMPU1
+        tolerance_mode: report

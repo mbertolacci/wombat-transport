@@ -319,8 +319,8 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
 
 
 def test_invalid_hemco_fill_values_are_detected():
-    invalid = "tests/fixtures/io_readers_v1/hemco_invalid.nc4"
-    valid = "tests/fixtures/io_readers_v1/hemco.nc4"
+    invalid = "tests/fixtures/io_readers_2x25_v1/hemco_invalid.nc4"
+    valid = "tests/fixtures/io_readers_2x25_v1/hemco.nc4"
 
     assert has_invalid_emissions(load_hemco_emissions(invalid))
     assert not has_invalid_emissions(load_hemco_emissions(valid))
@@ -547,7 +547,7 @@ def test_run_cli_writes_restart_like_output(tmp_path):
     assert f"wrote_output: {output_path}" in completed.stdout
     loaded = load_restart(
         output_path,
-        load_species_database("validation_runs/cases/realistic_restart_noemis/wombat/main/species_database.yml"),
+        load_species_database("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/species_database.yml"),
     )
     assert loaded.names == ("CO2",)
     assert loaded.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)

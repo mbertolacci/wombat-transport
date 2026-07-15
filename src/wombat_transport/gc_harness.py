@@ -42,7 +42,7 @@ from wombat_transport.run_config import (
     transport_timestep_s,
 )
 from wombat_transport.transport import (
-    MERRA2_FILENAME,
+    merra2_filename,
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
@@ -1038,12 +1038,11 @@ def _load_real_convection_met(
 ) -> dict[str, np.ndarray]:
     met_root = Path(met_root)
     day_dir = met_root / f"{timestamp.year:04d}" / f"{timestamp.month:02d}"
-    date = timestamp.strftime("%Y%m%d")
-    a1_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A1")
-    a3dyn_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3dyn")
-    a3mstc_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstC")
-    a3mste_path = day_dir / MERRA2_FILENAME.format(date=date, collection="A3mstE")
-    i3_path = day_dir / MERRA2_FILENAME.format(date=date, collection="I3")
+    a1_path = day_dir / merra2_filename(timestamp, "A1", grid)
+    a3dyn_path = day_dir / merra2_filename(timestamp, "A3dyn", grid)
+    a3mstc_path = day_dir / merra2_filename(timestamp, "A3mstC", grid)
+    a3mste_path = day_dir / merra2_filename(timestamp, "A3mstE", grid)
+    i3_path = day_dir / merra2_filename(timestamp, "I3", grid)
     a1_time_index = int(time_index) * 3
 
     with (
@@ -1461,7 +1460,7 @@ def generate_large_oracle_fixture(
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     definition = _load_large_oracle_definition(paths.definition_path)
     source = dict(definition.get("source", {}))
-    run_config_path = Path(run_config or source.get("run_config", "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
+    run_config_path = Path(run_config or source.get("run_config", "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml"))
     paths.directory.mkdir(parents=True, exist_ok=True)
     fixture_dt_s = float(source["dt_s"]) if dt_s is None and "dt_s" in source else dt_s
     if fixture_id in {BASE_INITIAL_TPCORE_FIXTURE_ID, RESIDUAL_INITIAL_TPCORE_FIXTURE_ID}:
@@ -2063,7 +2062,7 @@ def compare_transport_chain_oracle_fixture(
         raise ValueError(f"{fixture_id!r} is not a transport-chain oracle fixture")
     paths = large_oracle_fixture_paths(fixture_id, cache_dir=cache_dir, manifest_dir=manifest_dir)
     source = _large_oracle_source(paths)
-    config = load_run_config(source.get("run_config", "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
+    config = load_run_config(source.get("run_config", "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml"))
     tracer_names = _read_transport_step_tracer_names(paths.input_path)
     with netCDF4.Dataset(paths.input_path) as dataset:
         tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
@@ -2215,7 +2214,7 @@ def compare_transport_chain_handoffs(
 
 def _trace_transport_chain_fixture(paths: LargeOracleFixturePaths):
     source = _large_oracle_source(paths)
-    config = load_run_config(source.get("run_config", "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"))
+    config = load_run_config(source.get("run_config", "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml"))
     tracer_names = _read_transport_step_tracer_names(paths.input_path)
     with netCDF4.Dataset(paths.input_path) as dataset:
         tracer0 = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
@@ -4488,7 +4487,7 @@ def main(argv: list[str] | None = None) -> int:
 
     write_real_convection_parser = subparsers.add_parser("write-real-convection-input")
     write_real_convection_parser.add_argument("output", type=Path)
-    write_real_convection_parser.add_argument("--run-config", type=Path, default=Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"))
+    write_real_convection_parser.add_argument("--run-config", type=Path, default=Path("validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml"))
     write_real_convection_parser.add_argument("--mode", choices=REAL_CONVECTION_MODES, default="sampled-columns")
     write_real_convection_parser.add_argument("--time-index", type=int, default=None)
     write_real_convection_parser.add_argument("--tracer-time-index", type=int, default=0)

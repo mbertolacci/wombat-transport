@@ -7,8 +7,11 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField, public_tracer5_to_canonical
+from wombat_transport.grid import MODEL_LEVELS, geos_chem_horizontal_resolution
 from wombat_transport.species import Species, load_species_database
 
+# Kept as the canonical 2x2.5 fixture dimensions for compatibility. Runtime
+# validation derives horizontal dimensions from the supplied template.
 FIXED_GRID = {"lev": 47, "lat": 91, "lon": 144}
 GRID_COORDS = ("time", "lev", "ilev", "lat", "lon", "hyam", "hybm", "hyai", "hybi", "P0", "AREA")
 
@@ -28,7 +31,7 @@ def load_hemco_emissions(path: str | Path) -> TracerField:
 def load_base_met(path: str | Path) -> dict[str, np.ndarray]:
     wanted = {"Met_PEDGE", "Met_PEDGEDRY", "Met_BXHEIGHT", "Met_AVGW"}
     with netCDF4.Dataset(path) as dataset:
-        _assert_fixed_grid(dataset)
+        _assert_supported_grid(dataset)
         return {name: np.asarray(dataset.variables[name][:]) for name in wanted if name in dataset.variables}
 
 
@@ -39,8 +42,8 @@ def write_restart_like(path: str | Path, tracer_field: TracerField, template_pat
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
-        _assert_fixed_grid(template)
-        _assert_tracer_shape(tracer_field)
+        template_shape = _assert_supported_grid(template)
+        _assert_tracer_shape(tracer_field, template_shape)
 
         for dim_name in ("time", "lev", "ilev", "lat", "lon"):
             size = tracer_field.data.shape[0] if dim_name == "time" else len(template.dimensions[dim_name])
@@ -87,13 +90,13 @@ def initialize_tracers(
         raise ValueError("initialize_tracers requires restart_path or template_path")
 
     with netCDF4.Dataset(template) as template_dataset:
-        _assert_fixed_grid(template_dataset)
+        template_shape = _assert_supported_grid(template_dataset)
         coords = _read_coords(template_dataset)
         shape = (
             len(template_dataset.dimensions["time"]),
-            FIXED_GRID["lev"],
-            FIXED_GRID["lat"],
-            FIXED_GRID["lon"],
+            template_shape[0],
+            template_shape[1],
+            template_shape[2],
             len(species),
         )
 
@@ -103,6 +106,10 @@ def initialize_tracers(
     restart_dataset = None
     if restart is not None and restart.exists():
         restart_dataset = netCDF4.Dataset(restart)
+        restart_shape = _assert_supported_grid(restart_dataset)
+        if restart_shape != template_shape:
+            restart_dataset.close()
+            raise ValueError(f"restart grid {restart_shape} does not match template grid {template_shape}")
 
     try:
         for index, item in enumerate(species):
@@ -138,7 +145,7 @@ def _load_tracer_variables(
     species: Iterable[Species] | None = None,
 ) -> TracerField:
     with netCDF4.Dataset(path) as dataset:
-        _assert_fixed_grid(dataset)
+        _assert_supported_grid(dataset)
         coords = _read_coords(dataset)
         if species is None:
             names = _sorted_suffixes(dataset.variables, prefix)
@@ -165,19 +172,21 @@ def _sorted_suffixes(variables: dict[str, object], prefix: str) -> tuple[str, ..
     return tuple(sorted(name.removeprefix(prefix) for name in variables if name.startswith(prefix)))
 
 
-def _assert_fixed_grid(dataset: netCDF4.Dataset) -> None:
-    for dim, expected in FIXED_GRID.items():
-        actual = len(dataset.dimensions[dim])
-        if actual != expected:
-            raise ValueError(f"expected {dim}={expected}, found {actual}")
+def _assert_supported_grid(dataset: netCDF4.Dataset) -> tuple[int, int, int]:
+    lev = len(dataset.dimensions["lev"])
+    if lev != MODEL_LEVELS:
+        raise ValueError(f"expected lev={MODEL_LEVELS}, found {lev}")
+    lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
+    lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
+    geos_chem_horizontal_resolution(lat, lon)
+    return lev, lat.size, lon.size
 
 
-def _assert_tracer_shape(tracer_field: TracerField) -> None:
+def _assert_tracer_shape(tracer_field: TracerField, expected: tuple[int, int, int]) -> None:
     if tracer_field.data.ndim != 5:
         raise ValueError(f"expected tracer data to be 5-D, found {tracer_field.data.ndim}-D")
     if tracer_field.data.shape[-1] != len(tracer_field.names):
         raise ValueError("tracer name count does not match data last dimension")
-    expected = (FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"])
     if tracer_field.data.shape[1:4] != expected:
         raise ValueError(f"expected tracer grid {expected}, found {tracer_field.data.shape[1:4]}")
 

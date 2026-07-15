@@ -33,12 +33,18 @@ The first tool is compare-only. It expects outputs to already exist in
 
 ```bash
 .venv/bin/python tools/compare_validation_run.py \
-  validation_runs/cases/realistic_restart_noemis \
+  validation_runs/cases/realistic_restart_noemis_2x25 \
   --mode quick
 ```
 
 The tool writes `metrics.csv` and `summary.json` under
 `validation_runs/work/<case>/compare/<mode>/`.
+
+The 4x5 cases require the generated parity-test restart documented in
+`external_data/README.md` and MERRA-2 data under
+`external_data/geoschem/GEOS_4x5/MERRA2`. They reuse the established case
+templates and apply their resolution-specific paths while materializing the
+run directories.
 
 Modes are case-defined. `quick` is intended for normal HISTORY diagnostics.
 `restart` includes restart-file comparisons where a case defines them.

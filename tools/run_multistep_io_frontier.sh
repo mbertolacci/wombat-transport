@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 python="${PYTHON:-.venv/bin/python}"
-source_config="${SOURCE_CONFIG:-validation_runs/cases/residual_24tracer_emissions_2month/wombat/main/run.yml}"
+source_config="${SOURCE_CONFIG:-validation_runs/cases/residual_24tracer_emissions_2month_2x25/wombat/main/run.yml}"
 obsoperator_dir="${OBSOPERATOR_DIR:-external_data/obsoperator}"
 output_root="${OUT_DIR:-validation_runs/work/hpc_multistep_io_frontier}"
 start_time="${START:-2014-09-01 00:00}"

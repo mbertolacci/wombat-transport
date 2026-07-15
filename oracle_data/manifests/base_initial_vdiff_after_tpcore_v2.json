@@ -1,6 +1,7 @@
 {
   "fixture_id": "base_initial_vdiff_after_tpcore_v2",
   "description": "Full-grid one-tracer base-run canonical VDIFF oracle initialized from GEOS-Chem TPCORE output.",
+  "resolution": "2x25",
   "files": [
     {
       "name": "vdiff_input.nc",
@@ -16,7 +17,7 @@
     }
   ],
   "source": {
-    "run_config": "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml",
+    "run_config": "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml",
     "time_index": 0,
     "tracer_time_index": 0,
     "max_tracers": 1,

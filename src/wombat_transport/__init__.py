@@ -13,7 +13,7 @@ from wombat_transport.fields import (
     transport_tracer_to_canonical,
     transport_tracer_to_public4,
 )
-from wombat_transport.grid import TransportGrid, load_transport_grid
+from wombat_transport.grid import MODEL_LEVELS, TransportGrid, load_transport_grid
 from wombat_transport.emissions import (
     EmissionOperatorConfiguration,
     EmissionsOperator,
@@ -95,6 +95,7 @@ from wombat_transport.transport import (
 
 __all__ = [
     "FIXED_GRID",
+    "MODEL_LEVELS",
     "EmissionOperatorConfiguration",
     "EmissionsOperator",
     "EmissionsStep",

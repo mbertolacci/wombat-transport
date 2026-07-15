@@ -14,7 +14,10 @@ external_data/
   obsoperator/
   scaling-grids/
   restarts/
-    GEOSChem.Restart.20140901_0000z.nc4
+    2x25/
+      GEOSChem.Restart.20140901_0000z.nc4
+    4x5/
+      GEOSChem.Restart.20140901_0000z.nc4
 ```
 
 ### `geoschem/`
@@ -25,6 +28,9 @@ A3mstE, and I3 collections for the simulated dates. GEOS-Chem also expects
 the standard `HEMCO`, `CHEM_INPUTS`, and related ExtData trees beneath this
 directory. On the original development machine this is a symlink to
 `/home/mgnb/GEOS_Chem/ExtData`.
+
+The 4x5 validation cases use the corresponding daily collections under
+`GEOS_4x5/MERRA2`; filenames end in `.4x5.nc4`.
 
 ### `fluxes/`
 
@@ -53,9 +59,18 @@ GEOS-Chem and pass the compressed files directly to Wombat.
 
 ### `restarts/`
 
-`GEOSChem.Restart.20140901_0000z.nc4` is the canonical one-tracer initial
+`2x25/GEOSChem.Restart.20140901_0000z.nc4` is the canonical one-tracer initial
 condition and grid template. It must contain `SpeciesRst_CO2` and the standard
 GEOS-Chem grid/pressure coordinates on the global 2x2.5, 47-level grid.
+
+The ignored `4x5/GEOSChem.Restart.20140901_0000z.nc4` parity-test template is
+generated from that canonical restart:
+
+```bash
+PYTHONPATH=src .venv/bin/python tools/regrid_restart.py \
+  external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4 \
+  external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4
+```
 
 The migrated reference file has:
 
@@ -74,8 +89,8 @@ ln -s /path/to/GEOS_Chem/ExtData external_data/geoschem
 ln -s /path/to/fluxes external_data/fluxes
 ln -s /path/to/scaling-grids external_data/scaling-grids
 ln -s /path/to/obsoperator external_data/obsoperator
-mkdir -p external_data/restarts
-cp /path/to/GEOSChem.Restart.20140901_0000z.nc4 external_data/restarts/
+mkdir -p external_data/restarts/2x25
+cp /path/to/GEOSChem.Restart.20140901_0000z.nc4 external_data/restarts/2x25/
 ```
 
 The compact unit-test fixtures under `tests/fixtures/` do not require this

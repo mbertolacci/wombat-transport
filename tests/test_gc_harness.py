@@ -943,7 +943,7 @@ def test_convection_multi_tracer_preserves_ordering_and_independent_updates(tmp_
 def test_write_real_convection_input_records_sampled_47_level_contract(tmp_path):
     _require_real_convection_inputs()
     input_path = write_real_convection_input_from_config(
-        Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"),
+        Path("validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml"),
         tmp_path / "convection_input.nc",
         mode="sampled-columns",
     )
@@ -968,7 +968,7 @@ def test_write_real_convection_input_records_sampled_47_level_contract(tmp_path)
 def test_python_real_convection_sampled_output_has_finite_mass(tmp_path):
     _require_real_convection_inputs()
     input_path = write_real_convection_input_from_config(
-        Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"),
+        Path("validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml"),
         tmp_path / "convection_input.nc",
         mode="sampled-columns",
         max_tracers=3,
@@ -1663,7 +1663,7 @@ def _write_synthetic_pjc_input(path):
 
 def _require_real_convection_inputs() -> None:
     required = (
-        Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"),
+        Path("validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml"),
         Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A1.2x25.nc4"),
         Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3dyn.2x25.nc4"),
         Path("external_data/geoschem/GEOS_2x2.5/MERRA2/2014/09/MERRA2.20140901.A3mstC.2x25.nc4"),

@@ -10,7 +10,7 @@ import numpy as np
 from yaml12 import read_yaml
 
 from wombat_transport.fields import TracerField
-from wombat_transport.grid import TransportGrid
+from wombat_transport.grid import TransportGrid, geos_chem_latitude_edges_deg
 from wombat_transport.species import Species
 
 
@@ -384,6 +384,39 @@ def _latitude_overlap_weights(source_lat: np.ndarray, target_lat: np.ndarray) ->
     return weights
 
 
+def conservative_regrid_horizontal(
+    values: np.ndarray,
+    source_lat: np.ndarray,
+    source_lon: np.ndarray,
+    target_lat: np.ndarray,
+    target_lon: np.ndarray,
+) -> np.ndarray:
+    """Conservatively remap arrays whose final dimensions are latitude/longitude."""
+
+    array = np.asarray(values, dtype=np.float64)
+    if array.shape[-2:] != (source_lat.size, source_lon.size):
+        raise ValueError(
+            f"source field shape {array.shape[-2:]} does not match coordinates "
+            f"{(source_lat.size, source_lon.size)}"
+        )
+    lat_weights = _latitude_overlap_weights(source_lat, target_lat)
+    lon_weights = _longitude_overlap_weights(source_lon, target_lon)
+    lat_denominator = lat_weights.sum(axis=1)
+    lon_denominator = lon_weights.sum(axis=1)
+    if np.any(lat_denominator <= 0.0) or np.any(lon_denominator <= 0.0):
+        raise ValueError("source grid does not overlap target grid")
+
+    leading_shape = array.shape[:-2]
+    planes = array.reshape((-1, source_lat.size, source_lon.size))
+    lat_regridded = np.matmul(lat_weights[np.newaxis, :, :], planes)
+    lat_regridded /= lat_denominator[np.newaxis, :, np.newaxis]
+    for plane in lat_regridded:
+        _average_regridded_polar_rows(plane, source_lat, target_lat, source_lon)
+    regridded = np.matmul(lat_regridded, lon_weights.T)
+    regridded /= lon_denominator[np.newaxis, np.newaxis, :]
+    return np.ascontiguousarray(regridded.reshape((*leading_shape, target_lat.size, target_lon.size)))
+
+
 def _longitude_overlap_weights(source_lon: np.ndarray, target_lon: np.ndarray) -> np.ndarray:
     source_intervals = _cyclic_cell_intervals(source_lon)
     target_intervals = _cyclic_cell_intervals(target_lon)
@@ -464,13 +497,12 @@ def _noncyclic_bounds(centers: np.ndarray, *, lower: float, upper: float) -> tup
     values = np.asarray(centers, dtype=np.float64)
     if values.ndim != 1 or values.size < 2:
         raise ValueError("grid coordinate centers must be a 1-D array with at least two values")
+    if lower == -90.0 and upper == 90.0:
+        bounds = geos_chem_latitude_edges_deg(values)
+        return bounds[:-1], bounds[1:]
     midpoints = (values[:-1] + values[1:]) / 2.0
     bounds = np.empty(values.size + 1, dtype=np.float64)
     bounds[1:-1] = midpoints
     bounds[0] = max(lower, values[0] - (midpoints[0] - values[0]))
     bounds[-1] = min(upper, values[-1] + (values[-1] - midpoints[-1]))
-    if np.isclose(values[0], lower + 0.5, rtol=0.0, atol=1.0e-12):
-        bounds[1] = lower + 1.0
-    if np.isclose(values[-1], upper - 0.5, rtol=0.0, atol=1.0e-12):
-        bounds[-2] = upper - 1.0
     return bounds[:-1], bounds[1:]

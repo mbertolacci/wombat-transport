@@ -29,8 +29,8 @@ from wombat_transport.run_config import (
 from wombat_transport.transport import load_transport_forcing, run_transport_one_step
 
 
-DEFAULT_BASE_CONFIG = Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
-DEFAULT_RESIDUAL_CONFIG = Path("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml")
+DEFAULT_BASE_CONFIG = Path("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml")
+DEFAULT_RESIDUAL_CONFIG = Path("validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml")
 DEFAULT_EXECUTABLE = Path("tools/gc_harness/build/pjc_pfix_harness")
 DEFAULT_OUTPUT = Path("/home/mgnb/public_html/wombat-transport")
 DEFAULT_WORK_DIR = Path("/tmp/wombat_transport_plot_work")

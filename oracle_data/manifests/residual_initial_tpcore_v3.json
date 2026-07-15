@@ -1,6 +1,7 @@
 {
   "fixture_id": "residual_initial_tpcore_v3",
   "description": "Full-grid 24-tracer residual-run initial-condition PJC plus canonical TPCORE oracle using GEOS-Chem-style dry surface pressure inputs.",
+  "resolution": "2x25",
   "files": [
     {
       "name": "transport_step_input.nc",
@@ -16,7 +17,7 @@
     }
   ],
   "source": {
-    "run_config": "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml",
+    "run_config": "validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml",
     "time_index": 0,
     "tracer_time_index": 0,
     "max_tracers": 24,
