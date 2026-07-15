@@ -277,7 +277,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run GEOS-Chem/Wombat validation cases at multiple thread counts.")
     parser.add_argument("case_dirs", nargs="*", type=Path)
     parser.add_argument("--threads", nargs="+", type=int, default=[1, 2])
-    parser.add_argument("--work-prefix", type=Path, default=Path("validation_runs/work_obsoperator"))
+    parser.add_argument(
+        "--work-prefix",
+        type=Path,
+        default=Path("validation_runs/work/obsoperator"),
+    )
     parser.add_argument("--obsoperator-dir", type=Path, default=Path("external_data/obsoperator"))
     parser.add_argument(
         "--uncompressed-obsoperator-dir",

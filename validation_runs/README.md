@@ -47,27 +47,28 @@ Instrumented tracing remains separate and opt-in via the GC harness tools.
 ## ObsOperator timing matrix
 
 The checked-in validation configs enable ObsOperator for both engines. Daily
-gzip inputs live outside Git under `external_data/obsoperator/`; the matrix runner expands
-the same files to ordinary YAML for GEOS-Chem and keeps the gzip inputs for
-Wombat. It reuses the compiled executables from `validation_runs/work/` and
-creates fresh sibling work roots for each thread count:
+gzip inputs live outside Git under `external_data/obsoperator/`; the matrix
+runner expands the same files to ordinary YAML for GEOS-Chem and keeps the gzip
+inputs for Wombat. It reuses the compiled executables from
+`validation_runs/work/` and creates fresh ignored work roots for each thread
+count:
 
 ```bash
 .venv/bin/python tools/run_validation_matrix.py \
   --threads 1 2 \
-  --work-prefix validation_runs/work_obsoperator
+  --work-prefix validation_runs/work/obsoperator
 ```
 
 For example, the command above writes one-thread results below
-`validation_runs/work_obsoperator_t1/` and two-thread results below
-`validation_runs/work_obsoperator_t2/`. Each engine stage records
+`validation_runs/work/obsoperator_t1/` and two-thread results below
+`validation_runs/work/obsoperator_t2/`. Each engine stage records
 `timing.txt`, `validation_timing.json`, and its normal log. Runs are sequential
 so the timed processes do not compete with each other.
 
 The runner refuses to overwrite an existing matrix directory. Use a new
-`--work-prefix` for a fresh timing experiment. Pass one or more case
-directories positionally to run a subset, or `--prepare-only` to validate
-materialization without starting either model.
+`--work-prefix` below `validation_runs/work/` for a fresh timing experiment.
+Pass one or more case directories positionally to run a subset, or
+`--prepare-only` to validate materialization without starting either model.
 
 Pass `--geoschem-executable /path/to/gcclassic` to use one freshly compiled
 GEOS-Chem executable for every case and stage. The timing metadata records both
