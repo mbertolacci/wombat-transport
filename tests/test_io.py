@@ -16,10 +16,10 @@ from wombat_transport.io import (
 from wombat_transport.run_config import load_run_config
 from wombat_transport.species import load_species_database
 
-FIXTURE_ROOT = "tests/fixtures/io_readers_v1"
+FIXTURE_ROOT = "tests/fixtures/io_readers_2x25_v1"
 BASE_RESTART = f"{FIXTURE_ROOT}/restart.nc4"
-BASE_SPECIES = "validation_runs/cases/realistic_restart_noemis/wombat/main/species_database.yml"
-RESIDUAL_SPECIES = "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/species_database.yml"
+BASE_SPECIES = "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/species_database.yml"
+RESIDUAL_SPECIES = "validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/species_database.yml"
 RESIDUAL_MONTHLY_RESTART = BASE_RESTART
 BASE_SPECIES_CONC = f"{FIXTURE_ROOT}/base_species_conc.nc4"
 RESIDUAL_SPECIES_CONC = f"{FIXTURE_ROOT}/residual_species_conc.nc4"
@@ -123,8 +123,8 @@ def test_base_met_reader_loads_expected_variables():
 
 
 def test_run_configs_resolve_fixture_paths():
-    base = load_run_config("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
-    residual = load_run_config("validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml")
+    base = load_run_config("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml")
+    residual = load_run_config("validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml")
 
     assert base.initial_restart is not None
     external_root = (Path.cwd() / "external_data").resolve()

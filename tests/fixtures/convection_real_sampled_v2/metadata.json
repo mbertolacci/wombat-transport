@@ -36,10 +36,11 @@
     "tracer": 24
   },
   "snapshot": "convection-real-sampled-v2",
+  "resolution": "2x25",
   "source": {
     "dt_s": 600.0,
     "met_time_index": 0,
-    "run_config": "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml",
+    "run_config": "validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml",
     "timestamp": "2014-09-01 00:00",
     "vertical_mapping": "native_72_to_47_center_and_73_to_48_edge"
   }

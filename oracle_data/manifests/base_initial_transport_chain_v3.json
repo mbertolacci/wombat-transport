@@ -1,6 +1,7 @@
 {
   "fixture_id": "base_initial_transport_chain_v3",
   "description": "Full-grid one-tracer base-run initial-condition canonical TPCORE plus VDIFF plus convection oracle using GEOS-Chem-style dry pressure inputs.",
+  "resolution": "2x25",
   "files": [
     {
       "name": "transport_chain_input.nc",
@@ -16,7 +17,7 @@
     }
   ],
   "source": {
-    "run_config": "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml",
+    "run_config": "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml",
     "time_index": 0,
     "tracer_time_index": 0,
     "max_tracers": 1,

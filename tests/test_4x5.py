@@ -27,8 +27,8 @@ from wombat_transport.transport import load_transport_forcing, merra2_filename, 
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_FIXTURE = REPO_ROOT / "tests/fixtures/io_readers_v1/restart.nc4"
-BASE_SPECIES = REPO_ROOT / "validation_runs/cases/realistic_restart_noemis/wombat/main/species_database.yml"
+SOURCE_FIXTURE = REPO_ROOT / "tests/fixtures/io_readers_2x25_v1/restart.nc4"
+BASE_SPECIES = REPO_ROOT / "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/species_database.yml"
 
 
 def _load_restart_tool():

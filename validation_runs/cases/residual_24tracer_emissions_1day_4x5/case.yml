@@ -21,7 +21,7 @@ stages:
     end: "2014-09-02 00:00"
     engines:
       geoschem:
-        template_dir: ../residual_24tracer_emissions_1day/geoschem/main
+        template_dir: ../residual_24tracer_emissions_1day_2x25/geoschem/main
         work_dir: "{work}/main/geoschem"
         compile_script: compile_geoschem.sh
         run_script: run_geoschem.sh
@@ -31,11 +31,11 @@ stages:
           HEMCO_Config.rc:
             "external_data/geoschem/GEOS_2x2.5/MERRA2": "external_data/geoschem/GEOS_4x5/MERRA2"
       wombat:
-        template_dir: ../residual_24tracer_emissions_1day/wombat/main
+        template_dir: ../residual_24tracer_emissions_1day_2x25/wombat/main
         work_dir: "{work}/main/wombat"
         materialize_replacements:
           run.yml:
-            "grid_template: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4": "grid_template: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+            "grid_template: ../../../../../external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4": "grid_template: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
             "external_data/geoschem/GEOS_2x2.5/MERRA2": "external_data/geoschem/GEOS_4x5/MERRA2"
             "rank3: [1, 91, 144]": "rank3: [1, 46, 72]"
             "rank4: [1, 1, 91, 144]": "rank4: [1, 1, 46, 72]"

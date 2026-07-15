@@ -23,7 +23,7 @@ stages:
     end: "2014-09-03 00:00"
     engines:
       geoschem:
-        template_dir: ../realistic_restart_noemis/geoschem/main
+        template_dir: ../realistic_restart_noemis_2x25/geoschem/main
         work_dir: "{work}/main/geoschem"
         compile_script: compile_geoschem.sh
         run_script: run_geoschem.sh
@@ -32,14 +32,14 @@ stages:
             "resolution: 2.0x2.5": "resolution: 4.0x5.0"
           HEMCO_Config.rc:
             "external_data/geoschem/GEOS_2x2.5/MERRA2": "external_data/geoschem/GEOS_4x5/MERRA2"
-            "external_data/restarts/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4": "external_data/restarts/4x5/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4"
+            "external_data/restarts/2x25/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4": "external_data/restarts/4x5/GEOSChem.Restart.$YYYY$MM$DD_$HH$MNz.nc4"
       wombat:
-        template_dir: ../realistic_restart_noemis/wombat/main
+        template_dir: ../realistic_restart_noemis_2x25/wombat/main
         work_dir: "{work}/main/wombat"
         materialize_replacements:
           run.yml:
-            "initial_restart: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4": "initial_restart: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
-            "grid_template: ../../../../../external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4": "grid_template: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+            "initial_restart: ../../../../../external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4": "initial_restart: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
+            "grid_template: ../../../../../external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4": "grid_template: ../../../../../external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
             "external_data/geoschem/GEOS_2x2.5/MERRA2": "external_data/geoschem/GEOS_4x5/MERRA2"
             "rank3: [1, 91, 144]": "rank3: [1, 46, 72]"
             "rank4: [1, 1, 91, 144]": "rank4: [1, 1, 46, 72]"

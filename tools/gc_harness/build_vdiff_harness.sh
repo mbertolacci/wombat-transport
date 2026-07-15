@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-build_root="${GC_BUILD_ROOT:-${repo_root}/validation_runs/work/realistic_restart_noemis/main/geoschem/build}"
+build_root="${GC_BUILD_ROOT:-${repo_root}/validation_runs/work/realistic_restart_noemis_2x25/main/geoschem/build}"
 out_dir="${repo_root}/tools/gc_harness/build"
 mkdir -p "${out_dir}"
 

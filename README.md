@@ -103,8 +103,8 @@ runtime dependencies are `numpy`, `netCDF4`, and `py-yaml12`; the
 Example run configs:
 
 ```text
-validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml
-validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml
+validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml
+validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml
 ```
 
 ### ObsOperator output

@@ -33,7 +33,7 @@ The first tool is compare-only. It expects outputs to already exist in
 
 ```bash
 .venv/bin/python tools/compare_validation_run.py \
-  validation_runs/cases/realistic_restart_noemis \
+  validation_runs/cases/realistic_restart_noemis_2x25 \
   --mode quick
 ```
 

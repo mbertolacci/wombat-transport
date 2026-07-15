@@ -1,6 +1,7 @@
 {
   "fixture_id": "fullgrid_synthetic_low_courant_tpcore_v2",
   "description": "Full-grid smooth low-Courant synthetic PJC plus canonical TPCORE oracle.",
+  "resolution": "2x25",
   "files": [
     {
       "name": "transport_step_input.nc",
@@ -16,7 +17,7 @@
     }
   ],
   "source": {
-    "run_config": "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml",
+    "run_config": "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml",
     "dt_s": 600.0,
     "ntracer": 2,
     "grid": {

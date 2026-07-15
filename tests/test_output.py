@@ -26,7 +26,7 @@ from wombat_transport.output import (
 )
 from wombat_transport.species import Species
 
-BASE_RESTART = "tests/fixtures/io_readers_v1/restart.nc4"
+BASE_RESTART = "tests/fixtures/io_readers_2x25_v1/restart.nc4"
 
 
 def test_history_interval_parses_monthly_daily_and_hourly_values():

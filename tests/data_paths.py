@@ -7,9 +7,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXTERNAL_DATA = REPO_ROOT / "external_data"
-BASE_CONFIG = REPO_ROOT / "validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"
-RESIDUAL_CONFIG = REPO_ROOT / "validation_runs/cases/residual_24tracer_emissions_1day/wombat/main/run.yml"
-INITIAL_RESTART = EXTERNAL_DATA / "restarts/GEOSChem.Restart.20140901_0000z.nc4"
+BASE_CONFIG = REPO_ROOT / "validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml"
+RESIDUAL_CONFIG = REPO_ROOT / "validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml"
+INITIAL_RESTART = EXTERNAL_DATA / "restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4"
 MERRA2_ROOT = EXTERNAL_DATA / "geoschem/GEOS_2x2.5/MERRA2"
 FOUR_BY_FIVE_RESTART = EXTERNAL_DATA / "restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4"
 MERRA2_4X5_ROOT = EXTERNAL_DATA / "geoschem/GEOS_4x5/MERRA2"

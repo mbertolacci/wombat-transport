@@ -171,8 +171,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--run-config",
         type=Path,
-        default=Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml"),
-        help="Run config used only to locate the grid template. Defaults to validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml.",
+        default=Path("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml"),
+        help="Run config used only to locate the grid template. Defaults to validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml.",
     )
     parser.add_argument(
         "--input",

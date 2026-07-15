@@ -14,7 +14,8 @@ external_data/
   obsoperator/
   scaling-grids/
   restarts/
-    GEOSChem.Restart.20140901_0000z.nc4
+    2x25/
+      GEOSChem.Restart.20140901_0000z.nc4
     4x5/
       GEOSChem.Restart.20140901_0000z.nc4
 ```
@@ -58,7 +59,7 @@ GEOS-Chem and pass the compressed files directly to Wombat.
 
 ### `restarts/`
 
-`GEOSChem.Restart.20140901_0000z.nc4` is the canonical one-tracer initial
+`2x25/GEOSChem.Restart.20140901_0000z.nc4` is the canonical one-tracer initial
 condition and grid template. It must contain `SpeciesRst_CO2` and the standard
 GEOS-Chem grid/pressure coordinates on the global 2x2.5, 47-level grid.
 
@@ -67,7 +68,7 @@ generated from that canonical restart:
 
 ```bash
 PYTHONPATH=src .venv/bin/python tools/regrid_restart.py \
-  external_data/restarts/GEOSChem.Restart.20140901_0000z.nc4 \
+  external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4 \
   external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4
 ```
 
@@ -88,8 +89,8 @@ ln -s /path/to/GEOS_Chem/ExtData external_data/geoschem
 ln -s /path/to/fluxes external_data/fluxes
 ln -s /path/to/scaling-grids external_data/scaling-grids
 ln -s /path/to/obsoperator external_data/obsoperator
-mkdir -p external_data/restarts
-cp /path/to/GEOSChem.Restart.20140901_0000z.nc4 external_data/restarts/
+mkdir -p external_data/restarts/2x25
+cp /path/to/GEOSChem.Restart.20140901_0000z.nc4 external_data/restarts/2x25/
 ```
 
 The compact unit-test fixtures under `tests/fixtures/` do not require this

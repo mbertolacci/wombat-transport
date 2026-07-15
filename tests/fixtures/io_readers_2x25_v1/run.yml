@@ -1,0 +1,19 @@
+name: io_readers_fixture
+source_run_dir: .
+species_database: ../../../validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/species_database.yml
+initial_restart: ./restart.nc4
+grid_template: ./restart.nc4
+output_dir: ./OutputDir
+simulation:
+  start: "2014-09-01 00:00"
+  end: "2014-09-01 00:10"
+  transport_timestep_s: 600
+  emissions_timestep_s: 1200
+meteorology:
+  root: ./unavailable-meteorology
+emissions:
+  unit_conversion: none
+  missing_species: zero
+  scales: {}
+  fields: []
+outputs: {}
