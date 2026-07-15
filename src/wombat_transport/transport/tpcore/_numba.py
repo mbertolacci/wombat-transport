@@ -7,11 +7,14 @@ path. WOMBAT_NUMBA provides the shared transport-wide default.
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 
 from wombat_transport.transport.numba_control import apply_numba_thread_count
 from wombat_transport.transport.numba_control import numba_enabled
 from wombat_transport.transport.numba_control import numba_mode
+from wombat_transport.transport.numba_control import synchronized_transport_numba
 from wombat_transport.transport.tpcore.types import TpcoreSetup
 
 try:  # Optional acceleration dependency.
@@ -25,7 +28,7 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
 
 
 _NUMBA_AVAILABLE = njit is not None
-_TPCORE_NUMBA_WORKSPACE = None
+_TPCORE_NUMBA_WORKSPACES = threading.local()
 
 
 class _TpcoreNumbaWorkspace:
@@ -68,12 +71,11 @@ def _get_tpcore_numba_workspace(
     ntracer: int,
     nthreads: int,
 ) -> _TpcoreNumbaWorkspace:
-    global _TPCORE_NUMBA_WORKSPACE
     shape = (nlev, nlat, nlon, ntracer)
-    workspace = _TPCORE_NUMBA_WORKSPACE
+    workspace = getattr(_TPCORE_NUMBA_WORKSPACES, "workspace", None)
     if workspace is None or workspace.shape != shape or workspace.nthreads != nthreads:
         workspace = _TpcoreNumbaWorkspace(nlev, nlat, nlon, ntracer, nthreads)
-        _TPCORE_NUMBA_WORKSPACE = workspace
+        _TPCORE_NUMBA_WORKSPACES.workspace = workspace
     return workspace
 
 def _xtp_batch_numba(
@@ -178,6 +180,7 @@ def _make_fzppm_numba_workspace(nthreads: int, nlev: int, ntracer: int) -> tuple
     )
 
 
+@synchronized_transport_numba
 def _advect_tracers_fused_numba(
     *,
     tracer_conc: np.ndarray,
@@ -272,7 +275,7 @@ def _fzppm_batch_numba(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _set_cross_terms_numba_kernel(cx: np.ndarray, cy: np.ndarray, ua: np.ndarray, va: np.ndarray) -> None:
         nlev = cx.shape[0]
         nlat = cx.shape[1]
@@ -293,7 +296,7 @@ if njit is not None:
                     va[level, j, i] = 0.5 * (cy[level, j, i] + cy[level, j + 1, i])
 
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _set_jn_js_numba_kernel(cx: np.ndarray, jn: np.ndarray, js: np.ndarray) -> None:
         nlev = cx.shape[0]
         nlat = cx.shape[1]
@@ -326,7 +329,7 @@ if njit is not None:
             js[level] = js_value
             jn[level] = jn_value
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _average_const_poles_batch_numba_kernel(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) -> None:
         nlat = q.shape[0]
         nlon = q.shape[1]
@@ -364,7 +367,7 @@ if njit is not None:
                     q[j, i, tracer] = north
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _init_dq_mass_numba_kernel(q: np.ndarray, dq1: np.ndarray, delp1: np.ndarray) -> None:
         nlat = q.shape[0]
         nlon = q.shape[1]
@@ -377,7 +380,7 @@ if njit is not None:
                 dq1[j, i, tracer] = q[j, i, tracer] * mass
 
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _qckxyz_batch_numba_kernel(dq1: np.ndarray) -> None:
         nlev = dq1.shape[0]
         nlat = dq1.shape[1]
@@ -408,7 +411,7 @@ if njit is not None:
                         dq1[nlev - 1, j, i, tracer] = 0.0
 
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _qckxyz_needs_fill_numba_kernel(dq1: np.ndarray) -> bool:
         nlev = dq1.shape[0]
         nlat = dq1.shape[1]
@@ -425,7 +428,7 @@ if njit is not None:
         return False
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _finalize_tpcore_output_numba_kernel(dq1: np.ndarray, delp2: np.ndarray) -> None:
         nlev = dq1.shape[0]
         nlat = dq1.shape[1]
@@ -449,7 +452,7 @@ if njit is not None:
                     dq1[lev, 1, lon, tracer] = dq1[lev, 0, lon, tracer]
                     dq1[lev, nlat - 2, lon, tracer] = dq1[lev, nlat - 1, lon, tracer]
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _advect_tracers_fused_numba_kernel(
         q: np.ndarray,
         dq1: np.ndarray,
@@ -556,7 +559,7 @@ if njit is not None:
             _finalize_tpcore_output_numba_kernel(dq1, delp2)
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _calc_advec_cross_terms_batch_numba_kernel(
         q: np.ndarray,
         ua: np.ndarray,
@@ -696,7 +699,7 @@ if njit is not None:
                             qqv[j, i, tracer] = q_center
 
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _xadv_dao2_batch_numba_kernel(
         qqv: np.ndarray,
         ua: np.ndarray,
@@ -733,7 +736,7 @@ if njit is not None:
                     adx[j, i, tracer] = ru * (a1 * ru + b1) + c1
 
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _yadv_dao2_batch_numba_kernel(qqu: np.ndarray, va: np.ndarray, ady: np.ndarray) -> None:
         nlat = qqu.shape[0]
         nlon = qqu.shape[1]
@@ -780,7 +783,7 @@ if njit is not None:
                 ady[nlat - 1, i, tracer] = north
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _xadv_dao2_apply_batch_numba_kernel(
         q: np.ndarray,
         qqv: np.ndarray,
@@ -812,7 +815,7 @@ if njit is not None:
                     q[j, i, tracer] += ru * (a1 * ru + b1) + c1
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _yadv_dao2_apply_batch_numba_kernel(
         q: np.ndarray,
         qqu: np.ndarray,
@@ -891,7 +894,7 @@ if njit is not None:
                 q[nlat - 1, i, tracer] += north
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _xtp_batch_numba_kernel(
         dq1: np.ndarray,
         qqv: np.ndarray,
@@ -1051,7 +1054,7 @@ if njit is not None:
                 dq1[j, nlon - 1, tracer] += fx_row[nlon - 1, tracer] - fx_row[0, tracer]
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _ytp_batch_numba_kernel(
         dq1: np.ndarray,
         qqu: np.ndarray,
@@ -1166,7 +1169,7 @@ if njit is not None:
                 dq1[nlat - 2, i, tracer] = dq_np
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _fzppm_batch_numba_kernel(
         delp1: np.ndarray,
         wz: np.ndarray,

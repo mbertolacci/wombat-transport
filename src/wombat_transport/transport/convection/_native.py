@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,7 +20,7 @@ class _ConvectionLightWorkspace:
     bmass: np.ndarray
 
 
-_CONVECTION_LIGHT_WORKSPACE: _ConvectionLightWorkspace | None = None
+_CONVECTION_LIGHT_WORKSPACES = threading.local()
 
 
 def _get_convection_light_workspace(
@@ -28,19 +29,19 @@ def _get_convection_light_workspace(
     nlon: int,
     ntracer: int,
 ) -> _ConvectionLightWorkspace:
-    global _CONVECTION_LIGHT_WORKSPACE
-    existing = _CONVECTION_LIGHT_WORKSPACE
+    existing = getattr(_CONVECTION_LIGHT_WORKSPACES, "workspace", None)
     if (
         existing is not None
         and existing.tracer_out.shape == (nlev, nlat, nlon, ntracer)
         and existing.bmass.shape == (nlev, nlat, nlon)
     ):
         return existing
-    _CONVECTION_LIGHT_WORKSPACE = _ConvectionLightWorkspace(
+    workspace = _ConvectionLightWorkspace(
         tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
         bmass=np.empty((nlev, nlat, nlon), dtype=np.float64),
     )
-    return _CONVECTION_LIGHT_WORKSPACE
+    _CONVECTION_LIGHT_WORKSPACES.workspace = workspace
+    return workspace
 
 
 @dataclass(frozen=True)

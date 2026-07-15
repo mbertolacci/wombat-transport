@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,6 +10,7 @@ from wombat_transport.transport.numba_control import (
     apply_numba_thread_count,
     numba_enabled,
     numba_mode,
+    synchronized_transport_numba,
 )
 
 try:  # Optional acceleration path; NumPy remains the reference fallback.
@@ -33,24 +35,24 @@ class _ConvectionKernelWorkspace:
     current_work: np.ndarray
 
 
-_CONVECTION_KERNEL_WORKSPACE: _ConvectionKernelWorkspace | None = None
+_CONVECTION_KERNEL_WORKSPACES = threading.local()
 
 
 def _get_convection_kernel_workspace(nthreads: int, ntracer: int) -> _ConvectionKernelWorkspace:
-    global _CONVECTION_KERNEL_WORKSPACE
     stride = max(ntracer, _CONVECTION_SCRATCH_PAD_TRACERS)
     shape = (nthreads, stride)
-    existing = _CONVECTION_KERNEL_WORKSPACE
+    existing = getattr(_CONVECTION_KERNEL_WORKSPACES, "workspace", None)
     if existing is not None and existing.shape == shape:
         return existing
-    _CONVECTION_KERNEL_WORKSPACE = _ConvectionKernelWorkspace(
+    workspace = _ConvectionKernelWorkspace(
         shape=shape,
         qc=np.empty(shape, dtype=np.float64),
         qb_num=np.empty(shape, dtype=np.float64),
         delq_work=np.empty(shape, dtype=np.float64),
         current_work=np.empty(shape, dtype=np.float64),
     )
-    return _CONVECTION_KERNEL_WORKSPACE
+    _CONVECTION_KERNEL_WORKSPACES.workspace = workspace
+    return workspace
 
 
 
@@ -62,6 +64,7 @@ def _numba_convection_enabled() -> bool:
     return numba_enabled("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
 
 
+@synchronized_transport_numba
 def _convect_fullgrid_top_numba(
     q_all: np.ndarray,
     cmfmc_all: np.ndarray,
@@ -149,7 +152,7 @@ def _convect_column_group_top_numba(
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _convect_fullgrid_top_numba_kernel(
         q_all: np.ndarray,
         cmfmc_all: np.ndarray,
@@ -307,7 +310,7 @@ if njit is not None:
                                     delq = -current
                                 q_all[level, col, tracer] = current + delq
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _convect_column_group_top_numba_kernel(
         q_all: np.ndarray,
         diag_all: np.ndarray,
@@ -467,7 +470,7 @@ def _column_mass_transport_numba(tracer: np.ndarray, bmass_kg_m2: np.ndarray, ar
 
 if njit is not None:
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _column_mass_transport_numba_kernel(
         tracer: np.ndarray,
         bmass_kg_m2: np.ndarray,
