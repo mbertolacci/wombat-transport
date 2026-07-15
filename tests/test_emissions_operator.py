@@ -180,6 +180,26 @@ def test_constant_file_and_multiple_scale_factors_are_multiplied(tmp_path):
     np.testing.assert_array_equal(emissions.data[0, -1, :, :, 0], values * file_scale * -2.0)
 
 
+def test_long_coordinate_names_and_cyclic_integer_longitudes_are_regridded(tmp_path):
+    grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
+    source_values = np.array([[1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0]])
+    _write_xy_file(
+        tmp_path / "source.nc",
+        source_values,
+        lat=np.array([-45.0, 45.0]),
+        lon=np.array([0.0, 90.0, 180.0, 270.0]),
+        horizontal_names=("latitude", "longitude"),
+    )
+    config_path = _write_config(tmp_path, fields=[_field("field_a", "A", "source.nc")])
+
+    emissions = EmissionsOperator.from_yaml(config_path, root=tmp_path, species=_species("A"), grid=grid).evaluate(
+        datetime(2014, 9, 1)
+    )
+
+    expected = np.array([[1.5, 2.5, 3.5, 2.5], [15.0, 25.0, 35.0, 25.0]])
+    np.testing.assert_allclose(emissions.data[0, -1, :, :, 0], expected, rtol=0.0, atol=1.0e-15)
+
+
 def test_multiple_entries_sum_and_species_order_follows_species_list(tmp_path):
     grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
     _write_xy_file(tmp_path / "first.nc", np.full((2, 4), 1.0))
@@ -419,16 +439,18 @@ def _write_xy_file(
     variable_name: str = "emis",
     lat: np.ndarray | None = None,
     lon: np.ndarray | None = None,
+    horizontal_names: tuple[str, str] = ("lat", "lon"),
 ) -> None:
     array = np.asarray(values, dtype=np.float64)
     lat_values = np.asarray(lat if lat is not None else [-45.0, 45.0], dtype=np.float64)
     lon_values = np.asarray(lon if lon is not None else [45.0, 135.0, 225.0, 315.0], dtype=np.float64)
+    lat_name, lon_name = horizontal_names
     with netCDF4.Dataset(path, "w") as dataset:
-        dataset.createDimension("lat", lat_values.size)
-        dataset.createDimension("lon", lon_values.size)
-        dataset.createVariable("lat", "f8", ("lat",))[:] = lat_values
-        dataset.createVariable("lon", "f8", ("lon",))[:] = lon_values
-        dataset.createVariable(variable_name, "f8", ("lat", "lon"))[:] = array
+        dataset.createDimension(lat_name, lat_values.size)
+        dataset.createDimension(lon_name, lon_values.size)
+        dataset.createVariable(lat_name, "f8", (lat_name,))[:] = lat_values
+        dataset.createVariable(lon_name, "f8", (lon_name,))[:] = lon_values
+        dataset.createVariable(variable_name, "f8", (lat_name, lon_name))[:] = array
 
 
 def _write_time_xy_file(path: Path, times: list[datetime], values: np.ndarray, *, variable_name: str = "emis") -> None:

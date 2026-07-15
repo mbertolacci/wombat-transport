@@ -89,6 +89,22 @@ def test_hemco_harness_npft_scenario_writes_hemco_selection_syntax(tmp_path):
         np.testing.assert_array_equal(dataset.variables["npft"][:], np.array([1, 2, 3, 4, 5]))
 
 
+def test_source_and_scale_regrid_uses_new_residual_scale_schema(tmp_path):
+    run_dir = write_scenario_run_directory("source_and_scale_regrid", tmp_path / "run")
+
+    with netCDF4.Dataset(run_dir / "inputs" / "scale_1x1.nc") as dataset:
+        assert dataset.variables["scale"].dimensions == ("time", "latitude", "longitude")
+        np.testing.assert_array_equal(dataset.variables["longitude"][:], np.arange(-180.0, 180.0))
+
+    emissions = EmissionsOperator.from_yaml(
+        run_dir / "wombat_emissions.yml",
+        root=run_dir,
+        species=list(SPECIES),
+        grid=_grid_from_generated(run_dir),
+    ).evaluate(datetime(2014, 9, 1))
+    assert np.all(np.isfinite(emissions.data))
+
+
 @pytest.mark.skipif(find_hemco_standalone() is None, reason="HEMCO_STANDALONE is not available")
 @pytest.mark.parametrize("scenario", ["same_grid_file_scale", "source_regrid_then_scale", "source_and_scale_regrid"])
 def test_hemco_harness_optional_standalone_compare(tmp_path, scenario):

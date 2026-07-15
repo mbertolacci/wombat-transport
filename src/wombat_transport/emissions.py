@@ -49,6 +49,14 @@ class _SourceSlice:
     lon: np.ndarray
 
 
+_HORIZONTAL_DIMENSION_ALIASES = {
+    "lat": "lat",
+    "latitude": "lat",
+    "lon": "lon",
+    "longitude": "lon",
+}
+
+
 class EmissionsOperator:
     """Evaluate explicitly configured raw emissions fields for one timestep."""
 
@@ -205,7 +213,7 @@ class EmissionsOperator:
             if variable_name not in dataset.variables:
                 raise KeyError(f"{path} is missing variable {variable_name}")
             variable = dataset.variables[variable_name]
-            dims = list(variable.dimensions)
+            dims = [_HORIZONTAL_DIMENSION_ALIASES.get(name, name) for name in variable.dimensions]
             slices: list[object] = [slice(None)] * len(dims)
             if "time" in dims:
                 axis = dims.index("time")
@@ -216,8 +224,8 @@ class EmissionsOperator:
             source = _SourceSlice(
                 values=np.asarray(values, dtype=np.float64),
                 dims=tuple(dims),
-                lat=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
-                lon=np.asarray(dataset.variables["lon"][:], dtype=np.float64),
+                lat=_read_horizontal_coordinate(dataset, ("lat", "latitude"), path=path),
+                lon=_read_horizontal_coordinate(dataset, ("lon", "longitude"), path=path),
             )
         self._source_cache[key] = source
         return source
@@ -278,6 +286,26 @@ def _resolve_path(root: Path, value: str) -> Path:
     if not path.is_absolute():
         path = root / path
     return path.resolve()
+
+
+def _read_horizontal_coordinate(
+    dataset: netCDF4.Dataset,
+    names: tuple[str, str],
+    *,
+    path: Path,
+) -> np.ndarray:
+    matches = [name for name in names if name in dataset.variables]
+    if not matches:
+        raise KeyError(f"{path} is missing horizontal coordinate {names[0]!r} or {names[1]!r}")
+    if len(matches) > 1:
+        left = np.asarray(dataset.variables[matches[0]][:], dtype=np.float64)
+        right = np.asarray(dataset.variables[matches[1]][:], dtype=np.float64)
+        if not _same_grid(left, right):
+            raise ValueError(f"{path} has conflicting {matches[0]!r} and {matches[1]!r} coordinates")
+    values = np.asarray(dataset.variables[matches[0]][:], dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError(f"{path}:{matches[0]} must be a 1-D coordinate")
+    return values
 
 
 def _resolve_template_path(root: Path, template: str, timestamp: datetime) -> Path:
@@ -357,33 +385,17 @@ def _latitude_overlap_weights(source_lat: np.ndarray, target_lat: np.ndarray) ->
 
 
 def _longitude_overlap_weights(source_lon: np.ndarray, target_lon: np.ndarray) -> np.ndarray:
-    source = np.asarray(source_lon, dtype=np.float64)
-    order = np.argsort((source + 360.0) % 360.0)
-    sorted_source = ((source + 360.0) % 360.0)[order]
-    step = float(np.median(np.diff(sorted_source)))
-    source_low = sorted_source - step / 2.0
-    source_high = sorted_source + step / 2.0
-    source_low[0] = 0.0
-    source_high[-1] = 360.0
-
-    weights_sorted = np.zeros((target_lon.size, source_lon.size), dtype=np.float64)
-    target_step = float(np.median(np.diff(np.sort((np.asarray(target_lon, dtype=np.float64) + 360.0) % 360.0))))
-    for target_index, center in enumerate(target_lon):
-        normalized = (float(center) + 360.0) % 360.0
-        low = normalized - target_step / 2.0
-        high = normalized + target_step / 2.0
-        intervals = [(low, high)]
-        if low < 0.0:
-            intervals = [(low + 360.0, 360.0), (0.0, high)]
-        elif high > 360.0:
-            intervals = [(low, 360.0), (0.0, high - 360.0)]
-        for interval_low, interval_high in intervals:
-            overlap_low = np.maximum(source_low, interval_low)
-            overlap_high = np.minimum(source_high, interval_high)
-            weights_sorted[target_index] += np.maximum(0.0, overlap_high - overlap_low)
-
-    weights = np.empty_like(weights_sorted)
-    weights[:, order] = weights_sorted
+    source_intervals = _cyclic_cell_intervals(source_lon)
+    target_intervals = _cyclic_cell_intervals(target_lon)
+    weights = np.zeros((len(target_intervals), len(source_intervals)), dtype=np.float64)
+    for target_index, target_parts in enumerate(target_intervals):
+        for source_index, source_parts in enumerate(source_intervals):
+            for target_low, target_high in target_parts:
+                for source_low, source_high in source_parts:
+                    weights[target_index, source_index] += max(
+                        0.0,
+                        min(target_high, source_high) - max(target_low, source_low),
+                    )
     return weights
 
 
@@ -413,18 +425,39 @@ def _average_regridded_polar_rows(
 
 
 def _longitude_cell_widths(lon: np.ndarray) -> np.ndarray:
-    source = np.asarray(lon, dtype=np.float64)
-    order = np.argsort((source + 360.0) % 360.0)
-    sorted_source = ((source + 360.0) % 360.0)[order]
-    step = float(np.median(np.diff(sorted_source)))
-    low = sorted_source - step / 2.0
-    high = sorted_source + step / 2.0
-    low[0] = 0.0
-    high[-1] = 360.0
-    widths_sorted = high - low
-    widths = np.empty_like(widths_sorted)
-    widths[order] = widths_sorted
-    return widths
+    return np.asarray(
+        [sum(high - low for low, high in intervals) for intervals in _cyclic_cell_intervals(lon)],
+        dtype=np.float64,
+    )
+
+
+def _cyclic_cell_intervals(lon: np.ndarray) -> list[tuple[tuple[float, float], ...]]:
+    values = np.asarray(lon, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2:
+        raise ValueError("longitude centers must be a 1-D array with at least two values")
+    normalized = values % 360.0
+    order = np.argsort(normalized)
+    sorted_values = normalized[order]
+    gaps = np.diff(np.concatenate((sorted_values, sorted_values[:1] + 360.0)))
+    if np.any(gaps <= 0.0):
+        raise ValueError("longitude centers must be unique on the cyclic grid")
+
+    sorted_intervals: list[tuple[tuple[float, float], ...]] = []
+    for index, center in enumerate(sorted_values):
+        low = center - gaps[index - 1] / 2.0
+        high = center + gaps[index] / 2.0
+        if low < 0.0:
+            parts = ((low + 360.0, 360.0), (0.0, high))
+        elif high > 360.0:
+            parts = ((low, 360.0), (0.0, high - 360.0))
+        else:
+            parts = ((low, high),)
+        sorted_intervals.append(parts)
+
+    intervals: list[tuple[tuple[float, float], ...]] = [()] * values.size
+    for sorted_index, original_index in enumerate(order):
+        intervals[int(original_index)] = sorted_intervals[sorted_index]
+    return intervals
 
 
 def _noncyclic_bounds(centers: np.ndarray, *, lower: float, upper: float) -> tuple[np.ndarray, np.ndarray]:

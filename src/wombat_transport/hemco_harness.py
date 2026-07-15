@@ -28,6 +28,7 @@ TARGET_LAT = np.array(
 TARGET_LON = np.arange(-180.0, 180.0, 2.5, dtype=np.float64)
 SOURCE_LAT_1X1 = np.arange(-89.5, 90.0, 1.0, dtype=np.float64)
 SOURCE_LON_1X1 = np.arange(-179.5, 180.0, 1.0, dtype=np.float64)
+SOURCE_LON_INTEGER_1X1 = np.arange(-180.0, 180.0, 1.0, dtype=np.float64)
 SPECIES = (
     Species("A", molecular_weight_g=44.0, background_vv=0.0, full_name="A"),
     Species("B", molecular_weight_g=44.0, background_vv=0.0, full_name="B"),
@@ -263,7 +264,14 @@ def _source_regrid_then_scale(root: Path, grid: TransportGrid) -> dict[str, Any]
 
 def _source_and_scale_regrid(root: Path, grid: TransportGrid) -> dict[str, Any]:
     _write_xy_file(root / "inputs" / "source_1x1.nc", _source_field(), lat=SOURCE_LAT_1X1, lon=SOURCE_LON_1X1)
-    _write_xy_file(root / "inputs" / "scale_1x1.nc", _source_scale(), variable="scale", lat=SOURCE_LAT_1X1, lon=SOURCE_LON_1X1)
+    _write_xy_file(
+        root / "inputs" / "scale_1x1.nc",
+        _source_scale(),
+        variable="scale",
+        lat=SOURCE_LAT_1X1,
+        lon=SOURCE_LON_INTEGER_1X1,
+        horizontal_names=("latitude", "longitude"),
+    )
     return {
         "scales": {"scale_a": _scale("inputs/scale_1x1.nc")},
         "fields": [_entry("source_1x1", "A", "inputs/source_1x1.nc", scales=["scale_a"])],
@@ -538,22 +546,24 @@ def _write_xy_file(
     variable: str = "emis",
     lat: np.ndarray = TARGET_LAT,
     lon: np.ndarray = TARGET_LON,
+    horizontal_names: tuple[str, str] = ("lat", "lon"),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    lat_name, lon_name = horizontal_names
     with netCDF4.Dataset(path, "w") as dataset:
         dataset.createDimension("time", 1)
-        dataset.createDimension("lat", lat.size)
-        dataset.createDimension("lon", lon.size)
+        dataset.createDimension(lat_name, lat.size)
+        dataset.createDimension(lon_name, lon.size)
         time = dataset.createVariable("time", "f8", ("time",))
         time.units = "hours since 2000-01-01 00:00:00 UTC"
         time[:] = netCDF4.date2num([HARNESS_START], time.units)
-        lat_var = dataset.createVariable("lat", "f8", ("lat",))
+        lat_var = dataset.createVariable(lat_name, "f8", (lat_name,))
         lat_var.units = "degrees_north"
         lat_var[:] = lat
-        lon_var = dataset.createVariable("lon", "f8", ("lon",))
+        lon_var = dataset.createVariable(lon_name, "f8", (lon_name,))
         lon_var.units = "degrees_east"
         lon_var[:] = lon
-        output = dataset.createVariable(variable, "f8", ("time", "lat", "lon"))
+        output = dataset.createVariable(variable, "f8", ("time", lat_name, lon_name))
         output.units = "kg/m2/s" if variable == "emis" else "1"
         output[:] = np.asarray(values, dtype=np.float64)[np.newaxis, :, :]
 
