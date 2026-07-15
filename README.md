@@ -98,6 +98,9 @@ Optional Numba acceleration is controlled globally with `WOMBAT_NUMBA`; unset
 or truthy values enable it when available, and `0`, `false`, `no`, `off`, or
 `none` disable it. `WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and
 `WOMBAT_CONVECTION_NUMBA` override the global flag for individual operators.
+`WOMBAT_HISTORY_NUMBA` similarly controls the parallel HISTORY time-average
+accumulation, with `WOMBAT_HISTORY_NUMBA_THREADS` overriding the global thread
+count for that operation.
 
 The project can also be installed with standard Python packaging tools. Core
 runtime dependencies are `numpy`, `netCDF4`, and `py-yaml12`; the
