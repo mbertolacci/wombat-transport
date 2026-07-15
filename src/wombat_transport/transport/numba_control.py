@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from collections.abc import Callable
+from functools import wraps
+from typing import ParamSpec, TypeVar
 
 
 FALSEY_NUMBA_VALUES = frozenset({"0", "false", "no", "off", "none"})
@@ -13,6 +17,20 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
 
 
 _transport_warning_emitted = False
+_transport_numba_execution_lock = threading.Lock()
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def synchronized_transport_numba(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Serialize transport kernels while allowing unrelated Python threads to run."""
+
+    @wraps(function)
+    def synchronized(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with _transport_numba_execution_lock:
+            return function(*args, **kwargs)
+
+    return synchronized
 
 
 def numba_mode(operator_env: str) -> str:

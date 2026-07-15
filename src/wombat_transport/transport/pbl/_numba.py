@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -8,6 +9,7 @@ from wombat_transport.transport.numba_control import (
     apply_numba_thread_count,
     numba_enabled,
     numba_mode,
+    synchronized_transport_numba,
 )
 from wombat_transport.transport.pbl import _native
 
@@ -82,14 +84,13 @@ class _VdiffFullGridWorkspace:
     sphu_diffused: np.ndarray
 
 
-_VDIFF_FULLGRID_WORKSPACE: _VdiffFullGridWorkspace | None = None
+_VDIFF_FULLGRID_WORKSPACES = threading.local()
 
 
 def _get_vdiff_fullgrid_workspace(
     nthreads: int, nlev: int, nlat: int, nlon: int, ntracer: int
 ) -> _VdiffFullGridWorkspace:
-    global _VDIFF_FULLGRID_WORKSPACE
-    existing = _VDIFF_FULLGRID_WORKSPACE
+    existing = getattr(_VDIFF_FULLGRID_WORKSPACES, "workspace", None)
     if (
         existing is not None
         and existing.nthreads == nthreads
@@ -108,7 +109,7 @@ def _get_vdiff_fullgrid_workspace(
     tracer_shape = (nthreads, nlon, ntracer)
     lev_tracer_shape = (nthreads, nlon, nlev, ntracer)
     edge_tracer_shape = (nthreads, nlon, nlev + 1, ntracer)
-    _VDIFF_FULLGRID_WORKSPACE = _VdiffFullGridWorkspace(
+    workspace = _VdiffFullGridWorkspace(
         nthreads=nthreads,
         tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
         sphu_out=np.empty((nlev, nlat, nlon), dtype=np.float64),
@@ -157,7 +158,8 @@ def _get_vdiff_fullgrid_workspace(
         zfq_scalar=np.empty(lev_shape, dtype=np.float64),
         sphu_diffused=np.empty(lev_shape, dtype=np.float64),
     )
-    return _VDIFF_FULLGRID_WORKSPACE
+    _VDIFF_FULLGRID_WORKSPACES.workspace = workspace
+    return workspace
 
 
 
@@ -260,6 +262,7 @@ def _run_vdiff_latitude_numba(
     )
 
 
+@synchronized_transport_numba
 def _run_vdiffdr_one_step_fullgrid_numba(
     *,
     tracer_top: np.ndarray,
@@ -398,7 +401,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _finalize_deferred_tpcore_poles_numba_kernel(
         tracer_mass: np.ndarray, pressure_mass_hpa: np.ndarray
     ) -> None:
@@ -418,7 +421,7 @@ if njit is not None:
                     tracer_mass[lev, 1, lon, tracer] = south
                     tracer_mass[lev, nlat - 2, lon, tracer] = north
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _tracer_working_mass_numba_kernel(tracer_conc: np.ndarray, dry_air_mass_top: np.ndarray) -> np.ndarray:
         nlev = tracer_conc.shape[0]
         nlat = tracer_conc.shape[1]
@@ -434,7 +437,7 @@ if njit is not None:
         return total
 
 
-    @njit(cache=True, parallel=True)
+    @njit(cache=True, parallel=True, nogil=True)
     def _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top: np.ndarray,
         u_top: np.ndarray,
@@ -927,7 +930,7 @@ if njit is not None:
         return negative_count
 
 
-    @njit(cache=True)
+    @njit(cache=True, nogil=True)
     def _run_vdiff_latitude_numba_kernel(
         tracer_top: np.ndarray,
         u_top: np.ndarray,
