@@ -2,20 +2,28 @@ from __future__ import annotations
 
 import argparse
 import cProfile
-import csv
 import gc
 import io
-import os
 import pstats
-import resource
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
 import numpy as np
 
+from _scaling_support import (
+    bytes_to_mib as _bytes_to_mib,
+    count_is_allowed,
+    estimate_peak_bytes,
+    format_optional_general as _format_optional,
+    memory_limit_bytes as _memory_limit_bytes,
+    nonnegative_int as _nonnegative_int,
+    peak_rss_mib as _peak_rss_mib,
+    positive_int as _positive_int,
+    tracer_state_bytes as _tracer_state_bytes,
+    write_rows,
+)
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.run_config import load_run_config
 from wombat_transport.transport.tpcore import run_tpcore_one_step
@@ -25,7 +33,6 @@ DEFAULT_COUNTS = (1, 24, 96, 256, 512)
 DEFAULT_DT_S = 600.0
 DEFAULT_WORKING_SET_MULTIPLIER = 12.0
 DEFAULT_FIXED_OVERHEAD_BYTES = 512 * 1024**2
-AUTO_MEMORY_FRACTION = 0.55
 CSV_FIELDS = (
     "tracer_count",
     "status",
@@ -102,8 +109,13 @@ def main(argv: list[str] | None = None) -> int:
 
     for tracer_count in args.counts:
         state_bytes = _tracer_state_bytes(tracer_count, grid_shape)
-        peak_bytes = _estimate_peak_bytes(tracer_count, grid_shape)
-        allowed, reason = _count_is_allowed(peak_bytes, memory_limit)
+        peak_bytes = estimate_peak_bytes(
+            tracer_count,
+            grid_shape,
+            multiplier=DEFAULT_WORKING_SET_MULTIPLIER,
+            fixed_overhead_bytes=DEFAULT_FIXED_OVERHEAD_BYTES,
+        )
+        allowed, reason = count_is_allowed(peak_bytes, memory_limit, detailed_reason=True)
         if not allowed:
             rows.append(
                 BenchmarkRow(
@@ -144,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         del inputs
         gc.collect()
 
-    _write_rows(rows, args.output)
+    write_rows(rows, CSV_FIELDS, args.output)
     return 0
 
 
@@ -177,20 +189,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     if args.dt_s <= 0.0:
         parser.error("--dt-s must be positive")
     return args
-
-
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be a positive integer")
-    return parsed
-
-
-def _nonnegative_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("value must be non-negative")
-    return parsed
 
 
 def _read_fullgrid_shape(run_config_path: Path) -> tuple[int, int, int]:
@@ -339,90 +337,6 @@ def _profile_inputs(inputs: SyntheticTpcoreInputs, *, profile_top: int) -> str:
     stream.write(f"checksum,{checksum:.16g}\n")
     pstats.Stats(profiler, stream=stream).strip_dirs().sort_stats("cumulative").print_stats(profile_top)
     return stream.getvalue()
-
-
-def _write_rows(rows: list[BenchmarkRow], output: Path | None) -> None:
-    if output is None:
-        _write_csv(rows, sys.stdout)
-        return
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        _write_csv(rows, handle)
-
-
-def _write_csv(rows: list[BenchmarkRow], handle: TextIO) -> None:
-    writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
-    writer.writeheader()
-    for row in rows:
-        writer.writerow(row.as_csv_row())
-
-
-def _tracer_state_bytes(ntracer: int, grid_shape: tuple[int, int, int]) -> int:
-    return int(ntracer) * int(np.prod(grid_shape)) * np.dtype(np.float64).itemsize
-
-
-def _estimate_peak_bytes(
-    ntracer: int,
-    grid_shape: tuple[int, int, int],
-    *,
-    multiplier: float = DEFAULT_WORKING_SET_MULTIPLIER,
-    fixed_overhead_bytes: int = DEFAULT_FIXED_OVERHEAD_BYTES,
-) -> int:
-    return int(_tracer_state_bytes(ntracer, grid_shape) * multiplier + fixed_overhead_bytes)
-
-
-def _memory_limit_bytes(value: str) -> int | None:
-    if value == "auto":
-        physical = _physical_memory_bytes()
-        if physical is None:
-            return None
-        return int(physical * AUTO_MEMORY_FRACTION)
-    gb = float(value)
-    if gb <= 0.0:
-        raise ValueError("--max-memory-gb must be positive or 'auto'")
-    return int(gb * 1024**3)
-
-
-def _physical_memory_bytes() -> int | None:
-    try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        page_count = os.sysconf("SC_PHYS_PAGES")
-    except (AttributeError, OSError, ValueError):
-        return None
-    if page_size <= 0 or page_count <= 0:
-        return None
-    return int(page_size * page_count)
-
-
-def _count_is_allowed(estimated_peak_bytes: int, memory_limit_bytes: int | None) -> tuple[bool, str]:
-    if memory_limit_bytes is None:
-        return True, "memory limit unavailable; running without auto skip"
-    if estimated_peak_bytes > memory_limit_bytes:
-        return (
-            False,
-            f"estimated peak {_bytes_to_mib(estimated_peak_bytes):.1f} MiB exceeds memory limit "
-            f"{_bytes_to_mib(memory_limit_bytes):.1f} MiB",
-        )
-    return True, ""
-
-
-def _peak_rss_mib() -> float:
-    rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    if sys.platform == "darwin":
-        return rss / 1024.0**2
-    return rss / 1024.0
-
-
-def _bytes_to_mib(value: int | None) -> float:
-    if value is None:
-        return 0.0
-    return float(value) / 1024.0**2
-
-
-def _format_optional(value: float | None, *, precision: int = 8) -> str:
-    if value is None:
-        return ""
-    return f"{value:.{precision}g}"
 
 
 if __name__ == "__main__":

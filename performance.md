@@ -2315,7 +2315,7 @@ speed claim and VTune only for the microarchitectural explanation.
   worse in whole TPCORE. Removing a logically dead edge branch regressed the
   96-tracer four-core best by 6.3%.
 
-The retained `tools/profile_tpcore_paths.py` census explains these results. In
+The TPCORE profiler's `--path-census` mode explains these results. In
 the measured workload, XTP uses common PPM for 86.2% of rows, the near-pole path
 for 11.5%, and fallback for 2.3%. No fallback cell actually has `|cx| > 1`.
 X flux is 97.7% positive, but Y and vertical flux signs are essentially 50/50,
@@ -2329,12 +2329,12 @@ driver time moved `0.31064 -> 0.31158 s` at 24 tracers and
 `0.92949 -> 0.93339 s` at 96, with the 96-tracer mean 1.4% slower. It was fully
 removed.
 
-The retained offline `tools/census_forcing_stability.py` checked all 35 adjacent
-transitions in a six-hour nonzero-emissions run. A3 winds shared storage and
-equal values for 34/35 transitions, and hourly PBL fields did so for 30/35.
-However, pressure, interpolated temperature, and humidity changed on 35/35.
-Every complete TPCORE setup product and the complete VDIFF coefficient input set
-therefore had zero legal reuse hits.
+An offline census checked all 35 adjacent transitions in a six-hour
+nonzero-emissions run. A3 winds shared storage and equal values for 34/35
+transitions, and hourly PBL fields did so for 30/35. However, pressure,
+interpolated temperature, and humidity changed on 35/35. Every complete TPCORE
+setup product and the complete VDIFF coefficient input set therefore had zero
+legal reuse hits.
 
 A narrower west-neighbour U cache was bitwise exact and improved its raw PJC
 stage by 11.5-14.5%, but that projects to only 17-27 ms over 36 steps

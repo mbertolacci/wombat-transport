@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
-import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from _perf_support import parse_perf_stat_summary, profile_environment, run_perf_bundle
 
 
 DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml")
@@ -31,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         perf_summary: dict[str, str] = {}
         if not args.skip_perf:
             perf_outputs = _run_perf(operator, args, operator_dir)
-            perf_summary = _parse_perf_stat_summary(perf_outputs.get("perf_stat"))
+            perf_summary = parse_perf_stat_summary(perf_outputs.get("perf_stat"))
         report_path = operator_dir / f"{operator}_{args.tracers}_profile.md"
         _write_report(
             report_path,
@@ -96,7 +95,7 @@ def _run_benchmark(operator: str, args: argparse.Namespace, output_csv: Path) ->
         "--output",
         str(output_csv),
     ]
-    subprocess.run(cmd, check=True, env=_profile_env())
+    subprocess.run(cmd, check=True, env=profile_environment())
     with output_csv.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
     if len(rows) != 1:
@@ -105,17 +104,9 @@ def _run_benchmark(operator: str, args: argparse.Namespace, output_csv: Path) ->
 
 
 def _run_perf(operator: str, args: argparse.Namespace, output_dir: Path) -> dict[str, Path]:
-    perf = shutil.which("perf")
-    if perf is None:
-        return {}
-
-    env = _profile_env()
-    env["NUMBA_ENABLE_PROFILING"] = "1"
-    env["NUMBA_DEBUGINFO"] = "1"
-    benchmark_script = str(_benchmark_script(operator))
     common = [
         sys.executable,
-        benchmark_script,
+        str(_benchmark_script(operator)),
         "--run-config",
         str(args.run_config),
         "--counts",
@@ -127,89 +118,13 @@ def _run_perf(operator: str, args: argparse.Namespace, output_dir: Path) -> dict
         "--dt-s",
         str(args.dt_s),
     ]
-
-    stat_csv = output_dir / f"{operator}_{args.tracers}_perf_stat_benchmark.csv"
-    stat_txt = output_dir / f"{operator}_{args.tracers}_perf_stat.txt"
-    stat_cmd = [
-        perf,
-        "stat",
-        "-d",
-        "--delay",
-        str(args.perf_delay_ms),
-        "--",
-        *common,
-        "--output",
-        str(stat_csv),
-    ]
-    stat = subprocess.run(stat_cmd, env=env, text=True, capture_output=True, check=False)
-    stat_txt.write_text(stat.stdout + stat.stderr)
-
-    outputs = {"perf_stat": stat_txt, "perf_stat_benchmark": stat_csv}
-    if stat.returncode != 0:
-        return outputs
-
-    perf_data = output_dir / f"{operator}_{args.tracers}.perf.data"
-    record_csv = output_dir / f"{operator}_{args.tracers}_perf_record_benchmark.csv"
-    record_cmd = [
-        perf,
-        "record",
-        "--delay",
-        str(args.perf_delay_ms),
-        "-F",
-        "999",
-        "--call-graph",
-        "dwarf",
-        "-o",
-        str(perf_data),
-        "--",
-        *common,
-        "--output",
-        str(record_csv),
-    ]
-    record = subprocess.run(record_cmd, env=env, text=True, capture_output=True, check=False)
-    (output_dir / f"{operator}_{args.tracers}_perf_record.log").write_text(record.stdout + record.stderr)
-    outputs["perf_data"] = perf_data
-    outputs["perf_record_benchmark"] = record_csv
-    if record.returncode != 0:
-        return outputs
-
-    dso_report = output_dir / f"{operator}_{args.tracers}_perf_dso_report.txt"
-    symbol_report = output_dir / f"{operator}_{args.tracers}_perf_symbol_report.txt"
-    _write_perf_report(perf, perf_data, dso_report, ["--sort", "dso"])
-    _write_perf_report(perf, perf_data, symbol_report, ["--sort", "symbol,dso", "--percent-limit", "0.75"])
-    outputs["perf_dso_report"] = dso_report
-    outputs["perf_symbol_report"] = symbol_report
-    return outputs
-
-
-def _write_perf_report(perf: str, perf_data: Path, output_path: Path, extra_args: list[str]) -> None:
-    cmd = [perf, "report", "--stdio", "--no-children", "-i", str(perf_data), *extra_args]
-    report = subprocess.run(cmd, text=True, capture_output=True, check=False)
-    output_path.write_text(report.stdout + report.stderr)
-
-
-def _parse_perf_stat_summary(path: Path | None) -> dict[str, str]:
-    if path is None or not path.exists():
-        return {}
-    text = path.read_text()
-    patterns = {
-        "task_clock_ms": r"^\s*([0-9.]+)\s+msec task-clock",
-        "ipc": r"cpu_core/instructions/.*#\s*([0-9.]+)\s+insn per cycle",
-        "branch_miss_pct": r"cpu_core/branch-misses/.*#\s*([0-9.]+)%\s+of all branches",
-        "backend_bound_pct": r"#\s*([0-9.]+)\s*%\s+tma_backend_bound",
-        "frontend_bound_pct": r"#\s*([0-9.]+)\s*%\s+tma_frontend_bound",
-        "bad_speculation_pct": r"#\s*([0-9.]+)\s*%\s+tma_bad_speculation",
-        "retiring_pct": r"#\s*([0-9.]+)\s*%\s+tma_retiring",
-        "l1d_miss_pct": r"L1-dcache-load-misses.*#\s*([0-9.]+)%\s+of all L1-dcache accesses",
-        "llc_miss_pct": r"LLC-load-misses\s+#\s*([0-9.]+)%\s+of all LL-cache accesses",
-        "page_faults": r"^\s*([0-9]+)\s+page-faults",
-    }
-    summary: dict[str, str] = {}
-    for name, pattern in patterns.items():
-        match = re.search(pattern, text, flags=re.MULTILINE)
-        if match:
-            summary[name] = match.group(1)
-    return summary
+    return run_perf_bundle(
+        command=common,
+        output_dir=output_dir,
+        stem=f"{operator}_{args.tracers}",
+        delay_ms=args.perf_delay_ms,
+        env=profile_environment(),
+    )
 
 
 def _write_report(
@@ -272,16 +187,6 @@ def _write_report(
 
     lines.append("")
     path.write_text("\n".join(lines))
-
-
-def _profile_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.setdefault("NUMBA_NUM_THREADS", "1")
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("OPENBLAS_NUM_THREADS", "1")
-    env.setdefault("PYTHONPYCACHEPREFIX", "/tmp/wombat-pycache")
-    env.setdefault("NUMBA_CACHE_DIR", "/tmp/wombat-numba-cache")
-    return env
 
 
 if __name__ == "__main__":
