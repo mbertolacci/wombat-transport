@@ -10,6 +10,7 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.fields import TracerField
+from wombat_transport.history_accumulation import accumulate_history_sum
 from wombat_transport.io import GRID_COORDS
 from wombat_transport.run_config import RunConfig, simulation_start
 from wombat_transport.transport.forcing import TransportForcing
@@ -178,7 +179,7 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
 
         if self._sum is None:
             self._sum = self._sink.acquire_accumulator(snapshot.state.data)
-        self._sum += snapshot.state.data
+        accumulate_history_sum(self._sum, snapshot.state.data)
         self._count += 1
 
     def close(self) -> None:

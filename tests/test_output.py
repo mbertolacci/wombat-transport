@@ -5,9 +5,12 @@ from types import SimpleNamespace
 
 import netCDF4
 import numpy as np
+import pytest
 
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
+from wombat_transport import history_accumulation
+from wombat_transport.history_accumulation import accumulate_history_sum
 from wombat_transport.io import FIXED_GRID, load_restart, load_species_conc
 from wombat_transport.output import (
     HistoryOutputManager,
@@ -77,6 +80,36 @@ def test_output_writer_defaults_and_validates():
         assert "outputs.writer" in str(exc)
     else:
         raise AssertionError("accepted invalid output writer mode")
+
+
+def test_history_accumulation_native_and_numba_are_bitwise_equal(monkeypatch):
+    if not history_accumulation._NUMBA_AVAILABLE:
+        pytest.skip("numba is unavailable")
+    rng = np.random.default_rng(20140901)
+    values = [rng.standard_normal((2, 3, 4, 5)) for _ in range(6)]
+    native = rng.standard_normal((2, 3, 4, 5))
+    accelerated = native.copy()
+
+    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", "0")
+    for value in values:
+        accumulate_history_sum(native, value)
+    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA_THREADS", "2")
+    for value in values:
+        accumulate_history_sum(accelerated, value)
+
+    np.testing.assert_array_equal(accelerated, native)
+
+
+def test_history_accumulation_uses_native_fallback_without_numba(monkeypatch):
+    accumulator = np.arange(12, dtype=np.float64).reshape(3, 4)
+    expected = accumulator + 0.25
+    monkeypatch.setattr(history_accumulation, "_NUMBA_AVAILABLE", False)
+    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", "1")
+
+    accumulate_history_sum(accumulator, np.full_like(accumulator, 0.25))
+
+    np.testing.assert_array_equal(accumulator, expected)
 
 
 def test_output_storage_rejects_invalid_values():
@@ -297,7 +330,12 @@ def test_output_manager_streams_species_conc_across_daily_files(tmp_path):
     np.testing.assert_allclose(load_species_conc(second).data[0, :, :, :, 0], _field(("A",), values=(2.0,)).data[0, :, :, :, 0])
 
 
-def test_threaded_output_manager_matches_sync_species_conc(tmp_path):
+@pytest.mark.parametrize("history_numba", ("0", "1"))
+def test_threaded_output_manager_matches_sync_species_conc(tmp_path, monkeypatch, history_numba):
+    if history_numba == "1" and not history_accumulation._NUMBA_AVAILABLE:
+        pytest.skip("numba is unavailable")
+    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", history_numba)
+    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA_THREADS", "2")
     forcing = _forcing()
     delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
     collection = OutputCollectionConfig(
@@ -336,7 +374,7 @@ def test_threaded_output_manager_matches_sync_species_conc(tmp_path):
     threaded = load_species_conc(
         tmp_path / "threaded" / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
     )
-    np.testing.assert_allclose(threaded.data, sync.data)
+    np.testing.assert_array_equal(threaded.data, sync.data)
     assert threaded.names == sync.names
 
 
