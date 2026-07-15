@@ -216,7 +216,7 @@ Write the Wombat-side trace:
 
 ```bash
 python tools/trace_wombat_main_loop.py \
-  base_noemis_wombat/run.yml \
+  validation_runs/cases/realistic_restart_noemis/wombat/main/run.yml \
   tools/gc_harness/work/wombat_main_loop_trace.nc \
   --steps 18 --max-tracers 1 \
   --snapshot-dir tools/gc_harness/work/wombat_main_loop_snapshots \
