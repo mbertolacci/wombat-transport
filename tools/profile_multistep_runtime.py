@@ -5,6 +5,7 @@ import cProfile
 import csv
 import json
 import pstats
+import resource
 import shutil
 import threading
 import time
@@ -19,7 +20,9 @@ from yaml12 import read_yaml, write_yaml
 from wombat_transport import emissions as emissions_mod
 from wombat_transport import output as output_mod
 from wombat_transport import runner as runner_mod
-from wombat_transport.run_config import load_run_config
+from wombat_transport.obsoperator import manager as obsoperator_manager_mod
+from wombat_transport.obsoperator import writer as obsoperator_writer_mod
+from wombat_transport.run_config import load_run_config, meteorology_root
 from wombat_transport.transport import driver as driver_mod
 
 
@@ -57,6 +60,8 @@ class ProfileResult:
     transport_steps: int
     emissions_steps: int
     total_emitted_mass_kg: float
+    peak_rss_mib: float
+    output_bytes: int = 0
     timers: dict[str, CallTimer] = field(default_factory=dict)
 
     def rows(self) -> list[ProfileRow]:
@@ -144,9 +149,12 @@ def main(argv: list[str] | None = None) -> int:
             output_shuffle=args.output_shuffle,
             output_rank4_chunking=tuple(args.output_rank4_chunking) if args.output_rank4_chunking else None,
             output_writer=args.output_writer,
+            obsoperator_enabled=not args.disable_obsoperator,
+            obsoperator_input_dir=args.obsoperator_input_dir,
         )
         cprofile_path = output_dir / f"cprofile_{count:03d}.prof" if args.cprofile else None
         result = _run_profiled(run_dir / "run.yml", tracer_count=count, max_steps=None, cprofile_path=cprofile_path)
+        result.output_bytes = _tree_size_bytes(run_dir / "OutputDir") + _tree_size_bytes(run_dir / "Restarts")
         results.append(result)
 
     _write_stage_csv(output_dir / "stage_times.csv", results)
@@ -205,6 +213,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=None,
         help="Override outputs.writer.",
     )
+    parser.add_argument(
+        "--disable-obsoperator",
+        action="store_true",
+        help="Remove outputs.obsoperator from generated profiling runs.",
+    )
+    parser.add_argument(
+        "--obsoperator-input-dir",
+        type=Path,
+        help="Directory containing obsoperator-YYYYMMDD.yml.gz inputs for generated profiling runs.",
+    )
     parser.add_argument("--cprofile", action="store_true", help="Write one cProfile .prof per tracer count.")
     parser.add_argument(
         "--field-offset",
@@ -236,6 +254,8 @@ def _prepare_run_dir(
     output_shuffle: str | None = None,
     output_rank4_chunking: tuple[int, int, int, int] | None = None,
     output_writer: str | None = None,
+    obsoperator_enabled: bool = True,
+    obsoperator_input_dir: Path | None = None,
 ) -> Path:
     if run_dir.exists():
         shutil.rmtree(run_dir)
@@ -250,20 +270,26 @@ def _prepare_run_dir(
     source_emissions = read_yaml(source_root / emissions_ref) or {}
 
     species = _build_species(source_species, tracer_count)
-    emissions = _build_emissions(source_emissions, tuple(species.keys()), field_offset=field_offset)
+    emissions = _build_emissions(
+        source_emissions,
+        tuple(species.keys()),
+        field_offset=field_offset,
+        source_root=source_root,
+    )
 
     write_yaml(species, run_dir / "species_database.yml")
     write_yaml(emissions, run_dir / "emissions.yml")
 
     run_config["name"] = f"profile_multistep_{tracer_count:03d}_tracers"
-    run_config["source_run_dir"] = "."
+    resolved_source_config = load_run_config(source_config_path)
+    run_config["source_run_dir"] = str(resolved_source_config.source_run_dir)
     run_config["species_database"] = "./species_database.yml"
     run_config["initial_restart"] = None
-    run_config["grid_template"] = "../../../../../base/Restarts/GEOSChem.Restart.20140901_0000z.nc4"
+    run_config["grid_template"] = str(resolved_source_config.grid_template)
     run_config["output_dir"] = "./OutputDir"
     run_config["simulation"]["start"] = start
     run_config["simulation"]["end"] = end
-    run_config["meteorology"]["root"] = "../../../../../ExtData/GEOS_2x2.5/MERRA2"
+    run_config["meteorology"]["root"] = str(meteorology_root(resolved_source_config))
     run_config["emissions"] = "emissions.yml"
     run_config["logging"] = {"level": "warning"}
     run_config["diagnostics"] = {}
@@ -271,19 +297,18 @@ def _prepare_run_dir(
     run_config["validation"] = {}
     if not outputs_enabled:
         run_config["outputs"] = {}
-    elif (
-        species_conc_frequency
-        or species_conc_duration
-        or output_compression
-        or output_compression_level is not None
-        or output_shuffle
-        or output_rank4_chunking is not None
-        or output_writer
-    ):
-        outputs = run_config.get("outputs", {})
+    else:
+        outputs = dict(run_config.get("outputs", {}))
+        if not obsoperator_enabled:
+            outputs.pop("obsoperator", None)
+        elif obsoperator_input_dir is not None and "obsoperator" in outputs:
+            obsoperator = dict(outputs["obsoperator"])
+            input_name = Path(str(obsoperator["input_file"])).name
+            obsoperator["input_file"] = str(obsoperator_input_dir.resolve() / input_name)
+            outputs["obsoperator"] = obsoperator
+        run_config["outputs"] = outputs
         if output_writer:
             outputs["writer"] = output_writer
-            run_config["outputs"] = outputs
         if output_compression or output_compression_level is not None or output_shuffle:
             compression = dict(outputs.get("compression", {}))
             if output_compression:
@@ -293,13 +318,11 @@ def _prepare_run_dir(
             if output_shuffle:
                 compression["shuffle"] = output_shuffle == "on"
             outputs["compression"] = compression
-            run_config["outputs"] = outputs
         if output_rank4_chunking is not None:
             chunking = dict(outputs.get("chunking", {}))
             chunking["rank4"] = list(output_rank4_chunking)
             outputs["chunking"] = chunking
-            run_config["outputs"] = outputs
-        for name, collection in run_config.get("outputs", {}).get("collections", {}).items():
+        for name, collection in outputs.get("collections", {}).items():
             if str(name).startswith("SpeciesConc"):
                 if species_conc_frequency:
                     collection["frequency"] = species_conc_frequency
@@ -328,6 +351,7 @@ def _build_emissions(
     species_names: tuple[str, ...],
     *,
     field_offset: int = 0,
+    source_root: Path | None = None,
 ) -> dict[str, object]:
     fields = list(source_emissions.get("fields", ()))  # type: ignore[union-attr]
     if not fields:
@@ -337,13 +361,32 @@ def _build_emissions(
         template = dict(fields[(index + field_offset) % len(fields)])
         template["name"] = f"profile_{index + 1:03d}_{template['name']}"
         template["species"] = species_name
+        if source_root is not None:
+            _resolve_path_template(template, source_root)
         configured.append(template)
+    scales = {
+        str(name): dict(value) if isinstance(value, dict) else value
+        for name, value in dict(source_emissions.get("scales", {})).items()  # type: ignore[arg-type]
+    }
+    if source_root is not None:
+        for scale in scales.values():
+            if isinstance(scale, dict):
+                _resolve_path_template(scale, source_root)
     return {
         "unit_conversion": source_emissions.get("unit_conversion", "none"),
         "missing_species": source_emissions.get("missing_species", "zero"),
-        "scales": source_emissions.get("scales", {}),
+        "scales": scales,
         "fields": configured,
     }
+
+
+def _resolve_path_template(item: dict[str, object], root: Path) -> None:
+    value = item.get("path_template")
+    if not isinstance(value, str):
+        return
+    path = Path(value)
+    if not path.is_absolute():
+        item["path_template"] = str((root / path).resolve())
 
 
 def _run_profiled(
@@ -367,6 +410,7 @@ def _run_profiled(
             transport_steps=result.transport_steps,
             emissions_steps=result.emissions_steps,
             total_emitted_mass_kg=result.total_emitted_mass,
+            peak_rss_mib=_peak_rss_mib(),
             timers=profiler.timers,
         )
 
@@ -391,7 +435,7 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         (emissions_mod.EmissionsOperator, "evaluate_surface_flux", emissions_mod.EmissionsOperator.evaluate_surface_flux),
         (emissions_mod.EmissionsOperator, "_read_configured_array", emissions_mod.EmissionsOperator._read_configured_array),
         (runner_mod, "emitted_mass_by_tracer_for_step", runner_mod.emitted_mass_by_tracer_for_step),
-        (driver_mod, "run_transport_one_step", driver_mod.run_transport_one_step),
+        (runner_mod, "run_transport_one_step", runner_mod.run_transport_one_step),
         (driver_mod, "setup_tpcore_terms", driver_mod.setup_tpcore_terms),
         (driver_mod, "run_tpcore_one_step_with_setup", driver_mod.run_tpcore_one_step_with_setup),
         (driver_mod, "run_vdiffdr_one_step", driver_mod.run_vdiffdr_one_step),
@@ -403,6 +447,31 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         (output_mod._StreamingSpeciesConcFile, "_open", output_mod._StreamingSpeciesConcFile._open),
         (output_mod._StreamingSpeciesConcFile, "append_average", output_mod._StreamingSpeciesConcFile.append_average),
         (output_mod._StreamingSpeciesConcFile, "close", output_mod._StreamingSpeciesConcFile.close),
+        (
+            obsoperator_manager_mod.ObsOperatorManager,
+            "sample",
+            obsoperator_manager_mod.ObsOperatorManager.sample,
+        ),
+        (
+            obsoperator_manager_mod.ObsOperatorManager,
+            "close",
+            obsoperator_manager_mod.ObsOperatorManager.close,
+        ),
+        (
+            obsoperator_manager_mod.ObsOperatorManager,
+            "_initialize_for_date",
+            obsoperator_manager_mod.ObsOperatorManager._initialize_for_date,
+        ),
+        (
+            obsoperator_manager_mod.ObsOperatorManager,
+            "_evaluate_entries",
+            obsoperator_manager_mod.ObsOperatorManager._evaluate_entries,
+        ),
+        (
+            obsoperator_writer_mod._ObsOperatorNetCDFWriter,
+            "write_array_entries",
+            obsoperator_writer_mod._ObsOperatorNetCDFWriter.write_array_entries,
+        ),
     ]
     stage_names = {
         "_load_simulation_forcing": "met_forcing",
@@ -421,11 +490,17 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         "write_restart_collection": "output_write_restart",
         "_open": "output_open_species_conc",
         "append_average": "output_append_species_conc",
+        "sample": "obsoperator_sample",
+        "_initialize_for_date": "obsoperator_load_input",
+        "_evaluate_entries": "obsoperator_evaluate",
+        "write_array_entries": "obsoperator_write_output",
     }
     try:
         for obj, name, original in originals:
             if obj is output_mod._StreamingSpeciesConcFile and name == "close":
                 stage = "output_close_species_conc"
+            elif obj is obsoperator_manager_mod.ObsOperatorManager and name == "close":
+                stage = "obsoperator_close"
             else:
                 stage = stage_names[name]
             setattr(obj, name, profiler.wrap(stage, original))
@@ -474,10 +549,22 @@ def _write_summary_json(path: Path, results: list[ProfileResult]) -> None:
                 "transport_steps": result.transport_steps,
                 "emissions_steps": result.emissions_steps,
                 "total_emitted_mass_kg": result.total_emitted_mass_kg,
+                "peak_rss_mib": result.peak_rss_mib,
+                "output_bytes": result.output_bytes,
                 "timers": {name: asdict(timer) | {"exclusive_s": timer.exclusive_s} for name, timer in result.timers.items()},
             }
         )
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _peak_rss_mib() -> float:
+    return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+
+
+def _tree_size_bytes(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
 
 
 if __name__ == "__main__":
