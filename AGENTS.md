@@ -15,16 +15,17 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 
 ## Current Target
 
-- Scope is global GEOS 2x2.5, 47 vertical levels, transport-only CO2-like
-  tracers.
+- Scope is global GEOS 2x2.5 and 4x5, 47 vertical levels, transport-only
+  CO2-like tracers.
 - Chemistry, dry deposition, and wet deposition are out of scope for the current
   prototype.
 - The production tracer layout is canonical `(lev, lat, lon, tracer)`.
 - The main transport path is `TPCORE -> VDIFF -> convection`, with non-local
   PBL surface emissions handled through VDIFF.
-- Short-run parity is credible for the tested base-no-emissions two-day window
-  and residual 24-tracer one-day window. Do not claim monthly or long-horizon
-  parity until those comparisons are run explicitly.
+- Short-run parity is credible at both supported resolutions for the tested
+  base-no-emissions two-day window and residual 24-tracer one-day window. Do
+  not claim monthly or long-horizon parity until those comparisons are run
+  explicitly.
 
 ## Repo Map
 
@@ -33,8 +34,8 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 - `src/wombat_transport/transport/`: TPCORE, VDIFF/PBL, convection, forcing,
   pressure, and transport driver code.
 - `src/wombat_transport/emissions.py`: native emissions source reading,
-  regridding, scale factors, optional dimensions such as `npft`, and GEOS 2x2.5
-  polar-row behavior.
+  regridding, scale factors, optional dimensions such as `npft`, and standard
+  GEOS 2x2.5/4x5 polar-row behavior.
 - `src/wombat_transport/output.py`: HISTORY-like `SpeciesConcVV_*` and
   `SpeciesRst_*` output.
 - `tools/gc_harness/`: GEOS-Chem operator, HISTORY, met, oracle, and
@@ -53,9 +54,14 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
   contract; payloads below it remain ignored.
 - The canonical initial restart is
   `external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4`.
+- The 4x5 parity-test restart is generated from that canonical restart at
+  `external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4`.
 - `validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml` and
   `validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml`
   are the canonical one- and 24-tracer Wombat configs.
+- `validation_runs/cases/realistic_restart_noemis_4x5/` and
+  `validation_runs/cases/residual_24tracer_emissions_1day_4x5/` materialize the
+  corresponding 4x5 configurations from those templates.
 - Local generated run/debug directories are working artifacts unless the user
   explicitly asks to track them.
 - When working from a separate Git worktree, check the parent

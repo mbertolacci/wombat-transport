@@ -5,10 +5,10 @@ GEOS-Chem Classic transport-only behavior for many CO2-like tracers. The goal
 is GEOS-Chem numerical parity first, then efficient batched multi-tracer
 transport.
 
-The current target is deliberately narrow: global GEOS 2x2.5, 47 vertical
-levels, 600 s transport timestep, TPCORE with negative-value filling, non-local
-PBL mixing, and convection. Chemistry, dry deposition, and wet deposition are
-not implemented for this prototype.
+The current target is deliberately narrow: global GEOS 2x2.5 and 4x5 grids,
+47 vertical levels, a 600 s transport timestep, TPCORE with negative-value
+filling, non-local PBL mixing, and convection. Chemistry, dry deposition, and
+wet deposition are not implemented for this prototype.
 
 ## Current Status
 
@@ -19,8 +19,9 @@ not implemented for this prototype.
   including full-grid one-step fixtures and a cached
   `TPCORE -> VDIFF -> convection` handoff fixture set.
 - Native emissions read configured source fields, scale factors, optional
-  source dimensions such as `npft`, and GEOS 2x2.5 polar-row regridding
-  behavior validated against GEOS-Chem/HEMCO.
+  source dimensions such as `npft`, and conservatively regrid them onto the
+  configured GEOS 2x2.5 or 4x5 grid. The grid helpers preserve the special
+  polar-row geometry used by each resolution.
 - Output supports HISTORY-like `SpeciesConcVV_*` and `SpeciesRst_*` NetCDF
   collections, with configurable compression, chunking, and float dtype.
 - The forcing loader follows the relevant GEOS-Chem MERRA2 cadence, record
@@ -29,9 +30,12 @@ not implemented for this prototype.
   `performance.md`.
 
 Short-run comparisons are currently consistent with GEOS-Chem for the tested
-base no-emissions two-day window and residual 24-tracer one-day window. This is
-not yet a long-horizon parity claim: monthly residual restart drift and
-multi-week/month transport-only behavior still need explicit comparison.
+base no-emissions two-day window and residual 24-tracer one-day window at both
+2x2.5 and 4x5. Concentration, restart, and matched ObsOperator samples agree at
+floating-point roundoff in those runs; the comparison still reports the known
+terminal-boundary ObsOperator file-presence difference. This is not yet a
+long-horizon parity claim: monthly residual restart drift and multi-week/month
+transport-only behavior still need explicit comparison.
 
 ## Repository Layout
 
@@ -100,12 +104,28 @@ The project can also be installed with standard Python packaging tools. Core
 runtime dependencies are `numpy`, `netCDF4`, and `py-yaml12`; the
 `dev` extra adds `pytest`.
 
-Example run configs:
+Example run and validation-case configs:
 
 ```text
 validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml
 validation_runs/cases/residual_24tracer_emissions_1day_2x25/wombat/main/run.yml
+validation_runs/cases/realistic_restart_noemis_4x5/case.yml
+validation_runs/cases/residual_24tracer_emissions_1day_4x5/case.yml
 ```
+
+The 4x5 validation cases reuse the checked-in 2x2.5 engine templates and apply
+resolution-specific substitutions while materializing a run. Generate their
+local restart template from the canonical 2x2.5 restart with:
+
+```bash
+PYTHONPATH=src .venv/bin/python tools/regrid_restart.py \
+  external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4 \
+  external_data/restarts/4x5/GEOSChem.Restart.20140901_0000z.nc4
+```
+
+The corresponding MERRA-2 inputs belong under
+`external_data/geoschem/GEOS_4x5/MERRA2`; see `external_data/README.md` and
+`validation_runs/README.md` for the complete data and execution workflow.
 
 ### ObsOperator output
 
@@ -209,8 +229,8 @@ interpretation.
 
 ## Scope and Known Limits
 
-- The supported numerical target is currently global GEOS 2x2.5 with 47
-  vertical levels.
+- The supported numerical targets are global GEOS 2x2.5 (91 latitude by 144
+  longitude cells) and GEOS 4x5 (46 by 72), both with 47 vertical levels.
 - Chemistry, dry deposition, wet deposition, nested grids, cubed-sphere grids,
   and alternate vertical grids are out of scope unless explicitly added later.
 - Residual emissions currently read values verbatim with `unit_conversion:

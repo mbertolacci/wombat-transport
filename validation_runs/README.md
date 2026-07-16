@@ -26,6 +26,22 @@ Model behavior lives in the checked-in GEOS-Chem and Wombat run configs. The
 case manifest describes orchestration and comparisons only: stages, restart
 dependencies, output locations, and which collections should be compared.
 
+## Case registry
+
+| Case | Grid | Window |
+|---|---|---|
+| `realistic_restart_noemis_2x25` | 2x2.5 | two days |
+| `realistic_restart_noemis_4x5` | 4x5 | two days |
+| `residual_24tracer_emissions_1day_2x25` | 2x2.5 | one day |
+| `residual_24tracer_emissions_1day_4x5` | 4x5 | one day |
+| `continuous_noemis_4day_2x25` | 2x2.5 | four days |
+| `residual_24tracer_emissions_2month_2x25` | 2x2.5 | two months |
+| `restart_chain_noemis_2x25` | 2x2.5 | two two-day windows |
+| `restart_chain_noemis_2month_2x25` | 2x2.5 | two one-month windows |
+
+The resolution suffix is part of each active case identifier and therefore of
+its default directory below `validation_runs/work/`.
+
 ## Compare Existing Outputs
 
 The first tool is compare-only. It expects outputs to already exist in

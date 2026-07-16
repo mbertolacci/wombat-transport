@@ -22,11 +22,11 @@ external_data/
 
 ### `geoschem/`
 
-GEOS-Chem ExtData. The current validation cases require MERRA-2 GEOS 2x2.5
-meteorology under `GEOS_2x2.5/MERRA2`, including the A1, A3dyn, A3mstC,
-A3mstE, and I3 collections for the simulated dates. GEOS-Chem also expects
-the standard `HEMCO`, `CHEM_INPUTS`, and related ExtData trees beneath this
-directory. On the original development machine this is a symlink to
+GEOS-Chem ExtData. The 2x2.5 validation cases require MERRA-2 meteorology under
+`GEOS_2x2.5/MERRA2`, including the A1, A3dyn, A3mstC, A3mstE, and I3
+collections for the simulated dates. GEOS-Chem also expects the standard
+`HEMCO`, `CHEM_INPUTS`, and related ExtData trees beneath this directory. On
+the original development machine this is a symlink to
 `/home/mgnb/GEOS_Chem/ExtData`.
 
 The 4x5 validation cases use the corresponding daily collections under
