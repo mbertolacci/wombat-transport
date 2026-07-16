@@ -11,6 +11,9 @@ import numpy as np
 from _scaling_support import positive_int
 from benchmark_tpcore_scaling import _build_synthetic_tpcore_inputs
 from benchmark_vdiff_scaling import _build_synthetic_vdiff_inputs
+from benchmark_convection_scaling import _build_synthetic_convection_inputs
+from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport.convection._block_experiment import apply_convection_to_vdiff_blocks
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
 from wombat_transport.transport.pbl._block_experiment import apply_vdiff_zero_flux_to_tpcore_blocks
 from wombat_transport.transport.pbl._block_experiment import make_vdiff_block_scratch
@@ -48,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
             dt_s=args.dt_s,
             surface_flux_kg_m2_s=args.surface_flux_kg_m2_s,
         )
+        convection = _build_synthetic_convection_inputs(args.run_config, ntracer, dt_s=args.dt_s)
         setup = setup_tpcore_terms(
             p1_hpa=tpcore.p1_hpa,
             p2_hpa=tpcore.p2_hpa,
@@ -68,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                 validate_branches=False,
                 reuse_output=True,
             ).tracer_conc_after
-            return run_vdiffdr_one_step(
+            after_vdiff = run_vdiffdr_one_step(
                 tracer_conc=after_tpcore,
                 u_m_s=vdiff.u_m_s,
                 v_m_s=vdiff.v_m_s,
@@ -86,6 +90,27 @@ def main(argv: list[str] | None = None) -> int:
                 area_m2=vdiff.area_m2,
                 dt_s=vdiff.dt_s,
                 surface_flux_kg_m2_s=vdiff.surface_flux_kg_m2_s,
+                diagnostics=False,
+                reuse_output=True,
+            ).tracer_conc
+            if not args.include_convection:
+                return after_vdiff
+            return run_cloud_convection_one_step(
+                tracer_conc=after_vdiff,
+                cmfmc_kg_m2_s=convection.cmfmc_kg_m2_s,
+                dtrain_kg_m2_s=convection.dtrain_kg_m2_s,
+                dqrcu_kg_kg_s=convection.dqrcu_kg_kg_s,
+                reevapcn_kg_kg_s=convection.reevapcn_kg_kg_s,
+                delp_dry_hpa=convection.delp_dry_hpa,
+                delp_hpa=convection.delp_hpa,
+                area_m2=convection.area_m2,
+                bxheight_m=convection.bxheight_m,
+                pficu_kg_m2_s=convection.pficu_kg_m2_s,
+                pflcu_kg_m2_s=convection.pflcu_kg_m2_s,
+                temperature_k=convection.temperature_k,
+                precccon_mm_day=convection.precccon_mm_day,
+                dt_s=convection.dt_s,
+                reconstruct_conv_precip_flux=convection.reconstruct_conv_precip_flux,
                 diagnostics=False,
                 reuse_output=True,
             ).tracer_conc
@@ -131,6 +156,21 @@ def main(argv: list[str] | None = None) -> int:
                     workers=args.workers,
                     surface_flux_kg_m2_s=vdiff.surface_flux_kg_m2_s,
                 )
+                if args.include_convection:
+                    apply_convection_to_vdiff_blocks(
+                        workspace=workspace,
+                        cmfmc=convection.cmfmc_kg_m2_s,
+                        dtrain=convection.dtrain_kg_m2_s,
+                        delp_hpa=convection.delp_hpa,
+                        delp_dry=convection.delp_dry_hpa,
+                        bmass=convection.delp_dry_hpa * G0_100,
+                        dqrcu=convection.dqrcu_kg_kg_s,
+                        reevapcn=convection.reevapcn_kg_kg_s,
+                        reconstruct_conv_precip_flux=convection.reconstruct_conv_precip_flux,
+                        internal_steps=max(int(convection.dt_s) // 300, 1),
+                        internal_dt_s=convection.dt_s / max(int(convection.dt_s) // 300, 1),
+                        workers=args.workers,
+                    )
                 return workspace.blocks[0].q
 
             times, _ = _time_preloaded(load, blocked_chain, args.warmup, args.repeat)
@@ -224,6 +264,7 @@ def _parse_args(argv):
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--dt-s", type=float, default=600.0)
     parser.add_argument("--surface-flux-kg-m2-s", type=float, default=0.0)
+    parser.add_argument("--include-convection", action="store_true")
     parser.add_argument("--output", type=Path)
     return parser.parse_args(argv)
 

@@ -39,6 +39,8 @@ class TpcoreBlockWorkspace:
 
     tracer_shape: tuple[int, int, int, int]
     lane_width: int
+    state_a: np.ndarray
+    state_b: np.ndarray
     blocks: list[nb._TpcoreNumbaWorkspace]
 
 
@@ -53,8 +55,19 @@ def make_tpcore_block_workspace(
         raise ValueError("lane_width must be positive")
     nlev, nlat, nlon, ntracer = tracer_shape
     nblock = (ntracer + lane_width - 1) // lane_width
+    state_a = np.empty((nblock, nlev, nlat, nlon, lane_width), dtype=np.float64)
+    state_b = np.empty_like(state_a)
     blocks = [nb._TpcoreNumbaWorkspace(nlev, nlat, nlon, lane_width, 1) for _ in range(nblock)]
-    return TpcoreBlockWorkspace(tracer_shape=tracer_shape, lane_width=lane_width, blocks=blocks)
+    for block_index, block in enumerate(blocks):
+        block.q = state_a[block_index]
+        block.dq1 = state_b[block_index]
+    return TpcoreBlockWorkspace(
+        tracer_shape=tracer_shape,
+        lane_width=lane_width,
+        state_a=state_a,
+        state_b=state_b,
+        blocks=blocks,
+    )
 
 
 def prepare_tpcore_block_plan(*, setup: TpcoreSetup, area_m2: np.ndarray) -> TpcoreBlockPlan:

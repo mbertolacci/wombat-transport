@@ -2579,3 +2579,36 @@ tail block. With a uniform `1e-9 kg m-2 s-1` synthetic source on 2x2.5, the
 plan-charged chain improved from `0.3238` to `0.2620 s` at 96 tracers (1.24x)
 and from `0.7676` to `0.4604 s` at 192 tracers (1.67x). Surface-emission work
 therefore strengthens rather than erases the persistent-layout case.
+
+### Unified block state and convection
+
+The two persistent tracer buffers now use single C-contiguous arrays with
+shape `(block, lev, lat, lon, lane)`. Each slowest-dimension block slice remains
+C-contiguous for the serial TPCORE and convection kernels, while allocation,
+swapping, and future cross-block scheduling become simpler. TPCORE stayed
+bitwise exact and showed no layout regression.
+
+An explicit Numba `prange(block * lat * lon)` VDIFF variant was also tested.
+Despite its larger task pool and smaller per-worker vertical scratch, it was
+2-8% slower than the existing coarse block executor at 96 and 192 tracers. The
+flattened kernel was removed; the unified 5-D state remains because it is
+neutral-to-positive independently of that scheduling experiment.
+
+Convection now consumes the VDIFF result in the same persistent buffer. It
+recompiles the production full-grid arithmetic as a serial per-block kernel;
+the tracked 24-tracer sampled fixture and padded synthetic cases are bitwise
+equal. Complete plan-charged TPCORE -> VDIFF -> convection results were:
+
+| Grid/source | Tracers | Fused s | Best width | Block s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2x2.5 zero flux | 24 | 0.0826 | 8 | 0.1667 | 0.50x |
+| 2x2.5 zero flux | 96 | 0.3230 | 16 | 0.2987 | 1.08x |
+| 2x2.5 zero flux | 192 | 0.7590 | 8 | 0.4977 | 1.52x |
+| 2x2.5 emitting | 96 | 0.3743 | 16 | 0.3110 | 1.20x |
+| 2x2.5 emitting | 192 | 0.8391 | 8 | 0.5515 | 1.52x |
+| 4x5 emitting | 96 | 0.0885 | 16 | 0.0841 | 1.05x |
+| 4x5 emitting | 192 | 0.1739 | 16 | 0.1274 | 1.37x |
+
+All complete-chain benchmark outputs were bitwise equal. The evidence supports
+a hybrid policy: retain the fused canonical path for small ensembles and use
+persistent blocks only above a measured grid- and worker-dependent threshold.

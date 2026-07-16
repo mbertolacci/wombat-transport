@@ -91,6 +91,7 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.transport.convection import _native as convection_native
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport.convection._block_experiment import apply_convection_to_vdiff_blocks
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport.pbl import _numba as pbl_numba
 from wombat_transport.transport.pbl._block_experiment import apply_vdiff_zero_flux_to_tpcore_blocks
@@ -1039,6 +1040,53 @@ def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path, 
     assert comparison.negative_count_after_actual == comparison.negative_count_after_expected
     assert comparison.common_basis_python_mass_change_max_abs == 0.0
     assert comparison.common_basis_oracle_mass_change_max_abs == 0.0
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_experimental_convection_blocks_match_fullgrid_numba():
+    with netCDF4.Dataset(CONVECTION_REAL_FIXTURE_DIR / "convection_input.nc") as dataset:
+        values = {
+            name: np.asarray(dataset.variables[name][:], dtype=np.float64)
+            for name in dataset.variables
+            if name not in {"tracer_name", "source_lat_index", "source_lon_index", "lat", "lon"}
+        }
+        dt_s = float(dataset.dt_s)
+    expected = run_cloud_convection_one_step(
+        tracer_conc=values["tracer_conc"],
+        cmfmc_kg_m2_s=values["cmfmc_kg_m2_s"],
+        dtrain_kg_m2_s=values["dtrain_kg_m2_s"],
+        dqrcu_kg_kg_s=values["dqrcu_kg_kg_s"],
+        reevapcn_kg_kg_s=values["reevapcn_kg_kg_s"],
+        delp_dry_hpa=values["delp_dry_hpa"],
+        delp_hpa=values["delp_hpa"],
+        area_m2=values["area_m2"],
+        bxheight_m=values["bxheight_m"],
+        pficu_kg_m2_s=values["pficu_kg_m2_s"],
+        pflcu_kg_m2_s=values["pflcu_kg_m2_s"],
+        temperature_k=values["temperature_k"],
+        precccon_mm_day=values["precccon_mm_day"],
+        dt_s=dt_s,
+        diagnostics=False,
+    )
+    workspace = make_tpcore_block_workspace(values["tracer_conc"].shape, 8)
+    load_tracer_block_workspace(values["tracer_conc"], workspace)
+    apply_convection_to_vdiff_blocks(
+        workspace=workspace,
+        cmfmc=values["cmfmc_kg_m2_s"],
+        dtrain=values["dtrain_kg_m2_s"],
+        delp_hpa=values["delp_hpa"],
+        delp_dry=values["delp_dry_hpa"],
+        bmass=values["delp_dry_hpa"] * G0_100,
+        dqrcu=values["dqrcu_kg_kg_s"],
+        reevapcn=values["reevapcn_kg_kg_s"],
+        reconstruct_conv_precip_flux=False,
+        internal_steps=2,
+        internal_dt_s=300.0,
+        workers=2,
+    )
+    actual = np.concatenate([block.q for block in workspace.blocks], axis=3)[:, :, :, :24]
+
+    np.testing.assert_array_equal(actual, expected.tracer_conc)
 
 
 def test_tracked_vdiff_snapshot_matches_python_port(tmp_path, transport_numba_mode):
