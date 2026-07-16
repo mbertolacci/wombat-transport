@@ -81,6 +81,53 @@ harness parity plus short-window comparison through the named validation cases.
 Use monthly restarts and longer transport windows before making any stronger
 long-run parity claim.
 
+## Performance Snapshot
+
+The following end-to-end timings were measured on 2026-07-16 on an Intel Core
+i7-14700KF. Each row is one unpinned, sequential run with the requested thread
+count. The one-tracer case covers two days (288 transport steps); the 24- and
+100-tracer cases cover one day (144 steps). The 100-tracer workload extends the
+residual case with 76 synthetic, background-only CO2 tracers. Both engines read
+MERRA-2 meteorology, run the enabled ObsOperator, and write the configured
+outputs; the multi-tracer cases also read and apply the original residual
+emissions. These are complete application timings, not isolated
+transport-kernel timings.
+
+| Grid | Tracers | Threads | GEOS-Chem wall s | Wombat wall s | GEOS-Chem tracer-steps/s | Wombat tracer-steps/s | Wombat speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2x2.5 | 1 | 1 | 66.10 | 36.20 | 4.4 | 8.0 | 1.83x |
+| 2x2.5 | 1 | 2 | 49.25 | 26.29 | 5.8 | 11.0 | 1.87x |
+| 2x2.5 | 1 | 4 | 39.06 | 21.03 | 7.4 | 13.7 | 1.86x |
+| 2x2.5 | 24 | 1 | 200.46 | 49.16 | 17.2 | 70.3 | 4.08x |
+| 2x2.5 | 24 | 2 | 124.01 | 35.30 | 27.9 | 97.9 | 3.51x |
+| 2x2.5 | 24 | 4 | 83.28 | 25.79 | 41.5 | 134.0 | 3.23x |
+| 2x2.5 | 100 | 1 | 710.41 | 158.86 | 20.3 | 90.6 | 4.47x |
+| 2x2.5 | 100 | 2 | 436.12 | 108.35 | 33.0 | 132.9 | 4.03x |
+| 2x2.5 | 100 | 4 | 286.84 | 81.70 | 50.2 | 176.2 | 3.51x |
+| 4x5 | 1 | 1 | 16.51 | 9.45 | 17.4 | 30.5 | 1.75x |
+| 4x5 | 1 | 2 | 13.61 | 7.67 | 21.2 | 37.5 | 1.77x |
+| 4x5 | 1 | 4 | 11.49 | 6.70 | 25.1 | 43.0 | 1.71x |
+| 4x5 | 24 | 1 | 49.38 | 13.30 | 70.0 | 259.8 | 3.71x |
+| 4x5 | 24 | 2 | 30.46 | 10.02 | 113.4 | 345.0 | 3.04x |
+| 4x5 | 24 | 4 | 20.30 | 7.75 | 170.3 | 445.7 | 2.62x |
+| 4x5 | 100 | 1 | 176.16 | 37.81 | 81.7 | 380.9 | 4.66x |
+| 4x5 | 100 | 2 | 105.78 | 26.58 | 136.1 | 541.7 | 3.98x |
+| 4x5 | 100 | 4 | 69.75 | 20.46 | 206.5 | 703.9 | 3.41x |
+
+Tracer-step throughput is `transport steps * tracers / wall time`; Wombat
+speedup is GEOS-Chem wall time divided by Wombat wall time. Fixed startup,
+meteorology, ObsOperator, and output costs make scaling with tracer count
+deliberately non-linear. The measurements are single runs without CPU pinning,
+so they are a practical snapshot rather than a statistically controlled
+microbenchmark. They were produced with `tools/run_validation_matrix.py`; its
+timing JSON records both source commits and the complete commands.
+
+A separate high-tracer experiment on the Hercules cluster at MSU sustained
+approximately 700 tracer-steps/s using 400 tracers on one 40-core CPU socket.
+That result is not directly comparable to the local table because the hardware
+and workload differ, but it shows that high-tracer, single-node throughput can
+remain strong well beyond the small 24-tracer validation case.
+
 ## Running and Testing
 
 Use the local virtual environment when available:
