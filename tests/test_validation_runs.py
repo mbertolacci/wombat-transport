@@ -267,8 +267,8 @@ def _write_obsoperator(path: Path, *, sample: float) -> None:
         id_index = dataset.createVariable("id_index", "i4", ("samples",))
         field_index = dataset.createVariable("field_index", "i4", ("samples",))
         samples = dataset.createVariable("sample", "f4", ("samples",))
-        ids[0, :] = netCDF4.stringtochar(np.asarray(["entry"], dtype="S8"))[0]
-        fields[0, :] = netCDF4.stringtochar(np.asarray(["SpeciesConcVV_A"], dtype="S16"))[0]
+        ids[0, :] = np.asarray(["entry"], dtype="S8").view("S1").reshape(1, 8)[0]
+        fields[0, :] = np.asarray(["SpeciesConcVV_A"], dtype="S16").view("S1").reshape(1, 16)[0]
         id_index[0] = 1
         field_index[0] = 1
         samples[0] = sample

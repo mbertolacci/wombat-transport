@@ -1,6 +1,6 @@
 # Installation
 
-Wombat requires Python 3.11 or newer and is currently installed from its Git
+Wombat requires Python 3.10 or newer and is currently installed from its Git
 repository.
 
 ## Create an environment

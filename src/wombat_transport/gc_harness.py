@@ -236,6 +236,13 @@ GEOS_47_BP = np.array(
 )
 
 
+def _fixed_width_strings_to_chars(values: np.ndarray) -> np.ndarray:
+    """Return the character-array representation accepted by netCDF4."""
+    if values.dtype.kind != "S":
+        raise TypeError("fixed-width byte strings are required")
+    return values.view("S1").reshape(values.shape + (values.dtype.itemsize,))
+
+
 @dataclass(frozen=True)
 class PjcComparison:
     xmass_max_abs_error_hpa: float
@@ -921,7 +928,7 @@ def write_synthetic_convection_input(
         dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracer
         name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
         encoded = np.asarray([name.encode("ascii", errors="replace") for name in names], dtype=f"S{name_length}")
-        name_var[:] = netCDF4.stringtochar(encoded)
+        name_var[:] = _fixed_width_strings_to_chars(encoded)
         dataset.createVariable("cmfmc_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = cmfmc
         dataset.createVariable("dtrain_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = dtrain
         dataset.createVariable("dqrcu_kg_kg_s", "f8", ("lev", "lat", "lon"))[:] = dqrcu
@@ -1207,7 +1214,7 @@ def _write_convection_input_file(
         dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracers
         name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
         encoded = np.asarray([name.encode("ascii", errors="replace") for name in tracer_names], dtype=f"S{name_length}")
-        name_var[:] = netCDF4.stringtochar(encoded)
+        name_var[:] = _fixed_width_strings_to_chars(encoded)
         dataset.createVariable("cmfmc_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = cmfmc
         dataset.createVariable("dtrain_kg_m2_s", "f8", ("lev", "lat", "lon"))[:] = dtrain
         dataset.createVariable("dqrcu_kg_kg_s", "f8", ("lev", "lat", "lon"))[:] = dqrcu
@@ -2490,7 +2497,7 @@ def append_transport_step_tracers(
         dataset.createVariable("tracer_conc", "f8", ("lev", "lat", "lon", "tracer"))[:] = tracers
         name_var = dataset.createVariable("tracer_name", "S1", ("tracer", "name_strlen"))
         encoded = np.asarray([name.encode("ascii", errors="replace") for name in names], dtype=f"S{name_length}")
-        name_var[:] = netCDF4.stringtochar(encoded)
+        name_var[:] = _fixed_width_strings_to_chars(encoded)
     return path
 
 

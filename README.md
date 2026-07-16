@@ -40,7 +40,7 @@ timescales.
 
 ## Installation
 
-Wombat requires Python 3.11 or newer.
+Wombat requires Python 3.10 or newer.
 
 ```bash
 git clone https://github.com/mbertolacci/wombat-transport.git
