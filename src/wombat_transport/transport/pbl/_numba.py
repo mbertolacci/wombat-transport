@@ -283,7 +283,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     reuse_output: bool,
     output_buffer: np.ndarray | None,
     input_mass_pressure_hpa: np.ndarray | None,
-    plan_output: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    plan_output: tuple[np.ndarray, ...] | None = None,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -314,12 +314,32 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         plan_cch = np.empty((1, 1, 1), dtype=np.float64)
         plan_zeh = np.empty((1, 1, 1), dtype=np.float64)
         plan_termh = np.empty((1, 1, 1), dtype=np.float64)
+        plan_cgs = np.empty((1, 1, 1), dtype=np.float64)
+        plan_kvh = np.empty((1, 1, 1), dtype=np.float64)
+        plan_potbar = np.empty((1, 1, 1), dtype=np.float64)
+        plan_rpdel = np.empty((1, 1, 1), dtype=np.float64)
+        plan_rrho = np.empty((1, 1), dtype=np.float64)
+        plan_tmp1 = np.empty((1, 1), dtype=np.float64)
         capture_plan = False
     else:
-        plan_cch, plan_zeh, plan_termh = plan_output
+        (
+            plan_cch,
+            plan_zeh,
+            plan_termh,
+            plan_cgs,
+            plan_kvh,
+            plan_potbar,
+            plan_rpdel,
+            plan_rrho,
+            plan_tmp1,
+        ) = plan_output
         expected_plan_shape = (nlev, nlat, nlon)
-        if any(array.shape != expected_plan_shape for array in plan_output):
-            raise ValueError(f"plan_output arrays must have shape {expected_plan_shape}")
+        if any(array.shape != expected_plan_shape for array in plan_output[:3]):
+            raise ValueError(f"plan coefficient arrays must have shape {expected_plan_shape}")
+        if any(array.shape != (nlev + 1, nlat, nlon) for array in plan_output[3:6]):
+            raise ValueError("plan edge arrays have the wrong shape")
+        if plan_rpdel.shape != expected_plan_shape or plan_rrho.shape != (nlat, nlon) or plan_tmp1.shape != (nlat, nlon):
+            raise ValueError("plan source arrays have the wrong shape")
         capture_plan = True
     negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top,
@@ -390,6 +410,12 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         plan_cch,
         plan_zeh,
         plan_termh,
+        plan_cgs,
+        plan_kvh,
+        plan_potbar,
+        plan_rpdel,
+        plan_rrho,
+        plan_tmp1,
         capture_plan,
     )
     empty = np.empty(0, dtype=np.float64)
@@ -516,6 +542,12 @@ if njit is not None:
         plan_cch: np.ndarray,
         plan_zeh: np.ndarray,
         plan_termh: np.ndarray,
+        plan_cgs: np.ndarray,
+        plan_kvh: np.ndarray,
+        plan_potbar: np.ndarray,
+        plan_rpdel: np.ndarray,
+        plan_rrho: np.ndarray,
+        plan_tmp1: np.ndarray,
         capture_plan: bool,
     ) -> int:
         nlev = tracer_top.shape[0]
@@ -768,6 +800,15 @@ if njit is not None:
                         plan_cch[lev, lat, lon] = cch[lon, lev]
                         plan_zeh[lev, lat, lon] = zeh[lon, lev]
                         plan_termh[lev, lat, lon] = termh[lon, lev]
+                        plan_rpdel[lev, lat, lon] = rpdel[lon, lev]
+                for edge in range(nlev + 1):
+                    for lon in range(nlon):
+                        plan_cgs[edge, lat, lon] = cgs[lon, edge]
+                        plan_kvh[edge, lat, lon] = kvh[lon, edge]
+                        plan_potbar[edge, lat, lon] = potbar[lon, edge]
+                for lon in range(nlon):
+                    plan_rrho[lat, lon] = rrho[lon]
+                    plan_tmp1[lat, lon] = tmp1[lon]
 
             if not surface_flux_is_zero:
                 for lon in range(nlon):

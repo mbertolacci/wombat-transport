@@ -42,7 +42,12 @@ def main(argv: list[str] | None = None) -> int:
     rows = []
     for ntracer in args.counts:
         tpcore = _build_synthetic_tpcore_inputs(args.run_config, ntracer, dt_s=args.dt_s)
-        vdiff = _build_synthetic_vdiff_inputs(args.run_config, ntracer, dt_s=args.dt_s)
+        vdiff = _build_synthetic_vdiff_inputs(
+            args.run_config,
+            ntracer,
+            dt_s=args.dt_s,
+            surface_flux_kg_m2_s=args.surface_flux_kg_m2_s,
+        )
         setup = setup_tpcore_terms(
             p1_hpa=tpcore.p1_hpa,
             p2_hpa=tpcore.p2_hpa,
@@ -124,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                     workspace=workspace,
                     scratch=scratch,
                     workers=args.workers,
+                    surface_flux_kg_m2_s=vdiff.surface_flux_kg_m2_s,
                 )
                 return workspace.blocks[0].q
 
@@ -217,6 +223,7 @@ def _parse_args(argv):
     parser.add_argument("--repeat", type=positive_int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--dt-s", type=float, default=600.0)
+    parser.add_argument("--surface-flux-kg-m2-s", type=float, default=0.0)
     parser.add_argument("--output", type=Path)
     return parser.parse_args(argv)
 

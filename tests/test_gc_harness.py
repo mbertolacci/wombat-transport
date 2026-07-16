@@ -1197,6 +1197,68 @@ def test_experimental_zero_flux_vdiff_blocks_match_fullgrid_numba_with_tail():
     np.testing.assert_array_equal(plan.specific_humidity_after, expected.specific_humidity_kg_kg)
 
 
+@pytest.mark.skipif(not pbl_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_experimental_emitting_vdiff_blocks_match_fullgrid_numba_with_tail():
+    with netCDF4.Dataset(VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_input.nc") as dataset:
+        values = {name: np.asarray(dataset.variables[name][:], dtype=np.float64) for name in dataset.variables}
+        dt_s = float(dataset.dt_s)
+    tracer = values["tracer_conc"]
+    expected = run_vdiffdr_one_step(
+        tracer_conc=tracer,
+        u_m_s=values["u_m_s"],
+        v_m_s=values["v_m_s"],
+        temperature_k=values["temperature_k"],
+        specific_humidity_kg_kg=values["specific_humidity_kg_kg"],
+        pmid_hpa=values["pmid_hpa"],
+        pedge_hpa=values["pedge_hpa"],
+        virtual_temperature_k=values["virtual_temperature_k"],
+        bxheight_m=values["bxheight_m"],
+        dry_air_mass_kg=values["dry_air_mass_kg"],
+        pbl_top_m=values["pbl_top_m"],
+        hflux_w_m2=values["hflux_w_m2"],
+        eflux_w_m2=values["eflux_w_m2"],
+        ustar_m_s=values["ustar_m_s"],
+        area_m2=values["area_m2"],
+        dt_s=dt_s,
+        surface_flux_kg_m2_s=values["surface_flux_kg_m2_s"],
+        diagnostics=False,
+    )
+    workspace = make_tpcore_block_workspace(tracer.shape, 8)
+    load_tracer_block_workspace(tracer, workspace)
+    for block in workspace.blocks:
+        np.copyto(block.dq1, block.q)
+    plan = prepare_vdiff_zero_flux_block_plan(
+        u_top=values["u_m_s"],
+        v_top=values["v_m_s"],
+        temperature_top=values["temperature_k"],
+        sphu_top=values["specific_humidity_kg_kg"],
+        pmid_hpa=values["pmid_hpa"],
+        pint_hpa=values["pedge_hpa"],
+        virtual_temperature_top=values["virtual_temperature_k"],
+        bxheight_top=values["bxheight_m"],
+        dry_mass_top=values["dry_air_mass_kg"],
+        pblh_m=values["pbl_top_m"],
+        hflux_w_m2=values["hflux_w_m2"],
+        water_flux_kg_m2_s=values["eflux_w_m2"] / pbl_numba.LATVAP_J_PER_KG,
+        ustar_m_s=values["ustar_m_s"],
+        area_m2=values["area_m2"],
+        dt_s=dt_s,
+        workers=2,
+    )
+    negative_count = apply_vdiff_zero_flux_to_tpcore_blocks(
+        plan=plan,
+        workspace=workspace,
+        scratch=make_vdiff_block_scratch(workspace),
+        workers=2,
+        surface_flux_kg_m2_s=values["surface_flux_kg_m2_s"],
+    )
+    actual = workspace.blocks[0].q[:, :, :, : tracer.shape[-1]]
+
+    assert negative_count == expected.negative_count_before_clip
+    np.testing.assert_array_equal(actual, expected.tracer_conc)
+    np.testing.assert_array_equal(plan.specific_humidity_after, expected.specific_humidity_kg_kg)
+
+
 def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path, transport_numba_mode):
     comparison = compare_vdiff_output(
         VDIFF_NEGATIVE_FIXTURE_DIR / "vdiff_input.nc",

@@ -2569,3 +2569,13 @@ uses some of TPCORE's isolated gain. It does not justify production dispatch
 yet: nonzero surface flux and convection must share the layout, and the fused
 canonical path remains materially faster for small ensembles. Reproduction is
 available in `tools/benchmark_transport_blocks.py`.
+
+The same block solve now supports nonzero surface flux without precombining
+source coefficients: `cgs`, `kvh`, `potbar`, `rpdel`, `rrho`, and the bottom
+source scale are captured from the full-grid preparation, and the existing
+parenthesization is retained per tracer. The tracked emitting fixture is
+bitwise equal through tracer output, humidity, clipping count, and a padded
+tail block. With a uniform `1e-9 kg m-2 s-1` synthetic source on 2x2.5, the
+plan-charged chain improved from `0.3238` to `0.2620 s` at 96 tracers (1.24x)
+and from `0.7676` to `0.4604 s` at 192 tracers (1.67x). Surface-emission work
+therefore strengthens rather than erases the persistent-layout case.
