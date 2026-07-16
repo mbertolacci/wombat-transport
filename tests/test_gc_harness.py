@@ -104,6 +104,10 @@ from wombat_transport.transport.tpcore import (
     validate_tpcore_branch_support,
 )
 from wombat_transport.transport.tpcore import _numba as tpcore_numba
+from wombat_transport.transport.tpcore._block_experiment import advect_tracer_blocks
+from wombat_transport.transport.tpcore._block_experiment import pack_tracer_blocks
+from wombat_transport.transport.tpcore._block_experiment import prepare_tpcore_block_plan
+from wombat_transport.transport.tpcore._block_experiment import unpack_tracer_blocks
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v2"
@@ -1511,6 +1515,57 @@ def test_numba_fzppm_does_not_read_uninitialized_workspace():
         tracer_conc=tracer,
         setup=setup,
         area_m2=area,
+        fill=True,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(("ntracer", "lane_width"), ((1, 8), (7, 8), (8, 8), (9, 8), (17, 16)))
+def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_width):
+    tracer = np.arange(2 * 3 * 4 * ntracer, dtype=np.float64).reshape(2, 3, 4, ntracer)
+
+    blocks, active_tracers = pack_tracer_blocks(tracer, lane_width)
+    actual = unpack_tracer_blocks(blocks, active_tracers)
+
+    assert blocks.flags.c_contiguous
+    assert blocks.shape[0] == (ntracer + lane_width - 1) // lane_width
+    np.testing.assert_array_equal(actual, tracer)
+    if ntracer % lane_width:
+        assert np.count_nonzero(blocks[-1, :, :, :, ntracer % lane_width :]) == 0
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+@pytest.mark.parametrize(("ntracer", "lane_width", "workers"), ((7, 8, 1), (9, 8, 2), (17, 16, 2)))
+def test_experimental_tpcore_blocks_match_fused_numba(ntracer, lane_width, workers):
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        base_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        tracer = np.concatenate([base_tracer + tracer_index * 1.0e-8 for tracer_index in range(ntracer)], axis=3)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=area,
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    expected = tpcore_numba._advect_tracers_fused_numba(
+        tracer_conc=tracer,
+        setup=setup,
+        area_m2=area,
+        fill=True,
+    )
+    plan = prepare_tpcore_block_plan(setup=setup, area_m2=area)
+    actual = advect_tracer_blocks(
+        tracer_conc=tracer,
+        plan=plan,
+        lane_width=lane_width,
+        workers=workers,
         fill=True,
     )
 

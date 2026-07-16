@@ -2496,3 +2496,47 @@ CO2 restart maximum absolute differences remained at the established
 float32-quantization scale (`2.91e-11` at 2x2.5 and up to `5.82e-11` in 4x5
 HISTORY), with zero ObsOperator tolerance failures. Comparison artifacts live
 under `/tmp/wombat-opt-validation-compare` and remain untracked.
+
+## Experimental persistent TPCORE tracer blocks (2026-07-16)
+
+An opt-in prototype tests contiguous padded tracer blocks without changing the
+production dispatch or canonical public layout. It prepares `ua`, `va`, `jn`,
+and `js` once, recompiles the existing TPCORE leaf implementations as serial
+Numba kernels, and assigns independent blocks to a Python thread pool. Block
+storage accepts every positive tracer count; unused lanes in the final block
+are zero-filled and discarded on unpack. Exact tests cover widths 8 and 16,
+one- and multi-block inputs, and partial final blocks.
+
+Packing canonical state into blocks and unpacking it after every TPCORE call is
+not viable. On global 2x2.5 with eight workers, the complete 96-tracer blocked
+call took `0.500-0.554 s` for widths 8-24 versus `0.242 s` for the fused path.
+The extra full-state memory copies erase the scheduling benefit.
+
+The already-packed apply measurement is promising at larger tracer counts. It
+includes block scheduling and the per-step shared plan cost, but excludes the
+canonical pack and unpack that persistent state would avoid:
+
+| Grid | Tracers | Fused s | Best block width | Block apply s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2x2.5 | 24 | 0.0706 | 8 | 0.1115 | 0.63x |
+| 2x2.5 | 48 | 0.1264 | 8 | 0.1275 | 0.99x |
+| 2x2.5 | 64 | 0.1569 | 8 | 0.1317 | 1.19x |
+| 2x2.5 | 96 | 0.2421 | 16 | 0.2043 | 1.18x |
+| 2x2.5 | 128 | 0.3411 | 16 | 0.2435 | 1.40x |
+| 2x2.5 | 192 | 0.5631 | 8 | 0.3543 | 1.59x |
+| 4x5 | 24 | 0.0198 | 8 | 0.0270 | 0.73x |
+| 4x5 | 96 | 0.0669 | 16 | 0.0487 | 1.37x |
+| 4x5 | 192 | 0.1283 | 16 | 0.0791 | 1.62x |
+
+Every measured result was bitwise equal to the fused Numba output, including
+full-grid padded tails. Width 24 was slower than widths 8 and 16 at the primary
+2x2.5 counts, so 24 has no special status. Width 8 reaches the eight-worker
+frontier sooner and is the safer default for arbitrary counts; width 16 can be
+better once enough blocks exist. The eventual policy should remain measured
+dispatch rather than a user-visible tracer-count restriction.
+
+The prototype and `tools/benchmark_tpcore_blocks.py` are retained for the next
+architecture decision, but are not used by production. The next useful test is
+to let VDIFF and convection consume the same persistent block storage, avoiding
+conversion across a complete timestep. Until that succeeds, small ensembles
+and all canonical-state calls should continue using the existing fused path.
