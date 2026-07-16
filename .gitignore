@@ -4,6 +4,7 @@ GCClassic/
 OutputDir/
 Restarts/
 build/
+site/
 CodeDir
 build_info/
 gcclassic

@@ -1,0 +1,32 @@
+name: basic_2x25
+source_run_dir: .
+species_database: ./species_database.yml
+initial_restart: ../../external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4
+grid_template: ../../external_data/restarts/2x25/GEOSChem.Restart.20140901_0000z.nc4
+output_dir: ./OutputDir
+
+simulation:
+  start: "2014-09-01 00:00"
+  end: "2014-09-01 03:00"
+  transport_timestep_s: 600
+
+meteorology:
+  root: ../../external_data/geoschem/GEOS_2x2.5/MERRA2
+
+emissions: {}
+
+logging:
+  level: info
+
+outputs:
+  expid: ./OutputDir/Wombat
+  collections:
+    SpeciesConcThreeHourly:
+      template: "%y4%m2%d2_%h2%n2z.nc4"
+      frequency: 00000000 030000
+      mode: time-averaged
+      fields:
+        - SpeciesConcVV_?ADV?
+
+diagnostics: {}
+comparison: {}
