@@ -2540,3 +2540,32 @@ architecture decision, but are not used by production. The next useful test is
 to let VDIFF and convection consume the same persistent block storage, avoiding
 conversion across a complete timestep. Until that succeeds, small ensembles
 and all canonical-state calls should continue using the existing fused path.
+
+### Persistent zero-flux VDIFF handoff
+
+The experiment now captures the exact `cch`, `zeh`, and `termh` coefficients
+produced by the full-grid VDIFF kernel during a one-tracer preparation pass.
+Independent serial tracer-block solves consume TPCORE's packed output directly
+and write into its alternate buffer. The preparation also computes humidity
+once. Padded-tail tracer output, humidity, and negative-count diagnostics are
+bitwise equal to the production full-grid path.
+
+The table charges both TPCORE and VDIFF per-step plan costs but excludes initial
+canonical packing, representing state retained in block form across operators:
+
+| Grid | Tracers | Fused chain s | Best width | Block chain s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2x2.5 | 24 | 0.0720 | 8 | 0.1296 | 0.56x |
+| 2x2.5 | 64 | 0.1675 | 8 | 0.1662 | 1.01x |
+| 2x2.5 | 96 | 0.2642 | 16 | 0.2544 | 1.04x |
+| 2x2.5 | 128 | 0.3892 | 8 | 0.2960 | 1.31x |
+| 2x2.5 | 192 | 0.6446 | 8 | 0.4310 | 1.50x |
+| 4x5 | 24 | 0.0263 | 8 | 0.0347 | 0.76x |
+| 4x5 | 96 | 0.0627 | 8 | 0.0646 | 0.97x |
+| 4x5 | 192 | 0.1329 | 16 | 0.1009 | 1.32x |
+
+This retains the architecture on net even though the serial VDIFF block solve
+uses some of TPCORE's isolated gain. It does not justify production dispatch
+yet: nonzero surface flux and convection must share the layout, and the fused
+canonical path remains materially faster for small ensembles. Reproduction is
+available in `tools/benchmark_transport_blocks.py`.

@@ -93,6 +93,9 @@ from wombat_transport.transport.convection import _native as convection_native
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport.pbl import _numba as pbl_numba
+from wombat_transport.transport.pbl._block_experiment import apply_vdiff_zero_flux_to_tpcore_blocks
+from wombat_transport.transport.pbl._block_experiment import make_vdiff_block_scratch
+from wombat_transport.transport.pbl._block_experiment import prepare_vdiff_zero_flux_block_plan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -105,6 +108,8 @@ from wombat_transport.transport.tpcore import (
 )
 from wombat_transport.transport.tpcore import _numba as tpcore_numba
 from wombat_transport.transport.tpcore._block_experiment import advect_tracer_blocks
+from wombat_transport.transport.tpcore._block_experiment import load_tracer_block_workspace
+from wombat_transport.transport.tpcore._block_experiment import make_tpcore_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import pack_tracer_blocks
 from wombat_transport.transport.tpcore._block_experiment import prepare_tpcore_block_plan
 from wombat_transport.transport.tpcore._block_experiment import unpack_tracer_blocks
@@ -1124,6 +1129,72 @@ def test_vdiff_nonzero_surface_flux_fast_path_matches_diagnostic_path(transport_
         atol=1.0e-15,
     )
     assert fast.negative_count_before_clip == diagnostic.negative_count_before_clip
+
+
+@pytest.mark.skipif(not pbl_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_experimental_zero_flux_vdiff_blocks_match_fullgrid_numba_with_tail():
+    with netCDF4.Dataset(VDIFF_FIXTURE_DIR / "vdiff_input.nc") as dataset:
+        base_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        tracer = np.concatenate([base_tracer[:, :, :, :1] + index * 1.0e-8 for index in range(9)], axis=3)
+        kwargs = dict(
+            tracer_conc=tracer,
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            specific_humidity_kg_kg=np.asarray(dataset.variables["specific_humidity_kg_kg"][:], dtype=np.float64),
+            pmid_hpa=np.asarray(dataset.variables["pmid_hpa"][:], dtype=np.float64),
+            pedge_hpa=np.asarray(dataset.variables["pedge_hpa"][:], dtype=np.float64),
+            virtual_temperature_k=np.asarray(dataset.variables["virtual_temperature_k"][:], dtype=np.float64),
+            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            dry_air_mass_kg=np.asarray(dataset.variables["dry_air_mass_kg"][:], dtype=np.float64),
+            pbl_top_m=np.asarray(dataset.variables["pbl_top_m"][:], dtype=np.float64),
+            hflux_w_m2=np.asarray(dataset.variables["hflux_w_m2"][:], dtype=np.float64),
+            eflux_w_m2=np.asarray(dataset.variables["eflux_w_m2"][:], dtype=np.float64),
+            ustar_m_s=np.asarray(dataset.variables["ustar_m_s"][:], dtype=np.float64),
+            area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+            surface_flux_kg_m2_s=np.zeros((*base_tracer.shape[1:3], 9), dtype=np.float64),
+        )
+
+    expected = run_vdiffdr_one_step(**kwargs, diagnostics=False)
+    workspace = make_tpcore_block_workspace(tracer.shape, 8)
+    load_tracer_block_workspace(tracer, workspace)
+    for block in workspace.blocks:
+        np.copyto(block.dq1, block.q)
+    plan = prepare_vdiff_zero_flux_block_plan(
+        u_top=kwargs["u_m_s"],
+        v_top=kwargs["v_m_s"],
+        temperature_top=kwargs["temperature_k"],
+        sphu_top=kwargs["specific_humidity_kg_kg"],
+        pmid_hpa=kwargs["pmid_hpa"],
+        pint_hpa=kwargs["pedge_hpa"],
+        virtual_temperature_top=kwargs["virtual_temperature_k"],
+        bxheight_top=kwargs["bxheight_m"],
+        dry_mass_top=kwargs["dry_air_mass_kg"],
+        pblh_m=kwargs["pbl_top_m"],
+        hflux_w_m2=kwargs["hflux_w_m2"],
+        water_flux_kg_m2_s=kwargs["eflux_w_m2"] / pbl_numba.LATVAP_J_PER_KG,
+        ustar_m_s=kwargs["ustar_m_s"],
+        area_m2=kwargs["area_m2"],
+        dt_s=kwargs["dt_s"],
+        workers=2,
+    )
+    scratch = make_vdiff_block_scratch(workspace)
+    negative_count = apply_vdiff_zero_flux_to_tpcore_blocks(
+        plan=plan,
+        workspace=workspace,
+        scratch=scratch,
+        workers=2,
+    )
+    actual = np.empty_like(tracer)
+    for block_index, block in enumerate(workspace.blocks):
+        start = block_index * 8
+        stop = min(start + 8, tracer.shape[-1])
+        actual[:, :, :, start:stop] = block.q[:, :, :, : stop - start]
+
+    assert negative_count == expected.negative_count_before_clip
+    np.testing.assert_array_equal(actual, expected.tracer_conc)
+    np.testing.assert_array_equal(plan.specific_humidity_after, expected.specific_humidity_kg_kg)
 
 
 def test_tracked_vdiff_negative_clipping_snapshot_matches_python_port(tmp_path, transport_numba_mode):

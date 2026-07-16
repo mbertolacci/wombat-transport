@@ -283,6 +283,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     reuse_output: bool,
     output_buffer: np.ndarray | None,
     input_mass_pressure_hpa: np.ndarray | None,
+    plan_output: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -309,6 +310,17 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         sphu_out = np.empty_like(sphu_top)
     if input_mass_pressure_hpa is not None:
         _finalize_deferred_tpcore_poles_numba_kernel(tracer_top, input_mass_pressure_hpa)
+    if plan_output is None:
+        plan_cch = np.empty((1, 1, 1), dtype=np.float64)
+        plan_zeh = np.empty((1, 1, 1), dtype=np.float64)
+        plan_termh = np.empty((1, 1, 1), dtype=np.float64)
+        capture_plan = False
+    else:
+        plan_cch, plan_zeh, plan_termh = plan_output
+        expected_plan_shape = (nlev, nlat, nlon)
+        if any(array.shape != expected_plan_shape for array in plan_output):
+            raise ValueError(f"plan_output arrays must have shape {expected_plan_shape}")
+        capture_plan = True
     negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top,
         u_top,
@@ -375,6 +387,10 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.shmx,
         workspace.zfq_scalar,
         workspace.sphu_diffused,
+        plan_cch,
+        plan_zeh,
+        plan_termh,
+        capture_plan,
     )
     empty = np.empty(0, dtype=np.float64)
     return VdiffDrResult(
@@ -497,6 +513,10 @@ if njit is not None:
         shmx_workspace: np.ndarray,
         zfq_scalar_workspace: np.ndarray,
         sphu_diffused_workspace: np.ndarray,
+        plan_cch: np.ndarray,
+        plan_zeh: np.ndarray,
+        plan_termh: np.ndarray,
+        capture_plan: bool,
     ) -> int:
         nlev = tracer_top.shape[0]
         nlat = tracer_top.shape[1]
@@ -742,6 +762,12 @@ if njit is not None:
                         1.0 + cah[lon, lev] + cch[lon, lev] * (1.0 - zeh[lon, lev - 1])
                     )
                     zeh[lon, lev] = cah[lon, lev] * termh[lon, lev]
+            if capture_plan:
+                for lev in range(nlev):
+                    for lon in range(nlon):
+                        plan_cch[lev, lat, lon] = cch[lon, lev]
+                        plan_zeh[lev, lat, lon] = zeh[lon, lev]
+                        plan_termh[lev, lat, lon] = termh[lon, lev]
 
             if not surface_flux_is_zero:
                 for lon in range(nlon):
