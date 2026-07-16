@@ -7,11 +7,14 @@ import time
 from pathlib import Path
 
 import numpy as np
+from numba import set_num_threads
 
 from _scaling_support import positive_int
 from benchmark_tpcore_scaling import _build_synthetic_tpcore_inputs
 from benchmark_vdiff_scaling import _build_synthetic_vdiff_inputs
 from benchmark_convection_scaling import _build_synthetic_convection_inputs
+from wombat_transport.transport._block_pipeline_experiment import apply_numba_block_pipeline
+from wombat_transport.transport._block_pipeline_experiment import make_numba_block_pipeline_scratch
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.convection._block_experiment import apply_convection_to_vdiff_blocks
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
@@ -42,6 +45,7 @@ FIELDS = (
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    set_num_threads(args.workers)
     rows = []
     for ntracer in args.counts:
         tpcore = _build_synthetic_tpcore_inputs(args.run_config, ntracer, dt_s=args.dt_s)
@@ -188,6 +192,48 @@ def main(argv: list[str] | None = None) -> int:
                     reference,
                 )
             )
+            if args.include_convection:
+                pipeline_scratch = make_numba_block_pipeline_scratch(workspace, args.workers)
+
+                def numba_pipeline() -> np.ndarray:
+                    apply_numba_block_pipeline(
+                        tpcore_plan=tpcore_plan,
+                        vdiff_plan=vdiff_plan,
+                        workspace=workspace,
+                        scratch=pipeline_scratch,
+                        surface_flux_kg_m2_s=vdiff.surface_flux_kg_m2_s,
+                        cmfmc=convection.cmfmc_kg_m2_s,
+                        dtrain=convection.dtrain_kg_m2_s,
+                        delp_hpa=convection.delp_hpa,
+                        delp_dry=convection.delp_dry_hpa,
+                        bmass=convection.delp_dry_hpa * G0_100,
+                        dqrcu=convection.dqrcu_kg_kg_s,
+                        reevapcn=convection.reevapcn_kg_kg_s,
+                        reconstruct_conv_precip_flux=convection.reconstruct_conv_precip_flux,
+                        internal_steps=max(int(convection.dt_s) // 300, 1),
+                        internal_dt_s=(
+                            convection.dt_s / max(int(convection.dt_s) // 300, 1)
+                        ),
+                    )
+                    return workspace.blocks[0].q
+
+                pipeline_times, _ = _time_preloaded(
+                    load, numba_pipeline, args.warmup, args.repeat
+                )
+                pipeline_actual = _unpack_q(workspace)
+                rows.append(
+                    _row(
+                        ntracer,
+                        "blocked-numba-pipeline",
+                        lane_width,
+                        args.workers,
+                        pipeline_times,
+                        plan_s,
+                        fused_best,
+                        pipeline_actual,
+                        reference,
+                    )
+                )
 
     output = args.output.open("w", newline="", encoding="utf-8") if args.output else sys.stdout
     try:

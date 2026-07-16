@@ -91,12 +91,15 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.transport.convection import _native as convection_native
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport._block_pipeline_experiment import apply_numba_block_pipeline
+from wombat_transport.transport._block_pipeline_experiment import make_numba_block_pipeline_scratch
 from wombat_transport.transport.convection._block_experiment import apply_convection_to_vdiff_blocks
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport.pbl import _numba as pbl_numba
 from wombat_transport.transport.pbl._block_experiment import apply_vdiff_zero_flux_to_tpcore_blocks
 from wombat_transport.transport.pbl._block_experiment import make_vdiff_block_scratch
 from wombat_transport.transport.pbl._block_experiment import prepare_vdiff_zero_flux_block_plan
+from wombat_transport.transport.pbl._block_experiment import VdiffBlockPlan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -109,6 +112,7 @@ from wombat_transport.transport.tpcore import (
 )
 from wombat_transport.transport.tpcore import _numba as tpcore_numba
 from wombat_transport.transport.tpcore._block_experiment import advect_tracer_blocks
+from wombat_transport.transport.tpcore._block_experiment import apply_tpcore_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import load_tracer_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import make_tpcore_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import pack_tracer_blocks
@@ -1750,6 +1754,111 @@ def test_experimental_tpcore_blocks_match_fused_numba(ntracer, lane_width, worke
         fill=True,
     )
 
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+@pytest.mark.parametrize("surface_flux_value", (0.0, 1.0e-12))
+def test_experimental_numba_block_pipeline_matches_threaded_blocks(surface_flux_value):
+    ntracer = 9
+    lane_width = 8
+    workers = 2
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        base_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        tracer = np.concatenate(
+            [base_tracer[:, :, :, :1] + index * 1.0e-8 for index in range(ntracer)], axis=3
+        )
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=area,
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    nlev, nlat, nlon, _ = tracer.shape
+    shape = (nlev, nlat, nlon)
+    edge_shape = (nlev + 1, nlat, nlon)
+    vdiff_plan = VdiffBlockPlan(
+        cch=np.zeros(shape),
+        zeh=np.zeros(shape),
+        termh=np.ones(shape),
+        cgs=np.zeros(edge_shape),
+        kvh=np.zeros(edge_shape),
+        potbar=np.zeros(edge_shape),
+        rpdel=np.ones(shape),
+        rrho=np.ones((nlat, nlon)),
+        tmp1=np.zeros((nlat, nlon)),
+        dry_mass=np.ones(shape),
+        area_m2=area,
+        dt_s=600.0,
+        start_level=0,
+        specific_humidity_after=np.zeros(shape),
+    )
+    cmfmc = np.zeros(shape)
+    dtrain = np.zeros(shape)
+    dqrcu = np.zeros(shape)
+    cmfmc[4:13] = 0.01
+    dtrain[4:13] = 0.0015
+    dqrcu[4:13] = 1.0e-8
+    delp_dry = np.full(shape, 20.0)
+    delp_hpa = delp_dry * 1.01
+    reevapcn = np.zeros(shape)
+    surface_flux = np.full((nlat, nlon, ntracer), surface_flux_value)
+    tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=area)
+    workspace = make_tpcore_block_workspace(tracer.shape, lane_width)
+
+    load_tracer_block_workspace(tracer, workspace)
+    apply_tpcore_block_workspace(plan=tpcore_plan, workspace=workspace, workers=workers)
+    expected_negative = apply_vdiff_zero_flux_to_tpcore_blocks(
+        plan=vdiff_plan,
+        workspace=workspace,
+        scratch=make_vdiff_block_scratch(workspace),
+        workers=workers,
+        surface_flux_kg_m2_s=surface_flux,
+    )
+    apply_convection_to_vdiff_blocks(
+        workspace=workspace,
+        cmfmc=cmfmc,
+        dtrain=dtrain,
+        delp_hpa=delp_hpa,
+        delp_dry=delp_dry,
+        bmass=delp_dry * G0_100,
+        dqrcu=dqrcu,
+        reevapcn=reevapcn,
+        reconstruct_conv_precip_flux=False,
+        internal_steps=2,
+        internal_dt_s=300.0,
+        workers=workers,
+    )
+    expected = np.concatenate([block.q for block in workspace.blocks], axis=3)[..., :ntracer].copy()
+
+    load_tracer_block_workspace(tracer, workspace)
+    actual_negative = apply_numba_block_pipeline(
+        tpcore_plan=tpcore_plan,
+        vdiff_plan=vdiff_plan,
+        workspace=workspace,
+        scratch=make_numba_block_pipeline_scratch(workspace, workers),
+        surface_flux_kg_m2_s=surface_flux,
+        cmfmc=cmfmc,
+        dtrain=dtrain,
+        delp_hpa=delp_hpa,
+        delp_dry=delp_dry,
+        bmass=delp_dry * G0_100,
+        dqrcu=dqrcu,
+        reevapcn=reevapcn,
+        reconstruct_conv_precip_flux=False,
+        internal_steps=2,
+        internal_dt_s=300.0,
+    )
+    actual = np.concatenate([block.q for block in workspace.blocks], axis=3)[..., :ntracer]
+
+    assert actual_negative == expected_negative
     np.testing.assert_array_equal(actual, expected)
 
 

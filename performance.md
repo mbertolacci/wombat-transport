@@ -2612,3 +2612,34 @@ equal. Complete plan-charged TPCORE -> VDIFF -> convection results were:
 All complete-chain benchmark outputs were bitwise equal. The evidence supports
 a hybrid policy: retain the fused canonical path for small ensembles and use
 persistent blocks only above a measured grid- and worker-dependent threshold.
+
+### Top-level Numba block pipeline
+
+The persistent executor now also has an opt-in single-region Numba variant.
+One outer `prange(block)` assigns each block to a Numba worker and runs the
+serial TPCORE, VDIFF, and convection kernels consecutively. Scratch that is
+only live within an operator is indexed by Numba worker rather than duplicated
+for every block. The original Python thread-pool executor remains available;
+neither path is in production dispatch.
+
+Direct executor comparisons below exclude the common plan cost. All outputs,
+including a padded tail and nonzero surface flux, were bitwise equal:
+
+| Grid/source | Tracers | Width | Python threads s | Numba pipeline s | Pipeline change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4x5, zero flux | 24 | 8 | 0.0446 | 0.0310 | 30% faster |
+| 4x5, zero flux | 96 | 16 | 0.0774 | 0.0575 | 26% faster |
+| 4x5, zero flux | 192 | 8 | 0.1316 | 0.1081 | 18% faster |
+| 2x2.5, zero flux | 96 | 16 | 0.2815 | 0.2531 | 10% faster |
+| 2x2.5, zero flux | 192 | 8 | 0.5279 | 0.4691 | 11% faster |
+| 2x2.5, emitting | 96 | 16 | 0.3040 | 0.2869 | 6% faster |
+| 2x2.5, emitting | 192 | 8 | 0.5477 | 0.5090 | 7% faster |
+
+The improvement is not universal: the 2x2.5 emitting 96-tracer width-8 case
+regressed by about 1%, and width 16 was nearly neutral at 192 tracers. The best
+width also changes with the number of available blocks. Retain the Numba
+pipeline as the lower-overhead executor candidate, but keep lane selection and
+the Python scheduler independently benchmarkable. A future stage-aware Python
+scheduler may still be useful when deliberately limiting concurrency by
+operator; the Numba pipeline instead gives every block an uninterrupted
+TPCORE-to-convection path.
