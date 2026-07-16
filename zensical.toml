@@ -1,0 +1,38 @@
+[project]
+site_name = "Wombat Transport"
+site_url = "https://mbertolacci.github.io/wombat-transport/"
+site_description = "Parity-first GEOS-Chem Classic transport for high-throughput CO2-like tracer ensembles."
+repo_url = "https://github.com/mbertolacci/wombat-transport"
+repo_name = "mbertolacci/wombat-transport"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+nav = [
+  { "Home" = "index.md" },
+  { "Getting started" = [
+    { "Installation" = "getting-started/installation.md" },
+    { "External data" = "getting-started/external-data.md" },
+    { "First run" = "getting-started/first-run.md" },
+  ] },
+  { "User guide" = [
+    { "Inputs" = "user-guide/inputs.md" },
+    { "Outputs" = "user-guide/outputs.md" },
+    { "ObsOperator" = "user-guide/obsoperator.md" },
+    { "Performance and threading" = "user-guide/performance.md" },
+  ] },
+  { "Reference" = [
+    { "run.yml" = "reference/run-yml.md" },
+  ] },
+  { "Validation" = [
+    { "Parity and scope" = "validation/parity-and-scope.md" },
+  ] },
+]
+
+[project.theme]
+features = [
+  "navigation.sections",
+  "navigation.path",
+  "content.action.edit",
+  "content.action.view",
+  "content.code.copy",
+]

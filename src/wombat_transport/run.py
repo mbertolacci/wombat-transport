@@ -32,7 +32,7 @@ from wombat_transport.transport.numba_control import warn_if_transport_numba_dis
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run a Wombat transport prototype mode."
+        description="Run Wombat tracer transport."
     )
     parser.add_argument("run_config", type=Path)
     parser.add_argument(
