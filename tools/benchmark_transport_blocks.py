@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -45,6 +46,7 @@ FIELDS = (
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    os.environ["WOMBAT_NUMBA_THREADS"] = str(args.workers)
     set_num_threads(args.workers)
     rows = []
     for ntracer in args.counts:

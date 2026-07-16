@@ -2643,3 +2643,45 @@ the Python scheduler independently benchmarkable. A future stage-aware Python
 scheduler may still be useful when deliberately limiting concurrency by
 operator; the Numba pipeline instead gives every block an uninterrupted
 TPCORE-to-convection path.
+
+The benchmark must set `WOMBAT_NUMBA_THREADS` as well as Numba's runtime thread
+count. Production operator wrappers reapply the environment-controlled count
+on entry; without the environment setting, the nominally fused eight-worker
+baseline silently runs with one thread. The benchmark now sets both controls.
+
+With that correction, the complete zero-flux chain, all per-step block plan
+costs charged, and initial canonical packing excluded, has the following
+crossover on eight workers. Each block result remained bitwise equal:
+
+| Grid | Tracers | Best width | Fused s | Numba blocks s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4x5 | 1 | 1 | 0.0098 | 0.0155 | 0.63x |
+| 4x5 | 2 | 1 | 0.0105 | 0.0166 | 0.63x |
+| 4x5 | 4 | 1 | 0.0137 | 0.0175 | 0.78x |
+| 4x5 | 8 | 1 | 0.0142 | 0.0192 | 0.74x |
+| 4x5 | 16 | 2 | 0.0233 | 0.0227 | 1.02x |
+| 4x5 | 32 | 4 | 0.0299 | 0.0271 | 1.10x |
+| 4x5 | 64 | 8 | 0.0552 | 0.0401 | 1.38x |
+| 4x5 | 128 | 16 | 0.1022 | 0.0664 | 1.54x |
+| 4x5 | 192 | 8 | 0.1520 | 0.1093 | 1.39x |
+| 2x2.5 | 1 | 1 | 0.0219 | 0.0640 | 0.34x |
+| 2x2.5 | 2 | 1 | 0.0244 | 0.0654 | 0.37x |
+| 2x2.5 | 4 | 1 | 0.0293 | 0.0694 | 0.42x |
+| 2x2.5 | 8 | 1 | 0.0397 | 0.0756 | 0.53x |
+| 2x2.5 | 16 | 2 | 0.0606 | 0.0905 | 0.67x |
+| 2x2.5 | 32 | 4 | 0.1167 | 0.1156 | 1.01x |
+| 2x2.5 | 48 | 8 | 0.1566 | 0.1601 | 0.98x |
+| 2x2.5 | 64 | 8 | 0.2112 | 0.1712 | 1.23x |
+| 2x2.5 | 96 | 16 | 0.3234 | 0.2695 | 1.20x |
+| 2x2.5 | 128 | 16 | 0.4447 | 0.3170 | 1.40x |
+| 2x2.5 | 192 | 8 | 0.7231 | 0.4903 | 1.47x |
+
+The 2x2.5 results around 32-48 tracers are effectively the noisy crossover,
+not a useful dispatch win. A conservative local policy is canonical below 64
+tracers, then block-major, while 4x5 can cross around 16-32 tracers. Expressed
+in terms of work per worker, the useful frontier is roughly eight tracers per
+worker on 2x2.5 and four per worker on 4x5. The selected width should leave at
+least one block per worker; extra blocks can help dynamic scheduling. This also
+explains why a 400-tracer, 40-core socket is promising for width 8: it supplies
+50 independent blocks, whereas a one-tracer run supplies only one and cannot
+use block-level concurrency.
