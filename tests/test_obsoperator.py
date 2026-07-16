@@ -15,7 +15,7 @@ import wombat_transport.obsoperator as obsoperator_module
 import wombat_transport.obsoperator.input as obsoperator_input
 import wombat_transport.obsoperator.sampling as obsoperator_sampling
 import wombat_transport.obsoperator.writer as obsoperator_writer
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import BlockedTracerField, TracerField
 from wombat_transport.grid import TransportGrid, geos_chem_horizontal_centers
 from wombat_transport.obsoperator import (
     ObsOperatorConfig,
@@ -328,6 +328,26 @@ def test_vertical_operator_modes(tmp_path: Path, vertical: dict, expected: float
     sampled = _sample_state(state, _snapshot(), _grid())[0, :1]
 
     np.testing.assert_allclose(sampled, np.array([expected]))
+
+
+def test_sampler_maps_global_tracer_indices_into_blocks(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {"entries": [_entry_raw(fields=["SpeciesConcVV_A", "SpeciesConcVV_B"])]},
+    )
+    state = _load(path)
+    canonical = _snapshot()
+    blocked = OutputSnapshot(
+        timestamp=canonical.timestamp,
+        state=BlockedTracerField.from_tracer_field(canonical.state, block_width=1),
+        delp_dry_hpa=canonical.delp_dry_hpa,
+        forcing=canonical.forcing,
+    )
+
+    expected = _sample_state(state, canonical, _grid())
+    actual = _sample_state(state, blocked, _grid())
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_horizontal_box_weight_modes_and_longitude_wrap(tmp_path: Path):
@@ -1017,8 +1037,15 @@ def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.nd
     entries = np.arange(state.entry_count, dtype=np.int64)
     samples = np.empty((state.entry_count, state.prepared.max_field_count), dtype=np.float64)
     prepared = state.prepared
+    if isinstance(snapshot.state, BlockedTracerField):
+        state_bottom = np.asarray(snapshot.state.data[0, :, ::-1, :, :, :], dtype=np.float64)
+    else:
+        state_bottom = np.asarray(
+            snapshot.state.data[0, np.newaxis, ::-1, :, :, :], dtype=np.float64
+        )
     obsoperator_sampling._sample_prepared_entries_kernel(
-        np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
+        state_bottom,
+        snapshot.state.block_width,
         np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
         np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
         np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),

@@ -72,6 +72,25 @@ The [first-run guide](https://mbertolacci.github.io/wombat-transport/getting-sta
 explains the inputs, output, and configuration. The complete configuration
 contract is documented in the [`run.yml` reference](https://mbertolacci.github.io/wombat-transport/reference/run-yml/).
 
+Transport uses spatial parallelism by default. The experimental persistent
+tracer-block executor is selected per process with:
+
+```bash
+WOMBAT_TRANSPORT_EXECUTOR=blocks WOMBAT_NUMBA_THREADS=8 \
+  .venv/bin/python -m wombat_transport.run examples/basic_2x25/run.yml
+```
+
+Block width defaults to the full tracer count for `spatial` execution and to
+8 for `blocks`. Either strategy accepts an explicit storage width:
+
+```bash
+WOMBAT_TRANSPORT_EXECUTOR=spatial WOMBAT_TRANSPORT_BLOCK_WIDTH=16 ...
+```
+
+Spatial execution processes configured blocks sequentially while retaining
+its existing within-operator threading. Block execution uses one top-level
+Numba parallel region across blocks.
+
 ## Performance snapshot
 
 End-to-end local comparisons on an Intel Core i7-14700KF included MERRA-2

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from datetime import timezone
 import json
 import logging
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -13,7 +14,7 @@ import numpy as np
 
 from wombat_transport.constants import AIRMW_G_PER_MOL
 from wombat_transport.emissions import EmissionsOperator, SurfaceEmissions
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import BlockedTracerField, TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
 from wombat_transport.obsoperator import ObsOperatorManager
@@ -34,9 +35,16 @@ from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
-    run_transport_one_step,
+    NumbaBlockTransportExecutor,
+    run_transport_one_step_blocked,
+    run_transport_one_step_numba_blocks,
 )
-from wombat_transport.transport.numba_control import warn_if_transport_numba_disabled
+from wombat_transport.transport.numba_control import (
+    FALSEY_NUMBA_VALUES,
+    numba_mode,
+    numba_thread_count,
+    warn_if_transport_numba_disabled,
+)
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
@@ -49,7 +57,7 @@ class EmissionsStep:
 
 @dataclass(frozen=True)
 class TracerSimulationResult:
-    state: TracerField
+    state: BlockedTracerField
     emissions_processed: tuple[EmissionsStep, ...]
     emitted_mass_by_tracer: np.ndarray
     transport_steps: int
@@ -73,13 +81,44 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     _write_run_metadata(config)
     species = load_species_database(config.species_database)
     logger.debug("loaded_species count=%d", len(species))
-    state = initialize_tracers(
+    initial_state = initialize_tracers(
         config.initial_restart,
         config.species_database,
         template_path=config.grid_template,
     )
+    parallel_strategy = _transport_executor()
+    if parallel_strategy == "blocks":
+        disabled = [
+            name
+            for name in (
+                "WOMBAT_TPCORE_NUMBA",
+                "WOMBAT_VDIFF_NUMBA",
+                "WOMBAT_CONVECTION_NUMBA",
+            )
+            if numba_mode(name) in FALSEY_NUMBA_VALUES
+        ]
+        if disabled:
+            raise ValueError(
+                "WOMBAT_TRANSPORT_EXECUTOR=blocks requires all Numba transport operators; "
+                f"disabled: {', '.join(disabled)}"
+            )
+    block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
+    state = BlockedTracerField.from_tracer_field(initial_state, block_width)
+    block_executor = (
+        NumbaBlockTransportExecutor.create(
+            state, numba_thread_count("WOMBAT_NUMBA")
+        )
+        if parallel_strategy == "blocks"
+        else None
+    )
     surface_flux_to_vmr_factor = _surface_flux_to_vmr_factor(state, species)
-    logger.debug("initialized_tracers shape=%s", state.shape)
+    logger.debug(
+        "initialized_tracers shape=%s blocks=%d width=%d executor=%s",
+        state.shape,
+        state.block_count,
+        state.block_width,
+        parallel_strategy,
+    )
     grid = load_transport_grid(config.grid_template)
     tpcore_static_terms = build_tpcore_static_terms(
         area_m2=grid.area_m2,
@@ -153,18 +192,24 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             logger.debug("refreshed_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
 
         logger.debug("running_transport step=%d", transport_steps + 1)
-        transport_result = run_transport_one_step(
-            state,
-            forcing,
-            grid,
+        transport_kwargs = dict(
             dt_s=transport_dt_s,
             active_emissions=active_emissions,
             surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             dry_air_mass_kg=dry_air_mass,
             tpcore_static_terms=tpcore_static_terms,
-            validate_tpcore_branches=elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s)),
-            consume_input=True,
+            validate_tpcore_branches=(
+                elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s))
+            ),
         )
+        if block_executor is None:
+            transport_result = run_transport_one_step_blocked(
+                state, forcing, grid, consume_input=True, **transport_kwargs
+            )
+        else:
+            transport_result = run_transport_one_step_numba_blocks(
+                state, forcing, grid, block_executor, **transport_kwargs
+            )
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg
         final_delp_dry_hpa = transport_result.delp_dry_hpa
@@ -285,7 +330,7 @@ def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOpera
     raise TypeError("emissions must be a path string or an inline emissions mapping")
 
 
-def _surface_flux_to_vmr_factor(state: TracerField, species) -> np.ndarray:
+def _surface_flux_to_vmr_factor(state: TracerField | BlockedTracerField, species) -> np.ndarray:
     species_by_name = {item.name: item for item in species}
     factors = []
     for name in state.names:
@@ -293,6 +338,26 @@ def _surface_flux_to_vmr_factor(state: TracerField, species) -> np.ndarray:
             raise ValueError(f"tracer {name!r} is missing from the species database")
         factors.append(AIRMW_G_PER_MOL / species_by_name[name].molecular_weight_g)
     return np.asarray(factors, dtype=np.float64)
+
+
+def _transport_executor() -> str:
+    value = os.environ.get("WOMBAT_TRANSPORT_EXECUTOR", "spatial").strip().lower()
+    if value not in {"spatial", "blocks"}:
+        raise ValueError("WOMBAT_TRANSPORT_EXECUTOR must be 'spatial' or 'blocks'")
+    return value
+
+
+def _transport_block_width(executor: str, tracer_count: int) -> int:
+    configured = os.environ.get("WOMBAT_TRANSPORT_BLOCK_WIDTH")
+    if configured is None or not configured.strip():
+        return tracer_count if executor == "spatial" else 8
+    try:
+        width = int(configured)
+    except ValueError as exc:
+        raise ValueError("WOMBAT_TRANSPORT_BLOCK_WIDTH must be a positive integer") from exc
+    if width < 1:
+        raise ValueError("WOMBAT_TRANSPORT_BLOCK_WIDTH must be a positive integer")
+    return width
 
 
 def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:

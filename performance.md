@@ -2683,3 +2683,32 @@ least one block per worker; extra blocks can help dynamic scheduling. This also
 explains why a 400-tracer, 40-core socket is promising for width 8: it supplies
 50 independent blocks, whereas a one-tracer run supplies only one and cannot
 use block-level concurrency.
+
+### Persistent blocked simulation state
+
+The simulation runner now carries `BlockedTracerField` storage with physical
+shape `(time, block, lev, lat, lon, lane)` throughout the run. Logical tracer
+names exclude padded tail lanes. Individual blocks and individual tracers are
+zero-copy views; joining multiple blocks into the old canonical array is an
+explicit conversion rather than an implicit property access.
+
+`WOMBAT_TRANSPORT_EXECUTOR=spatial` is the default. Its default width is the
+complete tracer count, giving one block and the previous contiguous canonical
+kernel input. An explicit `WOMBAT_TRANSPORT_BLOCK_WIDTH` makes the spatial
+executor process several block views sequentially while retaining the existing
+within-operator Numba parallelism. This path was bitwise equal at widths 8 and
+24 on the real 24-tracer fixture.
+
+`WOMBAT_TRANSPORT_EXECUTOR=blocks` defaults to width 8. It owns one persistent
+TPCORE workspace and one worker-indexed scratch set, and calls the sole
+top-level `prange(block)` TPCORE -> VDIFF -> convection pipeline. The Python
+thread scheduler and its per-operator application wrappers were removed. The
+production driver comparison on the real 24-tracer fixture was bitwise equal
+through tracer state, humidity, and dry mass; zero- and nonzero-emission
+pipeline fixtures remain bitwise equal.
+
+HISTORY accumulation operates directly on contiguous blocked storage. Species
+and restart writers map each logical tracer index to `(block, lane)`, and the
+ObsOperator sampling kernel performs the same mapping for its prepared global
+field indices. Consequently the runner does not repack the complete tracer
+cube at output or observation boundaries.

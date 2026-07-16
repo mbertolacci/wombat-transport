@@ -3,6 +3,7 @@ from __future__ import annotations
 from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.transport.driver import (
     ConvectionInputState,
+    NumbaBlockTransportExecutor,
     TransportStageMass,
     TransportStepDiagnostics,
     TransportStepResult,
@@ -10,6 +11,8 @@ from wombat_transport.transport.driver import (
     VdiffInputState,
     compute_transport_stage_masses,
     run_transport_one_step,
+    run_transport_one_step_blocked,
+    run_transport_one_step_numba_blocks,
     run_transport_window,
     trace_transport_one_step,
 )
@@ -70,6 +73,7 @@ __all__ = [
     "TransportGrid",
     "ConvectionResult",
     "ConvectionInputState",
+    "NumbaBlockTransportExecutor",
     "TransportStageMass",
     "TransportStepDiagnostics",
     "TransportStepResult",
@@ -100,6 +104,8 @@ __all__ = [
     "pressure_edges_from_surface_hpa",
     "pressure_edges_hpa",
     "run_transport_one_step",
+    "run_transport_one_step_blocked",
+    "run_transport_one_step_numba_blocks",
     "run_transport_window",
     "trace_transport_one_step",
     "run_cloud_convection_one_step",

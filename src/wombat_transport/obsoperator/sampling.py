@@ -26,6 +26,7 @@ OBSOPERATOR_NUMBA_ENV = "WOMBAT_OBSOPERATOR_NUMBA"
 
 def _sample_prepared_entries_kernel(
     state_bottom: np.ndarray,
+    block_width: int,
     wet_surface_pressure_hpa: np.ndarray,
     specific_humidity_kg_kg: np.ndarray,
     temperature_k: np.ndarray,
@@ -51,7 +52,7 @@ def _sample_prepared_entries_kernel(
     exact_weight: np.ndarray,
     samples: np.ndarray,
 ) -> None:
-    nlev = state_bottom.shape[0]
+    nlev = state_bottom.shape[1]
     for schedule_index in range(scheduled_entries.size):
         entry_index = scheduled_entries[schedule_index]
         field_start = entry_field_start[entry_index]
@@ -78,6 +79,8 @@ def _sample_prepared_entries_kernel(
                 exact_end = exact_start + entry_exact_count[entry_index]
                 for field_offset in range(field_count):
                     tracer = field_indices[field_start + field_offset]
+                    block = tracer // block_width
+                    lane = tracer - block * block_width
                     vertical_sum = 0.0
                     for exact_index in range(exact_start, exact_end):
                         value = exact_value[exact_index]
@@ -114,7 +117,9 @@ def _sample_prepared_entries_kernel(
                                     break
                             if level < 0:
                                 raise ValueError("vertical altitude exceeds the modeled column")
-                        vertical_sum += exact_weight[exact_index] * state_bottom[level, lat, lon, tracer]
+                        vertical_sum += (
+                            exact_weight[exact_index] * state_bottom[block, level, lat, lon, lane]
+                        )
                     samples[schedule_index, field_offset] += horizontal_factor * vertical_sum
                 continue
 
@@ -170,6 +175,8 @@ def _sample_prepared_entries_kernel(
 
             for field_offset in range(field_count):
                 tracer = field_indices[field_start + field_offset]
+                block = tracer // block_width
+                lane = tracer - block * block_width
                 vertical_sum = 0.0
                 for level in range(level_start, level_end + 1):
                     if vertical_weighting in (_VERTICAL_NORMALIZED_PRESSURE, _VERTICAL_PRESSURE_WEIGHT):
@@ -178,7 +185,7 @@ def _sample_prepared_entries_kernel(
                         weight = edge_lower - edge_upper
                     else:
                         weight = 1.0
-                    vertical_sum += weight * state_bottom[level, lat, lon, tracer]
+                    vertical_sum += weight * state_bottom[block, level, lat, lon, lane]
                 if vertical_weighting in (_VERTICAL_NORMALIZED_PRESSURE, _VERTICAL_NORMALIZED):
                     vertical_sum /= normalization
                 samples[schedule_index, field_offset] += horizontal_factor * vertical_sum

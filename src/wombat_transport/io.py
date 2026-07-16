@@ -6,7 +6,7 @@ from typing import Iterable
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import TracerField, public_tracer5_to_canonical
+from wombat_transport.fields import BlockedTracerField, TracerField, public_tracer5_to_canonical
 from wombat_transport.grid import MODEL_LEVELS, geos_chem_horizontal_resolution
 from wombat_transport.species import Species, load_species_database
 
@@ -35,7 +35,9 @@ def load_base_met(path: str | Path) -> dict[str, np.ndarray]:
         return {name: np.asarray(dataset.variables[name][:]) for name in wanted if name in dataset.variables}
 
 
-def write_restart_like(path: str | Path, tracer_field: TracerField, template_path: str | Path) -> None:
+def write_restart_like(
+    path: str | Path, tracer_field: TracerField | BlockedTracerField, template_path: str | Path
+) -> None:
     """Write a restart-like NetCDF file with one ``SpeciesRst_*`` variable per tracer."""
 
     output_path = Path(path)
@@ -46,7 +48,7 @@ def write_restart_like(path: str | Path, tracer_field: TracerField, template_pat
         _assert_tracer_shape(tracer_field, template_shape)
 
         for dim_name in ("time", "lev", "ilev", "lat", "lon"):
-            size = tracer_field.data.shape[0] if dim_name == "time" else len(template.dimensions[dim_name])
+            size = tracer_field.shape[0] if dim_name == "time" else len(template.dimensions[dim_name])
             output.createDimension(dim_name, size)
 
         for coord_name in GRID_COORDS:
@@ -67,7 +69,7 @@ def write_restart_like(path: str | Path, tracer_field: TracerField, template_pat
             variable = output.createVariable(f"SpeciesRst_{name}", "f8", ("time", "lev", "lat", "lon"))
             variable.units = tracer_field.units[index] if index < len(tracer_field.units) else ""
             variable.long_name = f"Wombat restart-like concentration of species {name}"
-            variable[:] = tracer_field.data[:, ::-1, :, :, index]
+            variable[:] = tracer_field.tracer(index)[:, ::-1, :, :]
 
 
 def initialize_tracers(
@@ -182,13 +184,13 @@ def _assert_supported_grid(dataset: netCDF4.Dataset) -> tuple[int, int, int]:
     return lev, lat.size, lon.size
 
 
-def _assert_tracer_shape(tracer_field: TracerField, expected: tuple[int, int, int]) -> None:
-    if tracer_field.data.ndim != 5:
-        raise ValueError(f"expected tracer data to be 5-D, found {tracer_field.data.ndim}-D")
-    if tracer_field.data.shape[-1] != len(tracer_field.names):
-        raise ValueError("tracer name count does not match data last dimension")
-    if tracer_field.data.shape[1:4] != expected:
-        raise ValueError(f"expected tracer grid {expected}, found {tracer_field.data.shape[1:4]}")
+def _assert_tracer_shape(
+    tracer_field: TracerField | BlockedTracerField, expected: tuple[int, int, int]
+) -> None:
+    if tracer_field.shape[-1] != len(tracer_field.names):
+        raise ValueError("tracer name count does not match logical tracer dimension")
+    if tracer_field.shape[1:4] != expected:
+        raise ValueError(f"expected tracer grid {expected}, found {tracer_field.shape[1:4]}")
 
 
 def _read_coords(dataset: netCDF4.Dataset) -> dict[str, np.ndarray]:

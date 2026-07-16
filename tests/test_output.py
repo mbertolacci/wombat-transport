@@ -7,7 +7,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import BlockedTracerField, TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport import history_accumulation
 from wombat_transport.history_accumulation import accumulate_history_sum
@@ -157,6 +157,22 @@ def test_species_conc_writer_roundtrips_geos_chem_style_collection(tmp_path):
         assert variable.chunking() == [1, 1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
         assert dataset.variables["time"].chunking() == [512]
         np.testing.assert_array_equal(dataset.variables["time"][:], np.array([0.0, 180.0]))
+
+
+def test_species_conc_writer_reads_logical_tracers_from_blocks(tmp_path):
+    field = _field(("A", "B"), values=(1.0, 10.0))
+    blocked = BlockedTracerField.from_tracer_field(field, block_width=1)
+    output_path = tmp_path / "blocked.nc4"
+
+    write_species_conc_collection(
+        output_path,
+        [(datetime(2014, 9, 1), blocked)],
+        BASE_RESTART,
+        title="blocked",
+    )
+
+    loaded = load_species_conc(output_path)
+    np.testing.assert_allclose(loaded.data[0], field.data[0])
 
 
 def test_species_conc_writer_honors_float64_dtype_and_explicit_chunks(tmp_path):

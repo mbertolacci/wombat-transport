@@ -24,6 +24,8 @@ from wombat_transport.runner import (
     _is_time_for_emissions,
     _load_emissions_operator,
     _load_simulation_forcing,
+    _transport_block_width,
+    _transport_executor,
     _validate_timestep_schedule,
     has_invalid_emissions,
     run_tracer_simulation,
@@ -91,6 +93,26 @@ def test_geos_chem_emissions_schedule_uses_centered_emissions_timestep():
 def test_emissions_timestep_must_be_transport_multiple():
     with pytest.raises(ValueError, match="integer multiple"):
         _validate_timestep_schedule(600.0, 1000.0)
+
+
+def test_transport_executor_and_block_width_environment(monkeypatch):
+    monkeypatch.delenv("WOMBAT_TRANSPORT_EXECUTOR", raising=False)
+    monkeypatch.delenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", raising=False)
+    assert _transport_executor() == "spatial"
+    assert _transport_block_width("spatial", 24) == 24
+    assert _transport_block_width("blocks", 24) == 8
+
+    monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "blocks")
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "16")
+    assert _transport_executor() == "blocks"
+    assert _transport_block_width("blocks", 24) == 16
+
+    monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "threads")
+    with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_EXECUTOR"):
+        _transport_executor()
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "0")
+    with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_BLOCK_WIDTH"):
+        _transport_block_width("spatial", 24)
 
 
 def test_run_config_logging_level_defaults_and_validates():
@@ -196,7 +218,9 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         )
 
     monkeypatch.setattr("wombat_transport.runner._load_simulation_forcing", fake_load_forcing)
-    monkeypatch.setattr("wombat_transport.runner.run_transport_one_step", fake_run_transport_one_step)
+    monkeypatch.setattr(
+        "wombat_transport.runner.run_transport_one_step_blocked", fake_run_transport_one_step
+    )
 
     result = run_tracer_simulation(config, max_steps=2)
 
@@ -205,8 +229,9 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
     assert validation_flags == [True, False]
     assert active_emissions_seen[0] is not None
     assert active_emissions_seen[0] is active_emissions_seen[1]
-    np.testing.assert_array_equal(state_inputs[0], initial.data)
-    np.testing.assert_array_equal(state_inputs[1], initial.data)
+    expected = initial.data[:, np.newaxis, ...]
+    np.testing.assert_array_equal(state_inputs[0], expected)
+    np.testing.assert_array_equal(state_inputs[1], expected)
 
 
 @requires_residual_data
@@ -311,7 +336,7 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
     with netCDF4.Dataset(output_path) as dataset:
         np.testing.assert_allclose(
             dataset.variables["sample"][:],
-            np.array([result.state.data[0, -1, 0, 0, 0]], dtype=np.float32),
+            np.array([result.state.tracer(0)[0, -1, 0, 0]], dtype=np.float32),
         )
     with netCDF4.Dataset(restart_path) as dataset:
         assert _decode_char_rows(dataset.variables["id"][:]) == ["unfinished"]

@@ -10,7 +10,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from wombat_transport.fields import TracerField
+from wombat_transport.fields import BlockedTracerField, TracerField
 from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.fields import (
     canonical_time_slice,
@@ -29,6 +29,7 @@ from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
+    NumbaBlockTransportExecutor,
     compute_transport_stage_masses,
     compute_pbl_height,
     dry_air_mass_from_pressure,
@@ -39,6 +40,8 @@ from wombat_transport.transport import (
     load_transport_forcing,
     mix_full_pbl,
     run_transport_one_step,
+    run_transport_one_step_blocked,
+    run_transport_one_step_numba_blocks,
     run_transport_window,
     trace_transport_one_step,
     wet_surface_pressure_hpa,
@@ -766,6 +769,54 @@ def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
         include_flux_diagnostics=True,
     )
     assert diagnostic_result.zmass_hpa.shape == (1, FIXED_GRID["lev"] + 1, FIXED_GRID["lat"], FIXED_GRID["lon"])
+
+
+@requires_transport_data
+@pytest.mark.parametrize("block_width", (8, 24))
+def test_spatial_transport_over_blocks_matches_single_field(monkeypatch, block_width):
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    field = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    )
+    forcing = _load_forcing(config, grid=grid)
+
+    expected = run_transport_one_step(field, forcing, grid, dt_s=600.0)
+    blocked = BlockedTracerField.from_tracer_field(field, block_width)
+    actual = run_transport_one_step_blocked(blocked, forcing, grid, dt_s=600.0)
+
+    np.testing.assert_array_equal(actual.state.to_tracer_field().data, expected.state.data)
+    np.testing.assert_array_equal(actual.dry_air_mass_kg, expected.dry_air_mass_kg)
+    np.testing.assert_array_equal(actual.specific_humidity_kg_kg, expected.specific_humidity_kg_kg)
+
+
+@requires_transport_data
+def test_numba_block_transport_executor_matches_single_field(monkeypatch):
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
+    config = load_run_config(RESIDUAL_CONFIG)
+    grid = load_transport_grid(config.grid_template)
+    field = initialize_tracers(
+        config.initial_restart,
+        config.species_database,
+        template_path=config.grid_template,
+    )
+    forcing = _load_forcing(config, grid=grid)
+
+    expected = run_transport_one_step(field, forcing, grid, dt_s=600.0)
+    blocked = BlockedTracerField.from_tracer_field(field, 8)
+    executor = NumbaBlockTransportExecutor.create(blocked, workers=2)
+    actual = run_transport_one_step_numba_blocks(
+        blocked, forcing, grid, executor, dt_s=600.0
+    )
+
+    np.testing.assert_array_equal(actual.state.to_tracer_field().data, expected.state.data)
+    np.testing.assert_array_equal(actual.dry_air_mass_kg, expected.dry_air_mass_kg)
+    np.testing.assert_array_equal(actual.specific_humidity_kg_kg, expected.specific_humidity_kg_kg)
 
 
 @pytest.mark.parametrize("tracer_count", (1, 24))
