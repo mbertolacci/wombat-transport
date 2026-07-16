@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
 
 from wombat_transport.transport.pbl import _numba as nb
-from wombat_transport.transport.tpcore._block_experiment import TpcoreBlockWorkspace
-
 if nb._NUMBA_AVAILABLE:
     from numba import njit, set_num_threads
 else:  # pragma: no cover - exercised in environments without numba.
@@ -38,15 +35,6 @@ class VdiffBlockPlan:
     dt_s: float
     start_level: int
     specific_humidity_after: np.ndarray
-
-
-@dataclass
-class VdiffBlockScratch:
-    tracer_diffused: np.ndarray
-    before_mass: np.ndarray
-    after_mass: np.ndarray
-    qmx: np.ndarray
-    adjust: np.ndarray
 
 
 def prepare_vdiff_zero_flux_block_plan(
@@ -132,81 +120,6 @@ def prepare_vdiff_zero_flux_block_plan(
         start_level=max(0, nlev - int(npbl)),
         specific_humidity_after=result.specific_humidity_kg_kg,
     )
-
-
-def make_vdiff_block_scratch(workspace: TpcoreBlockWorkspace) -> list[VdiffBlockScratch]:
-    """Allocate one serial tracer solve scratch set per persistent block."""
-
-    nlev, _nlat, nlon, _ntracer = workspace.tracer_shape
-    lane_width = workspace.lane_width
-    return [
-        VdiffBlockScratch(
-            tracer_diffused=np.empty((nlon, nlev, lane_width), dtype=np.float64),
-            before_mass=np.empty((nlon, lane_width), dtype=np.float64),
-            after_mass=np.empty((nlon, lane_width), dtype=np.float64),
-            qmx=np.empty((nlon, nlev, lane_width), dtype=np.float64),
-            adjust=np.empty((nlon, lane_width), dtype=np.bool_),
-        )
-        for _ in workspace.blocks
-    ]
-
-
-def apply_vdiff_zero_flux_to_tpcore_blocks(
-    *,
-    plan: VdiffBlockPlan,
-    workspace: TpcoreBlockWorkspace,
-    scratch: list[VdiffBlockScratch],
-    workers: int,
-    surface_flux_kg_m2_s: np.ndarray | None = None,
-) -> int:
-    """Diffuse TPCORE block outputs into their reusable alternate buffers."""
-
-    if len(scratch) != len(workspace.blocks):
-        raise ValueError("VDIFF scratch does not match the TPCORE block workspace")
-    has_flux = surface_flux_kg_m2_s is not None and bool(np.any(surface_flux_kg_m2_s != 0.0))
-    flux_blocks = []
-    nlat, nlon = plan.area_m2.shape
-    ntracer = workspace.tracer_shape[-1]
-    for block in range(len(workspace.blocks)):
-        flux = np.zeros((nlat, nlon, workspace.lane_width), dtype=np.float64)
-        if surface_flux_kg_m2_s is not None:
-            start = block * workspace.lane_width
-            stop = min(start + workspace.lane_width, ntracer)
-            flux[:, :, : stop - start] = surface_flux_kg_m2_s[:, :, start:stop]
-        flux_blocks.append(flux)
-
-    def run_block(block: int) -> int:
-        block_workspace = workspace.blocks[block]
-        block_scratch = scratch[block]
-        return int(
-            _apply_vdiff_zero_flux_block(
-                block_workspace.dq1,
-                block_workspace.q,
-                plan.cch,
-                plan.zeh,
-                plan.termh,
-                plan.dry_mass,
-                plan.area_m2,
-                plan.cgs,
-                plan.kvh,
-                plan.potbar,
-                plan.rpdel,
-                plan.rrho,
-                plan.tmp1,
-                plan.dt_s,
-                plan.start_level,
-                flux_blocks[block],
-                has_flux,
-                block_scratch.tracer_diffused,
-                block_scratch.before_mass,
-                block_scratch.after_mass,
-                block_scratch.qmx,
-                block_scratch.adjust,
-            )
-        )
-
-    with ThreadPoolExecutor(max_workers=min(workers, len(workspace.blocks))) as executor:
-        return sum(executor.map(run_block, range(len(workspace.blocks))))
 
 
 if njit is not None:

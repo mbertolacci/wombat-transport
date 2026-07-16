@@ -17,13 +17,9 @@ from benchmark_convection_scaling import _build_synthetic_convection_inputs
 from wombat_transport.transport._block_pipeline_experiment import apply_numba_block_pipeline
 from wombat_transport.transport._block_pipeline_experiment import make_numba_block_pipeline_scratch
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
-from wombat_transport.transport.convection._block_experiment import apply_convection_to_vdiff_blocks
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
-from wombat_transport.transport.pbl._block_experiment import apply_vdiff_zero_flux_to_tpcore_blocks
-from wombat_transport.transport.pbl._block_experiment import make_vdiff_block_scratch
 from wombat_transport.transport.pbl._block_experiment import prepare_vdiff_zero_flux_block_plan
 from wombat_transport.transport.tpcore import run_tpcore_one_step_with_setup, setup_tpcore_terms
-from wombat_transport.transport.tpcore._block_experiment import apply_tpcore_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import load_tracer_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import make_tpcore_block_workspace
 from wombat_transport.transport.tpcore._block_experiment import prepare_tpcore_block_plan
@@ -148,52 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             plan_s = time.perf_counter() - plan_start
             workspace = make_tpcore_block_workspace(tpcore.tracer_conc.shape, lane_width)
-            scratch = make_vdiff_block_scratch(workspace)
 
             def load() -> None:
                 load_tracer_block_workspace(tpcore.tracer_conc, workspace)
 
-            def blocked_chain() -> np.ndarray:
-                apply_tpcore_block_workspace(plan=tpcore_plan, workspace=workspace, workers=args.workers)
-                apply_vdiff_zero_flux_to_tpcore_blocks(
-                    plan=vdiff_plan,
-                    workspace=workspace,
-                    scratch=scratch,
-                    workers=args.workers,
-                    surface_flux_kg_m2_s=vdiff.surface_flux_kg_m2_s,
-                )
-                if args.include_convection:
-                    apply_convection_to_vdiff_blocks(
-                        workspace=workspace,
-                        cmfmc=convection.cmfmc_kg_m2_s,
-                        dtrain=convection.dtrain_kg_m2_s,
-                        delp_hpa=convection.delp_hpa,
-                        delp_dry=convection.delp_dry_hpa,
-                        bmass=convection.delp_dry_hpa * G0_100,
-                        dqrcu=convection.dqrcu_kg_kg_s,
-                        reevapcn=convection.reevapcn_kg_kg_s,
-                        reconstruct_conv_precip_flux=convection.reconstruct_conv_precip_flux,
-                        internal_steps=max(int(convection.dt_s) // 300, 1),
-                        internal_dt_s=convection.dt_s / max(int(convection.dt_s) // 300, 1),
-                        workers=args.workers,
-                    )
-                return workspace.blocks[0].q
-
-            times, _ = _time_preloaded(load, blocked_chain, args.warmup, args.repeat)
-            actual = _unpack_q(workspace)
-            rows.append(
-                _row(
-                    ntracer,
-                    "blocked",
-                    lane_width,
-                    args.workers,
-                    times,
-                    plan_s,
-                    fused_best,
-                    actual,
-                    reference,
-                )
-            )
             if args.include_convection:
                 pipeline_scratch = make_numba_block_pipeline_scratch(workspace, args.workers)
 

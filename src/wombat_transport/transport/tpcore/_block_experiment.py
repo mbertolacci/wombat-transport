@@ -7,7 +7,6 @@ kernels while sharing one meteorological setup.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -128,36 +127,6 @@ def unpack_tracer_blocks(blocks: np.ndarray, ntracer: int) -> np.ndarray:
     return output
 
 
-def advect_tracer_blocks(
-    *,
-    tracer_conc: np.ndarray,
-    plan: TpcoreBlockPlan,
-    lane_width: int,
-    workers: int,
-    fill: bool = True,
-    workspace: TpcoreBlockWorkspace | None = None,
-) -> np.ndarray:
-    """Run the experimental block-major TPCORE path and return canonical output."""
-
-    if not nb._NUMBA_AVAILABLE or _advect_one_block_serial is None:
-        raise RuntimeError("numba is not available")
-    if workers < 1:
-        raise ValueError("workers must be positive")
-    if tracer_conc.shape[:3] != plan.setup.delp1_hpa.shape:
-        raise ValueError("tracer_conc shape does not match the TPCORE plan")
-
-    tracer_conc = np.asarray(tracer_conc, dtype=np.float64)
-    ntracer = tracer_conc.shape[-1]
-    if workspace is None:
-        workspace = make_tpcore_block_workspace(tracer_conc.shape, lane_width)
-    elif workspace.tracer_shape != tracer_conc.shape or workspace.lane_width != lane_width:
-        raise ValueError("block workspace does not match tracer_conc and lane_width")
-
-    load_tracer_block_workspace(tracer_conc, workspace)
-    apply_tpcore_block_workspace(plan=plan, workspace=workspace, workers=workers, fill=fill)
-    return unpack_tpcore_block_workspace(workspace)
-
-
 def load_tracer_block_workspace(tracer_conc: np.ndarray, workspace: TpcoreBlockWorkspace) -> None:
     """Copy canonical active tracers into reusable padded block inputs."""
 
@@ -171,46 +140,6 @@ def load_tracer_block_workspace(tracer_conc: np.ndarray, workspace: TpcoreBlockW
         stop = min(start + lane_width, ntracer)
         block_workspace.q.fill(0.0)
         block_workspace.q[:, :, :, : stop - start] = tracer_conc[:, :, :, start:stop]
-
-
-def apply_tpcore_block_workspace(
-    *, plan: TpcoreBlockPlan, workspace: TpcoreBlockWorkspace, workers: int, fill: bool = True
-) -> None:
-    """Apply TPCORE to already packed blocks, leaving results in block outputs."""
-
-    if workers < 1:
-        raise ValueError("workers must be positive")
-
-    def run_block(block: int) -> None:
-        block_workspace = workspace.blocks[block]
-        _advect_one_block_serial(
-            block_workspace.q,
-            block_workspace.dq1,
-            plan.setup.delp1_hpa,
-            plan.setup.delp2_hpa,
-            plan.setup.pu_hpa,
-            plan.setup.xmass_hpa,
-            plan.setup.ymass_hpa,
-            plan.setup.vertical_mass_flux_hpa,
-            plan.setup.cx,
-            plan.setup.cy,
-            plan.setup.geofac,
-            plan.setup.geofac_pc,
-            plan.ua,
-            plan.va,
-            plan.jn,
-            plan.js,
-            plan.area_1d_m2,
-            bool(fill),
-            block_workspace.qqu,
-            block_workspace.qqv,
-            *block_workspace.x_workspace,
-            *block_workspace.y_workspace,
-            *block_workspace.z_workspace,
-        )
-
-    with ThreadPoolExecutor(max_workers=min(workers, len(workspace.blocks))) as executor:
-        tuple(executor.map(run_block, range(len(workspace.blocks))))
 
 
 def unpack_tpcore_block_workspace(workspace: TpcoreBlockWorkspace) -> np.ndarray:

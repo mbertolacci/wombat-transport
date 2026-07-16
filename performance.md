@@ -2535,8 +2535,8 @@ frontier sooner and is the safer default for arbitrary counts; width 16 can be
 better once enough blocks exist. The eventual policy should remain measured
 dispatch rather than a user-visible tracer-count restriction.
 
-The prototype and `tools/benchmark_tpcore_blocks.py` are retained for the next
-architecture decision, but are not used by production. The next useful test is
+The prototype was retained for the next architecture decision, but was not
+used by production. The next useful test was
 to let VDIFF and convection consume the same persistent block storage, avoiding
 conversion across a complete timestep. Until that succeeds, small ensembles
 and all canonical-state calls should continue using the existing fused path.
@@ -2619,8 +2619,7 @@ The persistent executor now also has an opt-in single-region Numba variant.
 One outer `prange(block)` assigns each block to a Numba worker and runs the
 serial TPCORE, VDIFF, and convection kernels consecutively. Scratch that is
 only live within an operator is indexed by Numba worker rather than duplicated
-for every block. The original Python thread-pool executor remains available;
-neither path is in production dispatch.
+for every block. Neither path was in production dispatch at this stage.
 
 Direct executor comparisons below exclude the common plan cost. All outputs,
 including a padded tail and nonzero surface flux, were bitwise equal:
@@ -2638,11 +2637,10 @@ including a padded tail and nonzero surface flux, were bitwise equal:
 The improvement is not universal: the 2x2.5 emitting 96-tracer width-8 case
 regressed by about 1%, and width 16 was nearly neutral at 192 tracers. The best
 width also changes with the number of available blocks. Retain the Numba
-pipeline as the lower-overhead executor candidate, but keep lane selection and
-the Python scheduler independently benchmarkable. A future stage-aware Python
-scheduler may still be useful when deliberately limiting concurrency by
-operator; the Numba pipeline instead gives every block an uninterrupted
-TPCORE-to-convection path.
+pipeline as the lower-overhead executor candidate. The Python block scheduler
+was subsequently removed, leaving the Numba pipeline as the sole concurrent
+block executor. It gives every block an uninterrupted TPCORE-to-convection
+path and avoids maintaining two scheduling implementations.
 
 The benchmark must set `WOMBAT_NUMBA_THREADS` as well as Numba's runtime thread
 count. Production operator wrappers reapply the environment-controlled count
