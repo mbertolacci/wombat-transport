@@ -140,7 +140,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
 
-        inputs = _build_synthetic_vdiff_inputs(args.run_config, tracer_count, dt_s=args.dt_s)
+        inputs = _build_synthetic_vdiff_inputs(
+            args.run_config,
+            tracer_count,
+            dt_s=args.dt_s,
+            surface_flux_kg_m2_s=args.surface_flux_kg_m2_s,
+        )
         rows.append(
             _benchmark_inputs(
                 inputs,
@@ -177,6 +182,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--dt-s", type=float, default=DEFAULT_DT_S)
     parser.add_argument(
+        "--surface-flux-kg-m2-s",
+        type=float,
+        default=0.0,
+        help="Uniform synthetic tracer surface flux. Defaults to the zero-flux fast path.",
+    )
+    parser.add_argument(
         "--max-memory-gb",
         default="auto",
         help="Memory budget in GB, or 'auto' for a conservative fraction of physical memory.",
@@ -193,7 +204,13 @@ def _read_fullgrid_shape(run_config_path: Path) -> tuple[int, int, int]:
     return load_transport_grid(config.grid_template).shape
 
 
-def _build_synthetic_vdiff_inputs(run_config_path: Path, ntracer: int, *, dt_s: float) -> SyntheticVdiffInputs:
+def _build_synthetic_vdiff_inputs(
+    run_config_path: Path,
+    ntracer: int,
+    *,
+    dt_s: float,
+    surface_flux_kg_m2_s: float = 0.0,
+) -> SyntheticVdiffInputs:
     config = load_run_config(run_config_path)
     grid = load_transport_grid(config.grid_template)
     lat = grid.lat_deg
@@ -232,7 +249,7 @@ def _build_synthetic_vdiff_inputs(run_config_path: Path, ntracer: int, *, dt_s: 
     hflux = np.full((nlat, nlon), 65.0, dtype=np.float64)
     eflux = np.full((nlat, nlon), 90.0, dtype=np.float64)
     ustar = np.full((nlat, nlon), 0.35, dtype=np.float64)
-    surface_flux = np.zeros((nlat, nlon, ntracer), dtype=np.float64)
+    surface_flux = np.full((nlat, nlon, ntracer), surface_flux_kg_m2_s, dtype=np.float64)
 
     return SyntheticVdiffInputs(
         tracer_conc=tracer,

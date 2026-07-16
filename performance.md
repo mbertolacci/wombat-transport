@@ -2427,3 +2427,72 @@ same function executed directly in Python. Their logical science-output
 SHA-256 digests were identical. The Python reference therefore adds about
 0.48 s to this full run while retaining exactly one sampling implementation
 and one in-memory representation.
+
+## 2026-07-16 parity-gated local optimization follow-up
+
+This pass tested the low-risk local and compiler ideas left after the broader
+transport study. Block-major storage, prepare/apply plans, noalias compiler
+internals, QCK restructuring, fixed-grid kernels, level tiling, and aggregate
+scheduling were explicitly deferred.
+
+### Retained changes
+
+- Convection now computes the subcloud dry-pressure sum, mass sum, base mass
+  flux, and their reciprocals once per column rather than once per 300-second
+  internal step. The 24/96-tracer one-thread synthetic best times moved from
+  `0.03451/0.11377 s` to `0.03407/0.11366 s` before later compiler work.
+- FZPPM no longer clears its complete `dc` workspace or writes the unused last
+  `dpi` row. A NaN-poisoned workspace test proves that no removed value is
+  consumed. In the reverse-order comparison, 24/96-tracer TPCORE moved from
+  `0.23214/0.77375 s` to `0.22499/0.76797 s`.
+- VDIFF no longer clears `kvh`/`kvm` before overwriting them from `kvf`, clears
+  only the required `potbar` boundary, and removes redundant coefficient and
+  humidity-solve initialization. NaN-poison tests cover the affected arrays.
+  Zero-flux 24/96-tracer best times moved from `0.04762/0.12094 s` to
+  `0.04742/0.11934 s`.
+- The nonzero-emission VDIFF path computes `cgq` and the bottom source directly
+  with the original parenthesization. This removes the per-thread `cgq` and
+  `dqbot` workspaces. A new benchmark option supplies a uniform nonzero surface
+  flux; its 24/96-tracer best times moved from `0.06295/0.18870 s` to
+  `0.06038/0.16561 s`, improvements of 4.1% and 12.2%, with identical
+  checksums.
+- Granular `fastmath={"contract"}` is retained only for FZPPM and the
+  diagnostics-light convection kernel. FZPPM remained bitwise equal on the
+  compact oracle fixture and improved 96-tracer TPCORE by about 2.4% in the
+  isolated probe. Convection remained within its existing one-ULP contract and
+  moved from `0.03407/0.11366 s` to `0.03321/0.10394 s` at 24/96 tracers.
+
+The cumulative one-P-core synthetic driver reached `0.29750 s` at 24 tracers
+and `0.92281 s` at 96 tracers. Four P-cores reached `0.13925 s` and
+`0.40448 s`. A real 2x2.5 nonzero-emissions 24-tracer six-hour run completed
+all 36 transport steps in `11.69 s`, including `10.51 s` in transport. The
+contract and strict variants produced bitwise-identical values for every one
+of the 24 species in the six-hour HISTORY output. The full suite passed with
+233 tests and 52 local-data skips.
+
+### Rejected probes
+
+- Activating convection's existing inactive-column `continue` was exact, but
+  the all-active 24-tracer benchmark regressed by about 7%; the branch was
+  removed. The new inactive-column precipitation-field regression test remains.
+- `error_model="numpy"` was neutral or regressive on TPCORE, VDIFF, and
+  convection and was removed.
+- `fastmath={"contract"}` on XTP traded a 96-tracer improvement for a
+  24-tracer regression; YTP regressed both primary counts. Both were removed.
+
+All retained workspace and arithmetic changes passed the tracked low- and
+large-Courant TPCORE, zero/nonzero/negative VDIFF, active/inactive convection,
+NumPy fallback, and transport ownership tests. Generated benchmark, LLVM,
+profile, and multistep artifacts remained untracked under `/tmp`.
+
+The four canonical full-run windows were then rerun from copies of the parent
+checkout's materialized directories while loading this worktree on
+`PYTHONPATH`: two-day no-emissions and one-day 24-tracer residual emissions at
+both 2x2.5 and 4x5. All 864 transport steps completed. Case-defined HISTORY,
+ObsOperator, and available restart comparisons were bitwise identical to the
+saved pre-optimization Wombat outputs at both resolutions. Consequently the
+GEOS-Chem comparison metrics were also unchanged: species concentration and
+CO2 restart maximum absolute differences remained at the established
+float32-quantization scale (`2.91e-11` at 2x2.5 and up to `5.82e-11` in 4x5
+HISTORY), with zero ObsOperator tolerance failures. Comparison artifacts live
+under `/tmp/wombat-opt-validation-compare` and remain untracked.

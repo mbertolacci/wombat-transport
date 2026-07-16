@@ -152,7 +152,7 @@ def _convect_column_group_top_numba(
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, fastmath={"contract"})
     def _convect_fullgrid_top_numba_kernel(
         q_all: np.ndarray,
         cmfmc_all: np.ndarray,
@@ -210,24 +210,30 @@ if njit is not None:
                     cloud_base = level
                     break
 
+            mixes_below_base = cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM
+            denominator = 1.0
+            mass_below_base = 0.0
+            cmfmc_base = 0.0
+            inv_denominator = 1.0
+            inv_denom_qc = 1.0
+            if mixes_below_base:
+                denominator = 0.0
+                for level in range(cloud_base + 1, nlev):
+                    denominator += delp_dry_all[level, col]
+                    mass_below_base += bmass_all[level, col]
+                if denominator <= 0.0:
+                    denominator = 1.0
+                cmfmc_base = cmfmc_all[cloud_base + 1, col]
+                denom_qc = mass_below_base + cmfmc_base * internal_dt_s
+                inv_denominator = 1.0 / denominator
+                inv_denom_qc = 1.0 / denom_qc
+
             for step in range(internal_steps):
                 _ = step
                 for tracer in range(ntracer):
                     qc[tracer] = q_all[cloud_base, col, tracer]
 
-                if cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM:
-                    denominator = 0.0
-                    mass_below_base = 0.0
-                    for level in range(cloud_base + 1, nlev):
-                        denominator += delp_dry_all[level, col]
-                        mass_below_base += bmass_all[level, col]
-                    if denominator <= 0.0:
-                        denominator = 1.0
-
-                    cmfmc_base = cmfmc_all[cloud_base + 1, col]
-                    denom_qc = mass_below_base + cmfmc_base * internal_dt_s
-                    inv_denominator = 1.0 / denominator
-                    inv_denom_qc = 1.0 / denom_qc
+                if mixes_below_base:
                     for tracer in range(ntracer):
                         qb_num[tracer] = 0.0
                     for level in range(cloud_base + 1, nlev):

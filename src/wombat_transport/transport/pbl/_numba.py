@@ -53,7 +53,6 @@ class _VdiffFullGridWorkspace:
     qpert: np.ndarray
     tmp1: np.ndarray
     dshbot: np.ndarray
-    dqbot: np.ndarray
     rrho: np.ndarray
     khfs: np.ndarray
     kshfs: np.ndarray
@@ -73,7 +72,6 @@ class _VdiffFullGridWorkspace:
     cch: np.ndarray
     zeh: np.ndarray
     termh: np.ndarray
-    cgq: np.ndarray
     qmx: np.ndarray
     adjust: np.ndarray
     tracer_diffused: np.ndarray
@@ -108,7 +106,6 @@ def _get_vdiff_fullgrid_workspace(
     scalar_shape = (nthreads, nlon)
     tracer_shape = (nthreads, nlon, ntracer)
     lev_tracer_shape = (nthreads, nlon, nlev, ntracer)
-    edge_tracer_shape = (nthreads, nlon, nlev + 1, ntracer)
     workspace = _VdiffFullGridWorkspace(
         nthreads=nthreads,
         tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
@@ -128,7 +125,6 @@ def _get_vdiff_fullgrid_workspace(
         qpert=np.empty(scalar_shape, dtype=np.float64),
         tmp1=np.empty(scalar_shape, dtype=np.float64),
         dshbot=np.empty(scalar_shape, dtype=np.float64),
-        dqbot=np.empty(tracer_shape, dtype=np.float64),
         rrho=np.empty(scalar_shape, dtype=np.float64),
         khfs=np.empty(scalar_shape, dtype=np.float64),
         kshfs=np.empty(scalar_shape, dtype=np.float64),
@@ -148,7 +144,6 @@ def _get_vdiff_fullgrid_workspace(
         cch=np.empty(lev_shape, dtype=np.float64),
         zeh=np.empty(lev_shape, dtype=np.float64),
         termh=np.empty(lev_shape, dtype=np.float64),
-        cgq=np.empty(edge_tracer_shape, dtype=np.float64),
         qmx=np.empty(lev_tracer_shape, dtype=np.float64),
         adjust=np.empty(tracer_shape, dtype=np.bool_),
         tracer_diffused=np.empty(lev_tracer_shape, dtype=np.float64),
@@ -353,7 +348,6 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.qpert,
         workspace.tmp1,
         workspace.dshbot,
-        workspace.dqbot,
         workspace.rrho,
         workspace.khfs,
         workspace.kshfs,
@@ -373,7 +367,6 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         workspace.cch,
         workspace.zeh,
         workspace.termh,
-        workspace.cgq,
         workspace.qmx,
         workspace.adjust,
         workspace.tracer_diffused,
@@ -477,7 +470,6 @@ if njit is not None:
         qpert_workspace: np.ndarray,
         tmp1_workspace: np.ndarray,
         dshbot_workspace: np.ndarray,
-        dqbot_workspace: np.ndarray,
         rrho_workspace: np.ndarray,
         khfs_workspace: np.ndarray,
         kshfs_workspace: np.ndarray,
@@ -497,7 +489,6 @@ if njit is not None:
         cch_workspace: np.ndarray,
         zeh_workspace: np.ndarray,
         termh_workspace: np.ndarray,
-        cgq_workspace: np.ndarray,
         qmx_workspace: np.ndarray,
         adjust_workspace: np.ndarray,
         tracer_diffused_workspace: np.ndarray,
@@ -539,7 +530,6 @@ if njit is not None:
             qpert = qpert_workspace[thread_id]
             tmp1 = tmp1_workspace[thread_id]
             dshbot = dshbot_workspace[thread_id]
-            dqbot = dqbot_workspace[thread_id]
             rrho = rrho_workspace[thread_id]
             khfs = khfs_workspace[thread_id]
             kshfs = kshfs_workspace[thread_id]
@@ -559,7 +549,6 @@ if njit is not None:
             cch = cch_workspace[thread_id]
             zeh = zeh_workspace[thread_id]
             termh = termh_workspace[thread_id]
-            cgq = cgq_workspace[thread_id]
             qmx = qmx_workspace[thread_id]
             adjust = adjust_workspace[thread_id]
             tracer_diffused = tracer_diffused_workspace[thread_id]
@@ -591,20 +580,12 @@ if njit is not None:
             for lon in range(nlon):
                 for edge in range(nlev + 1):
                     kvf[lon, edge] = 0.0
-                    kvh[lon, edge] = 0.0
-                    kvm[lon, edge] = 0.0
                     cgsh[lon, edge] = 0.0
                     cgs[lon, edge] = 0.0
-                    if not surface_flux_is_zero:
-                        for tracer in range(ntracer):
-                            cgq[lon, edge, tracer] = 0.0
                 tpert[lon] = 0.0
                 qpert[lon] = 0.0
                 tmp1[lon] = dt_s * G0_M_PER_S2 * rpdel[lon, nlev - 1]
                 dshbot[lon] = water_flux_kg_m2_s[lat, lon] * tmp1[lon]
-                if not surface_flux_is_zero:
-                    for tracer in range(ntracer):
-                        dqbot[lon, tracer] = surface_flux_kg_m2_s[lat, lon, tracer] * tmp1[lon]
 
             for lev in range(ntopfl, nlev - 1):
                 ml2_value = 0.0
@@ -712,11 +693,6 @@ if njit is not None:
                             cgs[lon, lev] = fak3[lon] / (pblh_m[lat, lon] * wm[lon])
                             pr[lon] = phiminv[lon] / phihinv[lon] + _CCON * fak3[lon] / _FAK
                             cgsh[lon, lev] = kshfs[lon] * cgs[lon, lev]
-                            if not surface_flux_is_zero:
-                                for tracer in range(ntracer):
-                                    cgq[lon, lev, tracer] = (
-                                        surface_flux_kg_m2_s[lat, lon, tracer] * rrho[lon] * cgs[lon, lev]
-                                    )
                         if pblk[lon] > kvf[lon, lev]:
                             kvm[lon, lev] = pblk[lon]
                         else:
@@ -728,8 +704,7 @@ if njit is not None:
                             kvh[lon, lev] = kvf[lon, lev]
 
             for lon in range(nlon):
-                for edge in range(nlev + 1):
-                    potbar[lon, edge] = 0.0
+                potbar[lon, 0] = 0.0
                 for lev in range(1, nlev):
                     potbar[lon, lev] = pint[lon, lev] / (
                         0.5 * (temperature_top[lev, lat, lon] + temperature_top[lev - 1, lat, lon])
@@ -753,12 +728,6 @@ if njit is not None:
                         for lev in range(start, nlev):
                             shmx[lon, lev] = sphu_top[lev, lat, lon]
 
-            for lon in range(nlon):
-                for lev in range(nlev):
-                    cah[lon, lev] = 0.0
-                    cch[lon, lev] = 0.0
-                    zeh[lon, lev] = 0.0
-                    termh[lon, lev] = 0.0
             for lev in range(ntopfl, nlev - 1):
                 for lon in range(nlon):
                     tmp2 = dt_s * gorsq * rpdeli[lon, lev] * potbar[lon, lev + 1] ** 2
@@ -800,8 +769,11 @@ if njit is not None:
                                 input_value = tracer_top[lev, source_lat, lon, tracer] * inv_input_mass
                                 if input_needs_conversion and input_value < 0.0:
                                     input_value = 1.0e-26
+                                flux_rrho = surface_flux_kg_m2_s[lat, lon, tracer] * rrho[lon]
+                                cgq_next = flux_rrho * cgs[lon, lev + 1]
+                                cgq_now = flux_rrho * cgs[lon, lev]
                                 qmx_value = input_value + scale * (
-                                    term_next * cgq[lon, lev + 1, tracer] - term_now * cgq[lon, lev, tracer]
+                                    term_next * cgq_next - term_now * cgq_now
                                 )
                                 qmx[lon, lev, tracer] = qmx_value
                                 if qmx_value < 0.0:
@@ -863,7 +835,11 @@ if njit is not None:
                     source_value = tracer_value if surface_flux_is_zero else qmx[lon, nlev - 1, tracer]
                     tracer_diffused[lon, nlev - 1, tracer] = (
                         source_value
-                        + (0.0 if surface_flux_is_zero else dqbot[lon, tracer])
+                        + (
+                            0.0
+                            if surface_flux_is_zero
+                            else surface_flux_kg_m2_s[lat, lon, tracer] * tmp1[lon]
+                        )
                         + cch_bottom * tracer_diffused[lon, nlev - 2, tracer]
                     ) * tmp1d
             for lev in range(nlev - 2, ntopfl - 1, -1):
@@ -902,9 +878,6 @@ if njit is not None:
                         ]
 
             for lon in range(nlon):
-                for lev in range(nlev):
-                    zfq_scalar[lon, lev] = 0.0
-                    sphu_diffused[lon, lev] = 0.0
                 zfq_scalar[lon, ntopfl] = shmx[lon, ntopfl] * termh[lon, ntopfl]
             for lev in range(ntopfl + 1, nlev - 1):
                 for lon in range(nlon):

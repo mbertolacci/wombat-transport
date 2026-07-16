@@ -275,7 +275,7 @@ def _fzppm_batch_numba(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, fastmath={"contract"})
     def _set_cross_terms_numba_kernel(cx: np.ndarray, cy: np.ndarray, ua: np.ndarray, va: np.ndarray) -> None:
         nlev = cx.shape[0]
         nlat = cx.shape[1]
@@ -1206,12 +1206,6 @@ if njit is not None:
                 for k in range(nlev - 1):
                     for tracer in range(ntracer):
                         dpi[k, tracer] = q[k + 1, j, i, tracer] - q[k, j, i, tracer]
-                for tracer in range(ntracer):
-                    dpi[nlev - 1, tracer] = 0.0
-
-                for k in range(nlev):
-                    for tracer in range(ntracer):
-                        dc[k, tracer] = 0.0
 
                 for k in range(1, nlev - 1):
                     dlp_km1 = delp1[k - 1, j, i]
