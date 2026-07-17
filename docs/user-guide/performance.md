@@ -38,6 +38,74 @@ export OMP_NUM_THREADS=1
 Falsy switch values are `0`, `false`, `no`, `off`, and `none`. If Numba is
 unavailable or disabled, Wombat emits a major performance warning.
 
+## Tracer blocks and execution strategy
+
+Tracer state is always stored as contiguous blocks with internal layout
+`(block, level, latitude, longitude, lane)`. The last block is padded when the
+tracer count is not a multiple of its width. This representation is transparent
+to restart, HISTORY, emissions, and ObsOperator code: tracer names and outputs
+retain their ordinary canonical ordering.
+
+Storage layout and parallel execution are separate choices. These environment
+variables select the execution policy and storage width:
+
+| Variable | Purpose |
+|---|---|
+| `WOMBAT_TRANSPORT_EXECUTOR` | `spatial` (default) or `blocks` |
+| `WOMBAT_TRANSPORT_BLOCK_WIDTH` | Positive tracer lanes per block; strategy-dependent default |
+
+The strategies differ only in where Numba places parallel work:
+
+- `spatial` visits tracer blocks sequentially and uses threads over the spatial
+  task space inside each transport operator. With no explicit block width, all
+  tracers occupy one block.
+- `blocks` uses one top-level parallel loop over tracer blocks. Each worker runs
+  the complete `TPCORE -> VDIFF -> convection` chain for its block using serial
+  inner kernels. Its default block width is 8.
+
+The `blocks` executor requires Numba. It uses Numba's worker pool directly; it
+does not create Python threads or a Python scheduling layer. With one Numba
+thread it offers no parallelism advantage over spatial execution.
+
+For ordinary runs, leave the defaults alone. Spatial execution is the natural
+choice for small tracer counts or too few blocks to occupy the configured
+workers. Block execution is intended for larger tracer ensembles where
+independent blocks provide enough outer parallel work:
+
+```bash
+export NUMBA_NUM_THREADS=8
+export WOMBAT_NUMBA_THREADS=8
+export WOMBAT_TRANSPORT_EXECUTOR=blocks
+
+.venv/bin/python -m wombat_transport.run path/to/run.yml
+```
+
+Block width controls the tradeoff between the number and size of independent
+tasks. Narrower blocks expose more parallel tasks; wider blocks retain more
+tracer amortization within each operator. The default width of 8 is the
+recommended starting point. Tune it only with a representative end-to-end
+benchmark:
+
+```bash
+WOMBAT_TRANSPORT_EXECUTOR=blocks \
+WOMBAT_TRANSPORT_BLOCK_WIDTH=16 \
+WOMBAT_NUMBA_THREADS=8 \
+  .venv/bin/python -m wombat_transport.run path/to/run.yml
+```
+
+An explicit block width is also legal with spatial execution. In that case the
+spatial executor processes each configured block in sequence while retaining
+within-operator threading:
+
+```bash
+WOMBAT_TRANSPORT_EXECUTOR=spatial \
+WOMBAT_TRANSPORT_BLOCK_WIDTH=16 \
+  .venv/bin/python -m wombat_transport.run path/to/run.yml
+```
+
+This can be useful for controlled comparisons, but it is not required to use
+block-native tracer storage: storage is blocked in every execution mode.
+
 ## Local end-to-end comparison
 
 These timings were measured on 16 July 2026 on an Intel Core i7-14700KF. The
