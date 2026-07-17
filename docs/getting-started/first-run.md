@@ -35,6 +35,11 @@ For a faster smoke test, stop after one ten-minute transport step:
 The process reports the state shape, transport operators, step count, and
 timestep. It also writes `wombat_run_metadata.json` beside the run file.
 
+Numba acceleration is enabled by default. For larger tracer ensembles, the
+[performance and threading guide](../user-guide/performance.md) explains the
+block-native tracer layout, spatial and block execution strategies, and their
+environment controls.
+
 The complete three-hour run writes:
 
 ```text

@@ -1,8 +1,7 @@
 """Numba-accelerated TPCORE kernels.
 
-This module owns the optional compiled path. The reference implementation and
-public API stay in ``_native.py`` so WOMBAT_TPCORE_NUMBA=0 remains a plain NumPy
-path. WOMBAT_NUMBA provides the shared transport-wide default.
+This module contains numerical kernels only; operator dispatch and workspaces
+live in ``_operator.py``.
 """
 
 from __future__ import annotations
@@ -11,10 +10,10 @@ import threading
 
 import numpy as np
 
-from wombat_transport.transport.numba_control import apply_numba_thread_count
-from wombat_transport.transport.numba_control import numba_enabled
-from wombat_transport.transport.numba_control import numba_mode
+from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.numba_control import synchronized_transport_numba
+from wombat_transport.transport.numba_control import numba_available_and_enabled
+from wombat_transport.transport.numba_control import numba_mode
 from wombat_transport.transport.tpcore.types import TpcoreSetup
 
 try:  # Optional acceleration dependency.
@@ -194,7 +193,7 @@ def _advect_tracers_fused_numba(
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     nlev, nlat, nlon, ntracer = tracer_conc.shape
-    nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
+    nthreads = configure_numba_threads(available=_NUMBA_AVAILABLE)
     workspace = _get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer, nthreads)
     if reuse_input:
         if not tracer_conc.flags.c_contiguous or not tracer_conc.flags.writeable:
@@ -236,11 +235,11 @@ def _advect_tracers_fused_numba(
 
 
 def _numba_tpcore_mode() -> str:
-    return numba_mode("WOMBAT_TPCORE_NUMBA")
+    return numba_mode()
 
 
 def _numba_tpcore_enabled() -> bool:
-    return numba_enabled("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
+    return numba_available_and_enabled(available=_NUMBA_AVAILABLE)
 
 
 def _numba_tpcore_z_enabled() -> bool:
@@ -268,14 +267,14 @@ def _finalize_tpcore_output_numba(dq1: np.ndarray, delp2: np.ndarray) -> None:
 def _fzppm_batch_numba(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarray) -> None:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
-    nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=_NUMBA_AVAILABLE)
+    nthreads = configure_numba_threads(available=_NUMBA_AVAILABLE)
     workspace = _make_fzppm_numba_workspace(nthreads, q.shape[0], q.shape[3])
     _fzppm_batch_numba_kernel(delp1, wz, dq1, q, *workspace)
 
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, fastmath={"contract"})
     def _set_cross_terms_numba_kernel(cx: np.ndarray, cy: np.ndarray, ua: np.ndarray, va: np.ndarray) -> None:
         nlev = cx.shape[0]
         nlat = cx.shape[1]
@@ -1206,12 +1205,6 @@ if njit is not None:
                 for k in range(nlev - 1):
                     for tracer in range(ntracer):
                         dpi[k, tracer] = q[k + 1, j, i, tracer] - q[k, j, i, tracer]
-                for tracer in range(ntracer):
-                    dpi[nlev - 1, tracer] = 0.0
-
-                for k in range(nlev):
-                    for tracer in range(ntracer):
-                        dc[k, tracer] = 0.0
 
                 for k in range(1, nlev - 1):
                     dlp_km1 = delp1[k - 1, j, i]

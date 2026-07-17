@@ -90,11 +90,11 @@ def test_history_accumulation_native_and_numba_are_bitwise_equal(monkeypatch):
     native = rng.standard_normal((2, 3, 4, 5))
     accelerated = native.copy()
 
-    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", "0")
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
     for value in values:
         accumulate_history_sum(native, value)
-    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", "1")
-    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA_THREADS", "2")
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
     for value in values:
         accumulate_history_sum(accelerated, value)
 
@@ -105,7 +105,7 @@ def test_history_accumulation_uses_native_fallback_without_numba(monkeypatch):
     accumulator = np.arange(12, dtype=np.float64).reshape(3, 4)
     expected = accumulator + 0.25
     monkeypatch.setattr(history_accumulation, "_NUMBA_AVAILABLE", False)
-    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
 
     accumulate_history_sum(accumulator, np.full_like(accumulator, 0.25))
 
@@ -157,6 +157,22 @@ def test_species_conc_writer_roundtrips_geos_chem_style_collection(tmp_path):
         assert variable.chunking() == [1, 1, FIXED_GRID["lat"], FIXED_GRID["lon"]]
         assert dataset.variables["time"].chunking() == [512]
         np.testing.assert_array_equal(dataset.variables["time"][:], np.array([0.0, 180.0]))
+
+
+def test_species_conc_writer_reads_logical_tracers_from_blocks(tmp_path):
+    field = _field(("A", "B"), values=(1.0, 10.0))
+    blocked = field.reblock(1)
+    output_path = tmp_path / "blocked.nc4"
+
+    write_species_conc_collection(
+        output_path,
+        [(datetime(2014, 9, 1), blocked)],
+        BASE_RESTART,
+        title="blocked",
+    )
+
+    loaded = load_species_conc(output_path)
+    np.testing.assert_allclose(loaded.data[0], field.data[0])
 
 
 def test_species_conc_writer_honors_float64_dtype_and_explicit_chunks(tmp_path):
@@ -334,8 +350,8 @@ def test_output_manager_streams_species_conc_across_daily_files(tmp_path):
 def test_threaded_output_manager_matches_sync_species_conc(tmp_path, monkeypatch, history_numba):
     if history_numba == "1" and not history_accumulation._NUMBA_AVAILABLE:
         pytest.skip("numba is unavailable")
-    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA", history_numba)
-    monkeypatch.setenv("WOMBAT_HISTORY_NUMBA_THREADS", "2")
+    monkeypatch.setenv("WOMBAT_NUMBA", history_numba)
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
     forcing = _forcing()
     delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
     collection = OutputCollectionConfig(

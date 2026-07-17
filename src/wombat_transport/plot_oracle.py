@@ -341,7 +341,9 @@ def _build_comparison_bundle(
     oracle = read_transport_step_output(output_path)
     config = load_run_config(config_path)
     python_result = _run_python_step(config, max_tracers=max_tracers)
-    python_public = transport_tracer_to_public4(canonical_time_slice(python_result.state.data))
+    python_public = transport_tracer_to_public4(
+        canonical_time_slice(python_result.state.to_canonical())
+    )
     python_surface_pressure = np.sum(python_result.delp_dry_hpa[0], axis=0) + 0.01
     return ComparisonBundle(
         lon=lon,
@@ -499,7 +501,7 @@ def _read_tracer_names(dataset: netCDF4.Dataset) -> tuple[str, ...]:
 def _limit_tracers(tracers: TracerField, max_tracers: int) -> TracerField:
     return TracerField(
         names=tracers.names[:max_tracers],
-        data=tracers.data[..., :max_tracers],
+        data=tracers.to_canonical()[..., :max_tracers],
         units=tracers.units[:max_tracers],
         coords=tracers.coords,
     )

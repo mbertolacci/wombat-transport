@@ -104,7 +104,6 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 - Keep comments sparse and useful; document intentional GEOS-Chem deviations
   where they occur.
 - Numba is available in the local `.venv` and is part of the current
-  performance path. `WOMBAT_NUMBA` is the global switch, with
-  `WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and `WOMBAT_CONVECTION_NUMBA`
-  as per-operator overrides. Correctness is still judged by GEOS-Chem parity
-  tests.
+  performance path. `WOMBAT_NUMBA` is the repository-wide switch and
+  `WOMBAT_NUMBA_THREADS` is the single process-wide thread count. Correctness
+  is still judged by GEOS-Chem parity tests.

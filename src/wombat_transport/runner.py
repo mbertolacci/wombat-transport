@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from datetime import timezone
 import json
 import logging
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -34,9 +35,14 @@ from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
+    TransportExecutor,
     run_transport_one_step,
+    run_transport_step_with_executor,
 )
-from wombat_transport.transport.numba_control import warn_if_transport_numba_disabled
+from wombat_transport.transport.numba_control import (
+    numba_available_and_enabled,
+    warn_if_numba_disabled,
+)
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
@@ -68,18 +74,38 @@ class TracerSimulationResult:
 
 
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
-    warn_if_transport_numba_disabled(logger)
+    warn_if_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
     _write_run_metadata(config)
     species = load_species_database(config.species_database)
     logger.debug("loaded_species count=%d", len(species))
-    state = initialize_tracers(
+    initial_state = initialize_tracers(
         config.initial_restart,
         config.species_database,
         template_path=config.grid_template,
     )
+    parallel_strategy = _transport_executor()
+    numba_transport = numba_available_and_enabled()
+    if parallel_strategy == "blocks" and not numba_transport:
+        raise ValueError(
+            "WOMBAT_TRANSPORT_EXECUTOR=blocks requires WOMBAT_NUMBA to be enabled"
+        )
+    block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
+    state = initial_state.reblock(block_width)
+    use_unified_numba = numba_transport
+    transport_executor = (
+        TransportExecutor.create(state)
+        if use_unified_numba
+        else None
+    )
     surface_flux_to_vmr_factor = _surface_flux_to_vmr_factor(state, species)
-    logger.debug("initialized_tracers shape=%s", state.shape)
+    logger.debug(
+        "initialized_tracers shape=%s blocks=%d width=%d executor=%s",
+        state.shape,
+        state.block_count,
+        state.block_width,
+        parallel_strategy,
+    )
     grid = load_transport_grid(config.grid_template)
     tpcore_static_terms = build_tpcore_static_terms(
         area_m2=grid.area_m2,
@@ -153,18 +179,29 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             logger.debug("refreshed_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
 
         logger.debug("running_transport step=%d", transport_steps + 1)
-        transport_result = run_transport_one_step(
-            state,
-            forcing,
-            grid,
+        transport_kwargs = dict(
             dt_s=transport_dt_s,
             active_emissions=active_emissions,
             surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             dry_air_mass_kg=dry_air_mass,
             tpcore_static_terms=tpcore_static_terms,
-            validate_tpcore_branches=elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s)),
-            consume_input=True,
+            validate_tpcore_branches=(
+                elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s))
+            ),
         )
+        if transport_executor is None:
+            transport_result = run_transport_one_step(
+                state, forcing, grid, consume_input=True, **transport_kwargs
+            )
+        else:
+            transport_result = run_transport_step_with_executor(
+                state,
+                forcing,
+                grid,
+                transport_executor,
+                execution=parallel_strategy,
+                **transport_kwargs,
+            )
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg
         final_delp_dry_hpa = transport_result.delp_dry_hpa
@@ -295,6 +332,26 @@ def _surface_flux_to_vmr_factor(state: TracerField, species) -> np.ndarray:
     return np.asarray(factors, dtype=np.float64)
 
 
+def _transport_executor() -> str:
+    value = os.environ.get("WOMBAT_TRANSPORT_EXECUTOR", "spatial").strip().lower()
+    if value not in {"spatial", "blocks"}:
+        raise ValueError("WOMBAT_TRANSPORT_EXECUTOR must be 'spatial' or 'blocks'")
+    return value
+
+
+def _transport_block_width(executor: str, tracer_count: int) -> int:
+    configured = os.environ.get("WOMBAT_TRANSPORT_BLOCK_WIDTH")
+    if configured is None or not configured.strip():
+        return tracer_count if executor == "spatial" else 8
+    try:
+        width = int(configured)
+    except ValueError as exc:
+        raise ValueError("WOMBAT_TRANSPORT_BLOCK_WIDTH must be a positive integer") from exc
+    if width < 1:
+        raise ValueError("WOMBAT_TRANSPORT_BLOCK_WIDTH must be a positive integer")
+    return width
+
+
 def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:
     delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_start_hpa,
@@ -307,17 +364,18 @@ def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:
 def has_invalid_emissions(emissions: TracerField | SurfaceEmissions) -> bool:
     """Return true when an emissions field contains fill values as data."""
 
-    data = emissions.data
+    data = emissions.data if isinstance(emissions, SurfaceEmissions) else emissions.to_canonical()
     return bool(np.any(~np.isfinite(data)) or np.any(np.abs(data) > 1.0e20))
 
 
 def emitted_mass_by_tracer_for_step(emissions: TracerField | SurfaceEmissions, dt_s: float) -> np.ndarray:
     area = emissions.coords["AREA"]
-    if emissions.data.ndim == 3:
+    data = emissions.data if isinstance(emissions, SurfaceEmissions) else emissions.to_canonical()
+    if data.ndim == 3:
         area_3d = area[:, :, np.newaxis]
-        return np.sum(emissions.data * float(dt_s) * area_3d, axis=(0, 1))
+        return np.sum(data * float(dt_s) * area_3d, axis=(0, 1))
     area_5d = area[np.newaxis, np.newaxis, :, :, np.newaxis]
-    return np.sum(emissions.data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
+    return np.sum(data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
 
 
 def _validate_timestep_schedule(transport_dt_s: float, emissions_dt_s: float) -> None:

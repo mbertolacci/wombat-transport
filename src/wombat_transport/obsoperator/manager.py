@@ -148,8 +148,12 @@ class ObsOperatorManager:
         ):
             self._sample_workspace = np.empty(required_shape, dtype=np.float64)
         samples = self._sample_workspace[: required_shape[0], : required_shape[1]]
+        state_bottom = np.asarray(
+            snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
+        )
         self._sampling_kernel(
-            np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
+            state_bottom,
+            snapshot.state.block_width,
             np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
             np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
             np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),

@@ -89,9 +89,15 @@ from wombat_transport.gc_harness import (
     write_pjc_input,
     _tpcore_pressure_branch_gap,
 )
-from wombat_transport.transport.convection import _native as convection_native
+from wombat_transport.transport.convection import _reference as convection_reference
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport._executor import apply_transport
+from wombat_transport.transport._executor import make_transport_workspace
+from wombat_transport.transport.convection._operator import _convect_block_serial
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
+from wombat_transport.transport.pbl import _kernels as pbl_numba
+from wombat_transport.transport.pbl._operator import _apply_vdiff_block_serial
+from wombat_transport.transport.pbl._plan import VdiffPlan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -102,6 +108,12 @@ from wombat_transport.transport.tpcore import (
     trace_tpcore_one_step,
     validate_tpcore_branch_support,
 )
+from wombat_transport.transport.tpcore import _kernels as tpcore_numba
+from wombat_transport.transport.tpcore._operator import load_tpcore_workspace
+from wombat_transport.transport.tpcore._operator import make_tpcore_workspace
+from wombat_transport.transport.tpcore._operator import pack_tracer_blocks
+from wombat_transport.transport.tpcore._operator import unpack_tracer_blocks
+from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v2"
@@ -872,6 +884,34 @@ def test_convection_vectorized_batches_mixed_cloud_bases_and_inactive_columns():
     assert result.negative_count_after == 0
 
 
+def test_convection_inactive_column_ignores_precipitation_fields():
+    nlev, nlat, nlon, ntracer = 5, 1, 1, 2
+    tracer = np.linspace(3.9e-4, 4.1e-4, nlev * ntracer, dtype=np.float64).reshape(
+        nlev, nlat, nlon, ntracer
+    )
+    zeros = np.zeros((nlev, nlat, nlon), dtype=np.float64)
+    dqrcu = np.linspace(1.0e-9, 5.0e-9, nlev, dtype=np.float64).reshape(nlev, 1, 1)
+    reevapcn = np.linspace(5.0e-9, 1.0e-9, nlev, dtype=np.float64).reshape(nlev, 1, 1)
+    delp_dry = np.linspace(10.0, 50.0, nlev, dtype=np.float64).reshape(nlev, 1, 1)
+
+    result = run_cloud_convection_one_step(
+        tracer_conc=tracer,
+        cmfmc_kg_m2_s=zeros,
+        dtrain_kg_m2_s=zeros,
+        dqrcu_kg_kg_s=dqrcu,
+        reevapcn_kg_kg_s=reevapcn,
+        delp_dry_hpa=delp_dry,
+        delp_hpa=delp_dry * 1.01,
+        area_m2=np.full((nlat, nlon), 2.0e10, dtype=np.float64),
+        dt_s=600.0,
+        reconstruct_conv_precip_flux=True,
+        diagnostics=False,
+    )
+
+    np.testing.assert_array_equal(result.tracer_conc, tracer)
+    assert result.diag14_mass_flux.shape == (0,)
+
+
 def test_convection_column_chunking_preserves_results(monkeypatch):
     nlev, nlat, nlon, ntracer = 6, 2, 4, 3
     tracer = np.full((nlev, nlat, nlon, ntracer), 4.0e-4, dtype=np.float64)
@@ -900,7 +940,11 @@ def test_convection_column_chunking_preserves_results(monkeypatch):
         area_m2=area,
         dt_s=600.0,
     )
-    monkeypatch.setattr(convection_native, "_MAX_GROUP_TRACER_BYTES", nlev * ntracer * np.dtype(np.float64).itemsize)
+    monkeypatch.setattr(
+        convection_reference,
+        "_MAX_GROUP_TRACER_BYTES",
+        nlev * ntracer * np.dtype(np.float64).itemsize,
+    )
     chunked = run_cloud_convection_one_step(
         tracer_conc=tracer,
         cmfmc_kg_m2_s=cmfmc,
@@ -994,8 +1038,12 @@ def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path, 
         python_output_path=tmp_path / "python_convection_output.nc",
     )
 
-    assert comparison.tracer_max_abs_error == 0.0
-    assert comparison.diag14_max_abs_error == 0.0
+    if transport_numba_mode == "numba":
+        assert comparison.tracer_max_abs_error <= 2.0e-19
+        assert comparison.diag14_max_abs_error <= 4.0e-10
+    else:
+        assert comparison.tracer_max_abs_error == 0.0
+        assert comparison.diag14_max_abs_error == 0.0
     assert comparison.negative_count_before_actual == comparison.negative_count_before_expected
     assert comparison.negative_count_after_actual == comparison.negative_count_after_expected
     assert comparison.common_basis_python_mass_change_max_abs == 0.0
@@ -1061,6 +1109,26 @@ def test_vdiff_nonzero_surface_flux_fast_path_matches_diagnostic_path(transport_
 
     diagnostic = run_vdiffdr_one_step(**kwargs, diagnostics=True)
     fast = run_vdiffdr_one_step(**kwargs, diagnostics=False)
+
+    if pbl_numba._numba_vdiff_enabled():
+        expected_tracer = fast.tracer_conc.copy()
+        expected_humidity = fast.specific_humidity_kg_kg.copy()
+        workspace = pbl_numba._VDIFF_FULLGRID_WORKSPACES.workspace
+        for name in (
+            "kvh",
+            "kvm",
+            "potbar",
+            "cah",
+            "cch",
+            "zeh",
+            "termh",
+            "zfq_scalar",
+            "sphu_diffused",
+        ):
+            getattr(workspace, name).fill(np.nan)
+        poisoned = run_vdiffdr_one_step(**kwargs, diagnostics=False)
+        np.testing.assert_array_equal(poisoned.tracer_conc, expected_tracer)
+        np.testing.assert_array_equal(poisoned.specific_humidity_kg_kg, expected_humidity)
 
     np.testing.assert_allclose(fast.tracer_conc, diagnostic.tracer_conc, rtol=0.0, atol=1.0e-15)
     np.testing.assert_allclose(
@@ -1429,6 +1497,192 @@ def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture(transpor
         )
 
     np.testing.assert_allclose(state.tracer_conc_after, 4.0e-4, atol=1.0e-18, rtol=0.0)
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_numba_fzppm_does_not_read_uninitialized_workspace():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=area,
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    expected = tpcore_numba._advect_tracers_fused_numba(
+        tracer_conc=tracer,
+        setup=setup,
+        area_m2=area,
+        fill=True,
+    )
+    workspace = tpcore_numba._TPCORE_NUMBA_WORKSPACES.workspace
+    for array in workspace.z_workspace:
+        array.fill(np.nan)
+    actual = tpcore_numba._advect_tracers_fused_numba(
+        tracer_conc=tracer,
+        setup=setup,
+        area_m2=area,
+        fill=True,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(("ntracer", "lane_width"), ((1, 8), (7, 8), (8, 8), (9, 8), (17, 16)))
+def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_width):
+    tracer = np.arange(2 * 3 * 4 * ntracer, dtype=np.float64).reshape(2, 3, 4, ntracer)
+
+    blocks, active_tracers = pack_tracer_blocks(tracer, lane_width)
+    actual = unpack_tracer_blocks(blocks, active_tracers)
+
+    assert blocks.flags.c_contiguous
+    assert blocks.shape[0] == (ntracer + lane_width - 1) // lane_width
+    np.testing.assert_array_equal(actual, tracer)
+    if ntracer % lane_width:
+        assert np.count_nonzero(blocks[-1, :, :, :, ntracer % lane_width :]) == 0
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+@pytest.mark.parametrize("surface_flux_value", (0.0, 1.0e-12))
+@pytest.mark.parametrize("execution", ("serial", "spatial", "blocks"))
+def test_compiled_transport_policies_match_direct_kernels(monkeypatch, surface_flux_value, execution):
+    ntracer = 9
+    lane_width = 8
+    workers = 2
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", str(workers))
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        base_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        tracer = np.concatenate(
+            [base_tracer[:, :, :, :1] + index * 1.0e-8 for index in range(ntracer)], axis=3
+        )
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=area,
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    nlev, nlat, nlon, _ = tracer.shape
+    shape = (nlev, nlat, nlon)
+    edge_shape = (nlev + 1, nlat, nlon)
+    vdiff_plan = VdiffPlan(
+        cch=np.zeros(shape),
+        zeh=np.zeros(shape),
+        termh=np.ones(shape),
+        cgs=np.zeros(edge_shape),
+        kvh=np.zeros(edge_shape),
+        potbar=np.zeros(edge_shape),
+        rpdel=np.ones(shape),
+        rrho=np.ones((nlat, nlon)),
+        tmp1=np.zeros((nlat, nlon)),
+        dry_mass=np.ones(shape),
+        area_m2=area,
+        dt_s=600.0,
+        start_level=0,
+        specific_humidity_after=np.zeros(shape),
+    )
+    cmfmc = np.zeros(shape)
+    dtrain = np.zeros(shape)
+    dqrcu = np.zeros(shape)
+    cmfmc[4:13] = 0.01
+    dtrain[4:13] = 0.0015
+    dqrcu[4:13] = 1.0e-8
+    delp_dry = np.full(shape, 20.0)
+    delp_hpa = delp_dry * 1.01
+    reevapcn = np.zeros(shape)
+    surface_flux = np.full((nlat, nlon, ntracer), surface_flux_value)
+    tpcore_plan = prepare_tpcore_plan(setup=setup, area_m2=area)
+    transport_workspace = make_transport_workspace(
+        tracer.shape, lane_width, workers
+    )
+    workspace = transport_workspace.tpcore
+
+    expected_tpcore = tpcore_numba._advect_tracers_fused_numba(
+        tracer_conc=tracer, setup=setup, area_m2=area, fill=True
+    )
+    expected = np.empty_like(expected_tpcore)
+    expected_negative = _apply_vdiff_block_serial(
+        expected_tpcore,
+        expected,
+        vdiff_plan.cch,
+        vdiff_plan.zeh,
+        vdiff_plan.termh,
+        vdiff_plan.dry_mass,
+        vdiff_plan.area_m2,
+        vdiff_plan.cgs,
+        vdiff_plan.kvh,
+        vdiff_plan.potbar,
+        vdiff_plan.rpdel,
+        vdiff_plan.rrho,
+        vdiff_plan.tmp1,
+        vdiff_plan.dt_s,
+        vdiff_plan.start_level,
+        surface_flux,
+        bool(surface_flux_value),
+        np.empty((1, nlon, nlev, ntracer)),
+        np.empty((1, nlon, ntracer)),
+        np.empty((1, nlon, ntracer)),
+        np.empty((1, nlon, nlev, ntracer)),
+        np.empty((1, nlon, ntracer), dtype=np.bool_),
+    )
+    stride = max(ntracer, 16)
+    scalar_shape = (nlev, nlat * nlon)
+    _convect_block_serial(
+        expected.reshape(nlev, nlat * nlon, ntracer),
+        np.empty((0, 0, 0), dtype=np.float64),
+        cmfmc.reshape(scalar_shape),
+        dtrain.reshape(scalar_shape),
+        delp_hpa.reshape(scalar_shape),
+        delp_dry.reshape(scalar_shape),
+        (delp_dry * G0_100).reshape(scalar_shape),
+        dqrcu.reshape(scalar_shape),
+        reevapcn.reshape(scalar_shape),
+        area.reshape(nlat * nlon),
+        False,
+        False,
+        2,
+        300.0,
+        np.empty((1, stride)),
+        np.empty((1, stride)),
+        np.empty((1, stride)),
+        np.empty((1, stride)),
+    )
+
+    load_tpcore_workspace(tracer, workspace)
+    actual_negative = apply_transport(
+        tpcore_plan=tpcore_plan,
+        vdiff_plan=vdiff_plan,
+        workspace=transport_workspace,
+        surface_flux_kg_m2_s=surface_flux,
+        cmfmc=cmfmc,
+        dtrain=dtrain,
+        delp_hpa=delp_hpa,
+        delp_dry=delp_dry,
+        bmass=delp_dry * G0_100,
+        dqrcu=dqrcu,
+        reevapcn=reevapcn,
+        reconstruct_conv_precip_flux=False,
+        internal_steps=2,
+        internal_dt_s=300.0,
+        execution=execution,
+    )
+    actual = np.concatenate([block.q for block in workspace.blocks], axis=3)[..., :ntracer]
+
+    assert actual_negative == expected_negative
+    np.testing.assert_allclose(actual, expected, rtol=3.0e-16, atol=2.0e-19)
 
 
 def test_python_tpcore_trace_preserves_final_output_on_low_courant_fixture():

@@ -9,10 +9,11 @@ has since been replaced by a boolean switch; unset or truthy
 `WOMBAT_TPCORE_NUMBA` now enables the fused Numba path, and false-like values
 disable it.
 
-Current transport-wide control is `WOMBAT_NUMBA`: unset or truthy values enable
-optional Numba paths when importable, while false-like values disable them.
-`WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and `WOMBAT_CONVECTION_NUMBA`
-override that global switch for individual operators.
+Current repository-wide control is `WOMBAT_NUMBA`: unset or truthy values
+enable all optional Numba paths when importable, while false-like values disable
+them. `WOMBAT_NUMBA_THREADS` is the single process-wide worker count and is
+applied once. Operator-specific switches and thread controls mentioned in older
+entries below are retained only as historical records and no longer exist.
 
 The benchmark scripts now support `--warmup`, defaulting to one untimed run per
 tracer count. This avoids timing first-call Numba compilation when collecting
@@ -2427,3 +2428,381 @@ same function executed directly in Python. Their logical science-output
 SHA-256 digests were identical. The Python reference therefore adds about
 0.48 s to this full run while retaining exactly one sampling implementation
 and one in-memory representation.
+
+## 2026-07-16 parity-gated local optimization follow-up
+
+This pass tested the low-risk local and compiler ideas left after the broader
+transport study. Block-major storage, prepare/apply plans, noalias compiler
+internals, QCK restructuring, fixed-grid kernels, level tiling, and aggregate
+scheduling were explicitly deferred.
+
+### Retained changes
+
+- Convection now computes the subcloud dry-pressure sum, mass sum, base mass
+  flux, and their reciprocals once per column rather than once per 300-second
+  internal step. The 24/96-tracer one-thread synthetic best times moved from
+  `0.03451/0.11377 s` to `0.03407/0.11366 s` before later compiler work.
+- FZPPM no longer clears its complete `dc` workspace or writes the unused last
+  `dpi` row. A NaN-poisoned workspace test proves that no removed value is
+  consumed. In the reverse-order comparison, 24/96-tracer TPCORE moved from
+  `0.23214/0.77375 s` to `0.22499/0.76797 s`.
+- VDIFF no longer clears `kvh`/`kvm` before overwriting them from `kvf`, clears
+  only the required `potbar` boundary, and removes redundant coefficient and
+  humidity-solve initialization. NaN-poison tests cover the affected arrays.
+  Zero-flux 24/96-tracer best times moved from `0.04762/0.12094 s` to
+  `0.04742/0.11934 s`.
+- The nonzero-emission VDIFF path computes `cgq` and the bottom source directly
+  with the original parenthesization. This removes the per-thread `cgq` and
+  `dqbot` workspaces. A new benchmark option supplies a uniform nonzero surface
+  flux; its 24/96-tracer best times moved from `0.06295/0.18870 s` to
+  `0.06038/0.16561 s`, improvements of 4.1% and 12.2%, with identical
+  checksums.
+- Granular `fastmath={"contract"}` is retained only for FZPPM and the
+  diagnostics-light convection kernel. FZPPM remained bitwise equal on the
+  compact oracle fixture and improved 96-tracer TPCORE by about 2.4% in the
+  isolated probe. Convection remained within its existing one-ULP contract and
+  moved from `0.03407/0.11366 s` to `0.03321/0.10394 s` at 24/96 tracers.
+
+The cumulative one-P-core synthetic driver reached `0.29750 s` at 24 tracers
+and `0.92281 s` at 96 tracers. Four P-cores reached `0.13925 s` and
+`0.40448 s`. A real 2x2.5 nonzero-emissions 24-tracer six-hour run completed
+all 36 transport steps in `11.69 s`, including `10.51 s` in transport. The
+contract and strict variants produced bitwise-identical values for every one
+of the 24 species in the six-hour HISTORY output. The full suite passed with
+233 tests and 52 local-data skips.
+
+### Rejected probes
+
+- Activating convection's existing inactive-column `continue` was exact, but
+  the all-active 24-tracer benchmark regressed by about 7%; the branch was
+  removed. The new inactive-column precipitation-field regression test remains.
+- `error_model="numpy"` was neutral or regressive on TPCORE, VDIFF, and
+  convection and was removed.
+- `fastmath={"contract"}` on XTP traded a 96-tracer improvement for a
+  24-tracer regression; YTP regressed both primary counts. Both were removed.
+
+All retained workspace and arithmetic changes passed the tracked low- and
+large-Courant TPCORE, zero/nonzero/negative VDIFF, active/inactive convection,
+NumPy fallback, and transport ownership tests. Generated benchmark, LLVM,
+profile, and multistep artifacts remained untracked under `/tmp`.
+
+The four canonical full-run windows were then rerun from copies of the parent
+checkout's materialized directories while loading this worktree on
+`PYTHONPATH`: two-day no-emissions and one-day 24-tracer residual emissions at
+both 2x2.5 and 4x5. All 864 transport steps completed. Case-defined HISTORY,
+ObsOperator, and available restart comparisons were bitwise identical to the
+saved pre-optimization Wombat outputs at both resolutions. Consequently the
+GEOS-Chem comparison metrics were also unchanged: species concentration and
+CO2 restart maximum absolute differences remained at the established
+float32-quantization scale (`2.91e-11` at 2x2.5 and up to `5.82e-11` in 4x5
+HISTORY), with zero ObsOperator tolerance failures. Comparison artifacts live
+under `/tmp/wombat-opt-validation-compare` and remain untracked.
+
+## Experimental persistent TPCORE tracer blocks (2026-07-16)
+
+An opt-in prototype tests contiguous padded tracer blocks without changing the
+production dispatch or canonical public layout. It prepares `ua`, `va`, `jn`,
+and `js` once, recompiles the existing TPCORE leaf implementations as serial
+Numba kernels, and assigns independent blocks to a Python thread pool. Block
+storage accepts every positive tracer count; unused lanes in the final block
+are zero-filled and discarded on unpack. Exact tests cover widths 8 and 16,
+one- and multi-block inputs, and partial final blocks.
+
+Packing canonical state into blocks and unpacking it after every TPCORE call is
+not viable. On global 2x2.5 with eight workers, the complete 96-tracer blocked
+call took `0.500-0.554 s` for widths 8-24 versus `0.242 s` for the fused path.
+The extra full-state memory copies erase the scheduling benefit.
+
+The already-packed apply measurement is promising at larger tracer counts. It
+includes block scheduling and the per-step shared plan cost, but excludes the
+canonical pack and unpack that persistent state would avoid:
+
+| Grid | Tracers | Fused s | Best block width | Block apply s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2x2.5 | 24 | 0.0706 | 8 | 0.1115 | 0.63x |
+| 2x2.5 | 48 | 0.1264 | 8 | 0.1275 | 0.99x |
+| 2x2.5 | 64 | 0.1569 | 8 | 0.1317 | 1.19x |
+| 2x2.5 | 96 | 0.2421 | 16 | 0.2043 | 1.18x |
+| 2x2.5 | 128 | 0.3411 | 16 | 0.2435 | 1.40x |
+| 2x2.5 | 192 | 0.5631 | 8 | 0.3543 | 1.59x |
+| 4x5 | 24 | 0.0198 | 8 | 0.0270 | 0.73x |
+| 4x5 | 96 | 0.0669 | 16 | 0.0487 | 1.37x |
+| 4x5 | 192 | 0.1283 | 16 | 0.0791 | 1.62x |
+
+Every measured result was bitwise equal to the fused Numba output, including
+full-grid padded tails. Width 24 was slower than widths 8 and 16 at the primary
+2x2.5 counts, so 24 has no special status. Width 8 reaches the eight-worker
+frontier sooner and is the safer default for arbitrary counts; width 16 can be
+better once enough blocks exist. The eventual policy should remain measured
+dispatch rather than a user-visible tracer-count restriction.
+
+The prototype was retained for the next architecture decision, but was not
+used by production. The next useful test was
+to let VDIFF and convection consume the same persistent block storage, avoiding
+conversion across a complete timestep. Until that succeeds, small ensembles
+and all canonical-state calls should continue using the existing fused path.
+
+### Persistent zero-flux VDIFF handoff
+
+The experiment now captures the exact `cch`, `zeh`, and `termh` coefficients
+produced by the full-grid VDIFF kernel during a one-tracer preparation pass.
+Independent serial tracer-block solves consume TPCORE's packed output directly
+and write into its alternate buffer. The preparation also computes humidity
+once. Padded-tail tracer output, humidity, and negative-count diagnostics are
+bitwise equal to the production full-grid path.
+
+The table charges both TPCORE and VDIFF per-step plan costs but excludes initial
+canonical packing, representing state retained in block form across operators:
+
+| Grid | Tracers | Fused chain s | Best width | Block chain s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2x2.5 | 24 | 0.0720 | 8 | 0.1296 | 0.56x |
+| 2x2.5 | 64 | 0.1675 | 8 | 0.1662 | 1.01x |
+| 2x2.5 | 96 | 0.2642 | 16 | 0.2544 | 1.04x |
+| 2x2.5 | 128 | 0.3892 | 8 | 0.2960 | 1.31x |
+| 2x2.5 | 192 | 0.6446 | 8 | 0.4310 | 1.50x |
+| 4x5 | 24 | 0.0263 | 8 | 0.0347 | 0.76x |
+| 4x5 | 96 | 0.0627 | 8 | 0.0646 | 0.97x |
+| 4x5 | 192 | 0.1329 | 16 | 0.1009 | 1.32x |
+
+This retains the architecture on net even though the serial VDIFF block solve
+uses some of TPCORE's isolated gain. It does not justify production dispatch
+yet: nonzero surface flux and convection must share the layout, and the fused
+canonical path remains materially faster for small ensembles. Reproduction is
+available in `tools/benchmark_transport_blocks.py`.
+
+The same block solve now supports nonzero surface flux without precombining
+source coefficients: `cgs`, `kvh`, `potbar`, `rpdel`, `rrho`, and the bottom
+source scale are captured from the full-grid preparation, and the existing
+parenthesization is retained per tracer. The tracked emitting fixture is
+bitwise equal through tracer output, humidity, clipping count, and a padded
+tail block. With a uniform `1e-9 kg m-2 s-1` synthetic source on 2x2.5, the
+plan-charged chain improved from `0.3238` to `0.2620 s` at 96 tracers (1.24x)
+and from `0.7676` to `0.4604 s` at 192 tracers (1.67x). Surface-emission work
+therefore strengthens rather than erases the persistent-layout case.
+
+### Unified block state and convection
+
+The two persistent tracer buffers now use single C-contiguous arrays with
+shape `(block, lev, lat, lon, lane)`. Each slowest-dimension block slice remains
+C-contiguous for the serial TPCORE and convection kernels, while allocation,
+swapping, and future cross-block scheduling become simpler. TPCORE stayed
+bitwise exact and showed no layout regression.
+
+An explicit Numba `prange(block * lat * lon)` VDIFF variant was also tested.
+Despite its larger task pool and smaller per-worker vertical scratch, it was
+2-8% slower than the existing coarse block executor at 96 and 192 tracers. The
+flattened kernel was removed; the unified 5-D state remains because it is
+neutral-to-positive independently of that scheduling experiment.
+
+Convection now consumes the VDIFF result in the same persistent buffer. It
+recompiles the production full-grid arithmetic as a serial per-block kernel;
+the tracked 24-tracer sampled fixture and padded synthetic cases are bitwise
+equal. Complete plan-charged TPCORE -> VDIFF -> convection results were:
+
+| Grid/source | Tracers | Fused s | Best width | Block s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2x2.5 zero flux | 24 | 0.0826 | 8 | 0.1667 | 0.50x |
+| 2x2.5 zero flux | 96 | 0.3230 | 16 | 0.2987 | 1.08x |
+| 2x2.5 zero flux | 192 | 0.7590 | 8 | 0.4977 | 1.52x |
+| 2x2.5 emitting | 96 | 0.3743 | 16 | 0.3110 | 1.20x |
+| 2x2.5 emitting | 192 | 0.8391 | 8 | 0.5515 | 1.52x |
+| 4x5 emitting | 96 | 0.0885 | 16 | 0.0841 | 1.05x |
+| 4x5 emitting | 192 | 0.1739 | 16 | 0.1274 | 1.37x |
+
+All complete-chain benchmark outputs were bitwise equal. The evidence supports
+a hybrid policy: retain the fused canonical path for small ensembles and use
+persistent blocks only above a measured grid- and worker-dependent threshold.
+
+### Top-level Numba block pipeline
+
+The persistent executor now also has an opt-in single-region Numba variant.
+One outer `prange(block)` assigns each block to a Numba worker and runs the
+serial TPCORE, VDIFF, and convection kernels consecutively. Scratch that is
+only live within an operator is indexed by Numba worker rather than duplicated
+for every block. Neither path was in production dispatch at this stage.
+
+Direct executor comparisons below exclude the common plan cost. All outputs,
+including a padded tail and nonzero surface flux, were bitwise equal:
+
+| Grid/source | Tracers | Width | Python threads s | Numba pipeline s | Pipeline change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4x5, zero flux | 24 | 8 | 0.0446 | 0.0310 | 30% faster |
+| 4x5, zero flux | 96 | 16 | 0.0774 | 0.0575 | 26% faster |
+| 4x5, zero flux | 192 | 8 | 0.1316 | 0.1081 | 18% faster |
+| 2x2.5, zero flux | 96 | 16 | 0.2815 | 0.2531 | 10% faster |
+| 2x2.5, zero flux | 192 | 8 | 0.5279 | 0.4691 | 11% faster |
+| 2x2.5, emitting | 96 | 16 | 0.3040 | 0.2869 | 6% faster |
+| 2x2.5, emitting | 192 | 8 | 0.5477 | 0.5090 | 7% faster |
+
+The improvement is not universal: the 2x2.5 emitting 96-tracer width-8 case
+regressed by about 1%, and width 16 was nearly neutral at 192 tracers. The best
+width also changes with the number of available blocks. Retain the Numba
+pipeline as the lower-overhead executor candidate. The Python block scheduler
+was subsequently removed, leaving the Numba pipeline as the sole concurrent
+block executor. It gives every block an uninterrupted TPCORE-to-convection
+path and avoids maintaining two scheduling implementations.
+
+The benchmark must set `WOMBAT_NUMBA_THREADS` as well as Numba's runtime thread
+count. Production operator wrappers reapply the environment-controlled count
+on entry; without the environment setting, the nominally fused eight-worker
+baseline silently runs with one thread. The benchmark now sets both controls.
+
+With that correction, the complete zero-flux chain, all per-step block plan
+costs charged, and initial canonical packing excluded, has the following
+crossover on eight workers. Each block result remained bitwise equal:
+
+| Grid | Tracers | Best width | Fused s | Numba blocks s | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4x5 | 1 | 1 | 0.0098 | 0.0155 | 0.63x |
+| 4x5 | 2 | 1 | 0.0105 | 0.0166 | 0.63x |
+| 4x5 | 4 | 1 | 0.0137 | 0.0175 | 0.78x |
+| 4x5 | 8 | 1 | 0.0142 | 0.0192 | 0.74x |
+| 4x5 | 16 | 2 | 0.0233 | 0.0227 | 1.02x |
+| 4x5 | 32 | 4 | 0.0299 | 0.0271 | 1.10x |
+| 4x5 | 64 | 8 | 0.0552 | 0.0401 | 1.38x |
+| 4x5 | 128 | 16 | 0.1022 | 0.0664 | 1.54x |
+| 4x5 | 192 | 8 | 0.1520 | 0.1093 | 1.39x |
+| 2x2.5 | 1 | 1 | 0.0219 | 0.0640 | 0.34x |
+| 2x2.5 | 2 | 1 | 0.0244 | 0.0654 | 0.37x |
+| 2x2.5 | 4 | 1 | 0.0293 | 0.0694 | 0.42x |
+| 2x2.5 | 8 | 1 | 0.0397 | 0.0756 | 0.53x |
+| 2x2.5 | 16 | 2 | 0.0606 | 0.0905 | 0.67x |
+| 2x2.5 | 32 | 4 | 0.1167 | 0.1156 | 1.01x |
+| 2x2.5 | 48 | 8 | 0.1566 | 0.1601 | 0.98x |
+| 2x2.5 | 64 | 8 | 0.2112 | 0.1712 | 1.23x |
+| 2x2.5 | 96 | 16 | 0.3234 | 0.2695 | 1.20x |
+| 2x2.5 | 128 | 16 | 0.4447 | 0.3170 | 1.40x |
+| 2x2.5 | 192 | 8 | 0.7231 | 0.4903 | 1.47x |
+
+The 2x2.5 results around 32-48 tracers are effectively the noisy crossover,
+not a useful dispatch win. A conservative local policy is spatial below 64
+tracers, then parallel across blocks, while 4x5 can cross around 16-32 tracers. Expressed
+in terms of work per worker, the useful frontier is roughly eight tracers per
+worker on 2x2.5 and four per worker on 4x5. The selected width should leave at
+least one block per worker; extra blocks can help dynamic scheduling. This also
+explains why a 400-tracer, 40-core socket is promising for width 8: it supplies
+50 independent blocks, whereas a one-tracer run supplies only one and cannot
+use block-level concurrency.
+
+### Block-native simulation state
+
+`TracerField` always owns physical storage with shape
+`(time, block, lev, lat, lon, lane)`. Logical tracer names exclude padded tail
+lanes. Individual blocks and individual tracers are zero-copy views; joining
+multiple blocks into the old canonical array requires explicit
+`to_canonical()` conversion. The former `BlockedTracerField` type and the
+blocked-only transport driver were removed, so layout no longer changes with
+execution policy.
+
+`WOMBAT_TRANSPORT_EXECUTOR=spatial` is the default. Its default width is the
+complete tracer count, and every all-Numba tracer count uses the shared
+prepared one-block transport step. An explicit `WOMBAT_TRANSPORT_BLOCK_WIDTH`
+makes the spatial executor process several block views sequentially with
+within-operator parallelism. Both Numba forms and the native NumPy path were
+within one ULP at widths 8 and 24 on the real 24-tracer fixture; the spatial
+form remains bitwise equal to the standalone one-block adapter.
+
+`WOMBAT_TRANSPORT_EXECUTOR=blocks` defaults to width 8. One transport workspace
+owns persistent TPCORE state, block-shared intermediates, and worker-local
+scratch. Its top-level `prange(block)` calls a serial one-block TPCORE -> VDIFF
+-> convection step. The Python thread scheduler and its per-operator wrappers
+were removed. Two consecutive production-driver steps on the real 24-tracer
+fixture agree within one ULP through tracer state, with bitwise-equal humidity
+and dry mass. Zero- and nonzero-emission fixtures retain the same bound.
+
+HISTORY accumulation operates directly on contiguous block storage. Species
+and restart writers map each logical tracer index to `(block, lane)`, and the
+ObsOperator sampling kernel performs the same mapping for its prepared global
+field indices. Consequently the runner does not repack the complete tracer
+cube at output or observation boundaries.
+
+### Unified one-block transport policies
+
+The prepared Numba transport step now supports three policies over the same
+state, plans, and workspace:
+
+- `serial`: a serial block loop calling the serial one-block step;
+- `spatial`: a serial block loop calling spatially parallel TPCORE, VDIFF, and
+  convection variants;
+- `blocks`: one outer `prange(block)` calling the serial one-block step.
+
+VDIFF's tracer solve is one source function containing `prange(latitude)`,
+compiled with and without `parallel=True`. Convection already follows the same
+pattern through its Python kernel source. TPCORE shares all leaf arithmetic
+while retaining thin serial and spatial orchestration variants.
+
+Before tracer-free persistent VDIFF preparation, the local 2x2.5 results with
+eight workers, including cold plan construction, showed that the
+full-width spatial policy was about neutral at 8, 16, and 24 tracers and ranged
+from roughly neutral to 14% faster at 32--96 tracers across repeated runs. It
+was 8--11% slower at 1--4 tracers because fixed plan cost dominates, which
+initially motivated a below-eight fallback. At 24 and 96 tracers it was
+neutral-to-positive with one, two, four, and eight workers except for noisy
+comparisons within roughly 2%.
+
+Width-8 outer-block execution retained its high-thread crossover. With eight
+workers it was 27% faster than the direct chain at 64 tracers in one repeat and
+3% faster at 96 in a noisier repeat. At two workers it was 28% slower for 96
+tracers and at four workers roughly neutral. Block execution therefore remains
+explicit rather than automatically selected; spatial execution remains the
+default.
+
+### Tracer-free VDIFF preparation and steady-state plan cost
+
+The first unified low-tracer comparison charged a single cold VDIFF plan after
+allocation while warming the cached workspaces used by the direct chain. It
+also prepared coefficients by running the full VDIFF kernel with a dummy
+one-tracer field. Stage timings showed that the unified spatial apply itself
+was faster at 1--8 tracers; the apparent regression came from this preparation
+pass.
+
+The retained preparation path now exits after coefficient and humidity work,
+before all tracer loops. Coefficient, humidity, and dummy-input arrays live in
+the persistent transport workspace. The benchmark warms and repeats plan
+construction on those buffers, matching its treatment of the direct chain.
+The original combined VDIFF path retains the same tracer arithmetic, and a
+shared inlined humidity solve keeps the two paths in source-order parity.
+
+On global 2x2.5 with eight workers, zero flux, full-width one-block spatial
+execution, and all plan costs charged, the steady-state frontier was:
+
+| Tracers | Direct chain s | Unified s | Speedup |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.02117 | 0.02036 | 1.04x |
+| 2 | 0.02436 | 0.02380 | 1.02x |
+| 4 | 0.03034 | 0.02699 | 1.12x |
+| 8 | 0.04041 | 0.03691 | 1.09x |
+| 16 | 0.06435 | 0.05540 | 1.16x |
+| 32 | 0.11143 | 0.10828 | 1.03x |
+| 64 | 0.21379 | 0.19398 | 1.10x |
+| 96 | 0.32226 | 0.27399 | 1.18x |
+
+Uniform nonzero surface flux was within 1% at one tracer and 1.07x/1.15x
+faster at four/eight tracers. Width-8 outer-block execution also retained its
+gain: 1.23x at 64 tracers and 1.08x at 96 in this run. Every benchmark result
+was bitwise equal. The persistent VDIFF plan adds roughly 38 MiB at 2x2.5,
+independent of tracer count; this is the main cost to weigh before making the
+unified executor unconditional at low tracer counts.
+
+The executor is now unconditional whenever all three Numba operators are
+enabled. The default spatial width is exactly the tracer count, so it performs
+no padded lanes. A subsequent full-chain run including convection measured
+0.996x at one tracer and 1.045x at four tracers, which is close parity at the
+smallest case and a gain thereafter. The same run retained outer-block gains
+of 1.26x at 64 tracers with width 8 and 1.15x at 96 tracers with width 16;
+width 32 did not improve the block-parallel frontier.
+
+The standalone Numba VDIFF and convection APIs now adapt to these same
+one-block production kernels. Their diagnostic outputs are accumulated by the
+production arithmetic rather than separate diagnostic kernels. The obsolete
+latitude-by-latitude Numba VDIFF and grouped-column Numba convection
+implementations were removed; the NumPy implementations remain as independent
+semantic references.
+
+After making block storage universal and removing the transitional field and
+driver APIs, a warmed global 2x2.5 full-chain check with eight workers measured
+1.05x at one tracer and 1.13x at four tracers for exact-width spatial
+execution. Parallel block execution measured 1.29x at 64 tracers with width 8
+and 1.19x at 96 tracers with width 16. Spatial results were bitwise equal to
+the direct operator chain; block-parallel results remained within one ULP.

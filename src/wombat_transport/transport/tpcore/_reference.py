@@ -1,4 +1,4 @@
-"""GEOS-Chem-oriented NumPy TPCORE pieces.
+"""GEOS-Chem-oriented NumPy TPCORE reference implementation.
 
 The first tracked oracle fixture is intentionally compact and low-Courant:
 ``tests/fixtures/tpcore_snapshot_v2`` has max ``|cx|`` around 0.0023 and max
@@ -35,6 +35,7 @@ def run_tpcore_one_step(
     lat_deg: np.ndarray,
     dt_s: float,
     fill: bool = True,
+    _compiled_impl=None,
 ) -> TpcoreState:
     """Run the first NumPy TPCORE one-step path on canonical tracer layout.
 
@@ -59,6 +60,7 @@ def run_tpcore_one_step(
         area_m2=area_m2,
         fill=fill,
         validate_branches=True,
+        _compiled_impl=_compiled_impl,
     )
 
 
@@ -72,6 +74,7 @@ def run_tpcore_one_step_with_setup(
     reuse_output: bool = False,
     reuse_input: bool = False,
     defer_finalization: bool = False,
+    _compiled_impl=None,
 ) -> TpcoreState:
     """Run TPCORE tracer advection using an already computed setup."""
 
@@ -85,6 +88,7 @@ def run_tpcore_one_step_with_setup(
         reuse_output=reuse_output,
         reuse_input=reuse_input,
         defer_finalization=defer_finalization,
+        compiled_impl=_compiled_impl,
     )
     return _tpcore_state_from_setup(setup, tracer)
 
@@ -431,6 +435,7 @@ def _advect_tracers(
     reuse_output: bool = False,
     reuse_input: bool = False,
     defer_finalization: bool = False,
+    compiled_impl=None,
 ) -> np.ndarray | tuple[np.ndarray, TpcoreTrace | None]:
     """Advect canonical tracer arrays in top-level order."""
 
@@ -440,8 +445,8 @@ def _advect_tracers(
     if setup.delp1_hpa.shape != (nlev, nlat, nlon):
         raise ValueError("TPCORE setup shape does not match tracer_conc")
 
-    if _numba_tpcore_enabled() and not trace:
-        return _advect_tracers_fused_numba(
+    if compiled_impl is not None and not trace:
+        return compiled_impl(
             tracer_conc=np.asarray(tracer_conc, dtype=np.float64),
             setup=setup,
             area_m2=np.asarray(area_m2, dtype=np.float64),
@@ -1350,63 +1355,7 @@ def _fzppm_batch(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np.ndarr
 
 
 
-def _advect_tracers_fused_numba(
-    *,
-    tracer_conc: np.ndarray,
-    setup: TpcoreSetup,
-    area_m2: np.ndarray,
-    fill: bool,
-    reuse_output: bool = False,
-    reuse_input: bool = False,
-    defer_finalization: bool = False,
-) -> np.ndarray:
-    from wombat_transport.transport.tpcore._numba import _advect_tracers_fused_numba as _impl
-
-    return _impl(
-        tracer_conc=tracer_conc,
-        setup=setup,
-        area_m2=area_m2,
-        fill=fill,
-        reuse_output=reuse_output,
-        reuse_input=reuse_input,
-        defer_finalization=defer_finalization,
-    )
-
-
-def _numba_tpcore_mode() -> str:
-    from wombat_transport.transport.tpcore._numba import _numba_tpcore_mode as _impl
-
-    return _impl()
-
-
-def _numba_tpcore_enabled() -> bool:
-    from wombat_transport.transport.tpcore._numba import _numba_tpcore_enabled as _impl
-
-    return _impl()
-
-
-def _numba_tpcore_z_enabled() -> bool:
-    return _numba_tpcore_enabled()
-
-
-def _numba_tpcore_x_enabled() -> bool:
-    return _numba_tpcore_enabled()
-
-
-def _numba_tpcore_y_enabled() -> bool:
-    return _numba_tpcore_enabled()
-
-
-def _numba_tpcore_prepass_enabled() -> bool:
-    return _numba_tpcore_enabled()
-
-
 def _finalize_tpcore_output(dq1: np.ndarray, delp2: np.ndarray) -> np.ndarray:
-    if _numba_tpcore_enabled():
-        from wombat_transport.transport.tpcore._numba import _finalize_tpcore_output_numba
-
-        _finalize_tpcore_output_numba(dq1, delp2)
-        return dq1
     q_after = dq1 / delp2[:, :, :, np.newaxis]
     q_after[:, 1, :, :] = q_after[:, 0, :, :]
     q_after[:, -2, :, :] = q_after[:, -1, :, :]

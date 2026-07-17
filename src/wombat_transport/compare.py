@@ -34,19 +34,21 @@ def compare_to_time_slice(
 
     if candidate.names != reference.names:
         raise ValueError("candidate and reference tracer names do not match")
-    if reference.data.shape[0] == 0:
+    candidate_data = candidate.to_canonical()
+    reference_data = reference.to_canonical()
+    if reference_data.shape[0] == 0:
         raise ValueError("reference field has no time records")
 
-    reference_slice = reference.data[[reference_time_index], ...]
-    if candidate.data.shape != reference_slice.shape:
+    reference_slice = reference_data[[reference_time_index], ...]
+    if candidate_data.shape != reference_slice.shape:
         raise ValueError(
-            f"candidate shape {candidate.data.shape} does not match "
+            f"candidate shape {candidate_data.shape} does not match "
             f"reference slice shape {reference_slice.shape}"
         )
 
-    abs_error = np.abs(candidate.data - reference_slice)
+    abs_error = np.abs(candidate_data - reference_slice)
     reduce_axes = tuple(range(0, abs_error.ndim - 1))
-    mass_metrics = _mass_metrics(candidate.data, reference_slice, species, delp_dry_hpa, area_m2)
+    mass_metrics = _mass_metrics(candidate_data, reference_slice, species, delp_dry_hpa, area_m2)
     return ComparisonMetrics(
         names=candidate.names,
         max_abs_error=np.max(abs_error, axis=reduce_axes),

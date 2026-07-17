@@ -1,3 +1,5 @@
+"""Runtime convection operator and its compiled execution variants."""
+
 from __future__ import annotations
 
 import threading
@@ -5,10 +7,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.transport.convection import _native
+from functools import wraps
+
+from wombat_transport.transport.convection import _reference
 from wombat_transport.transport.numba_control import (
-    apply_numba_thread_count,
-    numba_enabled,
+    configure_numba_threads,
+    numba_available_and_enabled,
     numba_mode,
     synchronized_transport_numba,
 )
@@ -20,9 +24,9 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     njit = None
     prange = range
 
-for _name in dir(_native):
+for _name in dir(_reference):
     if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_native, _name))
+        globals().setdefault(_name, getattr(_reference, _name))
 
 _NUMBA_AVAILABLE = njit is not None
 
@@ -57,16 +61,17 @@ def _get_convection_kernel_workspace(nthreads: int, ntracer: int) -> _Convection
 
 
 def _numba_convection_mode() -> str:
-    return numba_mode("WOMBAT_CONVECTION_NUMBA")
+    return numba_mode()
 
 
 def _numba_convection_enabled() -> bool:
-    return numba_enabled("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
+    return numba_available_and_enabled(available=_NUMBA_AVAILABLE)
 
 
 @synchronized_transport_numba
 def _convect_fullgrid_top_numba(
     q_all: np.ndarray,
+    diag_all: np.ndarray,
     cmfmc_all: np.ndarray,
     dtrain_all: np.ndarray,
     delp_hpa_all: np.ndarray,
@@ -74,7 +79,9 @@ def _convect_fullgrid_top_numba(
     bmass_all: np.ndarray,
     dqrcu_met_all: np.ndarray,
     reevapcn_met_all: np.ndarray,
+    area_all: np.ndarray,
     *,
+    diagnostics: bool,
     reconstruct_conv_precip_flux: bool,
     internal_steps: int,
     internal_dt_s: float,
@@ -82,10 +89,11 @@ def _convect_fullgrid_top_numba(
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     ntracer = q_all.shape[2]
-    nthreads = apply_numba_thread_count("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
+    nthreads = configure_numba_threads(available=_NUMBA_AVAILABLE)
     workspace = _get_convection_kernel_workspace(nthreads, ntracer)
     _convect_fullgrid_top_numba_kernel(
         q_all,
+        diag_all,
         cmfmc_all,
         dtrain_all,
         delp_hpa_all,
@@ -93,6 +101,8 @@ def _convect_fullgrid_top_numba(
         bmass_all,
         dqrcu_met_all,
         reevapcn_met_all,
+        area_all,
+        diagnostics,
         reconstruct_conv_precip_flux,
         internal_steps,
         internal_dt_s,
@@ -103,58 +113,12 @@ def _convect_fullgrid_top_numba(
     )
 
 
-def _convect_column_group_top_numba(
-    q_all: np.ndarray,
-    diag_all: np.ndarray,
-    cmfmc_all: np.ndarray,
-    dtrain_all: np.ndarray,
-    delp_dry_all: np.ndarray,
-    bmass_all: np.ndarray,
-    area_all: np.ndarray,
-    cloud_base: int,
-    columns: np.ndarray,
-    *,
-    diagnostics: bool,
-    internal_steps: int,
-    internal_dt_s: float,
-) -> None:
-    if not _NUMBA_AVAILABLE:
-        _convect_column_group_top(
-            q_all,
-            diag_all,
-            cmfmc_all,
-            dtrain_all,
-            delp_dry_all,
-            bmass_all,
-            area_all,
-            cloud_base,
-            columns,
-            diagnostics=diagnostics,
-            internal_steps=internal_steps,
-            internal_dt_s=internal_dt_s,
-        )
-        return
-    _convect_column_group_top_numba_kernel(
-        q_all,
-        diag_all,
-        cmfmc_all,
-        dtrain_all,
-        delp_dry_all,
-        bmass_all,
-        area_all,
-        cloud_base,
-        columns,
-        diagnostics,
-        internal_steps,
-        internal_dt_s,
-    )
-
-
 if njit is not None:
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, fastmath={"contract"})
     def _convect_fullgrid_top_numba_kernel(
         q_all: np.ndarray,
+        diag_all: np.ndarray,
         cmfmc_all: np.ndarray,
         dtrain_all: np.ndarray,
         delp_hpa_all: np.ndarray,
@@ -162,6 +126,8 @@ if njit is not None:
         bmass_all: np.ndarray,
         dqrcu_met_all: np.ndarray,
         reevapcn_met_all: np.ndarray,
+        area_all: np.ndarray,
+        diagnostics: bool,
         reconstruct_conv_precip_flux: bool,
         internal_steps: int,
         internal_dt_s: float,
@@ -174,6 +140,7 @@ if njit is not None:
         ncol = q_all.shape[1]
         ntracer = q_all.shape[2]
         bottom_index = nlev - 1
+        dns = float(internal_steps)
 
         for col in prange(ncol):
             thread_id = get_thread_id()
@@ -210,24 +177,30 @@ if njit is not None:
                     cloud_base = level
                     break
 
+            mixes_below_base = cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM
+            denominator = 1.0
+            mass_below_base = 0.0
+            cmfmc_base = 0.0
+            inv_denominator = 1.0
+            inv_denom_qc = 1.0
+            if mixes_below_base:
+                denominator = 0.0
+                for level in range(cloud_base + 1, nlev):
+                    denominator += delp_dry_all[level, col]
+                    mass_below_base += bmass_all[level, col]
+                if denominator <= 0.0:
+                    denominator = 1.0
+                cmfmc_base = cmfmc_all[cloud_base + 1, col]
+                denom_qc = mass_below_base + cmfmc_base * internal_dt_s
+                inv_denominator = 1.0 / denominator
+                inv_denom_qc = 1.0 / denom_qc
+
             for step in range(internal_steps):
                 _ = step
                 for tracer in range(ntracer):
                     qc[tracer] = q_all[cloud_base, col, tracer]
 
-                if cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM:
-                    denominator = 0.0
-                    mass_below_base = 0.0
-                    for level in range(cloud_base + 1, nlev):
-                        denominator += delp_dry_all[level, col]
-                        mass_below_base += bmass_all[level, col]
-                    if denominator <= 0.0:
-                        denominator = 1.0
-
-                    cmfmc_base = cmfmc_all[cloud_base + 1, col]
-                    denom_qc = mass_below_base + cmfmc_base * internal_dt_s
-                    inv_denominator = 1.0 / denominator
-                    inv_denom_qc = 1.0 / denom_qc
+                if mixes_below_base:
                     for tracer in range(ntracer):
                         qb_num[tracer] = 0.0
                     for level in range(cloud_base + 1, nlev):
@@ -257,6 +230,7 @@ if njit is not None:
                         entrn = cmout - cmfmc_below
                         entrains = entrn >= 0.0 and cmout > 0.0
                         tendency_scale = internal_dt_s / bmass_all[level, col]
+                        area_scale = area_all[col] / dns
 
                         if entrains:
                             inv_cmout = 1.0 / cmout
@@ -272,6 +246,8 @@ if njit is not None:
 
                                 upward = cmfmc_current * q_all[level - 1, col, tracer]
                                 delq += upward
+                                if diagnostics:
+                                    diag_all[level, col, tracer] += (-temp - upward) * area_scale
                                 delq -= cmfmc_below * current
                                 current_work[tracer] = current
                                 delq_work[tracer] = delq * tendency_scale
@@ -285,6 +261,8 @@ if njit is not None:
 
                                 upward = cmfmc_current * q_all[level - 1, col, tracer]
                                 delq += upward
+                                if diagnostics:
+                                    diag_all[level, col, tracer] += (-temp - upward) * area_scale
                                 delq -= cmfmc_below * current
                                 current_work[tracer] = current
                                 delq_work[tracer] = delq * tendency_scale
@@ -310,120 +288,11 @@ if njit is not None:
                                     delq = -current
                                 q_all[level, col, tracer] = current + delq
 
-    @njit(cache=True, nogil=True)
-    def _convect_column_group_top_numba_kernel(
-        q_all: np.ndarray,
-        diag_all: np.ndarray,
-        cmfmc_all: np.ndarray,
-        dtrain_all: np.ndarray,
-        delp_dry_all: np.ndarray,
-        bmass_all: np.ndarray,
-        area_all: np.ndarray,
-        cloud_base: int,
-        columns: np.ndarray,
-        diagnostics: bool,
-        internal_steps: int,
-        internal_dt_s: float,
-    ) -> None:
-        nlev = q_all.shape[0]
-        ntracer = q_all.shape[2]
-        ncolumns = columns.size
-        bottom_index = nlev - 1
-        dns = float(internal_steps)
-        qc = np.empty(ntracer, dtype=np.float64)
-        qb_num = np.empty(ntracer, dtype=np.float64)
-
-        for step in range(internal_steps):
-            _ = step
-            for column_index in range(ncolumns):
-                col = columns[column_index]
-
-                for tracer in range(ntracer):
-                    qc[tracer] = q_all[cloud_base, col, tracer]
-
-                if cloud_base < bottom_index and cmfmc_all[cloud_base + 1, col] > _TINYNUM:
-                    denominator = 0.0
-                    mass_below_base = 0.0
-                    for level in range(cloud_base + 1, nlev):
-                        denominator += delp_dry_all[level, col]
-                        mass_below_base += bmass_all[level, col]
-                    if denominator <= 0.0:
-                        raise ValueError("dry pressure below cloud base must be positive")
-
-                    cmfmc_base = cmfmc_all[cloud_base + 1, col]
-                    denom_qc = mass_below_base + cmfmc_base * internal_dt_s
-                    for tracer in range(ntracer):
-                        qb_num[tracer] = 0.0
-                    for level in range(cloud_base + 1, nlev):
-                        delp_dry = delp_dry_all[level, col]
-                        for tracer in range(ntracer):
-                            qb_num[tracer] += q_all[level, col, tracer] * delp_dry
-                    for tracer in range(ntracer):
-                        qb = qb_num[tracer] / denominator
-                        plume = (
-                            mass_below_base * qb
-                            + cmfmc_base * q_all[cloud_base, col, tracer] * internal_dt_s
-                        ) / denom_qc
-                        qc[tracer] = plume
-                    for level in range(cloud_base + 1, nlev):
-                        for tracer in range(ntracer):
-                            q_all[level, col, tracer] = qc[tracer]
-
-                for level in range(cloud_base, 0, -1):
-                    if level == bottom_index:
-                        cmfmc_below = 0.0
-                    else:
-                        cmfmc_below = cmfmc_all[level + 1, col]
-
-                    if cmfmc_below > _TINYNUM:
-                        cmout = cmfmc_all[level, col] + dtrain_all[level, col]
-                        entrn = cmout - cmfmc_below
-                        entrains = entrn >= 0.0 and cmout > 0.0
-                        area_scale = area_all[col] / dns
-                        tendency_scale = internal_dt_s / bmass_all[level, col]
-
-                        for tracer in range(ntracer):
-                            qc_pres = qc[tracer]
-                            qc_next = qc_pres
-                            if entrains:
-                                qc_next = (
-                                    cmfmc_below * qc_pres + entrn * q_all[level, col, tracer]
-                                ) / cmout
-
-                            delq = cmfmc_below * qc_pres
-                            temp = -(cmfmc_all[level, col] * qc_next)
-                            delq += temp
-                            qc[tracer] = qc_next
-
-                            upward = cmfmc_all[level, col] * q_all[level - 1, col, tracer]
-                            delq += upward
-                            if diagnostics:
-                                diag_all[level, col, tracer] += (-temp - upward) * area_scale
-
-                            delq -= cmfmc_below * q_all[level, col, tracer]
-                            delq *= tendency_scale
-                            current = q_all[level, col, tracer]
-                            if current + delq < 0.0:
-                                delq = -current
-                            q_all[level, col, tracer] = current + delq
-                    else:
-                        has_current_flux = cmfmc_all[level, col] > _TINYNUM
-                        tendency_scale = internal_dt_s / bmass_all[level, col]
-                        for tracer in range(ntracer):
-                            qc[tracer] = q_all[level, col, tracer]
-                            if has_current_flux:
-                                delq = -(cmfmc_all[level, col] * qc[tracer])
-                                delq += cmfmc_all[level, col] * q_all[level - 1, col, tracer]
-                                delq *= tendency_scale
-                                current = q_all[level, col, tracer]
-                                if current + delq < 0.0:
-                                    delq = -current
-                                q_all[level, col, tracer] = current + delq
-
 else:
 
     def _convect_fullgrid_top_numba_kernel(
         q_all: np.ndarray,
+        diag_all: np.ndarray,
         cmfmc_all: np.ndarray,
         dtrain_all: np.ndarray,
         delp_hpa_all: np.ndarray,
@@ -431,6 +300,8 @@ else:
         bmass_all: np.ndarray,
         dqrcu_met_all: np.ndarray,
         reevapcn_met_all: np.ndarray,
+        area_all: np.ndarray,
+        diagnostics: bool,
         reconstruct_conv_precip_flux: bool,
         internal_steps: int,
         internal_dt_s: float,
@@ -440,24 +311,6 @@ else:
         current_work_workspace: np.ndarray,
     ) -> None:
         raise RuntimeError("numba is not available")
-
-    def _convect_column_group_top_numba_kernel(
-        q_all: np.ndarray,
-        diag_all: np.ndarray,
-        cmfmc_all: np.ndarray,
-        dtrain_all: np.ndarray,
-        delp_dry_all: np.ndarray,
-        bmass_all: np.ndarray,
-        area_all: np.ndarray,
-        cloud_base: int,
-        columns: np.ndarray,
-        diagnostics: bool,
-        internal_steps: int,
-        internal_dt_s: float,
-    ) -> None:
-        raise RuntimeError("numba is not available")
-
-
 
 def _column_mass_transport_numba(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
     if not _NUMBA_AVAILABLE:
@@ -497,3 +350,62 @@ else:
         area_m2: np.ndarray,
     ) -> np.ndarray:
         raise RuntimeError("numba is not available")
+
+
+def _convect_compiled(
+    tracer: np.ndarray,
+    diag14: np.ndarray,
+    cmfmc: np.ndarray,
+    dtrain: np.ndarray,
+    dqrcu_met: np.ndarray,
+    reevapcn_met: np.ndarray,
+    delp_hpa: np.ndarray,
+    delp_dry: np.ndarray,
+    bmass: np.ndarray,
+    area_m2: np.ndarray,
+    *,
+    reconstruct_conv_precip_flux: bool,
+    diagnostics: bool,
+    internal_steps: int,
+    internal_dt_s: float,
+) -> None:
+    """Adapt canonical operator arrays to the compiled column layout."""
+
+    nlev, nlat, nlon, ntracer = tracer.shape
+    ncol = nlat * nlon
+    _convect_fullgrid_top_numba(
+        tracer.reshape(nlev, ncol, ntracer),
+        diag14.reshape(nlev, ncol, ntracer) if diagnostics else diag14.reshape(0, 0, 0),
+        cmfmc.reshape(nlev, ncol),
+        dtrain.reshape(nlev, ncol),
+        delp_hpa.reshape(nlev, ncol),
+        delp_dry.reshape(nlev, ncol),
+        bmass.reshape(nlev, ncol),
+        dqrcu_met.reshape(nlev, ncol),
+        reevapcn_met.reshape(nlev, ncol),
+        area_m2.reshape(ncol),
+        diagnostics=diagnostics,
+        reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
+        internal_steps=internal_steps,
+        internal_dt_s=internal_dt_s,
+    )
+
+
+if njit is not None:
+    _convect_block_serial = njit(nogil=True, fastmath={"contract"})(
+        _convect_fullgrid_top_numba_kernel.py_func
+    )
+    _convect_block_spatial = _convect_fullgrid_top_numba_kernel
+else:
+    _convect_block_serial = None
+    _convect_block_spatial = None
+
+
+@wraps(_reference.run_cloud_convection_one_step)
+def run_cloud_convection_one_step(*args, **kwargs):
+    """Run convection through the reference or compiled operator implementation."""
+
+    if _numba_convection_enabled():
+        kwargs["_convect_impl"] = _convect_compiled
+        kwargs["_mass_impl"] = _column_mass_transport_numba
+    return _reference.run_cloud_convection_one_step(*args, **kwargs)

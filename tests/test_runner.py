@@ -24,6 +24,8 @@ from wombat_transport.runner import (
     _is_time_for_emissions,
     _load_emissions_operator,
     _load_simulation_forcing,
+    _transport_block_width,
+    _transport_executor,
     _validate_timestep_schedule,
     has_invalid_emissions,
     run_tracer_simulation,
@@ -93,6 +95,27 @@ def test_emissions_timestep_must_be_transport_multiple():
         _validate_timestep_schedule(600.0, 1000.0)
 
 
+def test_transport_executor_and_block_width_environment(monkeypatch):
+    monkeypatch.delenv("WOMBAT_TRANSPORT_EXECUTOR", raising=False)
+    monkeypatch.delenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", raising=False)
+    assert _transport_executor() == "spatial"
+    assert _transport_block_width("spatial", 24) == 24
+    assert _transport_block_width("blocks", 24) == 8
+
+    monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "blocks")
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "16")
+    assert _transport_executor() == "blocks"
+    assert _transport_block_width("blocks", 24) == 16
+
+    monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "threads")
+    with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_EXECUTOR"):
+        _transport_executor()
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "0")
+    with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_BLOCK_WIDTH"):
+        _transport_block_width("spatial", 24)
+
+
+
 def test_run_config_logging_level_defaults_and_validates():
     config = load_run_config(RESIDUAL_CONFIG)
 
@@ -158,6 +181,7 @@ def test_tracer_simulation_uses_configured_residual_emissions_source(tmp_path):
 
 @requires_restart
 def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeypatch, tmp_path):
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
     config = _isolated_config(load_run_config(RESIDUAL_CONFIG), tmp_path, outputs={})
     initial = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     active_emissions_seen = []
@@ -183,7 +207,7 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         validate_tpcore_branches=True,
         consume_input=False,
     ):
-        state_inputs.append(tracer_field.data.copy())
+        state_inputs.append(tracer_field.block_data.copy())
         active_emissions_seen.append(active_emissions)
         validation_flags.append(validate_tpcore_branches)
         assert consume_input
@@ -192,11 +216,13 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         return SimpleNamespace(
             state=tracer_field,
             dry_air_mass_kg=dry_air_mass_kg,
-            delp_dry_hpa=np.zeros(tracer_field.data.shape[:-1]),
+            delp_dry_hpa=np.zeros(tracer_field.shape[:-1]),
         )
 
     monkeypatch.setattr("wombat_transport.runner._load_simulation_forcing", fake_load_forcing)
-    monkeypatch.setattr("wombat_transport.runner.run_transport_one_step", fake_run_transport_one_step)
+    monkeypatch.setattr(
+        "wombat_transport.runner.run_transport_one_step", fake_run_transport_one_step
+    )
 
     result = run_tracer_simulation(config, max_steps=2)
 
@@ -205,12 +231,14 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
     assert validation_flags == [True, False]
     assert active_emissions_seen[0] is not None
     assert active_emissions_seen[0] is active_emissions_seen[1]
-    np.testing.assert_array_equal(state_inputs[0], initial.data)
-    np.testing.assert_array_equal(state_inputs[1], initial.data)
+    expected = initial.data[:, np.newaxis, ...]
+    np.testing.assert_array_equal(state_inputs[0], expected)
+    np.testing.assert_array_equal(state_inputs[1], expected)
 
 
 @requires_residual_data
-def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
+def test_tracer_simulation_writes_configured_history_outputs(tmp_path, monkeypatch):
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "8")
     config = load_run_config(RESIDUAL_CONFIG)
     outputs = {
         "expid": str(tmp_path / "OutputDir" / "GEOSChem"),
@@ -232,7 +260,8 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
         },
     }
 
-    run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
+    result = run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
+    assert result.state.block_count == 3
 
     species_conc = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
     restart = tmp_path / "Restarts" / "GEOSChem.Restart.20140901_0010z.nc4"
@@ -246,7 +275,8 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
 
 
 @requires_residual_data
-def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_path):
+def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "8")
     config = load_run_config(RESIDUAL_CONFIG)
     first_name = initialize_tracers(
         config.initial_restart,
@@ -304,6 +334,7 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
     }
 
     result = run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
+    assert result.state.block_count == 3
 
     output_path = tmp_path / "GEOSChem.ObsOperator.20140901_0000z.nc4"
     restart_path = tmp_path / "Wombat.ObsOperator.Restart.20140901_001000.nc4"
@@ -311,7 +342,7 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
     with netCDF4.Dataset(output_path) as dataset:
         np.testing.assert_allclose(
             dataset.variables["sample"][:],
-            np.array([result.state.data[0, -1, 0, 0, 0]], dtype=np.float32),
+            np.array([result.state.tracer(0)[0, -1, 0, 0]], dtype=np.float32),
         )
     with netCDF4.Dataset(restart_path) as dataset:
         assert _decode_char_rows(dataset.variables["id"][:]) == ["unfinished"]

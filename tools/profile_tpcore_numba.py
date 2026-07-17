@@ -15,9 +15,9 @@ from typing import Any
 
 import numpy as np
 from _perf_support import parse_perf_stat_summary, profile_environment, run_perf_bundle
-from wombat_transport.transport.numba_control import apply_numba_thread_count
-from wombat_transport.transport.tpcore import _numba as nb
-from wombat_transport.transport.tpcore._native import setup_tpcore_terms
+from wombat_transport.transport.numba_control import configure_numba_threads
+from wombat_transport.transport.tpcore import _kernels as nb
+from wombat_transport.transport.tpcore._reference import setup_tpcore_terms
 
 
 DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml")
@@ -204,7 +204,7 @@ def _run_staged_once(inputs: Any, setup: Any) -> dict[str, float]:
     nlev, nlat, nlon, ntracer = inputs.tracer_conc.shape
     q = np.ascontiguousarray(inputs.tracer_conc).copy()
     dq1 = np.empty_like(q)
-    nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=True)
+    nthreads = configure_numba_threads(available=True)
     workspace = nb._get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer, nthreads)
     nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
     nb._set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
@@ -324,7 +324,7 @@ def _prepare_stage_state(inputs: Any, setup: Any) -> dict[str, Any]:
     q_for_y = np.empty_like(q)
     qqu_levels = np.empty_like(q)
     qqv_levels = np.empty_like(q)
-    nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=True)
+    nthreads = configure_numba_threads(available=True)
     workspace = nb._get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer, nthreads)
     nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
     nb._set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
@@ -415,7 +415,7 @@ def _run_stage_perf_kernel(stage: str, state: dict[str, Any]) -> float:
     if stage == "python_copy_workspace_cross_terms":
         q_work = np.ascontiguousarray(inputs.tracer_conc).copy()
         dq1_work = np.empty_like(q_work)
-        nthreads = apply_numba_thread_count("WOMBAT_TPCORE_NUMBA", available=True)
+        nthreads = configure_numba_threads(available=True)
         workspace = nb._get_tpcore_numba_workspace(nlev, nlat, nlon, ntracer, nthreads)
         nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, workspace.ua, workspace.va)
         nb._set_jn_js_numba_kernel(setup.cx, workspace.jn, workspace.js)
@@ -728,7 +728,7 @@ def _run_stage_perf(args: argparse.Namespace, output_dir: Path) -> list[dict[str
 
 
 def _profile_env() -> dict[str, str]:
-    return profile_environment(numba_thread_vars=("WOMBAT_TPCORE_NUMBA_THREADS", "WOMBAT_NUMBA_THREADS"))
+    return profile_environment(numba_thread_vars=("WOMBAT_NUMBA_THREADS",))
 
 
 def _write_report(

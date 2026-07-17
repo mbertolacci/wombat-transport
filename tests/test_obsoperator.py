@@ -66,7 +66,7 @@ def test_obsoperator_config_and_date_template():
 
 
 def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WOMBAT_OBSOPERATOR_NUMBA", "0")
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
     _write_yaml(
         tmp_path / "obs-20140901.yml",
         {"entries": [_entry_raw(entry_id="first"), _entry_raw(entry_id="second")]},
@@ -144,7 +144,7 @@ def test_numba_manager_matches_python_array_sampler_for_float64_accumulators(tmp
         run_dir = tmp_path / mode
         run_dir.mkdir()
         _write_yaml(run_dir / "obs-20140901.yml", {"entries": entries})
-        monkeypatch.setenv("WOMBAT_OBSOPERATOR_NUMBA", mode)
+        monkeypatch.setenv("WOMBAT_NUMBA", mode)
         manager = _manager(run_dir)
         manager.sample(step_start=START, time_index=0, snapshot=_snapshot(horizontal_gradient=True))
         results[mode] = _manager_accumulators(manager)
@@ -328,6 +328,26 @@ def test_vertical_operator_modes(tmp_path: Path, vertical: dict, expected: float
     sampled = _sample_state(state, _snapshot(), _grid())[0, :1]
 
     np.testing.assert_allclose(sampled, np.array([expected]))
+
+
+def test_sampler_maps_global_tracer_indices_into_blocks(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {"entries": [_entry_raw(fields=["SpeciesConcVV_A", "SpeciesConcVV_B"])]},
+    )
+    state = _load(path)
+    canonical = _snapshot()
+    blocked = OutputSnapshot(
+        timestamp=canonical.timestamp,
+        state=canonical.state.reblock(1),
+        delp_dry_hpa=canonical.delp_dry_hpa,
+        forcing=canonical.forcing,
+    )
+
+    expected = _sample_state(state, canonical, _grid())
+    actual = _sample_state(state, blocked, _grid())
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_horizontal_box_weight_modes_and_longitude_wrap(tmp_path: Path):
@@ -1017,8 +1037,12 @@ def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.nd
     entries = np.arange(state.entry_count, dtype=np.int64)
     samples = np.empty((state.entry_count, state.prepared.max_field_count), dtype=np.float64)
     prepared = state.prepared
+    state_bottom = np.asarray(
+        snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
+    )
     obsoperator_sampling._sample_prepared_entries_kernel(
-        np.asarray(snapshot.state.data[0, ::-1, :, :, :], dtype=np.float64),
+        state_bottom,
+        snapshot.state.block_width,
         np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
         np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
         np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),
