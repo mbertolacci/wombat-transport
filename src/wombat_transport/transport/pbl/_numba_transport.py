@@ -7,16 +7,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.numba_control import synchronized_transport_numba
 from wombat_transport.transport.pbl import _numba as nb
 
 if nb._NUMBA_AVAILABLE:
-    from numba import get_thread_id, njit, prange, set_num_threads
+    from numba import get_thread_id, njit, prange
 else:  # pragma: no cover - exercised in environments without numba.
     get_thread_id = None
     njit = None
     prange = range
-    set_num_threads = None
 
 _G0_M_PER_S2 = nb.G0_M_PER_S2
 _RD_J_PER_KG_K = nb.RD_J_PER_KG_K
@@ -136,7 +136,12 @@ def prepare_vdiff_zero_flux_block_plan(
     if workspace.cch.shape != (nlev, nlat, nlon):
         raise ValueError("VDIFF plan workspace does not match the grid")
     npbl = nb._max_pbl_levels_from_pressure(np.asarray(pmid_hpa, dtype=np.float64))
-    set_num_threads(workers)
+    configured_workers = configure_numba_threads(available=True)
+    if workers != configured_workers:
+        raise ValueError(
+            f"VDIFF plan requested {workers} workers but "
+            f"WOMBAT_NUMBA_THREADS configured {configured_workers}"
+        )
     result = nb._prepare_vdiff_plan_numba(
         tracer_top=workspace.dummy_tracer,
         u_top=np.asarray(u_top, dtype=np.float64),
@@ -450,7 +455,6 @@ def run_vdiff_one_block_numba(
         workers=workers,
         workspace=workspace.plan,
     )
-    set_num_threads(workers)
     negative_count = _apply_vdiff_block_spatial(
         tracer_input,
         tracer_out,

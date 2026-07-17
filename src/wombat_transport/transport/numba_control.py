@@ -9,6 +9,8 @@ from typing import ParamSpec, TypeVar
 
 
 FALSEY_NUMBA_VALUES = frozenset({"0", "false", "no", "off", "none"})
+NUMBA_ENV = "WOMBAT_NUMBA"
+NUMBA_THREADS_ENV = "WOMBAT_NUMBA_THREADS"
 
 try:  # Optional acceleration dependency.
     from numba import set_num_threads
@@ -16,7 +18,10 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     set_num_threads = None
 
 
-_transport_warning_emitted = False
+_numba_warning_emitted = False
+_numba_threads_configured = False
+_configured_numba_thread_count: int | None = None
+_numba_configuration_lock = threading.Lock()
 _transport_numba_execution_lock = threading.Lock()
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -33,82 +38,72 @@ def synchronized_transport_numba(function: Callable[_P, _R]) -> Callable[_P, _R]
     return synchronized
 
 
-def numba_mode(operator_env: str) -> str:
-    """Return the effective Numba mode for one transport operator.
+def numba_mode() -> str:
+    """Return the repository-wide Numba mode."""
 
-    Operator-specific environment variables override the global
-    ``WOMBAT_NUMBA`` switch. With neither set, optional Numba acceleration is
-    enabled when the dependency is importable.
-    """
-
-    return os.environ.get(operator_env, os.environ.get("WOMBAT_NUMBA", "1")).lower()
+    return os.environ.get(NUMBA_ENV, "1").lower()
 
 
-def numba_enabled(operator_env: str, *, available: bool) -> bool:
-    if not available:
-        return False
-    return numba_mode(operator_env) not in FALSEY_NUMBA_VALUES
+def numba_enabled(*, available: bool) -> bool:
+    """Return whether the repository-wide Numba backend is enabled."""
+
+    return available and numba_mode() not in FALSEY_NUMBA_VALUES
 
 
-def transport_numba_enabled() -> bool:
-    """Return whether every operator required by unified transport is enabled."""
+def numba_available_and_enabled(*, available: bool | None = None) -> bool:
+    """Return whether the repository-wide Numba backend is enabled and available."""
 
-    if set_num_threads is None:
-        return False
-    return all(
-        numba_mode(name) not in FALSEY_NUMBA_VALUES
-        for name in (
-            "WOMBAT_TPCORE_NUMBA",
-            "WOMBAT_VDIFF_NUMBA",
-            "WOMBAT_CONVECTION_NUMBA",
-        )
-    )
+    dependency_available = set_num_threads is not None
+    if available is not None:
+        dependency_available = dependency_available and available
+    return numba_enabled(available=dependency_available)
 
 
-def numba_thread_count(operator_env: str) -> int:
-    """Return configured Numba worker count for one transport operator."""
+def numba_thread_count() -> int:
+    """Return the repository-wide Numba worker count."""
 
-    value = os.environ.get(f"{operator_env}_THREADS", os.environ.get("WOMBAT_NUMBA_THREADS", "1"))
+    value = os.environ.get(NUMBA_THREADS_ENV, "1")
     try:
         count = int(value)
     except ValueError as exc:
-        raise ValueError(f"{operator_env}_THREADS/WOMBAT_NUMBA_THREADS must be a positive integer") from exc
+        raise ValueError(f"{NUMBA_THREADS_ENV} must be a positive integer") from exc
     if count < 1:
-        raise ValueError(f"{operator_env}_THREADS/WOMBAT_NUMBA_THREADS must be a positive integer")
+        raise ValueError(f"{NUMBA_THREADS_ENV} must be a positive integer")
     return count
 
 
-def apply_numba_thread_count(operator_env: str, *, available: bool) -> int:
-    """Set and return the configured Numba worker count if Numba is available."""
+def configure_numba_threads(*, available: bool) -> int:
+    """Configure Numba's repository-wide worker count once per process."""
 
-    count = numba_thread_count(operator_env)
-    if available and set_num_threads is not None:
-        set_num_threads(count)
-    return count
+    global _configured_numba_thread_count, _numba_threads_configured
+    count = numba_thread_count()
+    if not available or set_num_threads is None:
+        return count
+    with _numba_configuration_lock:
+        if not _numba_threads_configured:
+            set_num_threads(count)
+            _configured_numba_thread_count = count
+            _numba_threads_configured = True
+        assert _configured_numba_thread_count is not None
+        return _configured_numba_thread_count
 
 
-def warn_if_transport_numba_disabled(logger: logging.Logger) -> None:
-    """Emit one prominent warning when production transport will use native paths."""
+def warn_if_numba_disabled(logger: logging.Logger) -> None:
+    """Emit one prominent warning when the repository-wide Numba backend is disabled."""
 
-    global _transport_warning_emitted
-    if _transport_warning_emitted:
+    global _numba_warning_emitted
+    if _numba_warning_emitted:
         return
 
-    operator_envs = (
-        "WOMBAT_TPCORE_NUMBA",
-        "WOMBAT_VDIFF_NUMBA",
-        "WOMBAT_CONVECTION_NUMBA",
-    )
     if set_num_threads is None:
         reason = "Numba is unavailable"
+    elif not numba_available_and_enabled():
+        reason = f"Numba is disabled by {NUMBA_ENV}"
     else:
-        disabled = [name for name in operator_envs if numba_mode(name) in FALSEY_NUMBA_VALUES]
-        if not disabled:
-            return
-        reason = f"Numba is disabled for {', '.join(disabled)}"
+        return
 
     logger.warning(
-        "MAJOR PERFORMANCE WARNING: %s; production transport will use much slower native paths.",
+        "MAJOR PERFORMANCE WARNING: %s; accelerated Wombat paths are disabled.",
         reason,
     )
-    _transport_warning_emitted = True
+    _numba_warning_emitted = True

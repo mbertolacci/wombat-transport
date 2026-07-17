@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from wombat_transport.transport.numba_control import apply_numba_thread_count
-from wombat_transport.transport.numba_control import numba_enabled
+from wombat_transport.transport.numba_control import configure_numba_threads
+from wombat_transport.transport.numba_control import numba_available_and_enabled
 
 try:  # Optional acceleration dependency.
     from numba import njit
@@ -15,7 +15,6 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     prange = range
 
 
-HISTORY_NUMBA_ENV = "WOMBAT_HISTORY_NUMBA"
 _NUMBA_AVAILABLE = njit is not None
 
 
@@ -23,14 +22,14 @@ def accumulate_history_sum(accumulator: np.ndarray, values: np.ndarray) -> None:
     """Add one state to a HISTORY accumulator without changing addition order."""
 
     if _history_numba_enabled() and accumulator.flags.c_contiguous and values.flags.c_contiguous:
-        apply_numba_thread_count(HISTORY_NUMBA_ENV, available=_NUMBA_AVAILABLE)
+        configure_numba_threads(available=_NUMBA_AVAILABLE)
         _accumulate_history_sum_numba_kernel(accumulator.reshape(-1), values.reshape(-1))
         return
     np.add(accumulator, values, out=accumulator)
 
 
 def _history_numba_enabled() -> bool:
-    return numba_enabled(HISTORY_NUMBA_ENV, available=_NUMBA_AVAILABLE)
+    return numba_available_and_enabled(available=_NUMBA_AVAILABLE)
 
 
 if njit is not None:

@@ -1548,10 +1548,11 @@ def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_widt
 @pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
 @pytest.mark.parametrize("surface_flux_value", (0.0, 1.0e-12))
 @pytest.mark.parametrize("execution", ("serial", "spatial", "blocks"))
-def test_numba_transport_policies_match_direct_kernels(surface_flux_value, execution):
+def test_numba_transport_policies_match_direct_kernels(monkeypatch, surface_flux_value, execution):
     ntracer = 9
     lane_width = 8
     workers = 2
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", str(workers))
     with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
         base_tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
         tracer = np.concatenate(

@@ -17,17 +17,14 @@ Numba acceleration is enabled by default when installed. The main controls are:
 
 | Variable | Purpose |
 |---|---|
-| `WOMBAT_NUMBA` | Global Numba enable/disable switch |
-| `WOMBAT_NUMBA_THREADS` | Global Wombat Numba thread count; defaults to 1 |
-| `WOMBAT_TPCORE_NUMBA` | Override Numba for TPCORE |
-| `WOMBAT_VDIFF_NUMBA` | Override Numba for VDIFF |
-| `WOMBAT_CONVECTION_NUMBA` | Override Numba for convection |
-| `WOMBAT_HISTORY_NUMBA` | Override Numba for HISTORY accumulation |
-| `WOMBAT_OBSOPERATOR_NUMBA` | Override Numba for serial ObsOperator sampling |
+| `WOMBAT_NUMBA` | Enable or disable every optional Numba path; defaults to enabled |
+| `WOMBAT_NUMBA_THREADS` | Process-wide Numba thread count; defaults to 1 |
 
-Each threaded operator also accepts an operator-specific `_THREADS` variable,
-such as `WOMBAT_TPCORE_NUMBA_THREADS`. It overrides
-`WOMBAT_NUMBA_THREADS` for that operator.
+There are no subsystem-specific overrides. Wombat applies
+`WOMBAT_NUMBA_THREADS` once per process, so transport, HISTORY accumulation,
+and any other parallel Numba kernels share the same worker count. Serial Numba
+kernels, including ObsOperator sampling, still follow `WOMBAT_NUMBA` but do not
+use the extra workers.
 
 Numba's own `NUMBA_NUM_THREADS` is an upper bound established when Numba
 starts. On a cluster, set it to at least the largest Wombat thread count:
@@ -39,8 +36,7 @@ export OMP_NUM_THREADS=1
 ```
 
 Falsy switch values are `0`, `false`, `no`, `off`, and `none`. If Numba is
-unavailable or disabled for transport, Wombat emits a major performance
-warning.
+unavailable or disabled, Wombat emits a major performance warning.
 
 ## Local end-to-end comparison
 

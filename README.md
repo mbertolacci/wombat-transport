@@ -81,6 +81,10 @@ WOMBAT_TRANSPORT_EXECUTOR=blocks WOMBAT_NUMBA_THREADS=8 \
   .venv/bin/python -m wombat_transport.run examples/basic_2x25/run.yml
 ```
 
+`WOMBAT_NUMBA` enables or disables every optional Numba path. The
+`WOMBAT_NUMBA_THREADS` value is applied once per process and shared by all
+parallel Numba kernels; there are no subsystem-specific overrides.
+
 Block width defaults to the full tracer count for `spatial` execution and to
 8 for `blocks`. Either strategy accepts an explicit storage width:
 

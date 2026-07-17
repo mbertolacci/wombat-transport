@@ -40,9 +40,8 @@ from wombat_transport.transport import (
     run_numba_transport_step,
 )
 from wombat_transport.transport.numba_control import (
-    numba_thread_count,
-    transport_numba_enabled,
-    warn_if_transport_numba_disabled,
+    numba_available_and_enabled,
+    warn_if_numba_disabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,7 +74,7 @@ class TracerSimulationResult:
 
 
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
-    warn_if_transport_numba_disabled(logger)
+    warn_if_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
     _write_run_metadata(config)
     species = load_species_database(config.species_database)
@@ -86,18 +85,16 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         template_path=config.grid_template,
     )
     parallel_strategy = _transport_executor()
-    numba_transport = transport_numba_enabled()
+    numba_transport = numba_available_and_enabled()
     if parallel_strategy == "blocks" and not numba_transport:
         raise ValueError(
-            "WOMBAT_TRANSPORT_EXECUTOR=blocks requires Numba and all Numba transport operators"
+            "WOMBAT_TRANSPORT_EXECUTOR=blocks requires WOMBAT_NUMBA to be enabled"
         )
     block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
     state = initial_state.reblock(block_width)
     use_unified_numba = numba_transport
     transport_executor = (
-        NumbaTransportExecutor.create(
-            state, numba_thread_count("WOMBAT_NUMBA")
-        )
+        NumbaTransportExecutor.create(state)
         if use_unified_numba
         else None
     )

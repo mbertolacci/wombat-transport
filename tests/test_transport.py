@@ -570,7 +570,7 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_shared_block_path(
         )
 
     monkeypatch.setattr(pbl_numba, "_NUMBA_AVAILABLE", True)
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", str(workers))
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", str(workers))
     monkeypatch.setattr(pbl_numba_transport, "run_vdiff_one_block_numba", fake_block_path)
 
     result = run_vdiffdr_one_step(**fixture, diagnostics=False)
@@ -594,7 +594,7 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_shared_block_path(
 
 def test_run_vdiffdr_one_step_reuses_light_output_only_when_requested(monkeypatch):
     fixture = _synthetic_vdiff_fixture()
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
 
     first = run_vdiffdr_one_step(**fixture, diagnostics=False, reuse_output=True)
     second = run_vdiffdr_one_step(**fixture, diagnostics=False, reuse_output=True)
@@ -608,7 +608,7 @@ def test_run_vdiffdr_one_step_reuses_light_output_only_when_requested(monkeypatc
 
 def test_run_vdiffdr_one_step_avoids_aliasing_reused_input_and_output(monkeypatch):
     fixture = _synthetic_vdiff_fixture()
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
 
     first = run_vdiffdr_one_step(**fixture, diagnostics=False, reuse_output=True)
     second = run_vdiffdr_one_step(
@@ -622,7 +622,7 @@ def test_run_vdiffdr_one_step_avoids_aliasing_reused_input_and_output(monkeypatc
 
 def test_run_vdiffdr_one_step_uses_owned_output_buffer(monkeypatch):
     fixture = _synthetic_vdiff_fixture()
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
     output = np.empty_like(fixture["tracer_conc"])
 
     expected = run_vdiffdr_one_step(**fixture, diagnostics=False)
@@ -639,7 +639,7 @@ def test_run_vdiffdr_one_step_uses_owned_output_buffer(monkeypatch):
 
 def test_run_vdiffdr_one_step_accepts_deferred_tpcore_pressure_mass(monkeypatch):
     fixture = _synthetic_vdiff_fixture()
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
     tracer = fixture["tracer_conc"]
     pressure_mass = fixture["pmid_hpa"] * 0.031 + 1.0
     tracer_mass = tracer * pressure_mass[..., np.newaxis]
@@ -757,7 +757,7 @@ def test_numba_transport_executor_matches_single_field(monkeypatch, execution):
 
     expected = run_transport_one_step(field, forcing, grid, dt_s=600.0)
     blocked = field.reblock(8)
-    executor = NumbaTransportExecutor.create(blocked, workers=2)
+    executor = NumbaTransportExecutor.create(blocked)
     actual = run_numba_transport_step(
         blocked, forcing, grid, executor, dt_s=600.0, execution=execution
     )

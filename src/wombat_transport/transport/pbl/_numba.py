@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from wombat_transport.transport.numba_control import (
-    apply_numba_thread_count,
-    numba_enabled,
+    configure_numba_threads,
+    numba_available_and_enabled,
     numba_mode,
 )
 from wombat_transport.transport.pbl import _native
@@ -158,15 +158,15 @@ def _get_vdiff_fullgrid_workspace(
 
 
 def _numba_vdiff_mode() -> str:
-    return numba_mode("WOMBAT_VDIFF_NUMBA")
+    return numba_mode()
 
 
 def _numba_vdiff_enabled() -> bool:
-    return numba_enabled("WOMBAT_VDIFF_NUMBA", available=_NUMBA_AVAILABLE)
+    return numba_available_and_enabled(available=_NUMBA_AVAILABLE)
 
 
 def _numba_vdiff_thread_count() -> int:
-    return apply_numba_thread_count("WOMBAT_VDIFF_NUMBA", available=_NUMBA_AVAILABLE)
+    return configure_numba_threads(available=_NUMBA_AVAILABLE)
 
 
 def _prepare_vdiff_plan_numba(

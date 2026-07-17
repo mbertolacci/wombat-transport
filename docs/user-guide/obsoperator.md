@@ -64,6 +64,6 @@ and weights. It appears in science output only after completion.
 
 ## Performance switch
 
-`WOMBAT_OBSOPERATOR_NUMBA` overrides the global `WOMBAT_NUMBA` switch for the
-sampling kernel. ObsOperator sampling is serial; the transport-wide thread
-count does not parallelize it.
+The repository-wide `WOMBAT_NUMBA` switch controls the sampling kernel.
+ObsOperator sampling is serial, so `WOMBAT_NUMBA_THREADS` does not parallelize
+it.

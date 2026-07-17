@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.convection import _numba_transport as convection_block
 from wombat_transport.transport.pbl import _numba_transport as vdiff_block
 from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlan
@@ -16,11 +17,10 @@ from wombat_transport.transport.tpcore._numba_transport import TpcoreBlockPlan
 from wombat_transport.transport.tpcore._numba_transport import TpcoreBlockWorkspace
 
 if tpcore_nb._NUMBA_AVAILABLE:
-    from numba import njit, prange, set_num_threads
+    from numba import njit, prange
 else:  # pragma: no cover - exercised in environments without numba.
     njit = None
     prange = range
-    set_num_threads = None
 
 _advect_one_block_serial = tpcore_block._advect_one_block_serial
 _advect_one_block_spatial = tpcore_block._advect_one_block_spatial
@@ -143,7 +143,12 @@ def apply_numba_transport(
         for value in (cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn)
     )
 
-    set_num_threads(workspace.workers)
+    configured_workers = configure_numba_threads(available=True)
+    if workspace.workers != configured_workers:
+        raise ValueError(
+            f"transport workspace has {workspace.workers} workers but "
+            f"WOMBAT_NUMBA_THREADS configured {configured_workers}"
+        )
     if execution == "spatial":
         return _multi_block_transport_step_spatial(
             tpcore_plan,

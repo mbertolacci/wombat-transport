@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-from numba import set_num_threads
 
 from _scaling_support import positive_int
 from benchmark_tpcore_scaling import _build_synthetic_tpcore_inputs
@@ -16,6 +15,7 @@ from benchmark_vdiff_scaling import _build_synthetic_vdiff_inputs
 from benchmark_convection_scaling import _build_synthetic_convection_inputs
 from wombat_transport.transport._numba_transport import apply_numba_transport
 from wombat_transport.transport._numba_transport import make_numba_transport_workspace
+from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
 from wombat_transport.transport.pbl._numba_transport import prepare_vdiff_zero_flux_block_plan
@@ -42,7 +42,7 @@ FIELDS = (
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     os.environ["WOMBAT_NUMBA_THREADS"] = str(args.workers)
-    set_num_threads(args.workers)
+    configure_numba_threads(available=True)
     rows = []
     for ntracer in args.counts:
         tpcore = _build_synthetic_tpcore_inputs(args.run_config, ntracer, dt_s=args.dt_s)

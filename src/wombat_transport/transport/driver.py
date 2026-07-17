@@ -22,7 +22,6 @@ from wombat_transport.grid import TransportGrid
 from wombat_transport.transport.convection import (
     ConvectionResult,
     G0_100,
-    _numba_convection_enabled,
     run_cloud_convection_one_step,
 )
 from wombat_transport.transport._numba_transport import (
@@ -38,7 +37,6 @@ from wombat_transport.transport.metrics import scalar_mass_by_tracer
 from wombat_transport.transport.pbl import (
     LATVAP_J_PER_KG,
     VdiffDrResult,
-    _numba_vdiff_enabled,
     run_vdiffdr_one_step,
 )
 from wombat_transport.transport.pbl._numba_transport import prepare_vdiff_zero_flux_block_plan
@@ -53,13 +51,14 @@ from wombat_transport.transport.tpcore import (
     TpcoreState,
     TpcoreStaticTerms,
     _average_const_poles_batch,
-    _numba_tpcore_enabled,
     analyze_tpcore_branches,
     build_tpcore_static_terms,
     run_tpcore_one_step_with_setup,
     setup_tpcore_terms,
     validate_tpcore_branch_support,
 )
+from wombat_transport.transport.numba_control import configure_numba_threads
+from wombat_transport.transport.numba_control import numba_available_and_enabled
 
 
 @dataclass(frozen=True)
@@ -151,9 +150,10 @@ class NumbaTransportExecutor:
     workspace: NumbaTransportWorkspace
 
     @classmethod
-    def create(cls, field: TracerField, workers: int) -> NumbaTransportExecutor:
+    def create(cls, field: TracerField) -> NumbaTransportExecutor:
         if field.block_data.shape[0] != 1:
             raise ValueError("transport requires exactly one time slice")
+        workers = configure_numba_threads(available=True)
         workspace = make_numba_transport_workspace(
             field.shape[1:], field.block_width, workers
         )
@@ -616,20 +616,16 @@ def _run_tpcore_one_step_from_mass(
             raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
     input_tracer = canonical_time_slice(tracer_data)
-    numba_tpcore = _numba_tpcore_enabled()
-    numba_vdiff = _numba_vdiff_enabled()
-    numba_convection = _numba_convection_enabled()
-    # Keep destructive ownership optimizations out of pure and mixed reference paths.
-    numba_ownership_chain = numba_tpcore and numba_vdiff and numba_convection
-    recycle_input = consume_input and numba_ownership_chain
+    use_numba = numba_available_and_enabled()
+    recycle_input = consume_input and use_numba
     recycled_tracer = input_tracer if recycle_input else None
-    defer_tpcore_finalization = numba_tpcore and numba_vdiff
+    defer_tpcore_finalization = use_numba
     tpcore = run_tpcore_one_step_with_setup(
         tracer_conc=input_tracer,
         setup=setup,
         area_m2=area,
         validate_branches=False,
-        reuse_output=numba_tpcore,
+        reuse_output=use_numba,
         reuse_input=recycle_input,
         defer_finalization=defer_tpcore_finalization,
     )
@@ -683,7 +679,7 @@ def _run_tpcore_one_step_from_mass(
     convection = _run_convection_input(
         convection_input,
         diagnostics=False,
-        consume_input=numba_ownership_chain,
+        consume_input=use_numba,
     )
     state = TracerField(
         names=tracer_field.names,
@@ -975,7 +971,7 @@ def _run_vdiff_input(
         dt_s=state.dt_s,
         surface_flux_kg_m2_s=state.surface_flux_for_vdiff,
         diagnostics=diagnostics,
-        reuse_output=not diagnostics and _numba_vdiff_enabled(),
+        reuse_output=not diagnostics and numba_available_and_enabled(),
         output_buffer=output_buffer,
         input_mass_pressure_hpa=input_mass_pressure_hpa,
     )
@@ -1058,7 +1054,7 @@ def _run_convection_input(
         precccon_mm_day=state.precccon_mm_day,
         dt_s=state.dt_s,
         diagnostics=diagnostics,
-        reuse_output=not diagnostics and _numba_convection_enabled(),
+        reuse_output=not diagnostics and numba_available_and_enabled(),
         consume_input=consume_input,
     )
 

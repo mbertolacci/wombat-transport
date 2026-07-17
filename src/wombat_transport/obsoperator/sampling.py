@@ -15,14 +15,13 @@ from wombat_transport.obsoperator.state import (
     _VERTICAL_PRESSURE_LEVEL,
     _VERTICAL_PRESSURE_WEIGHT,
 )
-from wombat_transport.transport.numba_control import numba_enabled
+from wombat_transport.transport.numba_control import configure_numba_threads
+from wombat_transport.transport.numba_control import numba_available_and_enabled
 
 try:  # Optional acceleration path; the same array kernel runs in Python as the reference fallback.
     from numba import njit
 except ImportError:  # pragma: no cover - exercised in environments without numba.
     njit = None
-
-OBSOPERATOR_NUMBA_ENV = "WOMBAT_OBSOPERATOR_NUMBA"
 
 def _sample_prepared_entries_kernel(
     state_bottom: np.ndarray,
@@ -220,7 +219,9 @@ else:  # pragma: no cover - exercised in environments without numba.
     _accumulate_prepared_samples_numba = _accumulate_prepared_samples_kernel
 
 def select_sampling_kernel() -> Callable[..., None]:
-    use_numba = numba_enabled(OBSOPERATOR_NUMBA_ENV, available=njit is not None)
+    use_numba = numba_available_and_enabled(available=njit is not None)
+    if use_numba:
+        configure_numba_threads(available=True)
     return _sample_prepared_entries_numba if use_numba else _sample_prepared_entries_kernel
 
 
@@ -232,7 +233,11 @@ def accumulate_prepared_samples(
     samples: np.ndarray,
     field_accumulator: np.ndarray,
 ) -> None:
-    _accumulate_prepared_samples_numba(
+    use_numba = numba_available_and_enabled(available=njit is not None)
+    if use_numba:
+        configure_numba_threads(available=True)
+    kernel = _accumulate_prepared_samples_numba if use_numba else _accumulate_prepared_samples_kernel
+    kernel(
         scheduled_entries,
         time_weights,
         entry_field_start,

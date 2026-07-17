@@ -7,8 +7,8 @@ import numpy as np
 
 from wombat_transport.transport.convection import _native
 from wombat_transport.transport.numba_control import (
-    apply_numba_thread_count,
-    numba_enabled,
+    configure_numba_threads,
+    numba_available_and_enabled,
     numba_mode,
     synchronized_transport_numba,
 )
@@ -57,11 +57,11 @@ def _get_convection_kernel_workspace(nthreads: int, ntracer: int) -> _Convection
 
 
 def _numba_convection_mode() -> str:
-    return numba_mode("WOMBAT_CONVECTION_NUMBA")
+    return numba_mode()
 
 
 def _numba_convection_enabled() -> bool:
-    return numba_enabled("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
+    return numba_available_and_enabled(available=_NUMBA_AVAILABLE)
 
 
 @synchronized_transport_numba
@@ -85,7 +85,7 @@ def _convect_fullgrid_top_numba(
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
     ntracer = q_all.shape[2]
-    nthreads = apply_numba_thread_count("WOMBAT_CONVECTION_NUMBA", available=_NUMBA_AVAILABLE)
+    nthreads = configure_numba_threads(available=_NUMBA_AVAILABLE)
     workspace = _get_convection_kernel_workspace(nthreads, ntracer)
     _convect_fullgrid_top_numba_kernel(
         q_all,

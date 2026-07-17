@@ -9,10 +9,11 @@ has since been replaced by a boolean switch; unset or truthy
 `WOMBAT_TPCORE_NUMBA` now enables the fused Numba path, and false-like values
 disable it.
 
-Current transport-wide control is `WOMBAT_NUMBA`: unset or truthy values enable
-optional Numba paths when importable, while false-like values disable them.
-`WOMBAT_TPCORE_NUMBA`, `WOMBAT_VDIFF_NUMBA`, and `WOMBAT_CONVECTION_NUMBA`
-override that global switch for individual operators.
+Current repository-wide control is `WOMBAT_NUMBA`: unset or truthy values
+enable all optional Numba paths when importable, while false-like values disable
+them. `WOMBAT_NUMBA_THREADS` is the single process-wide worker count and is
+applied once. Operator-specific switches and thread controls mentioned in older
+entries below are retained only as historical records and no longer exist.
 
 The benchmark scripts now support `--warmup`, defaulting to one untimed run per
 tracer count. This avoids timing first-call Numba compilation when collecting

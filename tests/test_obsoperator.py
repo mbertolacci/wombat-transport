@@ -66,7 +66,7 @@ def test_obsoperator_config_and_date_template():
 
 
 def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WOMBAT_OBSOPERATOR_NUMBA", "0")
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
     _write_yaml(
         tmp_path / "obs-20140901.yml",
         {"entries": [_entry_raw(entry_id="first"), _entry_raw(entry_id="second")]},
@@ -144,7 +144,7 @@ def test_numba_manager_matches_python_array_sampler_for_float64_accumulators(tmp
         run_dir = tmp_path / mode
         run_dir.mkdir()
         _write_yaml(run_dir / "obs-20140901.yml", {"entries": entries})
-        monkeypatch.setenv("WOMBAT_OBSOPERATOR_NUMBA", mode)
+        monkeypatch.setenv("WOMBAT_NUMBA", mode)
         manager = _manager(run_dir)
         manager.sample(step_start=START, time_index=0, snapshot=_snapshot(horizontal_gradient=True))
         results[mode] = _manager_accumulators(manager)
