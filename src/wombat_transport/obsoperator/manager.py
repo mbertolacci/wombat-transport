@@ -6,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 
-from wombat_transport.fields import BlockedTracerField
 from wombat_transport.grid import TransportGrid
 from wombat_transport.obsoperator.config import (
     ObsOperatorConfig,
@@ -149,12 +148,9 @@ class ObsOperatorManager:
         ):
             self._sample_workspace = np.empty(required_shape, dtype=np.float64)
         samples = self._sample_workspace[: required_shape[0], : required_shape[1]]
-        if isinstance(snapshot.state, BlockedTracerField):
-            state_bottom = np.asarray(snapshot.state.data[0, :, ::-1, :, :, :], dtype=np.float64)
-        else:
-            state_bottom = np.asarray(
-                snapshot.state.data[0, np.newaxis, ::-1, :, :, :], dtype=np.float64
-            )
+        state_bottom = np.asarray(
+            snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
+        )
         self._sampling_kernel(
             state_bottom,
             snapshot.state.block_width,

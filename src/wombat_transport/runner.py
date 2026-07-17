@@ -14,7 +14,7 @@ import numpy as np
 
 from wombat_transport.constants import AIRMW_G_PER_MOL
 from wombat_transport.emissions import EmissionsOperator, SurfaceEmissions
-from wombat_transport.fields import BlockedTracerField, TracerField
+from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import initialize_tracers
 from wombat_transport.obsoperator import ObsOperatorManager
@@ -35,9 +35,9 @@ from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
-    NumbaBlockedTransportExecutor,
-    run_transport_one_step_blocked,
-    run_numba_blocked_transport_step,
+    NumbaTransportExecutor,
+    run_transport_one_step,
+    run_numba_transport_step,
 )
 from wombat_transport.transport.numba_control import (
     numba_thread_count,
@@ -56,7 +56,7 @@ class EmissionsStep:
 
 @dataclass(frozen=True)
 class TracerSimulationResult:
-    state: BlockedTracerField
+    state: TracerField
     emissions_processed: tuple[EmissionsStep, ...]
     emitted_mass_by_tracer: np.ndarray
     transport_steps: int
@@ -92,10 +92,10 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             "WOMBAT_TRANSPORT_EXECUTOR=blocks requires Numba and all Numba transport operators"
         )
     block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
-    state = BlockedTracerField.from_tracer_field(initial_state, block_width)
+    state = initial_state.reblock(block_width)
     use_unified_numba = numba_transport
-    block_executor = (
-        NumbaBlockedTransportExecutor.create(
+    transport_executor = (
+        NumbaTransportExecutor.create(
             state, numba_thread_count("WOMBAT_NUMBA")
         )
         if use_unified_numba
@@ -192,17 +192,17 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
                 elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s))
             ),
         )
-        if block_executor is None:
-            transport_result = run_transport_one_step_blocked(
+        if transport_executor is None:
+            transport_result = run_transport_one_step(
                 state, forcing, grid, consume_input=True, **transport_kwargs
             )
         else:
-            transport_result = run_numba_blocked_transport_step(
+            transport_result = run_numba_transport_step(
                 state,
                 forcing,
                 grid,
-                block_executor,
-                execution="blocked" if parallel_strategy == "blocks" else "spatial",
+                transport_executor,
+                execution=parallel_strategy,
                 **transport_kwargs,
             )
         state = transport_result.state
@@ -325,7 +325,7 @@ def _load_emissions_operator(config: RunConfig, species, grid) -> EmissionsOpera
     raise TypeError("emissions must be a path string or an inline emissions mapping")
 
 
-def _surface_flux_to_vmr_factor(state: TracerField | BlockedTracerField, species) -> np.ndarray:
+def _surface_flux_to_vmr_factor(state: TracerField, species) -> np.ndarray:
     species_by_name = {item.name: item for item in species}
     factors = []
     for name in state.names:
@@ -367,17 +367,18 @@ def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:
 def has_invalid_emissions(emissions: TracerField | SurfaceEmissions) -> bool:
     """Return true when an emissions field contains fill values as data."""
 
-    data = emissions.data
+    data = emissions.data if isinstance(emissions, SurfaceEmissions) else emissions.to_canonical()
     return bool(np.any(~np.isfinite(data)) or np.any(np.abs(data) > 1.0e20))
 
 
 def emitted_mass_by_tracer_for_step(emissions: TracerField | SurfaceEmissions, dt_s: float) -> np.ndarray:
     area = emissions.coords["AREA"]
-    if emissions.data.ndim == 3:
+    data = emissions.data if isinstance(emissions, SurfaceEmissions) else emissions.to_canonical()
+    if data.ndim == 3:
         area_3d = area[:, :, np.newaxis]
-        return np.sum(emissions.data * float(dt_s) * area_3d, axis=(0, 1))
+        return np.sum(data * float(dt_s) * area_3d, axis=(0, 1))
     area_5d = area[np.newaxis, np.newaxis, :, :, np.newaxis]
-    return np.sum(emissions.data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
+    return np.sum(data * float(dt_s) * area_5d, axis=(0, 1, 2, 3))
 
 
 def _validate_timestep_schedule(transport_dt_s: float, emissions_dt_s: float) -> None:

@@ -91,13 +91,13 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.transport.convection import _native as convection_native
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
-from wombat_transport.transport._numba_blocked import apply_numba_blocked_transport
-from wombat_transport.transport._numba_blocked import make_numba_blocked_transport_workspace
-from wombat_transport.transport.convection._numba_blocked import _convect_block_serial
+from wombat_transport.transport._numba_transport import apply_numba_transport
+from wombat_transport.transport._numba_transport import make_numba_transport_workspace
+from wombat_transport.transport.convection._numba_transport import _convect_block_serial
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport.pbl import _numba as pbl_numba
-from wombat_transport.transport.pbl._numba_blocked import _apply_vdiff_block_serial
-from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlan
+from wombat_transport.transport.pbl._numba_transport import _apply_vdiff_block_serial
+from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -109,11 +109,11 @@ from wombat_transport.transport.tpcore import (
     validate_tpcore_branch_support,
 )
 from wombat_transport.transport.tpcore import _numba as tpcore_numba
-from wombat_transport.transport.tpcore._numba_blocked import load_tracer_block_workspace
-from wombat_transport.transport.tpcore._numba_blocked import make_tpcore_block_workspace
-from wombat_transport.transport.tpcore._numba_blocked import pack_tracer_blocks
-from wombat_transport.transport.tpcore._numba_blocked import prepare_tpcore_block_plan
-from wombat_transport.transport.tpcore._numba_blocked import unpack_tracer_blocks
+from wombat_transport.transport.tpcore._numba_transport import load_tracer_block_workspace
+from wombat_transport.transport.tpcore._numba_transport import make_tpcore_block_workspace
+from wombat_transport.transport.tpcore._numba_transport import pack_tracer_blocks
+from wombat_transport.transport.tpcore._numba_transport import prepare_tpcore_block_plan
+from wombat_transport.transport.tpcore._numba_transport import unpack_tracer_blocks
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v2"
@@ -1547,8 +1547,8 @@ def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_widt
 
 @pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
 @pytest.mark.parametrize("surface_flux_value", (0.0, 1.0e-12))
-@pytest.mark.parametrize("execution", ("serial", "spatial", "blocked"))
-def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, execution):
+@pytest.mark.parametrize("execution", ("serial", "spatial", "blocks"))
+def test_numba_transport_policies_match_direct_kernels(surface_flux_value, execution):
     ntracer = 9
     lane_width = 8
     workers = 2
@@ -1600,7 +1600,7 @@ def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, exec
     reevapcn = np.zeros(shape)
     surface_flux = np.full((nlat, nlon, ntracer), surface_flux_value)
     tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=area)
-    transport_workspace = make_numba_blocked_transport_workspace(
+    transport_workspace = make_numba_transport_workspace(
         tracer.shape, lane_width, workers
     )
     workspace = transport_workspace.tpcore
@@ -1657,7 +1657,7 @@ def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, exec
     )
 
     load_tracer_block_workspace(tracer, workspace)
-    actual_negative = apply_numba_blocked_transport(
+    actual_negative = apply_numba_transport(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
         workspace=transport_workspace,

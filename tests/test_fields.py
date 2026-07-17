@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from wombat_transport.fields import (
-    BlockedTracerField,
     TracerField,
     bottom_field3_to_top,
     canonical_time_slice,
@@ -25,42 +25,49 @@ def _tracer_field(ntracer: int) -> TracerField:
 def test_single_block_field_is_zero_copy_canonical_storage():
     original = _tracer_field(7)
 
-    blocked = BlockedTracerField.from_tracer_field(original, block_width=7)
-    canonical = blocked.to_tracer_field()
+    blocked = original.reblock(7)
+    canonical = blocked.to_canonical()
 
     assert blocked.shape == original.shape
     assert blocked.block_count == 1
     assert blocked.block_width == 7
-    assert np.shares_memory(blocked.data, original.data)
-    assert np.shares_memory(canonical.data, blocked.data)
-    np.testing.assert_array_equal(canonical.data, original.data)
+    assert np.shares_memory(blocked.block_data, original.block_data)
+    assert np.shares_memory(canonical, blocked.block_data)
+    np.testing.assert_array_equal(canonical, original.data)
 
 
 def test_block_views_and_tracer_views_share_padded_storage():
     original = _tracer_field(9)
 
-    blocked = BlockedTracerField.from_tracer_field(original, block_width=8)
+    blocked = original.reblock(8)
     first, tail = tuple(blocked.iter_blocks())
 
     assert blocked.shape == original.shape
-    assert blocked.data.shape == (2, 2, 3, 4, 5, 8)
+    assert blocked.block_data.shape == (2, 2, 3, 4, 5, 8)
     assert first.names == original.names[:8]
     assert tail.names == original.names[8:]
-    assert np.shares_memory(first.data, blocked.data)
-    assert np.shares_memory(tail.data, blocked.data)
-    assert np.shares_memory(blocked.tracer(8), blocked.data)
-    assert np.count_nonzero(blocked.data[:, -1, :, :, :, 1:]) == 0
+    assert np.shares_memory(first.data, blocked.block_data)
+    assert np.shares_memory(tail.data, blocked.block_data)
+    assert np.shares_memory(blocked.tracer(8), blocked.block_data)
+    assert np.count_nonzero(blocked.block_data[:, -1, :, :, :, 1:]) == 0
     np.testing.assert_array_equal(blocked.tracer(8), original.data[..., 8])
 
 
 def test_multiblock_canonical_conversion_joins_active_lanes():
     original = _tracer_field(17)
-    blocked = BlockedTracerField.from_tracer_field(original, block_width=8)
+    blocked = original.reblock(8)
 
-    canonical = blocked.to_tracer_field()
+    canonical = blocked.to_canonical()
 
-    assert not np.shares_memory(canonical.data, blocked.data)
-    np.testing.assert_array_equal(canonical.data, original.data)
+    assert not np.shares_memory(canonical, blocked.block_data)
+    np.testing.assert_array_equal(canonical, original.data)
+
+
+def test_multiblock_field_requires_explicit_canonical_conversion():
+    field = _tracer_field(9).reblock(8)
+
+    with pytest.raises(ValueError, match="use to_canonical"):
+        _ = field.data
 
 
 def test_public_5d_tracer_roundtrip_preserves_values():

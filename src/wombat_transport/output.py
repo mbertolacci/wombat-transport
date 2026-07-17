@@ -9,7 +9,7 @@ from typing import Any
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import BlockedTracerField, TracerField
+from wombat_transport.fields import TracerField
 from wombat_transport.history_accumulation import accumulate_history_sum
 from wombat_transport.io import GRID_COORDS
 from wombat_transport.run_config import RunConfig, simulation_start
@@ -84,7 +84,7 @@ class OutputCollectionConfig:
 @dataclass(frozen=True)
 class OutputSnapshot:
     timestamp: datetime
-    state: TracerField | BlockedTracerField
+    state: TracerField
     delp_dry_hpa: np.ndarray
     forcing: TransportForcing
 
@@ -161,7 +161,7 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
         self._group_start: datetime | None = None
         self._sum: np.ndarray | None = None
         self._count = 0
-        self._last_state: TracerField | BlockedTracerField | None = None
+        self._last_state: TracerField | None = None
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
         self._last_state = snapshot.state
@@ -178,8 +178,8 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
             self._start_window(window_start)
 
         if self._sum is None:
-            self._sum = self._sink.acquire_accumulator(snapshot.state.data)
-        accumulate_history_sum(self._sum, snapshot.state.data)
+            self._sum = self._sink.acquire_accumulator(snapshot.state.block_data)
+        accumulate_history_sum(self._sum, snapshot.state.block_data)
         self._count += 1
 
     def close(self) -> None:
@@ -194,7 +194,7 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
         self._count = 0
 
     def _finish_window(
-        self, fallback_state: TracerField | BlockedTracerField | None, *, close_group: bool
+        self, fallback_state: TracerField | None, *, close_group: bool
     ) -> None:
         if self._window_start is None or self._sum is None or self._count == 0:
             return
@@ -209,7 +209,7 @@ class _TimeAverageSpeciesWriter(_CollectionWriter):
         timestamp: datetime,
         summed: np.ndarray,
         count: int,
-        metadata: TracerField | BlockedTracerField,
+        metadata: TracerField,
         *,
         close_group: bool,
     ) -> None:
@@ -247,7 +247,7 @@ class _SpeciesConcSink:
         timestamp: datetime,
         summed: np.ndarray,
         count: int,
-        metadata: TracerField | BlockedTracerField,
+        metadata: TracerField,
         close_group: bool,
     ) -> None:
         raise NotImplementedError
@@ -278,7 +278,7 @@ class _SyncSpeciesConcSink(_SpeciesConcSink):
         timestamp: datetime,
         summed: np.ndarray,
         count: int,
-        metadata: TracerField | BlockedTracerField,
+        metadata: TracerField,
         close_group: bool,
     ) -> None:
         if self._group_file is None:
@@ -334,7 +334,7 @@ class _ThreadedSpeciesConcSink(_SpeciesConcSink):
         timestamp: datetime,
         summed: np.ndarray,
         count: int,
-        metadata: TracerField | BlockedTracerField,
+        metadata: TracerField,
         close_group: bool,
     ) -> None:
         self._ensure_open()
@@ -397,7 +397,7 @@ class _ThreadedSpeciesConcSink(_SpeciesConcSink):
         timestamp: datetime,
         summed: np.ndarray,
         count: int,
-        metadata: TracerField | BlockedTracerField,
+        metadata: TracerField,
         close_group: bool,
     ) -> np.ndarray:
         if self._group_file is None:
@@ -429,7 +429,7 @@ class _StreamingSpeciesConcFile:
         title: str,
         storage: OutputStorageConfig,
         first_timestamp: datetime,
-        first_state: TracerField | BlockedTracerField,
+        first_state: TracerField,
     ) -> None:
         self._path = path
         self._storage = storage
@@ -437,14 +437,14 @@ class _StreamingSpeciesConcFile:
         self._sample_index = 0
         self._names = first_state.names
         self._shape = first_state.shape
-        self._storage_shape = first_state.data.shape
+        self._storage_shape = first_state.block_data.shape
         self._dataset: netCDF4.Dataset | None = None
         self._time_variable = None
         self._variables: list[netCDF4.Variable] = []
         self._write_buffer = np.empty(self._shape[1:4], dtype=np.float64)
         self._open(template_path, title, first_state)
 
-    def append(self, timestamp: datetime, sample: TracerField | BlockedTracerField) -> None:
+    def append(self, timestamp: datetime, sample: TracerField) -> None:
         self._validate_open_sample(sample)
         self._write_time_sample(timestamp)
         for tracer_index, variable in enumerate(self._variables):
@@ -456,7 +456,7 @@ class _StreamingSpeciesConcFile:
         timestamp: datetime,
         summed: np.ndarray,
         count: int,
-        metadata: TracerField | BlockedTracerField,
+        metadata: TracerField,
     ) -> None:
         self._validate_open_sample(metadata)
         if summed.shape != self._storage_shape:
@@ -482,12 +482,12 @@ class _StreamingSpeciesConcFile:
             self._time_variable = None
             self._variables = []
 
-    def _validate_open_sample(self, sample: TracerField | BlockedTracerField) -> None:
+    def _validate_open_sample(self, sample: TracerField) -> None:
         if self._dataset is None or self._time_variable is None:
             raise ValueError("cannot write to closed SpeciesConc output file")
         if sample.names != self._names:
             raise ValueError("all SpeciesConc samples must have the same tracer names")
-        if sample.shape != self._shape or sample.data.shape != self._storage_shape:
+        if sample.shape != self._shape or sample.block_data.shape != self._storage_shape:
             raise ValueError("all SpeciesConc samples must have the same shape")
 
     def _write_time_sample(self, timestamp: datetime) -> None:
@@ -496,7 +496,7 @@ class _StreamingSpeciesConcFile:
         self._time_variable[self._sample_index] = (timestamp - self._base_time).total_seconds() / 60.0
 
     def _open(
-        self, template_path: Path, title: str, first_state: TracerField | BlockedTracerField
+        self, template_path: Path, title: str, first_state: TracerField
     ) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -671,7 +671,7 @@ def expand_history_template(template: str, timestamp: datetime) -> str:
 
 def write_species_conc_collection(
     path: str | Path,
-    samples: list[tuple[datetime, TracerField | BlockedTracerField]],
+    samples: list[tuple[datetime, TracerField]],
     template_path: str | Path,
     *,
     title: str,
@@ -989,7 +989,7 @@ def _create_time_variable(
 
 
 def _assert_compatible_samples(
-    fields: list[TracerField | BlockedTracerField], *, expected_shape: tuple[int, int, int, int]
+    fields: list[TracerField], *, expected_shape: tuple[int, int, int, int]
 ) -> None:
     first = fields[0]
     for field in fields:
@@ -1002,12 +1002,10 @@ def _assert_compatible_samples(
 
 
 def _summed_tracer(
-    summed: np.ndarray, metadata: TracerField | BlockedTracerField, tracer_index: int
+    summed: np.ndarray, metadata: TracerField, tracer_index: int
 ) -> np.ndarray:
-    if isinstance(metadata, BlockedTracerField):
-        block, lane = divmod(tracer_index, metadata.block_width)
-        return summed[:, block, :, :, :, lane]
-    return summed[..., tracer_index]
+    block, lane = divmod(tracer_index, metadata.block_width)
+    return summed[:, block, :, :, :, lane]
 
 
 def _write_restart_met_field(

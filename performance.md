@@ -2675,8 +2675,8 @@ crossover on eight workers. Each block result remained bitwise equal:
 | 2x2.5 | 192 | 8 | 0.7231 | 0.4903 | 1.47x |
 
 The 2x2.5 results around 32-48 tracers are effectively the noisy crossover,
-not a useful dispatch win. A conservative local policy is canonical below 64
-tracers, then block-major, while 4x5 can cross around 16-32 tracers. Expressed
+not a useful dispatch win. A conservative local policy is spatial below 64
+tracers, then parallel across blocks, while 4x5 can cross around 16-32 tracers. Expressed
 in terms of work per worker, the useful frontier is roughly eight tracers per
 worker on 2x2.5 and four per worker on 4x5. The selected width should leave at
 least one block per worker; extra blocks can help dynamic scheduling. This also
@@ -2684,13 +2684,15 @@ explains why a 400-tracer, 40-core socket is promising for width 8: it supplies
 50 independent blocks, whereas a one-tracer run supplies only one and cannot
 use block-level concurrency.
 
-### Persistent blocked simulation state
+### Block-native simulation state
 
-The simulation runner now carries `BlockedTracerField` storage with physical
-shape `(time, block, lev, lat, lon, lane)` throughout the run. Logical tracer
-names exclude padded tail lanes. Individual blocks and individual tracers are
-zero-copy views; joining multiple blocks into the old canonical array is an
-explicit conversion rather than an implicit property access.
+`TracerField` always owns physical storage with shape
+`(time, block, lev, lat, lon, lane)`. Logical tracer names exclude padded tail
+lanes. Individual blocks and individual tracers are zero-copy views; joining
+multiple blocks into the old canonical array requires explicit
+`to_canonical()` conversion. The former `BlockedTracerField` type and the
+blocked-only transport driver were removed, so layout no longer changes with
+execution policy.
 
 `WOMBAT_TRANSPORT_EXECUTOR=spatial` is the default. Its default width is the
 complete tracer count, and every all-Numba tracer count uses the shared
@@ -2708,7 +2710,7 @@ were removed. Two consecutive production-driver steps on the real 24-tracer
 fixture agree within one ULP through tracer state, with bitwise-equal humidity
 and dry mass. Zero- and nonzero-emission fixtures retain the same bound.
 
-HISTORY accumulation operates directly on contiguous blocked storage. Species
+HISTORY accumulation operates directly on contiguous block storage. Species
 and restart writers map each logical tracer index to `(block, lane)`, and the
 ObsOperator sampling kernel performs the same mapping for its prepared global
 field indices. Consequently the runner does not repack the complete tracer
@@ -2722,7 +2724,7 @@ state, plans, and workspace:
 - `serial`: a serial block loop calling the serial one-block step;
 - `spatial`: a serial block loop calling spatially parallel TPCORE, VDIFF, and
   convection variants;
-- `blocked`: one outer `prange(block)` calling the serial one-block step.
+- `blocks`: one outer `prange(block)` calling the serial one-block step.
 
 VDIFF's tracer solve is one source function containing `prange(latitude)`,
 compiled with and without `parallel=True`. Convection already follows the same
@@ -2796,3 +2798,10 @@ production arithmetic rather than separate diagnostic kernels. The obsolete
 latitude-by-latitude Numba VDIFF and grouped-column Numba convection
 implementations were removed; the NumPy implementations remain as independent
 semantic references.
+
+After making block storage universal and removing the transitional field and
+driver APIs, a warmed global 2x2.5 full-chain check with eight workers measured
+1.05x at one tracer and 1.13x at four tracers for exact-width spatial
+execution. Parallel block execution measured 1.29x at 64 tracers with width 8
+and 1.19x at 96 tracers with width 16. Spatial results were bitwise equal to
+the direct operator chain; block-parallel results remained within one ULP.

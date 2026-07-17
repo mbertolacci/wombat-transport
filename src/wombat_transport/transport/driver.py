@@ -13,7 +13,6 @@ from wombat_transport.constants import (
     RD_J_PER_KG_K,
 )
 from wombat_transport.fields import (
-    BlockedTracerField,
     TracerField,
     canonical_time_slice,
     transport_tracer_to_canonical,
@@ -26,10 +25,10 @@ from wombat_transport.transport.convection import (
     _numba_convection_enabled,
     run_cloud_convection_one_step,
 )
-from wombat_transport.transport._numba_blocked import (
-    NumbaBlockedTransportWorkspace,
-    apply_numba_blocked_transport,
-    make_numba_blocked_transport_workspace,
+from wombat_transport.transport._numba_transport import (
+    NumbaTransportWorkspace,
+    apply_numba_transport,
+    make_numba_transport_workspace,
 )
 from wombat_transport.transport.forcing import (
     TransportForcing,
@@ -42,8 +41,8 @@ from wombat_transport.transport.pbl import (
     _numba_vdiff_enabled,
     run_vdiffdr_one_step,
 )
-from wombat_transport.transport.pbl._numba_blocked import prepare_vdiff_zero_flux_block_plan
-from wombat_transport.transport.tpcore._numba_blocked import prepare_tpcore_block_plan
+from wombat_transport.transport.pbl._numba_transport import prepare_vdiff_zero_flux_block_plan
+from wombat_transport.transport.tpcore._numba_transport import prepare_tpcore_block_plan
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
@@ -72,7 +71,7 @@ class TransportStageMass:
 
 @dataclass(frozen=True)
 class TransportStepResult:
-    state: TracerField | BlockedTracerField
+    state: TracerField
     dry_air_mass_kg: np.ndarray
     delp_dry_hpa: np.ndarray
     specific_humidity_kg_kg: np.ndarray
@@ -146,27 +145,27 @@ class TransportWindowResult:
 
 
 @dataclass
-class NumbaBlockedTransportExecutor:
-    """Persistent state and scratch for blocked Numba transport policies."""
+class NumbaTransportExecutor:
+    """Persistent state and scratch for Numba transport policies."""
 
-    workspace: NumbaBlockedTransportWorkspace
+    workspace: NumbaTransportWorkspace
 
     @classmethod
-    def create(cls, field: BlockedTracerField, workers: int) -> NumbaBlockedTransportExecutor:
-        if field.data.shape[0] != 1:
-            raise ValueError("block transport requires exactly one time slice")
-        workspace = make_numba_blocked_transport_workspace(
+    def create(cls, field: TracerField, workers: int) -> NumbaTransportExecutor:
+        if field.block_data.shape[0] != 1:
+            raise ValueError("transport requires exactly one time slice")
+        workspace = make_numba_transport_workspace(
             field.shape[1:], field.block_width, workers
         )
         tpcore = workspace.tpcore
-        tpcore.state_a = field.data[0]
+        tpcore.state_a = field.block_data[0]
         for block_index, block in enumerate(tpcore.blocks):
             block.q = tpcore.state_a[block_index]
             block.dq1 = tpcore.state_b[block_index]
         return cls(workspace=workspace)
 
 
-def run_transport_one_step(
+def _run_transport_one_block(
     tracer_field: TracerField,
     forcing: TransportForcing,
     grid: TransportGrid,
@@ -207,8 +206,8 @@ def run_transport_one_step(
     )
 
 
-def run_transport_one_step_blocked(
-    tracer_field: BlockedTracerField,
+def run_transport_one_step(
+    tracer_field: TracerField,
     forcing: TransportForcing,
     grid: TransportGrid,
     *,
@@ -229,12 +228,12 @@ def run_transport_one_step_blocked(
     if surface_flux_to_vmr_factor is not None and np.shape(surface_flux_to_vmr_factor) != (
         tracer_field.tracer_count,
     ):
-        raise ValueError("surface_flux_to_vmr_factor does not match blocked tracer count")
+        raise ValueError("surface_flux_to_vmr_factor does not match tracer count")
     preserve_single_block = (
         tracer_field.block_count == 1
         and tracer_field.block_width == tracer_field.tracer_count
     )
-    output = None if preserve_single_block else np.zeros_like(tracer_field.data)
+    output = None if preserve_single_block else np.zeros_like(tracer_field.block_data)
     first_result: TransportStepResult | None = None
     for block_index, block_field in enumerate(tracer_field.iter_blocks()):
         start, stop = tracer_field.block_bounds(block_index)
@@ -244,7 +243,7 @@ def run_transport_one_step_blocked(
             if surface_flux_to_vmr_factor is None
             else np.asarray(surface_flux_to_vmr_factor, dtype=np.float64)[start:stop]
         )
-        result = run_transport_one_step(
+        result = _run_transport_one_block(
             block_field,
             forcing,
             grid,
@@ -264,17 +263,12 @@ def run_transport_one_step_blocked(
         if first_result is None:
             first_result = result
 
-    if first_result is None:  # BlockedTracerField rejects empty storage.
-        raise AssertionError("blocked transport produced no block results")
+    if first_result is None:  # TracerField rejects empty storage.
+        raise AssertionError("transport produced no block results")
     if output is None:
-        state = BlockedTracerField(
-            names=tracer_field.names,
-            data=first_result.state.data[:, np.newaxis, ...],
-            units=tracer_field.units,
-            coords=tracer_field.coords,
-        )
+        state = first_result.state
     else:
-        state = BlockedTracerField(
+        state = TracerField(
             names=tracer_field.names,
             data=output,
             units=tracer_field.units,
@@ -292,11 +286,11 @@ def run_transport_one_step_blocked(
     )
 
 
-def run_numba_blocked_transport_step(
-    tracer_field: BlockedTracerField,
+def run_numba_transport_step(
+    tracer_field: TracerField,
     forcing: TransportForcing,
     grid: TransportGrid,
-    executor: NumbaBlockedTransportExecutor,
+    executor: NumbaTransportExecutor,
     *,
     dt_s: float = 600.0,
     active_emissions: SurfaceEmissions | None = None,
@@ -304,13 +298,13 @@ def run_numba_blocked_transport_step(
     dry_air_mass_kg: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
     validate_tpcore_branches: bool = True,
-    execution: str = "blocked",
+    execution: str = "blocks",
 ) -> TransportStepResult:
-    """Run one prepared Numba transport step over persistent blocked state."""
+    """Run one prepared Numba transport step over persistent block-native state."""
 
     tpcore_workspace = executor.workspace.tpcore
-    if not np.shares_memory(tpcore_workspace.state_a, tracer_field.data):
-        raise ValueError("block executor does not own the supplied tracer field")
+    if not np.shares_memory(tpcore_workspace.state_a, tracer_field.block_data):
+        raise ValueError("transport executor does not own the supplied tracer field")
     if active_emissions is not None and active_emissions.names != tracer_field.names:
         raise ValueError("active emissions names do not match tracer field names")
     area = grid.area_m2
@@ -383,7 +377,7 @@ def run_numba_blocked_transport_step(
     )
     delp_top = np.asarray(next_delp[0], dtype=np.float64)[::-1]
     internal_steps = max(int(dt_s) // 300, 1)
-    apply_numba_blocked_transport(
+    apply_numba_transport(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
         workspace=executor.workspace,
@@ -400,7 +394,7 @@ def run_numba_blocked_transport_step(
         internal_dt_s=dt_s / internal_steps,
         execution=execution,
     )
-    state = BlockedTracerField(
+    state = TracerField(
         names=tracer_field.names,
         data=tpcore_workspace.state_a[np.newaxis, ...],
         units=tracer_field.units,
@@ -462,7 +456,7 @@ def compute_transport_stage_masses(
 
     dry_air_mass_top = trace.result.dry_air_mass_kg[:, ::-1, :, :]
     initial_scalar_mass = _tpcore_initial_scalar_mass(
-        initial_field.data,
+        initial_field.to_canonical(),
         trace.tpcore_state.delp1_hpa,
         area_m2,
     )
@@ -536,14 +530,12 @@ def run_transport_window(
             step=step,
             dt_s=dt_s,
         )
-        step_result = _run_transport_one_step_with_mass(
+        step_result = run_transport_one_step(
             state,
             forcing,
-            dry_air_mass,
-            grid.area_m2,
-            grid.hyai_hpa,
-            grid.hybi,
+            grid,
             dt_s=dt_s,
+            dry_air_mass_kg=dry_air_mass,
             tpcore_static_terms=tpcore_static_terms,
             validate_tpcore_branches=step == 0,
         )
@@ -551,10 +543,10 @@ def run_transport_window(
         dry_air_mass = step_result.dry_air_mass_kg
 
         if state_sum is None:
-            state_sum = np.zeros_like(state.data)
+            state_sum = np.zeros_like(state.block_data)
             dry_mass_sum = np.zeros_like(step_result.dry_air_mass_kg)
             delp_sum = np.zeros_like(step_result.delp_dry_hpa)
-        state_sum += state.data
+        state_sum += state.block_data
         dry_mass_sum += step_result.dry_air_mass_kg
         delp_sum += step_result.delp_dry_hpa
 
@@ -580,41 +572,6 @@ def run_transport_window(
         transport_operators=step_result.transport_operators,
     )
 
-def _run_transport_one_step_with_mass(
-    tracer_field: TracerField,
-    forcing: TransportForcing,
-    dry_air_mass: np.ndarray,
-    area: np.ndarray,
-    hyai: np.ndarray,
-    hybi: np.ndarray,
-    *,
-    dt_s: float,
-    active_emissions: TracerField | SurfaceEmissions | None = None,
-    surface_flux_to_vmr_factor: np.ndarray | None = None,
-    tpcore_static_terms: TpcoreStaticTerms | None = None,
-    include_flux_diagnostics: bool = False,
-    validate_tpcore_branches: bool = True,
-) -> TransportStepResult:
-    p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
-    p2_hpa = forcing.dry_surface_pressure_hpa[0]
-    return _run_tpcore_one_step_from_mass(
-        tracer_field,
-        forcing,
-        dry_air_mass,
-        area,
-        hyai,
-        hybi,
-        p2_hpa=p2_hpa,
-        p1_hpa=p1_hpa,
-        dt_s=dt_s,
-        active_emissions=active_emissions,
-        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
-        tpcore_static_terms=tpcore_static_terms,
-        include_flux_diagnostics=include_flux_diagnostics,
-        validate_tpcore_branches=validate_tpcore_branches,
-    )
-
-
 def _run_tpcore_one_step_from_mass(
     tracer_field: TracerField,
     forcing: TransportForcing,
@@ -633,8 +590,9 @@ def _run_tpcore_one_step_from_mass(
     validate_tpcore_branches: bool = True,
     consume_input: bool = False,
 ) -> TransportStepResult:
-    if tracer_field.data.shape[0] != 1:
-        raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
+    tracer_data = tracer_field.canonical_view()
+    if tracer_data.shape[0] != 1:
+        raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_data.shape}")
     if p1_hpa is None:
         p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
 
@@ -657,7 +615,7 @@ def _run_tpcore_one_step_from_mass(
             report = analyze_tpcore_branches(setup)
             raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
-    input_tracer = canonical_time_slice(tracer_field.data)
+    input_tracer = canonical_time_slice(tracer_data)
     numba_tpcore = _numba_tpcore_enabled()
     numba_vdiff = _numba_vdiff_enabled()
     numba_convection = _numba_convection_enabled()
@@ -767,8 +725,9 @@ def _trace_tpcore_one_step_from_mass(
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
 ) -> TransportStepDiagnostics:
-    if tracer_field.data.shape[0] != 1:
-        raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_field.data.shape}")
+    tracer_data = tracer_field.canonical_view()
+    if tracer_data.shape[0] != 1:
+        raise ValueError(f"TPCORE driver expects one time slice, found shape {tracer_data.shape}")
     if p1_hpa is None:
         p1_hpa = np.sum(_dry_air_mass_to_pressure(dry_air_mass, area), axis=1)[0] + float(hyai[-1])
 
@@ -791,7 +750,7 @@ def _trace_tpcore_one_step_from_mass(
         raise NotImplementedError(_format_tpcore_branch_preflight_error(report)) from exc
 
     tpcore = run_tpcore_one_step_with_setup(
-        tracer_conc=canonical_time_slice(tracer_field.data),
+        tracer_conc=canonical_time_slice(tracer_data),
         setup=setup,
         area_m2=area,
         validate_branches=False,
@@ -888,8 +847,8 @@ def _build_vdiff_input_after_tpcore(
     surface_flux = _surface_flux_from_active_emissions(
         tracer_field,
         active_emissions,
-        nlat=tracer_field.data.shape[2],
-        nlon=tracer_field.data.shape[3],
+        nlat=tracer_field.shape[2],
+        nlon=tracer_field.shape[3],
         ntracer=ntracer,
     )
     surface_flux_for_vdiff = _scale_surface_flux_for_vdiff(
@@ -898,7 +857,7 @@ def _build_vdiff_input_after_tpcore(
         ntracer=ntracer,
     )
     return VdiffInputState(
-        tracer_conc=canonical_time_slice(tracer_field.data),
+        tracer_conc=canonical_time_slice(tracer_field.canonical_view()),
         u_m_s=np.asarray(forcing.u_m_s[0], dtype=np.float64)[::-1],
         v_m_s=np.asarray(forcing.v_m_s[0], dtype=np.float64)[::-1],
         temperature_k=temperature[::-1],
@@ -951,12 +910,14 @@ def _surface_flux_from_active_emissions(
                 f"active surface emissions shape {active_emissions.data.shape} does not match {(nlat, nlon, ntracer)}"
             )
         return np.ascontiguousarray(active_emissions.data)
-    if active_emissions.data.shape != tracer_field.data.shape:
+    emissions_data = active_emissions.canonical_view()
+    tracer_data = tracer_field.canonical_view()
+    if emissions_data.shape != tracer_data.shape:
         raise ValueError(
-            f"active emissions shape {active_emissions.data.shape} does not match tracer field shape {tracer_field.data.shape}"
+            f"active emissions shape {emissions_data.shape} does not match tracer field shape {tracer_data.shape}"
         )
 
-    data = np.asarray(active_emissions.data, dtype=np.float64)
+    data = np.asarray(emissions_data, dtype=np.float64)
     if data.shape[0] != 1:
         raise ValueError(f"active emissions must contain one time slice, found shape {data.shape}")
     above_surface = data[:, :-1, :, :, :]
@@ -982,7 +943,7 @@ def _slice_active_emissions(
         )
     return TracerField(
         names=active_emissions.names[start:stop],
-        data=active_emissions.data[..., start:stop],
+        data=active_emissions.to_canonical()[..., start:stop],
         units=units,
         coords=active_emissions.coords,
     )
@@ -1058,7 +1019,7 @@ def _build_convection_input_after_vdiff(
         temperature_top = temperature[::-1]
         precccon = np.asarray(forcing.convective_precip_mm_day[0], dtype=np.float64)
     return ConvectionInputState(
-        tracer_conc=canonical_time_slice(tracer_field.data),
+        tracer_conc=canonical_time_slice(tracer_field.canonical_view()),
         cmfmc_kg_m2_s=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64)[::-1],
         dtrain_kg_m2_s=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64)[::-1],
         dqrcu_kg_kg_s=np.asarray(forcing.convective_precip_prod_kg_kg_s[0], dtype=np.float64)[::-1],

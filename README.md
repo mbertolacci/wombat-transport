@@ -72,8 +72,9 @@ The [first-run guide](https://mbertolacci.github.io/wombat-transport/getting-sta
 explains the inputs, output, and configuration. The complete configuration
 contract is documented in the [`run.yml` reference](https://mbertolacci.github.io/wombat-transport/reference/run-yml/).
 
-Transport uses spatial parallelism by default. The persistent
-tracer-block executor is selected per process with:
+Tracer state is always stored as contiguous tracer blocks. Transport uses
+spatial parallelism within each block by default; parallel execution across
+blocks is selected per process with:
 
 ```bash
 WOMBAT_TRANSPORT_EXECUTOR=blocks WOMBAT_NUMBA_THREADS=8 \
@@ -90,7 +91,7 @@ WOMBAT_TRANSPORT_EXECUTOR=spatial WOMBAT_TRANSPORT_BLOCK_WIDTH=16 ...
 Spatial execution processes configured blocks sequentially while retaining
 within-operator threading. All tracer counts use the shared prepared one-block
 transport step. Block execution uses one top-level Numba parallel region
-across blocks.
+across blocks. Storage layout is therefore independent of execution strategy.
 
 ## Performance snapshot
 

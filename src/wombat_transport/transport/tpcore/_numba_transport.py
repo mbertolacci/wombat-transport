@@ -1,4 +1,4 @@
-"""Numba TPCORE executor for persistent blocked tracer storage."""
+"""Numba TPCORE executor for persistent block-native tracer storage."""
 
 from __future__ import annotations
 

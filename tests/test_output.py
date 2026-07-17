@@ -7,7 +7,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from wombat_transport.fields import BlockedTracerField, TracerField
+from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport import history_accumulation
 from wombat_transport.history_accumulation import accumulate_history_sum
@@ -161,7 +161,7 @@ def test_species_conc_writer_roundtrips_geos_chem_style_collection(tmp_path):
 
 def test_species_conc_writer_reads_logical_tracers_from_blocks(tmp_path):
     field = _field(("A", "B"), values=(1.0, 10.0))
-    blocked = BlockedTracerField.from_tracer_field(field, block_width=1)
+    blocked = field.reblock(1)
     output_path = tmp_path / "blocked.nc4"
 
     write_species_conc_collection(

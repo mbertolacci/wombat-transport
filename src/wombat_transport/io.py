@@ -6,7 +6,7 @@ from typing import Iterable
 import netCDF4
 import numpy as np
 
-from wombat_transport.fields import BlockedTracerField, TracerField, public_tracer5_to_canonical
+from wombat_transport.fields import TracerField, public_tracer5_to_canonical
 from wombat_transport.grid import MODEL_LEVELS, geos_chem_horizontal_resolution
 from wombat_transport.species import Species, load_species_database
 
@@ -36,7 +36,7 @@ def load_base_met(path: str | Path) -> dict[str, np.ndarray]:
 
 
 def write_restart_like(
-    path: str | Path, tracer_field: TracerField | BlockedTracerField, template_path: str | Path
+    path: str | Path, tracer_field: TracerField, template_path: str | Path
 ) -> None:
     """Write a restart-like NetCDF file with one ``SpeciesRst_*`` variable per tracer."""
 
@@ -185,7 +185,7 @@ def _assert_supported_grid(dataset: netCDF4.Dataset) -> tuple[int, int, int]:
 
 
 def _assert_tracer_shape(
-    tracer_field: TracerField | BlockedTracerField, expected: tuple[int, int, int]
+    tracer_field: TracerField, expected: tuple[int, int, int]
 ) -> None:
     if tracer_field.shape[-1] != len(tracer_field.names):
         raise ValueError("tracer name count does not match logical tracer dimension")

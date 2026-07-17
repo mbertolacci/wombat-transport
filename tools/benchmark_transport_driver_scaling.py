@@ -328,7 +328,7 @@ def _benchmark_inputs(
         gc.collect()
     best = min(runs, key=lambda run: run.total_s)
     mean = _mean_run(runs)
-    gridcell_tracers = int(np.prod(inputs.tracer_field.data.shape[1:]))
+    gridcell_tracers = int(np.prod(inputs.tracer_field.shape[1:]))
     return BenchmarkRow(
         tracer_count=tracer_count,
         status="completed",
@@ -409,7 +409,7 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
         vdiff_s=stage_times["vdiff"],
         convection_s=stage_times["convection"],
         overhead_s=total - stage_total,
-        checksum=float(np.mean(result.state.data)),
+        checksum=float(np.mean(result.state.block_data)),
     )
 
 

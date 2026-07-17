@@ -112,10 +112,12 @@ def compare_scenario(run_dir: str | Path, hemco_diagnostic: str | Path | None = 
     hemco = _load_hemco_diagnostic(diagnostic_path)
     grid = _transport_grid(root)
     wombat = EmissionsOperator.from_yaml("wombat_emissions.yml", root=root, species=list(SPECIES), grid=grid).evaluate(HARNESS_START)
+    wombat_data = wombat.to_canonical()
+    hemco_data = hemco.to_canonical()
     area_5d = grid.area_m2[np.newaxis, np.newaxis, :, :, np.newaxis]
     comparisons: list[HemcoHarnessComparison] = []
     for index, species in enumerate(wombat.names):
-        difference = wombat.data[..., index] - hemco.data[..., index]
+        difference = wombat_data[..., index] - hemco_data[..., index]
         mass_difference = difference * area_5d[..., 0]
         comparisons.append(
             HemcoHarnessComparison(
@@ -125,8 +127,8 @@ def compare_scenario(run_dir: str | Path, hemco_diagnostic: str | Path | None = 
                 mean_abs_error=float(np.mean(np.abs(difference))),
                 global_mass_error=float(np.sum(mass_difference)),
                 max_gridcell_mass_error=float(np.max(np.abs(mass_difference))),
-                nonzero_mismatch_count=int(np.count_nonzero((wombat.data[..., index] != 0.0) != (hemco.data[..., index] != 0.0))),
-                bottom_level_only=bool(np.all(wombat.data[:, :-1, :, :, index] == 0.0) and np.all(hemco.data[:, :-1, :, :, index] == 0.0)),
+                nonzero_mismatch_count=int(np.count_nonzero((wombat_data[..., index] != 0.0) != (hemco_data[..., index] != 0.0))),
+                bottom_level_only=bool(np.all(wombat_data[:, :-1, :, :, index] == 0.0) and np.all(hemco_data[:, :-1, :, :, index] == 0.0)),
             )
         )
     return tuple(comparisons)

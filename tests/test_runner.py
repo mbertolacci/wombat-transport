@@ -207,7 +207,7 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         validate_tpcore_branches=True,
         consume_input=False,
     ):
-        state_inputs.append(tracer_field.data.copy())
+        state_inputs.append(tracer_field.block_data.copy())
         active_emissions_seen.append(active_emissions)
         validation_flags.append(validate_tpcore_branches)
         assert consume_input
@@ -216,12 +216,12 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
         return SimpleNamespace(
             state=tracer_field,
             dry_air_mass_kg=dry_air_mass_kg,
-            delp_dry_hpa=np.zeros(tracer_field.data.shape[:-1]),
+            delp_dry_hpa=np.zeros(tracer_field.shape[:-1]),
         )
 
     monkeypatch.setattr("wombat_transport.runner._load_simulation_forcing", fake_load_forcing)
     monkeypatch.setattr(
-        "wombat_transport.runner.run_transport_one_step_blocked", fake_run_transport_one_step
+        "wombat_transport.runner.run_transport_one_step", fake_run_transport_one_step
     )
 
     result = run_tracer_simulation(config, max_steps=2)
@@ -237,7 +237,8 @@ def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeyp
 
 
 @requires_residual_data
-def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
+def test_tracer_simulation_writes_configured_history_outputs(tmp_path, monkeypatch):
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "8")
     config = load_run_config(RESIDUAL_CONFIG)
     outputs = {
         "expid": str(tmp_path / "OutputDir" / "GEOSChem"),
@@ -259,7 +260,8 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
         },
     }
 
-    run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
+    result = run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
+    assert result.state.block_count == 3
 
     species_conc = tmp_path / "OutputDir" / "GEOSChem.SpeciesConcThreeHourly.20140901_0000z.nc4"
     restart = tmp_path / "Restarts" / "GEOSChem.Restart.20140901_0010z.nc4"
@@ -273,7 +275,8 @@ def test_tracer_simulation_writes_configured_history_outputs(tmp_path):
 
 
 @requires_residual_data
-def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_path):
+def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "8")
     config = load_run_config(RESIDUAL_CONFIG)
     first_name = initialize_tracers(
         config.initial_restart,
@@ -331,6 +334,7 @@ def test_tracer_simulation_samples_obsoperator_after_first_transport_step(tmp_pa
     }
 
     result = run_tracer_simulation(_isolated_config(config, tmp_path, outputs=outputs), max_steps=1)
+    assert result.state.block_count == 3
 
     output_path = tmp_path / "GEOSChem.ObsOperator.20140901_0000z.nc4"
     restart_path = tmp_path / "Wombat.ObsOperator.Restart.20140901_001000.nc4"

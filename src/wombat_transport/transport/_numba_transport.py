@@ -1,4 +1,4 @@
-"""Top-level Numba executor for persistent blocked tracer storage."""
+"""Top-level Numba executor for persistent block-native tracer storage."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.transport.convection import _numba_blocked as convection_block
-from wombat_transport.transport.pbl import _numba_blocked as vdiff_block
-from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlan
-from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlanWorkspace
-from wombat_transport.transport.tpcore import _numba_blocked as tpcore_block
+from wombat_transport.transport.convection import _numba_transport as convection_block
+from wombat_transport.transport.pbl import _numba_transport as vdiff_block
+from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlan
+from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlanWorkspace
+from wombat_transport.transport.tpcore import _numba_transport as tpcore_block
 from wombat_transport.transport.tpcore import _numba as tpcore_nb
-from wombat_transport.transport.tpcore._numba_blocked import TpcoreBlockPlan
-from wombat_transport.transport.tpcore._numba_blocked import TpcoreBlockWorkspace
+from wombat_transport.transport.tpcore._numba_transport import TpcoreBlockPlan
+from wombat_transport.transport.tpcore._numba_transport import TpcoreBlockWorkspace
 
 if tpcore_nb._NUMBA_AVAILABLE:
     from numba import njit, prange, set_num_threads
@@ -31,7 +31,7 @@ _convect_block_spatial = convection_block._convect_block_spatial
 
 
 @dataclass
-class NumbaBlockedTransportWorkspace:
+class NumbaTransportWorkspace:
     """Persistent block state plus block-shared and worker-local scratch."""
 
     tpcore: TpcoreBlockWorkspace
@@ -56,9 +56,9 @@ class NumbaBlockedTransportWorkspace:
     negative_counts: np.ndarray
 
 
-def make_numba_blocked_transport_workspace(
+def make_numba_transport_workspace(
     tracer_shape: tuple[int, int, int, int], lane_width: int, workers: int
-) -> NumbaBlockedTransportWorkspace:
+) -> NumbaTransportWorkspace:
     """Allocate persistent state and scratch for every execution policy."""
 
     if workers < 1:
@@ -73,7 +73,7 @@ def make_numba_blocked_transport_workspace(
         *y_spatial[:4],
         *(np.empty((nblock, nlon, lane), dtype=np.float64) for _ in range(4)),
     )
-    return NumbaBlockedTransportWorkspace(
+    return NumbaTransportWorkspace(
         tpcore=tpcore,
         vdiff_plan=vdiff_block.make_vdiff_block_plan_workspace(nlev, nlat, nlon),
         workers=workers,
@@ -97,11 +97,11 @@ def make_numba_blocked_transport_workspace(
     )
 
 
-def apply_numba_blocked_transport(
+def apply_numba_transport(
     *,
     tpcore_plan: TpcoreBlockPlan,
     vdiff_plan: VdiffBlockPlan,
-    workspace: NumbaBlockedTransportWorkspace,
+    workspace: NumbaTransportWorkspace,
     surface_flux_kg_m2_s: np.ndarray | None,
     cmfmc: np.ndarray,
     dtrain: np.ndarray,
@@ -114,16 +114,16 @@ def apply_numba_blocked_transport(
     internal_steps: int,
     internal_dt_s: float,
     fill: bool = True,
-    execution: str = "blocked",
+    execution: str = "blocks",
 ) -> int:
     """Apply one prepared transport step using the selected parallel policy."""
 
     if njit is None or _multi_block_transport_step_parallel is None:
         raise RuntimeError("numba is not available")
     if workspace.workers < 1:
-        raise ValueError("blocked transport workspace has no workers")
-    if execution not in {"blocked", "serial", "spatial"}:
-        raise ValueError("execution must be 'blocked', 'serial', or 'spatial'")
+        raise ValueError("transport workspace has no workers")
+    if execution not in {"blocks", "serial", "spatial"}:
+        raise ValueError("execution must be 'blocks', 'serial', or 'spatial'")
 
     tpcore_workspace = workspace.tpcore
     nlev, nlat, nlon, ntracer = tpcore_workspace.tracer_shape
@@ -159,7 +159,7 @@ def apply_numba_blocked_transport(
         )
     kernel = (
         _multi_block_transport_step_parallel
-        if execution == "blocked"
+        if execution == "blocks"
         else _multi_block_transport_step_serial
     )
     kernel(
@@ -223,7 +223,7 @@ def apply_numba_blocked_transport(
 def _multi_block_transport_step_spatial(
     tpcore_plan: TpcoreBlockPlan,
     vdiff_plan: VdiffBlockPlan,
-    workspace: NumbaBlockedTransportWorkspace,
+    workspace: NumbaTransportWorkspace,
     surface_flux: np.ndarray,
     has_flux: bool,
     scalar_inputs: tuple[np.ndarray, ...],
@@ -256,7 +256,7 @@ def _one_block_transport_step_spatial(
     block: int,
     tpcore_plan: TpcoreBlockPlan,
     vdiff_plan: VdiffBlockPlan,
-    workspace: NumbaBlockedTransportWorkspace,
+    workspace: NumbaTransportWorkspace,
     surface_flux: np.ndarray,
     has_flux: bool,
     scalar_inputs: tuple[np.ndarray, ...],

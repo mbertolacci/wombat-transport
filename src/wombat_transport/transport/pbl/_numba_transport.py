@@ -1,4 +1,4 @@
-"""Numba VDIFF path for persistent blocked tracer storage."""
+"""Numba VDIFF path for persistent block-native tracer storage."""
 
 from __future__ import annotations
 

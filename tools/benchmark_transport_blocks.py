@@ -14,14 +14,14 @@ from _scaling_support import positive_int
 from benchmark_tpcore_scaling import _build_synthetic_tpcore_inputs
 from benchmark_vdiff_scaling import _build_synthetic_vdiff_inputs
 from benchmark_convection_scaling import _build_synthetic_convection_inputs
-from wombat_transport.transport._numba_blocked import apply_numba_blocked_transport
-from wombat_transport.transport._numba_blocked import make_numba_blocked_transport_workspace
+from wombat_transport.transport._numba_transport import apply_numba_transport
+from wombat_transport.transport._numba_transport import make_numba_transport_workspace
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
-from wombat_transport.transport.pbl._numba_blocked import prepare_vdiff_zero_flux_block_plan
+from wombat_transport.transport.pbl._numba_transport import prepare_vdiff_zero_flux_block_plan
 from wombat_transport.transport.tpcore import run_tpcore_one_step_with_setup, setup_tpcore_terms
-from wombat_transport.transport.tpcore._numba_blocked import load_tracer_block_workspace
-from wombat_transport.transport.tpcore._numba_blocked import prepare_tpcore_block_plan
+from wombat_transport.transport.tpcore._numba_transport import load_tracer_block_workspace
+from wombat_transport.transport.tpcore._numba_transport import prepare_tpcore_block_plan
 
 
 FIELDS = (
@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         rows.append(_row(ntracer, "fused", 0, args.workers, fused_times, 0.0, fused_best, reference, reference))
 
         for lane_width in args.lanes:
-            transport_workspace = make_numba_blocked_transport_workspace(
+            transport_workspace = make_numba_transport_workspace(
                 tpcore.tracer_conc.shape, lane_width, args.workers
             )
             workspace = transport_workspace.tpcore
@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.include_convection:
                 def numba_transport(execution: str) -> np.ndarray:
-                    apply_numba_blocked_transport(
+                    apply_numba_transport(
                         tpcore_plan=tpcore_plan,
                         vdiff_plan=vdiff_plan,
                         workspace=transport_workspace,
@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     return workspace.blocks[0].q
 
-                for execution in ("serial", "spatial", "blocked"):
+                for execution in ("serial", "spatial", "blocks"):
                     transport_times, _ = _time_preloaded(
                         load,
                         lambda execution=execution: numba_transport(execution),

@@ -1,4 +1,4 @@
-"""Numba convection kernel for persistent blocked tracer storage."""
+"""Numba convection kernel for persistent block-native tracer storage."""
 
 from __future__ import annotations
 

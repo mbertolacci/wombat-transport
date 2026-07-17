@@ -550,7 +550,7 @@ def write_transport_step_input_from_config(
         config.species_database,
         template_path=config.grid_template,
     )
-    tracer_data = canonical_time_slice(tracers.data, tracer_time_index)
+    tracer_data = canonical_time_slice(tracers.to_canonical(), tracer_time_index)
     tracer_names = tracers.names
     if max_tracers is not None:
         tracer_data = tracer_data[..., :max_tracers]
@@ -973,7 +973,7 @@ def write_real_convection_input_from_config(
         config.species_database,
         template_path=config.grid_template,
     )
-    tracer_data = canonical_time_slice(tracers.data, tracer_time_index)
+    tracer_data = canonical_time_slice(tracers.to_canonical(), tracer_time_index)
     tracer_names = tracers.names
     if max_tracers is not None:
         tracer_data = tracer_data[..., :max_tracers]
@@ -2115,7 +2115,7 @@ def compare_transport_chain_oracle_fixture(
     common_oracle_vdiff_mass = _tracer_mass_common_basis(expected_vdiff_tracer, final_dry_mass)
     common_oracle_convection_mass = _tracer_mass_common_basis(expected_tracer, final_dry_mass)
     common_actual_convection_mass = convection_scalar_mass
-    actual_tracer = canonical_time_slice(result.state.data)
+    actual_tracer = canonical_time_slice(result.state.to_canonical())
     error = np.abs(actual_tracer - expected_tracer)
     return TransportChainComparison(
         tracer_max_abs_error=float(np.max(error)),
@@ -2206,7 +2206,7 @@ def compare_transport_chain_handoffs(
             rows,
             "final_chain_output",
             "tracer_conc_after",
-            canonical_time_slice(diagnostics.result.state.data),
+            canonical_time_slice(diagnostics.result.state.to_canonical()),
             np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64),
         )
         _append_array_error_row(

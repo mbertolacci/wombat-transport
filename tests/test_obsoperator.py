@@ -15,7 +15,7 @@ import wombat_transport.obsoperator as obsoperator_module
 import wombat_transport.obsoperator.input as obsoperator_input
 import wombat_transport.obsoperator.sampling as obsoperator_sampling
 import wombat_transport.obsoperator.writer as obsoperator_writer
-from wombat_transport.fields import BlockedTracerField, TracerField
+from wombat_transport.fields import TracerField
 from wombat_transport.grid import TransportGrid, geos_chem_horizontal_centers
 from wombat_transport.obsoperator import (
     ObsOperatorConfig,
@@ -339,7 +339,7 @@ def test_sampler_maps_global_tracer_indices_into_blocks(tmp_path: Path):
     canonical = _snapshot()
     blocked = OutputSnapshot(
         timestamp=canonical.timestamp,
-        state=BlockedTracerField.from_tracer_field(canonical.state, block_width=1),
+        state=canonical.state.reblock(1),
         delp_dry_hpa=canonical.delp_dry_hpa,
         forcing=canonical.forcing,
     )
@@ -1037,12 +1037,9 @@ def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.nd
     entries = np.arange(state.entry_count, dtype=np.int64)
     samples = np.empty((state.entry_count, state.prepared.max_field_count), dtype=np.float64)
     prepared = state.prepared
-    if isinstance(snapshot.state, BlockedTracerField):
-        state_bottom = np.asarray(snapshot.state.data[0, :, ::-1, :, :, :], dtype=np.float64)
-    else:
-        state_bottom = np.asarray(
-            snapshot.state.data[0, np.newaxis, ::-1, :, :, :], dtype=np.float64
-        )
+    state_bottom = np.asarray(
+        snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
+    )
     obsoperator_sampling._sample_prepared_entries_kernel(
         state_bottom,
         snapshot.state.block_width,

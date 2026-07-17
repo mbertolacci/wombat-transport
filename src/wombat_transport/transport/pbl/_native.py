@@ -309,7 +309,7 @@ def run_vdiffdr_one_step(
     if input_mass_pressure is not None and diagnostics:
         raise ValueError("input_mass_pressure_hpa requires diagnostics=False and the full-grid Numba path")
     if numba_vdiff:
-        from wombat_transport.transport.pbl._numba_blocked import run_vdiff_one_block_numba
+        from wombat_transport.transport.pbl._numba_transport import run_vdiff_one_block_numba
 
         return run_vdiff_one_block_numba(
             tracer_top=tracer,

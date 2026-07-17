@@ -103,7 +103,7 @@ def main() -> int:
         count = int(args.max_tracers)
         state = state.__class__(
             names=state.names[:count],
-            data=state.data[..., :count],
+            data=state.to_canonical()[..., :count],
             units=state.units[:count],
             coords=state.coords,
         )
@@ -141,7 +141,7 @@ def main() -> int:
             if args.max_tracers is not None:
                 active_emissions = active_emissions.__class__(
                     names=active_emissions.names[: len(species)],
-                    data=active_emissions.data[..., : len(species)],
+                    data=active_emissions.to_canonical()[..., : len(species)],
                     units=active_emissions.units[: len(species)],
                     coords=active_emissions.coords,
                 )
@@ -222,13 +222,13 @@ def _records_for_step(
     tpcore_p2_hpa: np.ndarray,
 ) -> list[dict[str, np.ndarray | datetime | int | str]]:
     records = [
-        _record(step, timestamp, "step_start", canonical_time_slice(initial_state.data), columns),
-        _record(step, timestamp, "before_do_transport", canonical_time_slice(initial_state.data), columns),
+        _record(step, timestamp, "step_start", canonical_time_slice(initial_state.to_canonical()), columns),
+        _record(step, timestamp, "before_do_transport", canonical_time_slice(initial_state.to_canonical()), columns),
         _record(
             step,
             timestamp,
             "before_tpcore_fvdas",
-            canonical_time_slice(initial_state.data),
+            canonical_time_slice(initial_state.to_canonical()),
             columns,
             p_tp1_hpa=_tpcore_initial_surface_pressure_hpa(trace.tpcore_state),
             p_tp2_hpa=tpcore_p2_hpa,
@@ -317,7 +317,7 @@ def _records_for_step(
             precccon=trace.convection_input.precccon_mm_day,
         ),
         _record(step, timestamp, "after_do_convection", trace.convection_output.tracer_conc, columns),
-        _record(step, timestamp, "after_history_record", canonical_time_slice(trace.result.state.data), columns),
+        _record(step, timestamp, "after_history_record", canonical_time_slice(trace.result.state.to_canonical()), columns),
     ]
     if emissions_was_refreshed:
         records.insert(
@@ -343,9 +343,9 @@ def _write_snapshots_for_step(
 ) -> None:
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     snapshots = {
-        "step_start": canonical_time_slice(initial_state.data),
-        "before_do_transport": canonical_time_slice(initial_state.data),
-        "before_tpcore_fvdas": canonical_time_slice(initial_state.data),
+        "step_start": canonical_time_slice(initial_state.to_canonical()),
+        "before_do_transport": canonical_time_slice(initial_state.to_canonical()),
+        "before_tpcore_fvdas": canonical_time_slice(initial_state.to_canonical()),
         "after_do_transport": trace.tpcore_state.tracer_conc_after,
         "after_setup_wetscav": trace.tpcore_state.tracer_conc_after,
         "after_compute_pbl_height": trace.tpcore_state.tracer_conc_after,
@@ -358,7 +358,7 @@ def _write_snapshots_for_step(
         "after_do_mixing": trace.vdiff_output.tracer_conc,
         "before_do_convection": trace.convection_input.tracer_conc,
         "after_do_convection": trace.convection_output.tracer_conc,
-        "after_history_record": canonical_time_slice(trace.result.state.data),
+        "after_history_record": canonical_time_slice(trace.result.state.to_canonical()),
     }
     for boundary, tracer_top in snapshots.items():
         _write_snapshot(snapshot_dir / f"{boundary}_{step:06d}.bin", tracer_top)
