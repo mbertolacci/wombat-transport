@@ -9,6 +9,7 @@ import numpy as np
 from wombat_transport.transport.convection import _numba_blocked as convection_block
 from wombat_transport.transport.pbl import _numba_blocked as vdiff_block
 from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlan
+from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlanWorkspace
 from wombat_transport.transport.tpcore import _numba_blocked as tpcore_block
 from wombat_transport.transport.tpcore import _numba as tpcore_nb
 from wombat_transport.transport.tpcore._numba_blocked import TpcoreBlockPlan
@@ -34,6 +35,7 @@ class NumbaBlockedTransportWorkspace:
     """Persistent block state plus block-shared and worker-local scratch."""
 
     tpcore: TpcoreBlockWorkspace
+    vdiff_plan: VdiffBlockPlanWorkspace
     workers: int
     qqu: np.ndarray
     qqv: np.ndarray
@@ -72,6 +74,7 @@ def make_numba_blocked_transport_workspace(
     )
     return NumbaBlockedTransportWorkspace(
         tpcore=tpcore,
+        vdiff_plan=vdiff_block.make_vdiff_block_plan_workspace(nlev, nlat, nlon),
         workers=workers,
         qqu=np.empty((nblock, nlat, nlon, lane), dtype=np.float64),
         qqv=np.empty((nblock, nlat, nlon, lane), dtype=np.float64),

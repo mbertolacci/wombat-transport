@@ -2743,3 +2743,40 @@ workers it was 27% faster than the direct chain at 64 tracers in one repeat and
 tracers and at four workers roughly neutral. Block execution therefore remains
 explicit rather than automatically selected; spatial execution remains the
 default.
+
+### Tracer-free VDIFF preparation and steady-state plan cost
+
+The first unified low-tracer comparison charged a single cold VDIFF plan after
+allocation while warming the cached workspaces used by the direct chain. It
+also prepared coefficients by running the full VDIFF kernel with a dummy
+one-tracer field. Stage timings showed that the unified spatial apply itself
+was faster at 1--8 tracers; the apparent regression came from this preparation
+pass.
+
+The retained preparation path now exits after coefficient and humidity work,
+before all tracer loops. Coefficient, humidity, and dummy-input arrays live in
+the persistent transport workspace. The benchmark warms and repeats plan
+construction on those buffers, matching its treatment of the direct chain.
+The original combined VDIFF path retains the same tracer arithmetic, and a
+shared inlined humidity solve keeps the two paths in source-order parity.
+
+On global 2x2.5 with eight workers, zero flux, full-width one-block spatial
+execution, and all plan costs charged, the steady-state frontier was:
+
+| Tracers | Direct chain s | Unified s | Speedup |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.02117 | 0.02036 | 1.04x |
+| 2 | 0.02436 | 0.02380 | 1.02x |
+| 4 | 0.03034 | 0.02699 | 1.12x |
+| 8 | 0.04041 | 0.03691 | 1.09x |
+| 16 | 0.06435 | 0.05540 | 1.16x |
+| 32 | 0.11143 | 0.10828 | 1.03x |
+| 64 | 0.21379 | 0.19398 | 1.10x |
+| 96 | 0.32226 | 0.27399 | 1.18x |
+
+Uniform nonzero surface flux was within 1% at one tracer and 1.07x/1.15x
+faster at four/eight tracers. Width-8 outer-block execution also retained its
+gain: 1.23x at 64 tracers and 1.08x at 96 in this run. Every benchmark result
+was bitwise equal. The persistent VDIFF plan adds roughly 38 MiB at 2x2.5,
+independent of tracer count; this is the main cost to weigh before making the
+unified executor unconditional at low tracer counts.

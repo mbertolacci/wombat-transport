@@ -284,6 +284,8 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     output_buffer: np.ndarray | None,
     input_mass_pressure_hpa: np.ndarray | None,
     plan_output: tuple[np.ndarray, ...] | None = None,
+    plan_only: bool = False,
+    sphu_output_buffer: np.ndarray | None = None,
 ) -> VdiffDrResult:
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -308,6 +310,14 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     else:
         tracer_out = np.empty_like(tracer_top)
         sphu_out = np.empty_like(sphu_top)
+    if sphu_output_buffer is not None:
+        sphu_out = np.asarray(sphu_output_buffer)
+        if sphu_out.shape != sphu_top.shape or sphu_out.dtype != np.float64:
+            raise ValueError("sphu_output_buffer must match sphu_top shape and float64 dtype")
+        if not sphu_out.flags.c_contiguous or not sphu_out.flags.writeable:
+            raise ValueError("sphu_output_buffer must be writable and C-contiguous")
+        if np.shares_memory(sphu_out, sphu_top):
+            raise ValueError("sphu_output_buffer must not overlap sphu_top")
     if input_mass_pressure_hpa is not None:
         _finalize_deferred_tpcore_poles_numba_kernel(tracer_top, input_mass_pressure_hpa)
     if plan_output is None:
@@ -417,6 +427,7 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         plan_rrho,
         plan_tmp1,
         capture_plan,
+        plan_only,
     )
     empty = np.empty(0, dtype=np.float64)
     return VdiffDrResult(
@@ -470,6 +481,49 @@ if njit is not None:
                     for tracer in range(ntracer):
                         total[tracer] += tracer_conc[lev, lat, lon, tracer] * mass
         return total
+
+
+    @njit(inline="always", nogil=True)
+    def _solve_vdiff_humidity_numba(
+        nlev: int,
+        ntopfl: int,
+        lat: int,
+        shmx: np.ndarray,
+        termh: np.ndarray,
+        cch: np.ndarray,
+        zeh: np.ndarray,
+        dshbot: np.ndarray,
+        zfq_scalar: np.ndarray,
+        sphu_diffused: np.ndarray,
+        sphu_out: np.ndarray,
+    ) -> None:
+        nlon = shmx.shape[0]
+        for lon in range(nlon):
+            zfq_scalar[lon, ntopfl] = shmx[lon, ntopfl] * termh[lon, ntopfl]
+        for lev in range(ntopfl + 1, nlev - 1):
+            for lon in range(nlon):
+                zfq_scalar[lon, lev] = (
+                    shmx[lon, lev] + cch[lon, lev] * zfq_scalar[lon, lev - 1]
+                ) * termh[lon, lev]
+        for lon in range(nlon):
+            tmp1d = 1.0 / (1.0 + cch[lon, nlev - 1] * (1.0 - zeh[lon, nlev - 2]))
+            zfq_scalar[lon, nlev - 1] = (
+                shmx[lon, nlev - 1]
+                + dshbot[lon]
+                + cch[lon, nlev - 1] * zfq_scalar[lon, nlev - 2]
+            ) * tmp1d
+            sphu_diffused[lon, nlev - 1] = zfq_scalar[lon, nlev - 1]
+        for lev in range(nlev - 2, ntopfl - 1, -1):
+            for lon in range(nlon):
+                sphu_diffused[lon, lev] = (
+                    zfq_scalar[lon, lev] + zeh[lon, lev] * sphu_diffused[lon, lev + 1]
+                )
+        for lon in range(nlon):
+            for lev in range(nlev):
+                value = sphu_diffused[lon, lev]
+                if value < 1.0e-12:
+                    value = 0.0
+                sphu_out[lev, lat, lon] = value
 
 
     @njit(cache=True, parallel=True, nogil=True)
@@ -549,6 +603,7 @@ if njit is not None:
         plan_rrho: np.ndarray,
         plan_tmp1: np.ndarray,
         capture_plan: bool,
+        plan_only: bool,
     ) -> int:
         nlev = tracer_top.shape[0]
         nlat = tracer_top.shape[1]
@@ -810,6 +865,22 @@ if njit is not None:
                     plan_rrho[lat, lon] = rrho[lon]
                     plan_tmp1[lat, lon] = tmp1[lon]
 
+            if capture_plan and plan_only:
+                _solve_vdiff_humidity_numba(
+                    nlev,
+                    ntopfl,
+                    lat,
+                    shmx,
+                    termh,
+                    cch,
+                    zeh,
+                    dshbot,
+                    zfq_scalar,
+                    sphu_diffused,
+                    sphu_out,
+                )
+                continue
+
             if not surface_flux_is_zero:
                 for lon in range(nlon):
                     for tracer in range(ntracer):
@@ -944,28 +1015,19 @@ if njit is not None:
                             lon, tracer
                         ]
 
-            for lon in range(nlon):
-                zfq_scalar[lon, ntopfl] = shmx[lon, ntopfl] * termh[lon, ntopfl]
-            for lev in range(ntopfl + 1, nlev - 1):
-                for lon in range(nlon):
-                    zfq_scalar[lon, lev] = (
-                        shmx[lon, lev] + cch[lon, lev] * zfq_scalar[lon, lev - 1]
-                    ) * termh[lon, lev]
-            for lon in range(nlon):
-                tmp1d = 1.0 / (1.0 + cch[lon, nlev - 1] * (1.0 - zeh[lon, nlev - 2]))
-                zfq_scalar[lon, nlev - 1] = (
-                    shmx[lon, nlev - 1] + dshbot[lon] + cch[lon, nlev - 1] * zfq_scalar[lon, nlev - 2]
-                ) * tmp1d
-                sphu_diffused[lon, nlev - 1] = zfq_scalar[lon, nlev - 1]
-            for lev in range(nlev - 2, ntopfl - 1, -1):
-                for lon in range(nlon):
-                    sphu_diffused[lon, lev] = zfq_scalar[lon, lev] + zeh[lon, lev] * sphu_diffused[lon, lev + 1]
-            for lon in range(nlon):
-                for lev in range(nlev):
-                    value = sphu_diffused[lon, lev]
-                    if value < 1.0e-12:
-                        value = 0.0
-                    sphu_out[lev, lat, lon] = value
+            _solve_vdiff_humidity_numba(
+                nlev,
+                ntopfl,
+                lat,
+                shmx,
+                termh,
+                cch,
+                zeh,
+                dshbot,
+                zfq_scalar,
+                sphu_diffused,
+                sphu_out,
+            )
 
         return negative_count
 

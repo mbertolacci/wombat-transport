@@ -370,6 +370,7 @@ def run_numba_blocked_transport_step(
         area_m2=area,
         dt_s=dt_s,
         workers=executor.workspace.workers,
+        workspace=executor.workspace.vdiff_plan,
     )
     if active_emissions is None:
         surface_flux = np.zeros((*area.shape, tracer_field.tracer_count), dtype=np.float64)

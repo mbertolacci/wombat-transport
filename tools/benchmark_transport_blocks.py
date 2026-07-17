@@ -121,31 +121,41 @@ def main(argv: list[str] | None = None) -> int:
         rows.append(_row(ntracer, "fused", 0, args.workers, fused_times, 0.0, fused_best, reference, reference))
 
         for lane_width in args.lanes:
-            plan_start = time.perf_counter()
-            tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=tpcore.area_m2)
-            vdiff_plan = prepare_vdiff_zero_flux_block_plan(
-                u_top=vdiff.u_m_s,
-                v_top=vdiff.v_m_s,
-                temperature_top=vdiff.temperature_k,
-                sphu_top=vdiff.specific_humidity_kg_kg,
-                pmid_hpa=vdiff.pmid_hpa,
-                pint_hpa=vdiff.pedge_hpa,
-                virtual_temperature_top=vdiff.virtual_temperature_k,
-                bxheight_top=vdiff.bxheight_m,
-                dry_mass_top=vdiff.dry_air_mass_kg,
-                pblh_m=vdiff.pbl_top_m,
-                hflux_w_m2=vdiff.hflux_w_m2,
-                water_flux_kg_m2_s=vdiff.eflux_w_m2 / LATVAP_J_PER_KG,
-                ustar_m_s=vdiff.ustar_m_s,
-                area_m2=vdiff.area_m2,
-                dt_s=vdiff.dt_s,
-                workers=args.workers,
-            )
-            plan_s = time.perf_counter() - plan_start
             transport_workspace = make_numba_blocked_transport_workspace(
                 tpcore.tracer_conc.shape, lane_width, args.workers
             )
             workspace = transport_workspace.tpcore
+            def prepare_plans():
+                tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=tpcore.area_m2)
+                vdiff_plan = prepare_vdiff_zero_flux_block_plan(
+                    u_top=vdiff.u_m_s,
+                    v_top=vdiff.v_m_s,
+                    temperature_top=vdiff.temperature_k,
+                    sphu_top=vdiff.specific_humidity_kg_kg,
+                    pmid_hpa=vdiff.pmid_hpa,
+                    pint_hpa=vdiff.pedge_hpa,
+                    virtual_temperature_top=vdiff.virtual_temperature_k,
+                    bxheight_top=vdiff.bxheight_m,
+                    dry_mass_top=vdiff.dry_air_mass_kg,
+                    pblh_m=vdiff.pbl_top_m,
+                    hflux_w_m2=vdiff.hflux_w_m2,
+                    water_flux_kg_m2_s=vdiff.eflux_w_m2 / LATVAP_J_PER_KG,
+                    ustar_m_s=vdiff.ustar_m_s,
+                    area_m2=vdiff.area_m2,
+                    dt_s=vdiff.dt_s,
+                    workers=args.workers,
+                    workspace=transport_workspace.vdiff_plan,
+                )
+                return tpcore_plan, vdiff_plan
+
+            for _ in range(args.warmup):
+                tpcore_plan, vdiff_plan = prepare_plans()
+            plan_times = []
+            for _ in range(args.repeat):
+                plan_start = time.perf_counter()
+                tpcore_plan, vdiff_plan = prepare_plans()
+                plan_times.append(time.perf_counter() - plan_start)
+            plan_s = min(plan_times)
 
             def load() -> None:
                 load_tracer_block_workspace(tpcore.tracer_conc, workspace)

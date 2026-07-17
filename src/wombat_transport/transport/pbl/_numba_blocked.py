@@ -40,6 +40,48 @@ class VdiffBlockPlan:
     specific_humidity_after: np.ndarray
 
 
+@dataclass
+class VdiffBlockPlanWorkspace:
+    """Reusable outputs and dummy inputs for one VDIFF preparation."""
+
+    cch: np.ndarray
+    zeh: np.ndarray
+    termh: np.ndarray
+    cgs: np.ndarray
+    kvh: np.ndarray
+    potbar: np.ndarray
+    rpdel: np.ndarray
+    rrho: np.ndarray
+    tmp1: np.ndarray
+    specific_humidity_after: np.ndarray
+    dummy_tracer: np.ndarray
+    dummy_flux: np.ndarray
+
+
+def make_vdiff_block_plan_workspace(
+    nlev: int, nlat: int, nlon: int
+) -> VdiffBlockPlanWorkspace:
+    """Allocate coefficient storage reused by every transport step."""
+
+    center = np.empty((nlev, nlat, nlon), dtype=np.float64)
+    edge = np.empty((nlev + 1, nlat, nlon), dtype=np.float64)
+    horizontal = np.empty((nlat, nlon), dtype=np.float64)
+    return VdiffBlockPlanWorkspace(
+        cch=center,
+        zeh=np.empty_like(center),
+        termh=np.empty_like(center),
+        cgs=edge,
+        kvh=np.empty_like(edge),
+        potbar=np.empty_like(edge),
+        rpdel=np.empty_like(center),
+        rrho=horizontal,
+        tmp1=np.empty_like(horizontal),
+        specific_humidity_after=np.empty_like(center),
+        dummy_tracer=np.zeros((nlev, nlat, nlon, 1), dtype=np.float64),
+        dummy_flux=np.zeros((nlat, nlon, 1), dtype=np.float64),
+    )
+
+
 def prepare_vdiff_zero_flux_block_plan(
     *,
     u_top: np.ndarray,
@@ -58,6 +100,7 @@ def prepare_vdiff_zero_flux_block_plan(
     area_m2: np.ndarray,
     dt_s: float,
     workers: int,
+    workspace: VdiffBlockPlanWorkspace | None = None,
 ) -> VdiffBlockPlan:
     """Prepare exact zero-surface-flux coefficients once for all tracer blocks."""
 
@@ -68,21 +111,14 @@ def prepare_vdiff_zero_flux_block_plan(
     nlev, nlat, nlon = temperature_top.shape
     if pint_hpa.shape != (nlev + 1, nlat, nlon):
         raise ValueError("pint_hpa shape does not match the VDIFF grid")
+    if workspace is None:
+        workspace = make_vdiff_block_plan_workspace(nlev, nlat, nlon)
+    if workspace.cch.shape != (nlev, nlat, nlon):
+        raise ValueError("VDIFF plan workspace does not match the grid")
     npbl = nb._max_pbl_levels_from_pressure(np.asarray(pmid_hpa, dtype=np.float64))
-    cch = np.empty((nlev, nlat, nlon), dtype=np.float64)
-    zeh = np.empty_like(cch)
-    termh = np.empty_like(cch)
-    cgs = np.empty((nlev + 1, nlat, nlon), dtype=np.float64)
-    kvh = np.empty_like(cgs)
-    potbar = np.empty_like(cgs)
-    rpdel = np.empty_like(cch)
-    rrho = np.empty((nlat, nlon), dtype=np.float64)
-    tmp1 = np.empty_like(rrho)
-    dummy_tracer = np.zeros((nlev, nlat, nlon, 1), dtype=np.float64)
-    dummy_flux = np.zeros((nlat, nlon, 1), dtype=np.float64)
     set_num_threads(workers)
     result = nb._run_vdiffdr_one_step_fullgrid_numba(
-        tracer_top=dummy_tracer,
+        tracer_top=workspace.dummy_tracer,
         u_top=np.asarray(u_top, dtype=np.float64),
         v_top=np.asarray(v_top, dtype=np.float64),
         temperature_top=np.asarray(temperature_top, dtype=np.float64),
@@ -95,28 +131,40 @@ def prepare_vdiff_zero_flux_block_plan(
         pblh_m=np.asarray(pblh_m, dtype=np.float64),
         hflux_w_m2=np.asarray(hflux_w_m2, dtype=np.float64),
         water_flux_kg_m2_s=np.asarray(water_flux_kg_m2_s, dtype=np.float64),
-        surface_flux_kg_m2_s=dummy_flux,
+        surface_flux_kg_m2_s=workspace.dummy_flux,
         ustar_m_s=np.asarray(ustar_m_s, dtype=np.float64),
         area_m2=np.asarray(area_m2, dtype=np.float64),
         dt_s=float(dt_s),
         npbl=int(npbl),
         surface_flux_is_zero=True,
         nthreads=workers,
-        reuse_output=False,
+        reuse_output=True,
         output_buffer=None,
         input_mass_pressure_hpa=None,
-        plan_output=(cch, zeh, termh, cgs, kvh, potbar, rpdel, rrho, tmp1),
+        plan_output=(
+            workspace.cch,
+            workspace.zeh,
+            workspace.termh,
+            workspace.cgs,
+            workspace.kvh,
+            workspace.potbar,
+            workspace.rpdel,
+            workspace.rrho,
+            workspace.tmp1,
+        ),
+        plan_only=True,
+        sphu_output_buffer=workspace.specific_humidity_after,
     )
     return VdiffBlockPlan(
-        cch=cch,
-        zeh=zeh,
-        termh=termh,
-        cgs=cgs,
-        kvh=kvh,
-        potbar=potbar,
-        rpdel=rpdel,
-        rrho=rrho,
-        tmp1=tmp1,
+        cch=workspace.cch,
+        zeh=workspace.zeh,
+        termh=workspace.termh,
+        cgs=workspace.cgs,
+        kvh=workspace.kvh,
+        potbar=workspace.potbar,
+        rpdel=workspace.rpdel,
+        rrho=workspace.rrho,
+        tmp1=workspace.tmp1,
         dry_mass=np.asarray(dry_mass_top, dtype=np.float64),
         area_m2=np.asarray(area_m2, dtype=np.float64),
         dt_s=float(dt_s),
