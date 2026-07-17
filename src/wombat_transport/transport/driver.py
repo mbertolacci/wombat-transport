@@ -24,10 +24,9 @@ from wombat_transport.transport.convection import (
     G0_100,
     run_cloud_convection_one_step,
 )
-from wombat_transport.transport._numba_transport import (
-    NumbaTransportWorkspace,
-    apply_numba_transport,
-    make_numba_transport_workspace,
+from wombat_transport.transport._executor import (
+    TransportExecutor,
+    apply_transport,
 )
 from wombat_transport.transport.forcing import (
     TransportForcing,
@@ -39,8 +38,8 @@ from wombat_transport.transport.pbl import (
     VdiffDrResult,
     run_vdiffdr_one_step,
 )
-from wombat_transport.transport.pbl._numba_transport import prepare_vdiff_zero_flux_block_plan
-from wombat_transport.transport.tpcore._numba_transport import prepare_tpcore_block_plan
+from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
+from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
@@ -57,7 +56,6 @@ from wombat_transport.transport.tpcore import (
     setup_tpcore_terms,
     validate_tpcore_branch_support,
 )
-from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.numba_control import numba_available_and_enabled
 
 
@@ -141,28 +139,6 @@ class TransportWindowResult:
     steps: int
     dt_s: float
     transport_operators: tuple[str, ...]
-
-
-@dataclass
-class NumbaTransportExecutor:
-    """Persistent state and scratch for Numba transport policies."""
-
-    workspace: NumbaTransportWorkspace
-
-    @classmethod
-    def create(cls, field: TracerField) -> NumbaTransportExecutor:
-        if field.block_data.shape[0] != 1:
-            raise ValueError("transport requires exactly one time slice")
-        workers = configure_numba_threads(available=True)
-        workspace = make_numba_transport_workspace(
-            field.shape[1:], field.block_width, workers
-        )
-        tpcore = workspace.tpcore
-        tpcore.state_a = field.block_data[0]
-        for block_index, block in enumerate(tpcore.blocks):
-            block.q = tpcore.state_a[block_index]
-            block.dq1 = tpcore.state_b[block_index]
-        return cls(workspace=workspace)
 
 
 def _run_transport_one_block(
@@ -286,11 +262,11 @@ def run_transport_one_step(
     )
 
 
-def run_numba_transport_step(
+def run_transport_step_with_executor(
     tracer_field: TracerField,
     forcing: TransportForcing,
     grid: TransportGrid,
-    executor: NumbaTransportExecutor,
+    executor: TransportExecutor,
     *,
     dt_s: float = 600.0,
     active_emissions: SurfaceEmissions | None = None,
@@ -300,7 +276,7 @@ def run_numba_transport_step(
     validate_tpcore_branches: bool = True,
     execution: str = "blocks",
 ) -> TransportStepResult:
-    """Run one prepared Numba transport step over persistent block-native state."""
+    """Run one prepared compiled step over persistent block-native state."""
 
     tpcore_workspace = executor.workspace.tpcore
     if not np.shares_memory(tpcore_workspace.state_a, tracer_field.block_data):
@@ -344,8 +320,8 @@ def run_numba_transport_step(
     virtual_temperature = _virtual_temperature_k(temperature, sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
 
-    tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=area)
-    vdiff_plan = prepare_vdiff_zero_flux_block_plan(
+    tpcore_plan = prepare_tpcore_plan(setup=setup, area_m2=area)
+    vdiff_plan = prepare_vdiff_plan(
         u_top=np.asarray(forcing.u_m_s[0], dtype=np.float64)[::-1],
         v_top=np.asarray(forcing.v_m_s[0], dtype=np.float64)[::-1],
         temperature_top=temperature[::-1],
@@ -377,7 +353,7 @@ def run_numba_transport_step(
     )
     delp_top = np.asarray(next_delp[0], dtype=np.float64)[::-1]
     internal_steps = max(int(dt_s) // 300, 1)
-    apply_numba_transport(
+    apply_transport(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
         workspace=executor.workspace,

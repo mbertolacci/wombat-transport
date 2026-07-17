@@ -35,9 +35,9 @@ from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
-    NumbaTransportExecutor,
+    TransportExecutor,
     run_transport_one_step,
-    run_numba_transport_step,
+    run_transport_step_with_executor,
 )
 from wombat_transport.transport.numba_control import (
     numba_available_and_enabled,
@@ -94,7 +94,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     state = initial_state.reblock(block_width)
     use_unified_numba = numba_transport
     transport_executor = (
-        NumbaTransportExecutor.create(state)
+        TransportExecutor.create(state)
         if use_unified_numba
         else None
     )
@@ -194,7 +194,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
                 state, forcing, grid, consume_input=True, **transport_kwargs
             )
         else:
-            transport_result = run_numba_transport_step(
+            transport_result = run_transport_step_with_executor(
                 state,
                 forcing,
                 grid,

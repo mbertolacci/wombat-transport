@@ -1,9 +1,17 @@
+"""Transport operators and execution plumbing.
+
+Each operator keeps its NumPy oracle in ``_reference.py``. Raw compiled loops
+live in ``_kernels.py`` where the operator is large enough to warrant them;
+``_plan.py`` owns tracer-independent per-step preparation; and ``_operator.py``
+selects and composes implementations. ``_executor.py`` joins the three
+operators and owns spatial-versus-block parallel execution.
+"""
+
 from __future__ import annotations
 
 from wombat_transport.grid import TransportGrid, load_transport_grid
 from wombat_transport.transport.driver import (
     ConvectionInputState,
-    NumbaTransportExecutor,
     TransportStageMass,
     TransportStepDiagnostics,
     TransportStepResult,
@@ -11,10 +19,11 @@ from wombat_transport.transport.driver import (
     VdiffInputState,
     compute_transport_stage_masses,
     run_transport_one_step,
-    run_numba_transport_step,
+    run_transport_step_with_executor,
     run_transport_window,
     trace_transport_one_step,
 )
+from wombat_transport.transport._executor import TransportExecutor
 from wombat_transport.transport.convection import ConvectionResult, run_cloud_convection_one_step
 from wombat_transport.transport.forcing import (
     MERRA2_72_AP_HPA,
@@ -72,7 +81,7 @@ __all__ = [
     "TransportGrid",
     "ConvectionResult",
     "ConvectionInputState",
-    "NumbaTransportExecutor",
+    "TransportExecutor",
     "TransportStageMass",
     "TransportStepDiagnostics",
     "TransportStepResult",
@@ -103,7 +112,7 @@ __all__ = [
     "pressure_edges_from_surface_hpa",
     "pressure_edges_hpa",
     "run_transport_one_step",
-    "run_numba_transport_step",
+    "run_transport_step_with_executor",
     "run_transport_window",
     "trace_transport_one_step",
     "run_cloud_convection_one_step",

@@ -68,7 +68,7 @@ from wombat_transport.transport.tpcore import (
     setup_tpcore_terms,
     trace_tpcore_one_step,
 )
-from wombat_transport.transport.tpcore._native import _average_poles_in_place, _calc_divergence
+from wombat_transport.transport.tpcore._reference import _average_poles_in_place, _calc_divergence
 
 
 PJC_INPUT_VERSION = "pjc-pfix-input-v1"

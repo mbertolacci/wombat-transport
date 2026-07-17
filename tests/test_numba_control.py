@@ -8,9 +8,9 @@ from wombat_transport import history_accumulation
 from wombat_transport.obsoperator import sampling
 from wombat_transport.transport import convection, pbl, tpcore
 from wombat_transport.transport import numba_control
-from wombat_transport.transport.convection import _numba as convection_numba
-from wombat_transport.transport.pbl import _numba as pbl_numba
-from wombat_transport.transport.tpcore import _numba as tpcore_numba
+from wombat_transport.transport.convection import _operator as convection_numba
+from wombat_transport.transport.pbl import _kernels as pbl_numba
+from wombat_transport.transport.tpcore import _kernels as tpcore_numba
 
 
 def test_numba_defaults_to_enabled_for_every_subsystem(monkeypatch):

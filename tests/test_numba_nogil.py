@@ -4,10 +4,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from wombat_transport.transport.convection import _native as convection_native
-from wombat_transport.transport.convection import _numba as convection_numba
-from wombat_transport.transport.pbl import _numba as pbl_numba
-from wombat_transport.transport.tpcore import _numba as tpcore_numba
+from wombat_transport.transport.convection import _reference as convection_reference
+from wombat_transport.transport.convection import _operator as convection_numba
+from wombat_transport.transport.pbl import _kernels as pbl_numba
+from wombat_transport.transport.tpcore import _kernels as tpcore_numba
 
 
 NUMBA_MODULES = (tpcore_numba, pbl_numba, convection_numba)
@@ -32,7 +32,7 @@ def test_transport_numba_kernels_release_gil():
         (tpcore_numba._get_tpcore_numba_workspace, (2, 3, 4, 1, 1)),
         (pbl_numba._get_vdiff_fullgrid_workspace, (1, 2, 3, 4, 1)),
         (convection_numba._get_convection_kernel_workspace, (1, 1)),
-        (convection_native._get_convection_light_workspace, (2, 3, 4, 1)),
+        (convection_reference._get_convection_light_workspace, (2, 3, 4, 1)),
     ],
 )
 def test_reusable_transport_workspaces_are_thread_local(getter, args):

@@ -1,15 +1,20 @@
-"""Numba VDIFF path for persistent block-native tracer storage."""
+"""Runtime VDIFF operator, workspaces, and plan application."""
 
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from functools import wraps
 
 import numpy as np
 
-from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.numba_control import synchronized_transport_numba
-from wombat_transport.transport.pbl import _numba as nb
+from wombat_transport.transport.pbl import _kernels as nb
+from wombat_transport.transport.pbl import _reference
+from wombat_transport.transport.pbl._plan import VdiffPlan
+from wombat_transport.transport.pbl._plan import VdiffPlanWorkspace
+from wombat_transport.transport.pbl._plan import make_vdiff_plan_workspace
+from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
 
 if nb._NUMBA_AVAILABLE:
     from numba import get_thread_id, njit, prange
@@ -20,189 +25,13 @@ else:  # pragma: no cover - exercised in environments without numba.
 
 _G0_M_PER_S2 = nb.G0_M_PER_S2
 _RD_J_PER_KG_K = nb.RD_J_PER_KG_K
+_numba_vdiff_mode = nb._numba_vdiff_mode
+_numba_vdiff_enabled = nb._numba_vdiff_enabled
+_numba_vdiff_thread_count = nb._numba_vdiff_thread_count
 
-
-@dataclass(frozen=True)
-class VdiffBlockPlan:
-    """Tracer-independent diffusion coefficients and humidity result."""
-
-    cch: np.ndarray
-    zeh: np.ndarray
-    termh: np.ndarray
-    cgs: np.ndarray
-    kvh: np.ndarray
-    potbar: np.ndarray
-    rpdel: np.ndarray
-    rrho: np.ndarray
-    tmp1: np.ndarray
-    dry_mass: np.ndarray
-    area_m2: np.ndarray
-    dt_s: float
-    start_level: int
-    specific_humidity_after: np.ndarray
-
-
-@dataclass
-class VdiffBlockPlanWorkspace:
-    """Reusable outputs and dummy inputs for one VDIFF preparation."""
-
-    cch: np.ndarray
-    zeh: np.ndarray
-    termh: np.ndarray
-    cgs: np.ndarray
-    kvh: np.ndarray
-    potbar: np.ndarray
-    rpdel: np.ndarray
-    rrho: np.ndarray
-    tmp1: np.ndarray
-    specific_humidity_after: np.ndarray
-    dummy_tracer: np.ndarray
-    dummy_flux: np.ndarray
-    diagnostic_kvm: np.ndarray
-    diagnostic_tpert: np.ndarray
-    diagnostic_qpert: np.ndarray
-
-
-def make_vdiff_block_plan_workspace(
-    nlev: int, nlat: int, nlon: int, *, diagnostics: bool = False
-) -> VdiffBlockPlanWorkspace:
-    """Allocate coefficient storage reused by every transport step."""
-
-    center = np.empty((nlev, nlat, nlon), dtype=np.float64)
-    edge = np.empty((nlev + 1, nlat, nlon), dtype=np.float64)
-    horizontal = np.empty((nlat, nlon), dtype=np.float64)
-    return VdiffBlockPlanWorkspace(
-        cch=center,
-        zeh=np.empty_like(center),
-        termh=np.empty_like(center),
-        cgs=edge,
-        kvh=np.empty_like(edge),
-        potbar=np.empty_like(edge),
-        rpdel=np.empty_like(center),
-        rrho=horizontal,
-        tmp1=np.empty_like(horizontal),
-        specific_humidity_after=np.empty_like(center),
-        dummy_tracer=np.zeros((nlev, nlat, nlon, 1), dtype=np.float64),
-        dummy_flux=np.zeros((nlat, nlon, 1), dtype=np.float64),
-        diagnostic_kvm=(
-            np.empty((nlev + 1, nlat, nlon), dtype=np.float64)
-            if diagnostics
-            else np.empty((0,), dtype=np.float64)
-        ),
-        diagnostic_tpert=(
-            np.empty((nlat, nlon), dtype=np.float64)
-            if diagnostics
-            else np.empty((0,), dtype=np.float64)
-        ),
-        diagnostic_qpert=(
-            np.empty((nlat, nlon), dtype=np.float64)
-            if diagnostics
-            else np.empty((0,), dtype=np.float64)
-        ),
-    )
-
-
-def prepare_vdiff_zero_flux_block_plan(
-    *,
-    u_top: np.ndarray,
-    v_top: np.ndarray,
-    temperature_top: np.ndarray,
-    sphu_top: np.ndarray,
-    pmid_hpa: np.ndarray,
-    pint_hpa: np.ndarray,
-    virtual_temperature_top: np.ndarray,
-    bxheight_top: np.ndarray,
-    dry_mass_top: np.ndarray,
-    pblh_m: np.ndarray,
-    hflux_w_m2: np.ndarray,
-    water_flux_kg_m2_s: np.ndarray,
-    ustar_m_s: np.ndarray,
-    area_m2: np.ndarray,
-    dt_s: float,
-    workers: int,
-    workspace: VdiffBlockPlanWorkspace | None = None,
-) -> VdiffBlockPlan:
-    """Prepare exact zero-surface-flux coefficients once for all tracer blocks."""
-
-    if not nb._NUMBA_AVAILABLE:
-        raise RuntimeError("numba is not available")
-    if workers < 1:
-        raise ValueError("workers must be positive")
-    nlev, nlat, nlon = temperature_top.shape
-    if pint_hpa.shape != (nlev + 1, nlat, nlon):
-        raise ValueError("pint_hpa shape does not match the VDIFF grid")
-    if workspace is None:
-        workspace = make_vdiff_block_plan_workspace(nlev, nlat, nlon)
-    if workspace.cch.shape != (nlev, nlat, nlon):
-        raise ValueError("VDIFF plan workspace does not match the grid")
-    npbl = nb._max_pbl_levels_from_pressure(np.asarray(pmid_hpa, dtype=np.float64))
-    configured_workers = configure_numba_threads(available=True)
-    if workers != configured_workers:
-        raise ValueError(
-            f"VDIFF plan requested {workers} workers but "
-            f"WOMBAT_NUMBA_THREADS configured {configured_workers}"
-        )
-    result = nb._prepare_vdiff_plan_numba(
-        tracer_top=workspace.dummy_tracer,
-        u_top=np.asarray(u_top, dtype=np.float64),
-        v_top=np.asarray(v_top, dtype=np.float64),
-        temperature_top=np.asarray(temperature_top, dtype=np.float64),
-        sphu_top=np.asarray(sphu_top, dtype=np.float64),
-        pmid_hpa=np.asarray(pmid_hpa, dtype=np.float64),
-        pint_hpa=np.asarray(pint_hpa, dtype=np.float64),
-        virtual_temperature_top=np.asarray(virtual_temperature_top, dtype=np.float64),
-        bxheight_top=np.asarray(bxheight_top, dtype=np.float64),
-        dry_mass_top=np.asarray(dry_mass_top, dtype=np.float64),
-        pblh_m=np.asarray(pblh_m, dtype=np.float64),
-        hflux_w_m2=np.asarray(hflux_w_m2, dtype=np.float64),
-        water_flux_kg_m2_s=np.asarray(water_flux_kg_m2_s, dtype=np.float64),
-        surface_flux_kg_m2_s=workspace.dummy_flux,
-        ustar_m_s=np.asarray(ustar_m_s, dtype=np.float64),
-        area_m2=np.asarray(area_m2, dtype=np.float64),
-        dt_s=float(dt_s),
-        npbl=int(npbl),
-        surface_flux_is_zero=True,
-        nthreads=workers,
-        reuse_output=True,
-        output_buffer=None,
-        input_mass_pressure_hpa=None,
-        plan_output=(
-            workspace.cch,
-            workspace.zeh,
-            workspace.termh,
-            workspace.cgs,
-            workspace.kvh,
-            workspace.potbar,
-            workspace.rpdel,
-            workspace.rrho,
-            workspace.tmp1,
-        ),
-        plan_only=True,
-        sphu_output_buffer=workspace.specific_humidity_after,
-        diagnostic_plan_output=(
-            workspace.diagnostic_kvm,
-            workspace.diagnostic_tpert,
-            workspace.diagnostic_qpert,
-        )
-        if workspace.diagnostic_kvm.size
-        else None,
-    )
-    return VdiffBlockPlan(
-        cch=workspace.cch,
-        zeh=workspace.zeh,
-        termh=workspace.termh,
-        cgs=workspace.cgs,
-        kvh=workspace.kvh,
-        potbar=workspace.potbar,
-        rpdel=workspace.rpdel,
-        rrho=workspace.rrho,
-        tmp1=workspace.tmp1,
-        dry_mass=np.asarray(dry_mass_top, dtype=np.float64),
-        area_m2=np.asarray(area_m2, dtype=np.float64),
-        dt_s=float(dt_s),
-        start_level=max(0, nlev - int(npbl)),
-        specific_humidity_after=result.specific_humidity_kg_kg,
-    )
+for _name in dir(_reference):
+    if not _name.startswith("__"):
+        globals().setdefault(_name, getattr(_reference, _name))
 
 
 if njit is not None:
@@ -338,7 +167,7 @@ else:
 @dataclass
 class _VdiffOneBlockWorkspace:
     shape: tuple[int, int, int, int, int]
-    plan: VdiffBlockPlanWorkspace
+    plan: VdiffPlanWorkspace
     tracer_out: np.ndarray
     tracer_diffused: np.ndarray
     before_mass: np.ndarray
@@ -360,7 +189,7 @@ def _get_vdiff_one_block_workspace(
         return existing
     workspace = _VdiffOneBlockWorkspace(
         shape=shape,
-        plan=make_vdiff_block_plan_workspace(nlev, nlat, nlon, diagnostics=True),
+        plan=make_vdiff_plan_workspace(nlev, nlat, nlon, diagnostics=True),
         tracer_out=np.empty((nlev, nlat, nlon, ntracer), dtype=np.float64),
         tracer_diffused=np.empty((workers, nlon, nlev, ntracer), dtype=np.float64),
         before_mass=np.empty((workers, nlon, ntracer), dtype=np.float64),
@@ -374,7 +203,7 @@ def _get_vdiff_one_block_workspace(
 
 
 @synchronized_transport_numba
-def run_vdiff_one_block_numba(
+def run_vdiff_one_block_compiled(
     *,
     tracer_top: np.ndarray,
     u_top: np.ndarray,
@@ -436,7 +265,7 @@ def run_vdiff_one_block_numba(
         if diagnostics
         else np.empty((0,), dtype=np.float64)
     )
-    plan = prepare_vdiff_zero_flux_block_plan(
+    plan = prepare_vdiff_plan(
         u_top=u_top,
         v_top=v_top,
         temperature_top=temperature_top,
@@ -502,3 +331,14 @@ def run_vdiff_one_block_numba(
         initial_tracer_mass=initial_mass,
         final_tracer_mass=final_mass,
     )
+
+
+@wraps(_reference.run_vdiffdr_one_step)
+def run_vdiffdr_one_step(*args, **kwargs):
+    """Run VDIFF through the reference or compiled operator implementation."""
+
+    if nb._numba_vdiff_enabled():
+        kwargs["_compiled_impl"] = run_vdiff_one_block_compiled
+        kwargs["_compiled_workers"] = nb._numba_vdiff_thread_count()
+        kwargs["_mass_impl"] = nb._tracer_working_mass_numba
+    return _reference.run_vdiffdr_one_step(*args, **kwargs)

@@ -29,7 +29,7 @@ from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
-    NumbaTransportExecutor,
+    TransportExecutor,
     compute_transport_stage_masses,
     compute_pbl_height,
     dry_air_mass_from_pressure,
@@ -40,7 +40,7 @@ from wombat_transport.transport import (
     load_transport_forcing,
     mix_full_pbl,
     run_transport_one_step,
-    run_numba_transport_step,
+    run_transport_step_with_executor,
     run_transport_window,
     trace_transport_one_step,
     wet_surface_pressure_hpa,
@@ -48,8 +48,8 @@ from wombat_transport.transport import (
     load_transport_forcing_for_step,
 )
 import wombat_transport.transport.forcing as forcing_module
-import wombat_transport.transport.pbl._numba as pbl_numba
-import wombat_transport.transport.pbl._numba_transport as pbl_numba_transport
+import wombat_transport.transport.pbl._kernels as pbl_numba
+import wombat_transport.transport.pbl._operator as pbl_operator
 from tests.data_paths import BASE_CONFIG, RESIDUAL_CONFIG, requires_restart, requires_transport_data
 from wombat_transport.transport.pbl import (
     ZVIR,
@@ -571,7 +571,7 @@ def test_run_vdiffdr_one_step_diagnostics_light_uses_shared_block_path(
 
     monkeypatch.setattr(pbl_numba, "_NUMBA_AVAILABLE", True)
     monkeypatch.setenv("WOMBAT_NUMBA_THREADS", str(workers))
-    monkeypatch.setattr(pbl_numba_transport, "run_vdiff_one_block_numba", fake_block_path)
+    monkeypatch.setattr(pbl_operator, "run_vdiff_one_block_compiled", fake_block_path)
 
     result = run_vdiffdr_one_step(**fixture, diagnostics=False)
 
@@ -743,7 +743,7 @@ def test_spatial_transport_over_blocks_matches_single_field(
 
 @requires_transport_data
 @pytest.mark.parametrize("execution", ("spatial", "blocks"))
-def test_numba_transport_executor_matches_single_field(monkeypatch, execution):
+def test_transport_executor_matches_single_field(monkeypatch, execution):
     monkeypatch.setenv("WOMBAT_NUMBA", "1")
     monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
     config = load_run_config(RESIDUAL_CONFIG)
@@ -757,8 +757,8 @@ def test_numba_transport_executor_matches_single_field(monkeypatch, execution):
 
     expected = run_transport_one_step(field, forcing, grid, dt_s=600.0)
     blocked = field.reblock(8)
-    executor = NumbaTransportExecutor.create(blocked)
-    actual = run_numba_transport_step(
+    executor = TransportExecutor.create(blocked)
+    actual = run_transport_step_with_executor(
         blocked, forcing, grid, executor, dt_s=600.0, execution=execution
     )
 
@@ -778,7 +778,7 @@ def test_numba_transport_executor_matches_single_field(monkeypatch, execution):
         dt_s=600.0,
         dry_air_mass_kg=expected.dry_air_mass_kg,
     )
-    actual_next = run_numba_transport_step(
+    actual_next = run_transport_step_with_executor(
         actual.state,
         forcing,
         grid,

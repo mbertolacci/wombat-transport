@@ -78,6 +78,8 @@ def run_cloud_convection_one_step(
     diagnostics: bool = True,
     reuse_output: bool = False,
     consume_input: bool = False,
+    _convect_impl=None,
+    _mass_impl=None,
 ) -> ConvectionResult:
     """Port GEOS-Chem ``DO_CLOUD_CONVECTION`` for transport-only tracers.
 
@@ -151,10 +153,12 @@ def run_cloud_convection_one_step(
         np.multiply(delp_dry, G0_100, out=bmass)
         np.copyto(tracer_after_top, tracer)
     diag14_top = np.zeros_like(tracer_after_top) if diagnostics else _EMPTY_FLOAT64
-    initial_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else _EMPTY_FLOAT64
+    convect_impl = _convect_active_columns_top if _convect_impl is None else _convect_impl
+    mass_impl = _column_mass_transport if _mass_impl is None else _mass_impl
+    initial_mass = mass_impl(tracer_after_top, bmass, area) if diagnostics else _EMPTY_FLOAT64
     negative_before = int(np.count_nonzero(tracer_after_top < 0.0)) if diagnostics else 0
 
-    _convect_active_columns_top(
+    convect_impl(
         tracer_after_top,
         diag14_top,
         cmfmc,
@@ -171,7 +175,7 @@ def run_cloud_convection_one_step(
         internal_dt_s=internal_dt,
     )
 
-    final_mass = _column_mass_transport(tracer_after_top, bmass, area) if diagnostics else _EMPTY_FLOAT64
+    final_mass = mass_impl(tracer_after_top, bmass, area) if diagnostics else _EMPTY_FLOAT64
     return ConvectionResult(
         tracer_conc=tracer_after_top,
         diag14_mass_flux=diag14_top,
@@ -211,25 +215,6 @@ def _convect_active_columns_top(
     delp_d = delp_dry.reshape(nlev, ncol)
     bm = bmass.reshape(nlev, ncol)
     area = area_m2.reshape(ncol)
-
-    if _numba_convection_enabled():
-        _convect_fullgrid_top_numba(
-            q,
-            diag,
-            cmf,
-            detrain,
-            delp,
-            delp_d,
-            bm,
-            dqrcu_met.reshape(nlev, ncol),
-            reevapcn_met.reshape(nlev, ncol),
-            area,
-            diagnostics=diagnostics,
-            reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
-            internal_steps=internal_steps,
-            internal_dt_s=internal_dt_s,
-        )
-        return
 
     active = (np.max(np.abs(cmf), axis=0) > _TINYNUM) | (np.max(np.abs(detrain), axis=0) > _TINYNUM)
     if not np.any(active):
@@ -435,31 +420,5 @@ def _convect_column_group_top(
         diag_all[:, columns, :] = diag
 
 
-def _numba_convection_mode() -> str:
-    from wombat_transport.transport.convection._numba import _numba_convection_mode as _impl
-
-    return _impl()
-
-
-def _numba_convection_enabled() -> bool:
-    from wombat_transport.transport.convection._numba import _numba_convection_enabled as _impl
-
-    return _impl()
-
-
-def _convect_fullgrid_top_numba(*args, **kwargs) -> None:
-    from wombat_transport.transport.convection._numba import _convect_fullgrid_top_numba as _impl
-
-    _impl(*args, **kwargs)
-
-
 def _column_mass_transport(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
-    if _numba_convection_enabled():
-        return _column_mass_transport_numba(tracer, bmass_kg_m2, area_m2)
     return np.sum(tracer * bmass_kg_m2[:, :, :, np.newaxis] * area_m2[np.newaxis, :, :, np.newaxis], axis=(0, 1, 2))
-
-
-def _column_mass_transport_numba(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
-    from wombat_transport.transport.convection._numba import _column_mass_transport_numba as _impl
-
-    return _impl(tracer, bmass_kg_m2, area_m2)

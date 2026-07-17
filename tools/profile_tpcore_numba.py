@@ -16,8 +16,8 @@ from typing import Any
 import numpy as np
 from _perf_support import parse_perf_stat_summary, profile_environment, run_perf_bundle
 from wombat_transport.transport.numba_control import configure_numba_threads
-from wombat_transport.transport.tpcore import _numba as nb
-from wombat_transport.transport.tpcore._native import setup_tpcore_terms
+from wombat_transport.transport.tpcore import _kernels as nb
+from wombat_transport.transport.tpcore._reference import setup_tpcore_terms
 
 
 DEFAULT_RUN_CONFIG = Path("validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml")

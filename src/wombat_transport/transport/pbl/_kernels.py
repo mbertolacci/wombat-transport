@@ -1,3 +1,5 @@
+"""Low-level compiled kernels for VDIFF/PBL calculations."""
+
 from __future__ import annotations
 
 import threading
@@ -10,7 +12,7 @@ from wombat_transport.transport.numba_control import (
     numba_available_and_enabled,
     numba_mode,
 )
-from wombat_transport.transport.pbl import _native
+from wombat_transport.transport.pbl import _reference
 
 try:  # Optional acceleration path; NumPy remains the reference fallback.
     from numba import get_thread_id, njit, prange
@@ -19,9 +21,9 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     njit = None
     prange = range
 
-for _name in dir(_native):
+for _name in dir(_reference):
     if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_native, _name))
+        globals().setdefault(_name, getattr(_reference, _name))
 
 _NUMBA_AVAILABLE = njit is not None
 

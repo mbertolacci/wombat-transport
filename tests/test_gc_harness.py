@@ -89,15 +89,15 @@ from wombat_transport.gc_harness import (
     write_pjc_input,
     _tpcore_pressure_branch_gap,
 )
-from wombat_transport.transport.convection import _native as convection_native
+from wombat_transport.transport.convection import _reference as convection_reference
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
-from wombat_transport.transport._numba_transport import apply_numba_transport
-from wombat_transport.transport._numba_transport import make_numba_transport_workspace
-from wombat_transport.transport.convection._numba_transport import _convect_block_serial
+from wombat_transport.transport._executor import apply_transport
+from wombat_transport.transport._executor import make_transport_workspace
+from wombat_transport.transport.convection._operator import _convect_block_serial
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
-from wombat_transport.transport.pbl import _numba as pbl_numba
-from wombat_transport.transport.pbl._numba_transport import _apply_vdiff_block_serial
-from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlan
+from wombat_transport.transport.pbl import _kernels as pbl_numba
+from wombat_transport.transport.pbl._operator import _apply_vdiff_block_serial
+from wombat_transport.transport.pbl._plan import VdiffPlan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
@@ -108,12 +108,12 @@ from wombat_transport.transport.tpcore import (
     trace_tpcore_one_step,
     validate_tpcore_branch_support,
 )
-from wombat_transport.transport.tpcore import _numba as tpcore_numba
-from wombat_transport.transport.tpcore._numba_transport import load_tracer_block_workspace
-from wombat_transport.transport.tpcore._numba_transport import make_tpcore_block_workspace
-from wombat_transport.transport.tpcore._numba_transport import pack_tracer_blocks
-from wombat_transport.transport.tpcore._numba_transport import prepare_tpcore_block_plan
-from wombat_transport.transport.tpcore._numba_transport import unpack_tracer_blocks
+from wombat_transport.transport.tpcore import _kernels as tpcore_numba
+from wombat_transport.transport.tpcore._operator import load_tpcore_workspace
+from wombat_transport.transport.tpcore._operator import make_tpcore_workspace
+from wombat_transport.transport.tpcore._operator import pack_tracer_blocks
+from wombat_transport.transport.tpcore._operator import unpack_tracer_blocks
+from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v2"
@@ -940,7 +940,11 @@ def test_convection_column_chunking_preserves_results(monkeypatch):
         area_m2=area,
         dt_s=600.0,
     )
-    monkeypatch.setattr(convection_native, "_MAX_GROUP_TRACER_BYTES", nlev * ntracer * np.dtype(np.float64).itemsize)
+    monkeypatch.setattr(
+        convection_reference,
+        "_MAX_GROUP_TRACER_BYTES",
+        nlev * ntracer * np.dtype(np.float64).itemsize,
+    )
     chunked = run_cloud_convection_one_step(
         tracer_conc=tracer,
         cmfmc_kg_m2_s=cmfmc,
@@ -1548,7 +1552,7 @@ def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_widt
 @pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
 @pytest.mark.parametrize("surface_flux_value", (0.0, 1.0e-12))
 @pytest.mark.parametrize("execution", ("serial", "spatial", "blocks"))
-def test_numba_transport_policies_match_direct_kernels(monkeypatch, surface_flux_value, execution):
+def test_compiled_transport_policies_match_direct_kernels(monkeypatch, surface_flux_value, execution):
     ntracer = 9
     lane_width = 8
     workers = 2
@@ -1574,7 +1578,7 @@ def test_numba_transport_policies_match_direct_kernels(monkeypatch, surface_flux
     nlev, nlat, nlon, _ = tracer.shape
     shape = (nlev, nlat, nlon)
     edge_shape = (nlev + 1, nlat, nlon)
-    vdiff_plan = VdiffBlockPlan(
+    vdiff_plan = VdiffPlan(
         cch=np.zeros(shape),
         zeh=np.zeros(shape),
         termh=np.ones(shape),
@@ -1600,8 +1604,8 @@ def test_numba_transport_policies_match_direct_kernels(monkeypatch, surface_flux
     delp_hpa = delp_dry * 1.01
     reevapcn = np.zeros(shape)
     surface_flux = np.full((nlat, nlon, ntracer), surface_flux_value)
-    tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=area)
-    transport_workspace = make_numba_transport_workspace(
+    tpcore_plan = prepare_tpcore_plan(setup=setup, area_m2=area)
+    transport_workspace = make_transport_workspace(
         tracer.shape, lane_width, workers
     )
     workspace = transport_workspace.tpcore
@@ -1657,8 +1661,8 @@ def test_numba_transport_policies_match_direct_kernels(monkeypatch, surface_flux
         np.empty((1, stride)),
     )
 
-    load_tracer_block_workspace(tracer, workspace)
-    actual_negative = apply_numba_transport(
+    load_tpcore_workspace(tracer, workspace)
+    actual_negative = apply_transport(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
         workspace=transport_workspace,

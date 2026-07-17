@@ -1,34 +1,36 @@
-"""Numba TPCORE executor for persistent block-native tracer storage."""
+"""Runtime TPCORE operator, workspaces, and execution composition."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import wraps
 
 import numpy as np
 
-from wombat_transport.transport.tpcore import _numba as nb
-from wombat_transport.transport.tpcore.types import TpcoreSetup
+from wombat_transport.transport.tpcore import _kernels as nb
+from wombat_transport.transport.tpcore import _reference
+from wombat_transport.transport.tpcore._plan import TpcorePlan
+from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 
 if nb._NUMBA_AVAILABLE:
     from numba import njit
 else:  # pragma: no cover - exercised in environments without numba.
     njit = None
 
+for _name in dir(_reference):
+    if not _name.startswith("__"):
+        globals().setdefault(_name, getattr(_reference, _name))
 
-@dataclass(frozen=True)
-class TpcoreBlockPlan:
-    """Tracer-independent values shared by every block in one TPCORE step."""
-
-    setup: TpcoreSetup
-    area_1d_m2: np.ndarray
-    ua: np.ndarray
-    va: np.ndarray
-    jn: np.ndarray
-    js: np.ndarray
+_numba_tpcore_mode = nb._numba_tpcore_mode
+_numba_tpcore_enabled = nb._numba_tpcore_enabled
+_numba_tpcore_z_enabled = nb._numba_tpcore_z_enabled
+_numba_tpcore_x_enabled = nb._numba_tpcore_x_enabled
+_numba_tpcore_y_enabled = nb._numba_tpcore_y_enabled
+_numba_tpcore_prepass_enabled = nb._numba_tpcore_prepass_enabled
 
 
 @dataclass
-class TpcoreBlockWorkspace:
+class TpcoreWorkspace:
     """Reusable contiguous storage owned independently by each tracer block."""
 
     tracer_shape: tuple[int, int, int, int]
@@ -38,9 +40,9 @@ class TpcoreBlockWorkspace:
     blocks: list[nb._TpcoreNumbaWorkspace]
 
 
-def make_tpcore_block_workspace(
+def make_tpcore_workspace(
     tracer_shape: tuple[int, int, int, int], lane_width: int
-) -> TpcoreBlockWorkspace:
+) -> TpcoreWorkspace:
     """Allocate reusable per-block input, output, and scratch arrays."""
 
     if len(tracer_shape) != 4 or tracer_shape[-1] < 1:
@@ -55,35 +57,12 @@ def make_tpcore_block_workspace(
     for block_index, block in enumerate(blocks):
         block.q = state_a[block_index]
         block.dq1 = state_b[block_index]
-    return TpcoreBlockWorkspace(
+    return TpcoreWorkspace(
         tracer_shape=tracer_shape,
         lane_width=lane_width,
         state_a=state_a,
         state_b=state_b,
         blocks=blocks,
-    )
-
-
-def prepare_tpcore_block_plan(*, setup: TpcoreSetup, area_m2: np.ndarray) -> TpcoreBlockPlan:
-    """Prepare the scalar TPCORE state once for all tracer blocks."""
-
-    if not nb._NUMBA_AVAILABLE:
-        raise RuntimeError("numba is not available")
-    if area_m2.shape != setup.delp1_hpa.shape[1:]:
-        raise ValueError("area_m2 shape does not match the TPCORE setup")
-    ua = np.empty_like(setup.cx)
-    va = np.empty_like(setup.cy)
-    jn = np.empty(setup.cx.shape[0], dtype=np.int64)
-    js = np.empty(setup.cx.shape[0], dtype=np.int64)
-    nb._set_cross_terms_numba_kernel(setup.cx, setup.cy, ua, va)
-    nb._set_jn_js_numba_kernel(setup.cx, jn, js)
-    return TpcoreBlockPlan(
-        setup=setup,
-        area_1d_m2=np.ascontiguousarray(area_m2[:, 0], dtype=np.float64),
-        ua=ua,
-        va=va,
-        jn=jn,
-        js=js,
     )
 
 
@@ -122,7 +101,7 @@ def unpack_tracer_blocks(blocks: np.ndarray, ntracer: int) -> np.ndarray:
     return output
 
 
-def load_tracer_block_workspace(tracer_conc: np.ndarray, workspace: TpcoreBlockWorkspace) -> None:
+def load_tpcore_workspace(tracer_conc: np.ndarray, workspace: TpcoreWorkspace) -> None:
     """Copy canonical active tracers into reusable padded block inputs."""
 
     tracer_conc = np.asarray(tracer_conc, dtype=np.float64)
@@ -137,7 +116,7 @@ def load_tracer_block_workspace(tracer_conc: np.ndarray, workspace: TpcoreBlockW
         block_workspace.q[:, :, :, : stop - start] = tracer_conc[:, :, :, start:stop]
 
 
-def unpack_tpcore_block_workspace(workspace: TpcoreBlockWorkspace) -> np.ndarray:
+def unpack_tpcore_workspace(workspace: TpcoreWorkspace) -> np.ndarray:
     """Copy active block outputs back to canonical tracer storage."""
 
     nlev, nlat, nlon, ntracer = workspace.tracer_shape
@@ -234,3 +213,21 @@ if njit is not None:
 else:
     _advect_one_block_serial = None
     _advect_one_block_spatial = None
+
+
+@wraps(_reference.run_tpcore_one_step)
+def run_tpcore_one_step(*args, **kwargs):
+    """Run TPCORE through the reference or compiled operator implementation."""
+
+    if _numba_tpcore_enabled():
+        kwargs["_compiled_impl"] = nb._advect_tracers_fused_numba
+    return _reference.run_tpcore_one_step(*args, **kwargs)
+
+
+@wraps(_reference.run_tpcore_one_step_with_setup)
+def run_tpcore_one_step_with_setup(*args, **kwargs):
+    """Run a prepared TPCORE step through the selected implementation."""
+
+    if _numba_tpcore_enabled():
+        kwargs["_compiled_impl"] = nb._advect_tracers_fused_numba
+    return _reference.run_tpcore_one_step_with_setup(*args, **kwargs)

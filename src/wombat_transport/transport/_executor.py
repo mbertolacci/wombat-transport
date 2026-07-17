@@ -1,4 +1,4 @@
-"""Top-level Numba executor for persistent block-native tracer storage."""
+"""Compiled executor for the block-native TPCORE, VDIFF, convection chain."""
 
 from __future__ import annotations
 
@@ -6,36 +6,39 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.fields import TracerField
 from wombat_transport.transport.numba_control import configure_numba_threads
-from wombat_transport.transport.convection import _numba_transport as convection_block
-from wombat_transport.transport.pbl import _numba_transport as vdiff_block
-from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlan
-from wombat_transport.transport.pbl._numba_transport import VdiffBlockPlanWorkspace
-from wombat_transport.transport.tpcore import _numba_transport as tpcore_block
-from wombat_transport.transport.tpcore import _numba as tpcore_nb
-from wombat_transport.transport.tpcore._numba_transport import TpcoreBlockPlan
-from wombat_transport.transport.tpcore._numba_transport import TpcoreBlockWorkspace
+from wombat_transport.transport.convection import _operator as convection_operator
+from wombat_transport.transport.pbl import _operator as vdiff_operator
+from wombat_transport.transport.pbl._plan import VdiffPlan
+from wombat_transport.transport.pbl._plan import VdiffPlanWorkspace
+from wombat_transport.transport.pbl._plan import make_vdiff_plan_workspace
+from wombat_transport.transport.tpcore import _operator as tpcore_operator
+from wombat_transport.transport.tpcore import _kernels as tpcore_kernels
+from wombat_transport.transport.tpcore._operator import TpcoreWorkspace
+from wombat_transport.transport.tpcore._operator import make_tpcore_workspace
+from wombat_transport.transport.tpcore._plan import TpcorePlan
 
-if tpcore_nb._NUMBA_AVAILABLE:
+if tpcore_kernels._NUMBA_AVAILABLE:
     from numba import njit, prange
 else:  # pragma: no cover - exercised in environments without numba.
     njit = None
     prange = range
 
-_advect_one_block_serial = tpcore_block._advect_one_block_serial
-_advect_one_block_spatial = tpcore_block._advect_one_block_spatial
-_apply_vdiff_block_serial = vdiff_block._apply_vdiff_block_serial
-_apply_vdiff_block_spatial = vdiff_block._apply_vdiff_block_spatial
-_convect_block_serial = convection_block._convect_block_serial
-_convect_block_spatial = convection_block._convect_block_spatial
+_advect_one_block_serial = tpcore_operator._advect_one_block_serial
+_advect_one_block_spatial = tpcore_operator._advect_one_block_spatial
+_apply_vdiff_block_serial = vdiff_operator._apply_vdiff_block_serial
+_apply_vdiff_block_spatial = vdiff_operator._apply_vdiff_block_spatial
+_convect_block_serial = convection_operator._convect_block_serial
+_convect_block_spatial = convection_operator._convect_block_spatial
 
 
 @dataclass
-class NumbaTransportWorkspace:
+class TransportWorkspace:
     """Persistent block state plus block-shared and worker-local scratch."""
 
-    tpcore: TpcoreBlockWorkspace
-    vdiff_plan: VdiffBlockPlanWorkspace
+    tpcore: TpcoreWorkspace
+    vdiff_plan: VdiffPlanWorkspace
     workers: int
     qqu: np.ndarray
     qqv: np.ndarray
@@ -56,33 +59,53 @@ class NumbaTransportWorkspace:
     negative_counts: np.ndarray
 
 
-def make_numba_transport_workspace(
+@dataclass
+class TransportExecutor:
+    """Persistent state and scratch for one compiled transport strategy."""
+
+    workspace: TransportWorkspace
+
+    @classmethod
+    def create(cls, field: TracerField) -> TransportExecutor:
+        if field.block_data.shape[0] != 1:
+            raise ValueError("transport requires exactly one time slice")
+        workers = configure_numba_threads(available=True)
+        workspace = make_transport_workspace(field.shape[1:], field.block_width, workers)
+        tpcore = workspace.tpcore
+        tpcore.state_a = field.block_data[0]
+        for block_index, block in enumerate(tpcore.blocks):
+            block.q = tpcore.state_a[block_index]
+            block.dq1 = tpcore.state_b[block_index]
+        return cls(workspace=workspace)
+
+
+def make_transport_workspace(
     tracer_shape: tuple[int, int, int, int], lane_width: int, workers: int
-) -> NumbaTransportWorkspace:
+) -> TransportWorkspace:
     """Allocate persistent state and scratch for every execution policy."""
 
     if workers < 1:
         raise ValueError("workers must be positive")
-    tpcore = tpcore_block.make_tpcore_block_workspace(tracer_shape, lane_width)
+    tpcore = make_tpcore_workspace(tracer_shape, lane_width)
     nlev, nlat, nlon, _ntracer = tpcore.tracer_shape
     nblock = len(tpcore.blocks)
     lane = tpcore.lane_width
-    stride = max(lane, convection_block.nb._CONVECTION_SCRATCH_PAD_TRACERS)
-    y_spatial = tpcore_nb._make_ytp_numba_workspace(workers, nlat, nlon, lane)
+    stride = max(lane, convection_operator._CONVECTION_SCRATCH_PAD_TRACERS)
+    y_spatial = tpcore_kernels._make_ytp_numba_workspace(workers, nlat, nlon, lane)
     y = (
         *y_spatial[:4],
         *(np.empty((nblock, nlon, lane), dtype=np.float64) for _ in range(4)),
     )
-    return NumbaTransportWorkspace(
+    return TransportWorkspace(
         tpcore=tpcore,
-        vdiff_plan=vdiff_block.make_vdiff_block_plan_workspace(nlev, nlat, nlon),
+        vdiff_plan=make_vdiff_plan_workspace(nlev, nlat, nlon),
         workers=workers,
         qqu=np.empty((nblock, nlat, nlon, lane), dtype=np.float64),
         qqv=np.empty((nblock, nlat, nlon, lane), dtype=np.float64),
-        x=tpcore_nb._make_xtp_numba_workspace(workers, nlat, nlon, lane),
+        x=tpcore_kernels._make_xtp_numba_workspace(workers, nlat, nlon, lane),
         y=y,
         y_spatial=y_spatial,
-        z=tpcore_nb._make_fzppm_numba_workspace(workers, nlev, lane),
+        z=tpcore_kernels._make_fzppm_numba_workspace(workers, nlev, lane),
         tracer_diffused=np.empty((workers, nlon, nlev, lane), dtype=np.float64),
         before_mass=np.empty((workers, nlon, lane), dtype=np.float64),
         after_mass=np.empty((workers, nlon, lane), dtype=np.float64),
@@ -97,11 +120,11 @@ def make_numba_transport_workspace(
     )
 
 
-def apply_numba_transport(
+def apply_transport(
     *,
-    tpcore_plan: TpcoreBlockPlan,
-    vdiff_plan: VdiffBlockPlan,
-    workspace: NumbaTransportWorkspace,
+    tpcore_plan: TpcorePlan,
+    vdiff_plan: VdiffPlan,
+    workspace: TransportWorkspace,
     surface_flux_kg_m2_s: np.ndarray | None,
     cmfmc: np.ndarray,
     dtrain: np.ndarray,
@@ -226,9 +249,9 @@ def apply_numba_transport(
 
 
 def _multi_block_transport_step_spatial(
-    tpcore_plan: TpcoreBlockPlan,
-    vdiff_plan: VdiffBlockPlan,
-    workspace: NumbaTransportWorkspace,
+    tpcore_plan: TpcorePlan,
+    vdiff_plan: VdiffPlan,
+    workspace: TransportWorkspace,
     surface_flux: np.ndarray,
     has_flux: bool,
     scalar_inputs: tuple[np.ndarray, ...],
@@ -259,9 +282,9 @@ def _multi_block_transport_step_spatial(
 
 def _one_block_transport_step_spatial(
     block: int,
-    tpcore_plan: TpcoreBlockPlan,
-    vdiff_plan: VdiffBlockPlan,
-    workspace: NumbaTransportWorkspace,
+    tpcore_plan: TpcorePlan,
+    vdiff_plan: VdiffPlan,
+    workspace: TransportWorkspace,
     surface_flux: np.ndarray,
     has_flux: bool,
     scalar_inputs: tuple[np.ndarray, ...],

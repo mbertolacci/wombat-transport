@@ -1,3 +1,5 @@
+"""Runtime convection operator and its compiled execution variants."""
+
 from __future__ import annotations
 
 import threading
@@ -5,7 +7,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.transport.convection import _native
+from functools import wraps
+
+from wombat_transport.transport.convection import _reference
 from wombat_transport.transport.numba_control import (
     configure_numba_threads,
     numba_available_and_enabled,
@@ -20,9 +24,9 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     njit = None
     prange = range
 
-for _name in dir(_native):
+for _name in dir(_reference):
     if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_native, _name))
+        globals().setdefault(_name, getattr(_reference, _name))
 
 _NUMBA_AVAILABLE = njit is not None
 
@@ -346,3 +350,62 @@ else:
         area_m2: np.ndarray,
     ) -> np.ndarray:
         raise RuntimeError("numba is not available")
+
+
+def _convect_compiled(
+    tracer: np.ndarray,
+    diag14: np.ndarray,
+    cmfmc: np.ndarray,
+    dtrain: np.ndarray,
+    dqrcu_met: np.ndarray,
+    reevapcn_met: np.ndarray,
+    delp_hpa: np.ndarray,
+    delp_dry: np.ndarray,
+    bmass: np.ndarray,
+    area_m2: np.ndarray,
+    *,
+    reconstruct_conv_precip_flux: bool,
+    diagnostics: bool,
+    internal_steps: int,
+    internal_dt_s: float,
+) -> None:
+    """Adapt canonical operator arrays to the compiled column layout."""
+
+    nlev, nlat, nlon, ntracer = tracer.shape
+    ncol = nlat * nlon
+    _convect_fullgrid_top_numba(
+        tracer.reshape(nlev, ncol, ntracer),
+        diag14.reshape(nlev, ncol, ntracer) if diagnostics else diag14.reshape(0, 0, 0),
+        cmfmc.reshape(nlev, ncol),
+        dtrain.reshape(nlev, ncol),
+        delp_hpa.reshape(nlev, ncol),
+        delp_dry.reshape(nlev, ncol),
+        bmass.reshape(nlev, ncol),
+        dqrcu_met.reshape(nlev, ncol),
+        reevapcn_met.reshape(nlev, ncol),
+        area_m2.reshape(ncol),
+        diagnostics=diagnostics,
+        reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
+        internal_steps=internal_steps,
+        internal_dt_s=internal_dt_s,
+    )
+
+
+if njit is not None:
+    _convect_block_serial = njit(nogil=True, fastmath={"contract"})(
+        _convect_fullgrid_top_numba_kernel.py_func
+    )
+    _convect_block_spatial = _convect_fullgrid_top_numba_kernel
+else:
+    _convect_block_serial = None
+    _convect_block_spatial = None
+
+
+@wraps(_reference.run_cloud_convection_one_step)
+def run_cloud_convection_one_step(*args, **kwargs):
+    """Run convection through the reference or compiled operator implementation."""
+
+    if _numba_convection_enabled():
+        kwargs["_convect_impl"] = _convect_compiled
+        kwargs["_mass_impl"] = _column_mass_transport_numba
+    return _reference.run_cloud_convection_one_step(*args, **kwargs)

@@ -1,8 +1,7 @@
 """Numba-accelerated TPCORE kernels.
 
-This module owns the optional compiled path. The reference implementation and
-public API stay in ``_native.py`` so ``WOMBAT_NUMBA=0`` remains a
-plain NumPy path.
+This module contains numerical kernels only; operator dispatch and workspaces
+live in ``_operator.py``.
 """
 
 from __future__ import annotations
