@@ -1,4 +1,4 @@
-"""Experimental top-level Numba executor for persistent tracer blocks."""
+"""Top-level Numba executor for persistent blocked tracer storage."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wombat_transport.transport.convection import _block_experiment as convection_block
-from wombat_transport.transport.pbl import _block_experiment as vdiff_block
-from wombat_transport.transport.pbl._block_experiment import VdiffBlockPlan
-from wombat_transport.transport.tpcore import _block_experiment as tpcore_block
+from wombat_transport.transport.convection import _numba_blocked as convection_block
+from wombat_transport.transport.pbl import _numba_blocked as vdiff_block
+from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlan
+from wombat_transport.transport.tpcore import _numba_blocked as tpcore_block
 from wombat_transport.transport.tpcore import _numba as tpcore_nb
-from wombat_transport.transport.tpcore._block_experiment import TpcoreBlockPlan
-from wombat_transport.transport.tpcore._block_experiment import TpcoreBlockWorkspace
+from wombat_transport.transport.tpcore._numba_blocked import TpcoreBlockPlan
+from wombat_transport.transport.tpcore._numba_blocked import TpcoreBlockWorkspace
 
 if tpcore_nb._NUMBA_AVAILABLE:
     from numba import get_thread_id, njit, prange, set_num_threads

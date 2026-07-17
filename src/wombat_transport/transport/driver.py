@@ -26,7 +26,7 @@ from wombat_transport.transport.convection import (
     _numba_convection_enabled,
     run_cloud_convection_one_step,
 )
-from wombat_transport.transport._block_pipeline_experiment import (
+from wombat_transport.transport._numba_blocked import (
     NumbaBlockPipelineScratch,
     apply_numba_block_pipeline,
     make_numba_block_pipeline_scratch,
@@ -42,8 +42,8 @@ from wombat_transport.transport.pbl import (
     _numba_vdiff_enabled,
     run_vdiffdr_one_step,
 )
-from wombat_transport.transport.pbl._block_experiment import prepare_vdiff_zero_flux_block_plan
-from wombat_transport.transport.tpcore._block_experiment import (
+from wombat_transport.transport.pbl._numba_blocked import prepare_vdiff_zero_flux_block_plan
+from wombat_transport.transport.tpcore._numba_blocked import (
     TpcoreBlockWorkspace,
     make_tpcore_block_workspace,
     prepare_tpcore_block_plan,

@@ -72,7 +72,7 @@ The [first-run guide](https://mbertolacci.github.io/wombat-transport/getting-sta
 explains the inputs, output, and configuration. The complete configuration
 contract is documented in the [`run.yml` reference](https://mbertolacci.github.io/wombat-transport/reference/run-yml/).
 
-Transport uses spatial parallelism by default. The experimental persistent
+Transport uses spatial parallelism by default. The persistent
 tracer-block executor is selected per process with:
 
 ```bash

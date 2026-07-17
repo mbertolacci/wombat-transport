@@ -1,4 +1,4 @@
-"""Experimental persistent tracer-block executor for convection."""
+"""Numba convection kernel for persistent blocked tracer storage."""
 
 from __future__ import annotations
 

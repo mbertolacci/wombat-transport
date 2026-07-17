@@ -1,4 +1,4 @@
-"""Experimental persistent tracer-block path for VDIFF."""
+"""Numba VDIFF path for persistent blocked tracer storage."""
 
 from __future__ import annotations
 

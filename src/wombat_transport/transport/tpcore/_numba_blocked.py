@@ -1,9 +1,4 @@
-"""Experimental block-major executor for the Numba TPCORE tracer solve.
-
-This module is deliberately outside the production dispatch path.  It tests
-whether independent, contiguous tracer blocks can profitably own serial TPCORE
-kernels while sharing one meteorological setup.
-"""
+"""Numba TPCORE executor for persistent blocked tracer storage."""
 
 from __future__ import annotations
 

@@ -773,8 +773,9 @@ def test_transport_one_step_runs_residual_operator_chain(transport_numba_mode):
 
 @requires_transport_data
 @pytest.mark.parametrize("block_width", (8, 24))
-def test_spatial_transport_over_blocks_matches_single_field(monkeypatch, block_width):
-    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+def test_spatial_transport_over_blocks_matches_single_field(
+    monkeypatch, block_width, transport_numba_mode
+):
     monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
     config = load_run_config(RESIDUAL_CONFIG)
     grid = load_transport_grid(config.grid_template)
