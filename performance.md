@@ -2693,20 +2693,20 @@ zero-copy views; joining multiple blocks into the old canonical array is an
 explicit conversion rather than an implicit property access.
 
 `WOMBAT_TRANSPORT_EXECUTOR=spatial` is the default. Its default width is the
-complete tracer count. From eight tracers upward it uses a shared prepared
-one-block transport step; below eight it retains the previous operator path to
-avoid fixed plan overhead. An explicit `WOMBAT_TRANSPORT_BLOCK_WIDTH` makes the
-spatial executor process several block views sequentially with within-operator
-parallelism. Both Numba forms and the native NumPy path were bitwise equal at
-widths 8 and 24 on the real 24-tracer fixture.
+complete tracer count, and every all-Numba tracer count uses the shared
+prepared one-block transport step. An explicit `WOMBAT_TRANSPORT_BLOCK_WIDTH`
+makes the spatial executor process several block views sequentially with
+within-operator parallelism. Both Numba forms and the native NumPy path were
+within one ULP at widths 8 and 24 on the real 24-tracer fixture; the spatial
+form remains bitwise equal to the standalone one-block adapter.
 
 `WOMBAT_TRANSPORT_EXECUTOR=blocks` defaults to width 8. One transport workspace
 owns persistent TPCORE state, block-shared intermediates, and worker-local
 scratch. Its top-level `prange(block)` calls a serial one-block TPCORE -> VDIFF
 -> convection step. The Python thread scheduler and its per-operator wrappers
 were removed. Two consecutive production-driver steps on the real 24-tracer
-fixture were bitwise equal through tracer state, humidity, and dry mass;
-zero- and nonzero-emission fixtures remain bitwise equal.
+fixture agree within one ULP through tracer state, with bitwise-equal humidity
+and dry mass. Zero- and nonzero-emission fixtures retain the same bound.
 
 HISTORY accumulation operates directly on contiguous blocked storage. Species
 and restart writers map each logical tracer index to `(block, lane)`, and the
@@ -2729,11 +2729,12 @@ compiled with and without `parallel=True`. Convection already follows the same
 pattern through its Python kernel source. TPCORE shares all leaf arithmetic
 while retaining thin serial and spatial orchestration variants.
 
-On the local 2x2.5 grid with eight workers, including plan construction, the
+Before tracer-free persistent VDIFF preparation, the local 2x2.5 results with
+eight workers, including cold plan construction, showed that the
 full-width spatial policy was about neutral at 8, 16, and 24 tracers and ranged
 from roughly neutral to 14% faster at 32--96 tracers across repeated runs. It
 was 8--11% slower at 1--4 tracers because fixed plan cost dominates, which
-motivates the below-eight fallback. At 24 and 96 tracers it was
+initially motivated a below-eight fallback. At 24 and 96 tracers it was
 neutral-to-positive with one, two, four, and eight workers except for noisy
 comparisons within roughly 2%.
 
@@ -2780,3 +2781,18 @@ gain: 1.23x at 64 tracers and 1.08x at 96 in this run. Every benchmark result
 was bitwise equal. The persistent VDIFF plan adds roughly 38 MiB at 2x2.5,
 independent of tracer count; this is the main cost to weigh before making the
 unified executor unconditional at low tracer counts.
+
+The executor is now unconditional whenever all three Numba operators are
+enabled. The default spatial width is exactly the tracer count, so it performs
+no padded lanes. A subsequent full-chain run including convection measured
+0.996x at one tracer and 1.045x at four tracers, which is close parity at the
+smallest case and a gain thereafter. The same run retained outer-block gains
+of 1.26x at 64 tracers with width 8 and 1.15x at 96 tracers with width 16;
+width 32 did not improve the block-parallel frontier.
+
+The standalone Numba VDIFF and convection APIs now adapt to these same
+one-block production kernels. Their diagnostic outputs are accumulated by the
+production arithmetic rather than separate diagnostic kernels. The obsolete
+latitude-by-latitude Numba VDIFF and grouped-column Numba convection
+implementations were removed; the NumPy implementations remain as independent
+semantic references.

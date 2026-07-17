@@ -47,7 +47,6 @@ from wombat_transport.transport.numba_control import (
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
-MIN_UNIFIED_SPATIAL_TRACERS = 8
 
 
 @dataclass(frozen=True)
@@ -94,9 +93,7 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         )
     block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
     state = BlockedTracerField.from_tracer_field(initial_state, block_width)
-    use_unified_numba = _use_unified_numba_transport(
-        parallel_strategy, initial_state.tracer_count, numba_transport
-    )
+    use_unified_numba = numba_transport
     block_executor = (
         NumbaBlockedTransportExecutor.create(
             state, numba_thread_count("WOMBAT_NUMBA")
@@ -356,14 +353,6 @@ def _transport_block_width(executor: str, tracer_count: int) -> int:
     if width < 1:
         raise ValueError("WOMBAT_TRANSPORT_BLOCK_WIDTH must be a positive integer")
     return width
-
-
-def _use_unified_numba_transport(
-    executor: str, tracer_count: int, numba_enabled: bool
-) -> bool:
-    return numba_enabled and (
-        executor == "blocks" or tracer_count >= MIN_UNIFIED_SPATIAL_TRACERS
-    )
 
 
 def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:

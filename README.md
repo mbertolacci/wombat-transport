@@ -88,10 +88,9 @@ WOMBAT_TRANSPORT_EXECUTOR=spatial WOMBAT_TRANSPORT_BLOCK_WIDTH=16 ...
 ```
 
 Spatial execution processes configured blocks sequentially while retaining
-within-operator threading. With fewer than eight tracers it retains the
-existing operator path; from eight tracers upward it uses the shared prepared
-one-block transport step. Block execution uses one top-level Numba parallel
-region across blocks.
+within-operator threading. All tracer counts use the shared prepared one-block
+transport step. Block execution uses one top-level Numba parallel region
+across blocks.
 
 ## Performance snapshot
 

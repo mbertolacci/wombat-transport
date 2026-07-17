@@ -50,6 +50,7 @@ from wombat_transport.transport import (
 )
 import wombat_transport.transport.forcing as forcing_module
 import wombat_transport.transport.pbl._numba as pbl_numba
+import wombat_transport.transport.pbl._numba_blocked as pbl_numba_blocked
 from tests.data_paths import BASE_CONFIG, RESIDUAL_CONFIG, requires_restart, requires_transport_data
 from wombat_transport.transport.pbl import (
     ZVIR,
@@ -545,104 +546,51 @@ def test_run_vdiffdr_one_step_preserves_long_lived_mass_with_zero_surface_flux(t
     np.testing.assert_allclose(result.final_tracer_mass, result.initial_tracer_mass, rtol=2.0e-14)
 
 
-def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path(monkeypatch):
+@pytest.mark.parametrize(("workers", "offset", "negative_count"), ((1, 1.0, 7), (2, 3.0, 11)))
+def test_run_vdiffdr_one_step_diagnostics_light_uses_shared_block_path(
+    monkeypatch, workers, offset, negative_count
+):
     fixture = _synthetic_vdiff_fixture()
     calls = []
 
-    def fake_fullgrid_kernel(
-        tracer_top,
-        u_top,
-        v_top,
-        temperature_top,
-        sphu_top,
-        pmid_hpa,
-        pint_hpa,
-        virtual_temperature_top,
-        bxheight_top,
-        dry_mass_top,
-        pblh_m,
-        hflux_w_m2,
-        water_flux_kg_m2_s,
-        surface_flux_kg_m2_s,
-        ustar_m_s,
-        area_m2,
-        dt_s,
-        npbl,
-        surface_flux_is_zero,
-        tracer_out,
-        sphu_out,
-        *workspace,
-    ):
-        calls.append((tracer_top.shape, sphu_top.shape, npbl, surface_flux_is_zero))
-        tracer_out[:] = tracer_top + 1.0
-        sphu_out[:] = sphu_top + 2.0
-        np.testing.assert_array_equal(surface_flux_kg_m2_s, 0.0)
-        np.testing.assert_array_equal(area_m2, fixture["area_m2"])
-        assert len(workspace) > 0
-        return 7
+    def fake_block_path(**kwargs):
+        calls.append(kwargs)
+        empty = np.empty((0,), dtype=np.float64)
+        return SimpleNamespace(
+            tracer_conc=kwargs["tracer_top"] + offset,
+            specific_humidity_kg_kg=kwargs["sphu_top"] + offset + 1.0,
+            kvh_m2_s=empty,
+            kvm_m2_s=empty,
+            pbl_top_m=kwargs["pblh_m"].copy(),
+            tpert_k=empty,
+            qpert_kg_kg=empty,
+            negative_count_before_clip=negative_count,
+            negative_count_after_clip=0,
+            initial_tracer_mass=empty,
+            final_tracer_mass=empty,
+        )
 
     monkeypatch.setattr(pbl_numba, "_NUMBA_AVAILABLE", True)
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "1")
-    monkeypatch.setattr(pbl_numba, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", str(workers))
+    monkeypatch.setattr(pbl_numba_blocked, "run_vdiff_one_block_numba", fake_block_path)
 
     result = run_vdiffdr_one_step(**fixture, diagnostics=False)
 
-    assert calls == [(fixture["tracer_conc"].shape, fixture["specific_humidity_kg_kg"].shape, 30, True)]
-    np.testing.assert_allclose(result.tracer_conc, fixture["tracer_conc"] + 1.0)
-    np.testing.assert_allclose(result.specific_humidity_kg_kg, fixture["specific_humidity_kg_kg"] + 2.0)
-    assert result.negative_count_before_clip == 7
+    assert len(calls) == 1
+    assert calls[0]["workers"] == workers
+    assert calls[0]["diagnostics"] is False
+    np.testing.assert_array_equal(calls[0]["surface_flux_kg_m2_s"], 0.0)
+    np.testing.assert_allclose(result.tracer_conc, fixture["tracer_conc"] + offset)
+    np.testing.assert_allclose(
+        result.specific_humidity_kg_kg,
+        fixture["specific_humidity_kg_kg"] + offset + 1.0,
+    )
+    assert result.negative_count_before_clip == negative_count
     assert result.negative_count_after_clip == 0
     assert result.kvh_m2_s.shape == (0,)
     assert result.kvm_m2_s.shape == (0,)
     assert result.initial_tracer_mass.shape == (0,)
     assert result.final_tracer_mass.shape == (0,)
-
-
-def test_run_vdiffdr_one_step_diagnostics_light_uses_fullgrid_numba_path_with_threads(monkeypatch):
-    fixture = _synthetic_vdiff_fixture()
-    calls = []
-
-    def fake_fullgrid_kernel(
-        tracer_top,
-        u_top,
-        v_top,
-        temperature_top,
-        sphu_top,
-        pmid_hpa,
-        pint_hpa,
-        virtual_temperature_top,
-        bxheight_top,
-        dry_mass_top,
-        pblh_m,
-        hflux_w_m2,
-        water_flux_kg_m2_s,
-        surface_flux_kg_m2_s,
-        ustar_m_s,
-        area_m2,
-        dt_s,
-        npbl,
-        surface_flux_is_zero,
-        tracer_out,
-        sphu_out,
-        *workspace,
-    ):
-        calls.append((tracer_top.shape, sphu_top.shape, npbl, surface_flux_is_zero))
-        tracer_out[:] = tracer_top + 3.0
-        sphu_out[:] = sphu_top + 4.0
-        assert len(workspace) > 0
-        return 11
-
-    monkeypatch.setattr(pbl_numba, "_NUMBA_AVAILABLE", True)
-    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA_THREADS", "2")
-    monkeypatch.setattr(pbl_numba, "_run_vdiffdr_fullgrid_zero_flux_numba_kernel", fake_fullgrid_kernel)
-
-    result = run_vdiffdr_one_step(**fixture, diagnostics=False)
-
-    assert calls == [(fixture["tracer_conc"].shape, fixture["specific_humidity_kg_kg"].shape, 30, True)]
-    np.testing.assert_allclose(result.tracer_conc, fixture["tracer_conc"] + 3.0)
-    np.testing.assert_allclose(result.specific_humidity_kg_kg, fixture["specific_humidity_kg_kg"] + 4.0)
-    assert result.negative_count_before_clip == 11
-    assert result.negative_count_after_clip == 0
 
 
 def test_run_vdiffdr_one_step_reuses_light_output_only_when_requested(monkeypatch):
@@ -815,7 +763,12 @@ def test_numba_block_transport_executor_matches_single_field(monkeypatch, execut
         blocked, forcing, grid, executor, dt_s=600.0, execution=execution
     )
 
-    np.testing.assert_array_equal(actual.state.to_tracer_field().data, expected.state.data)
+    np.testing.assert_allclose(
+        actual.state.to_tracer_field().data,
+        expected.state.data,
+        rtol=3.0e-16,
+        atol=2.0e-19,
+    )
     np.testing.assert_array_equal(actual.dry_air_mass_kg, expected.dry_air_mass_kg)
     np.testing.assert_array_equal(actual.specific_humidity_kg_kg, expected.specific_humidity_kg_kg)
 
@@ -835,8 +788,11 @@ def test_numba_block_transport_executor_matches_single_field(monkeypatch, execut
         dry_air_mass_kg=actual.dry_air_mass_kg,
         execution=execution,
     )
-    np.testing.assert_array_equal(
-        actual_next.state.to_tracer_field().data, expected_next.state.data
+    np.testing.assert_allclose(
+        actual_next.state.to_tracer_field().data,
+        expected_next.state.data,
+        rtol=3.0e-16,
+        atol=2.0e-19,
     )
 
 

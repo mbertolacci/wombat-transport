@@ -212,9 +212,10 @@ def _convect_active_columns_top(
     bm = bmass.reshape(nlev, ncol)
     area = area_m2.reshape(ncol)
 
-    if _numba_convection_enabled() and not diagnostics:
+    if _numba_convection_enabled():
         _convect_fullgrid_top_numba(
             q,
+            diag,
             cmf,
             detrain,
             delp,
@@ -222,6 +223,8 @@ def _convect_active_columns_top(
             bm,
             dqrcu_met.reshape(nlev, ncol),
             reevapcn_met.reshape(nlev, ncol),
+            area,
+            diagnostics=diagnostics,
             reconstruct_conv_precip_flux=reconstruct_conv_precip_flux,
             internal_steps=internal_steps,
             internal_dt_s=internal_dt_s,
@@ -243,8 +246,9 @@ def _convect_active_columns_top(
 
     for cloud_base in np.unique(cloud_base_by_column[active_columns]):
         columns = active_columns[cloud_base_by_column[active_columns] == cloud_base]
-        if _numba_convection_enabled():
-            _convect_column_group_top_numba(
+        max_chunk_columns = _max_convection_group_columns(nlev, ntracer)
+        for column_chunk in _iter_column_chunks(columns, max_chunk_columns):
+            _convect_column_group_top(
                 q,
                 diag,
                 cmf,
@@ -253,28 +257,11 @@ def _convect_active_columns_top(
                 bm,
                 area,
                 int(cloud_base),
-                columns,
+                column_chunk,
                 diagnostics=diagnostics,
                 internal_steps=internal_steps,
                 internal_dt_s=internal_dt_s,
             )
-        else:
-            max_chunk_columns = _max_convection_group_columns(nlev, ntracer)
-            for column_chunk in _iter_column_chunks(columns, max_chunk_columns):
-                _convect_column_group_top(
-                    q,
-                    diag,
-                    cmf,
-                    detrain,
-                    delp_d,
-                    bm,
-                    area,
-                    int(cloud_base),
-                    column_chunk,
-                    diagnostics=diagnostics,
-                    internal_steps=internal_steps,
-                    internal_dt_s=internal_dt_s,
-                )
 
 
 def _convective_precip_rates_columns(
@@ -462,12 +449,6 @@ def _numba_convection_enabled() -> bool:
 
 def _convect_fullgrid_top_numba(*args, **kwargs) -> None:
     from wombat_transport.transport.convection._numba import _convect_fullgrid_top_numba as _impl
-
-    _impl(*args, **kwargs)
-
-
-def _convect_column_group_top_numba(*args, **kwargs) -> None:
-    from wombat_transport.transport.convection._numba import _convect_column_group_top_numba as _impl
 
     _impl(*args, **kwargs)
 

@@ -49,6 +49,7 @@ class NumbaBlockedTransportWorkspace:
     qmx: np.ndarray
     adjust: np.ndarray
     convection_qc: np.ndarray
+    convection_diag_empty: np.ndarray
     convection_qb_num: np.ndarray
     convection_delq_work: np.ndarray
     convection_current_work: np.ndarray
@@ -88,6 +89,7 @@ def make_numba_blocked_transport_workspace(
         qmx=np.empty((workers, nlon, nlev, lane), dtype=np.float64),
         adjust=np.empty((workers, nlon, lane), dtype=np.bool_),
         convection_qc=np.empty((workers, stride), dtype=np.float64),
+        convection_diag_empty=np.empty((0, 0, 0), dtype=np.float64),
         convection_qb_num=np.empty((workers, stride), dtype=np.float64),
         convection_delq_work=np.empty((workers, stride), dtype=np.float64),
         convection_current_work=np.empty((workers, stride), dtype=np.float64),
@@ -209,6 +211,7 @@ def apply_numba_blocked_transport(
         internal_steps,
         internal_dt_s,
         workspace.convection_qc,
+        workspace.convection_diag_empty,
         workspace.convection_qb_num,
         workspace.convection_delq_work,
         workspace.convection_current_work,
@@ -321,7 +324,10 @@ def _one_block_transport_step_spatial(
     nlev, nlat, nlon, lane = q.shape
     _convect_block_spatial(
         q.reshape(nlev, nlat * nlon, lane),
+        workspace.convection_diag_empty,
         *scalar_inputs,
+        vdiff_plan.area_m2.reshape(nlat * nlon),
+        False,
         reconstruct_conv_precip_flux,
         internal_steps,
         internal_dt_s,
@@ -377,14 +383,16 @@ if njit is not None:
             tracer_diffused, before_mass, after_mass, qmx, adjust,
         )
         (
-            cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn,
+            diag, cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn, area_m2,
+            diagnostics,
             reconstruct_conv_precip_flux, internal_steps, internal_dt_s,
         ) = convection_inputs
         qc, qb_num, delq_work, current_work = convection_work
         nlev, nlat, nlon, lane = q.shape
         _convect_block_serial(
-            q.reshape(nlev, nlat * nlon, lane), cmfmc, dtrain, delp_hpa,
-            delp_dry, bmass, dqrcu, reevapcn, reconstruct_conv_precip_flux,
+            q.reshape(nlev, nlat * nlon, lane), diag, cmfmc, dtrain, delp_hpa,
+            delp_dry, bmass, dqrcu, reevapcn, area_m2, diagnostics,
+            reconstruct_conv_precip_flux,
             internal_steps, internal_dt_s, qc, qb_num, delq_work, current_work,
         )
         return negative_count
@@ -463,6 +471,7 @@ if njit is not None:
         internal_steps,
         internal_dt_s,
         convection_qc,
+        convection_diag_empty,
         convection_qb_num,
         convection_delq_work,
         convection_current_work,
@@ -483,7 +492,8 @@ if njit is not None:
         )
         vdiff_worker_work = (tracer_diffused, before_mass, after_mass, qmx, adjust)
         convection_inputs = (
-            cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn,
+            convection_diag_empty, cmfmc, dtrain, delp_hpa, delp_dry, bmass,
+            dqrcu, reevapcn, area_m2.reshape(area_m2.size), False,
             reconstruct_conv_precip_flux, internal_steps, internal_dt_s,
         )
         convection_work = (

@@ -303,10 +303,15 @@ def run_vdiffdr_one_step(
             )
 
     numba_vdiff = _numba_vdiff_enabled()
-    surface_flux_is_zero = bool(not np.any(surface_flux != 0.0)) if numba_vdiff else False
     numba_vdiff_threads = _numba_vdiff_thread_count() if numba_vdiff else 1
-    if numba_vdiff and not diagnostics:
-        return _run_vdiffdr_one_step_fullgrid_numba(
+    if output_buffer is not None and diagnostics:
+        raise ValueError("output_buffer requires diagnostics=False and the full-grid Numba path")
+    if input_mass_pressure is not None and diagnostics:
+        raise ValueError("input_mass_pressure_hpa requires diagnostics=False and the full-grid Numba path")
+    if numba_vdiff:
+        from wombat_transport.transport.pbl._numba_blocked import run_vdiff_one_block_numba
+
+        return run_vdiff_one_block_numba(
             tracer_top=tracer,
             u_top=u,
             v_top=v,
@@ -324,10 +329,9 @@ def run_vdiffdr_one_step(
             ustar_m_s=ustar,
             area_m2=area,
             dt_s=float(dt_s),
-            npbl=_max_pbl_levels_from_pressure(pmid),
-            surface_flux_is_zero=surface_flux_is_zero,
-            nthreads=numba_vdiff_threads,
-            reuse_output=reuse_output,
+            workers=numba_vdiff_threads,
+            diagnostics=diagnostics,
+            reuse_output=reuse_output and not diagnostics,
             output_buffer=output_buffer,
             input_mass_pressure_hpa=input_mass_pressure,
         )
@@ -390,10 +394,7 @@ def run_vdiffdr_one_step(
             npbl=npbl,
             ml2=ml2,
         )
-        if numba_vdiff:
-            column = _run_vdiff_latitude_numba(**latitude_args, surface_flux_is_zero=surface_flux_is_zero)
-        else:
-            column = _run_vdiff_latitude(**latitude_args)
+        column = _run_vdiff_latitude(**latitude_args)
         tracer_after_top[:, lat_index, :, :] = column.tracer_top.transpose(1, 0, 2)
         sphu_after_top[:, lat_index, :] = column.sphu_top.T
         kvh_top[:, lat_index, :] = column.kvh_top.T
@@ -648,18 +649,6 @@ def _numba_vdiff_thread_count() -> int:
     from wombat_transport.transport.pbl._numba import _numba_vdiff_thread_count as _impl
 
     return _impl()
-
-
-def _run_vdiff_latitude_numba(**kwargs) -> _VdiffLatitudeResult:
-    from wombat_transport.transport.pbl._numba import _run_vdiff_latitude_numba as _impl
-
-    return _impl(**kwargs)
-
-
-def _run_vdiffdr_one_step_fullgrid_numba(**kwargs) -> VdiffDrResult:
-    from wombat_transport.transport.pbl._numba import _run_vdiffdr_one_step_fullgrid_numba as _impl
-
-    return _impl(**kwargs)
 
 
 def _pbldif_archived_pblh(

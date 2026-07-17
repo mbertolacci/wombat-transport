@@ -9,7 +9,6 @@ from wombat_transport.transport.numba_control import (
     apply_numba_thread_count,
     numba_enabled,
     numba_mode,
-    synchronized_transport_numba,
 )
 from wombat_transport.transport.pbl import _native
 
@@ -170,95 +169,7 @@ def _numba_vdiff_thread_count() -> int:
     return apply_numba_thread_count("WOMBAT_VDIFF_NUMBA", available=_NUMBA_AVAILABLE)
 
 
-def _run_vdiff_latitude_numba(
-    *,
-    tracer_top: np.ndarray,
-    u_top: np.ndarray,
-    v_top: np.ndarray,
-    temperature_top: np.ndarray,
-    sphu_top: np.ndarray,
-    pmid_top: np.ndarray,
-    pint_top: np.ndarray,
-    rpdel_top: np.ndarray,
-    rpdeli_top: np.ndarray,
-    zm_top: np.ndarray,
-    thp_top: np.ndarray,
-    dry_mass_top: np.ndarray,
-    pblh_m: np.ndarray,
-    hflux_w_m2: np.ndarray,
-    water_flux_kg_m2_s: np.ndarray,
-    surface_flux_kg_m2_s: np.ndarray,
-    ustar_m_s: np.ndarray,
-    area_m2: np.ndarray,
-    dt_s: float,
-    ntopfl: int,
-    npbl: int,
-    ml2: np.ndarray,
-    surface_flux_is_zero: bool,
-) -> _VdiffLatitudeResult:
-    if not _NUMBA_AVAILABLE:
-        return _run_vdiff_latitude(
-            tracer_top=tracer_top,
-            u_top=u_top,
-            v_top=v_top,
-            temperature_top=temperature_top,
-            sphu_top=sphu_top,
-            pmid_top=pmid_top,
-            pint_top=pint_top,
-            rpdel_top=rpdel_top,
-            rpdeli_top=rpdeli_top,
-            zm_top=zm_top,
-            thp_top=thp_top,
-            dry_mass_top=dry_mass_top,
-            pblh_m=pblh_m,
-            hflux_w_m2=hflux_w_m2,
-            water_flux_kg_m2_s=water_flux_kg_m2_s,
-            surface_flux_kg_m2_s=surface_flux_kg_m2_s,
-            ustar_m_s=ustar_m_s,
-            area_m2=area_m2,
-            dt_s=dt_s,
-            ntopfl=ntopfl,
-            npbl=npbl,
-            ml2=ml2,
-        )
-    tracer_out, sphu_out, kvh, kvm, tpert, qpert, negative_count = _run_vdiff_latitude_numba_kernel(
-        tracer_top,
-        u_top,
-        v_top,
-        temperature_top,
-        sphu_top,
-        pmid_top,
-        pint_top,
-        rpdel_top,
-        rpdeli_top,
-        zm_top,
-        thp_top,
-        dry_mass_top,
-        pblh_m,
-        hflux_w_m2,
-        water_flux_kg_m2_s,
-        surface_flux_kg_m2_s,
-        ustar_m_s,
-        area_m2,
-        dt_s,
-        ntopfl,
-        npbl,
-        ml2,
-        surface_flux_is_zero,
-    )
-    return _VdiffLatitudeResult(
-        tracer_top=tracer_out,
-        sphu_top=sphu_out,
-        kvh_top=kvh,
-        kvm_top=kvm,
-        tpert=tpert,
-        qpert=qpert,
-        negative_count_before_clip=int(negative_count),
-    )
-
-
-@synchronized_transport_numba
-def _run_vdiffdr_one_step_fullgrid_numba(
+def _prepare_vdiff_plan_numba(
     *,
     tracer_top: np.ndarray,
     u_top: np.ndarray,
@@ -286,9 +197,13 @@ def _run_vdiffdr_one_step_fullgrid_numba(
     plan_output: tuple[np.ndarray, ...] | None = None,
     plan_only: bool = False,
     sphu_output_buffer: np.ndarray | None = None,
+    diagnostic_plan_output: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> VdiffDrResult:
+    """Prepare meteorology-only VDIFF coefficients for the shared apply kernels."""
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
+    if plan_output is None or not plan_only:
+        raise ValueError("VDIFF plan preparation requires plan_output and plan_only=True")
     nlev, nlat, nlon, ntracer = tracer_top.shape
     workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlat, nlon, ntracer)
     if output_buffer is not None:
@@ -351,6 +266,18 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         if plan_rpdel.shape != expected_plan_shape or plan_rrho.shape != (nlat, nlon) or plan_tmp1.shape != (nlat, nlon):
             raise ValueError("plan source arrays have the wrong shape")
         capture_plan = True
+    if diagnostic_plan_output is None:
+        plan_kvm = np.empty((1, 1, 1), dtype=np.float64)
+        plan_tpert = np.empty((1, 1), dtype=np.float64)
+        plan_qpert = np.empty((1, 1), dtype=np.float64)
+        capture_plan_diagnostics = False
+    else:
+        plan_kvm, plan_tpert, plan_qpert = diagnostic_plan_output
+        if plan_kvm.shape != (nlev + 1, nlat, nlon):
+            raise ValueError("diagnostic plan kvm array has the wrong shape")
+        if plan_tpert.shape != (nlat, nlon) or plan_qpert.shape != (nlat, nlon):
+            raise ValueError("diagnostic plan perturbation arrays have the wrong shape")
+        capture_plan_diagnostics = True
     negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top,
         u_top,
@@ -428,6 +355,10 @@ def _run_vdiffdr_one_step_fullgrid_numba(
         plan_tmp1,
         capture_plan,
         plan_only,
+        plan_kvm,
+        plan_tpert,
+        plan_qpert,
+        capture_plan_diagnostics,
     )
     empty = np.empty(0, dtype=np.float64)
     return VdiffDrResult(
@@ -604,6 +535,10 @@ if njit is not None:
         plan_tmp1: np.ndarray,
         capture_plan: bool,
         plan_only: bool,
+        plan_kvm: np.ndarray,
+        plan_tpert: np.ndarray,
+        plan_qpert: np.ndarray,
+        capture_plan_diagnostics: bool,
     ) -> int:
         nlev = tracer_top.shape[0]
         nlat = tracer_top.shape[1]
@@ -864,6 +799,13 @@ if njit is not None:
                 for lon in range(nlon):
                     plan_rrho[lat, lon] = rrho[lon]
                     plan_tmp1[lat, lon] = tmp1[lon]
+            if capture_plan_diagnostics:
+                for edge in range(nlev + 1):
+                    for lon in range(nlon):
+                        plan_kvm[edge, lat, lon] = kvm[lon, edge]
+                for lon in range(nlon):
+                    plan_tpert[lat, lon] = tpert[lon]
+                    plan_qpert[lat, lon] = qpert[lon]
 
             if capture_plan and plan_only:
                 _solve_vdiff_humidity_numba(
@@ -1032,330 +974,6 @@ if njit is not None:
         return negative_count
 
 
-    @njit(cache=True, nogil=True)
-    def _run_vdiff_latitude_numba_kernel(
-        tracer_top: np.ndarray,
-        u_top: np.ndarray,
-        v_top: np.ndarray,
-        temperature_top: np.ndarray,
-        sphu_top: np.ndarray,
-        pmid_top: np.ndarray,
-        pint_top: np.ndarray,
-        rpdel_top: np.ndarray,
-        rpdeli_top: np.ndarray,
-        zm_top: np.ndarray,
-        thp_top: np.ndarray,
-        dry_mass_top: np.ndarray,
-        pblh_m: np.ndarray,
-        hflux_w_m2: np.ndarray,
-        water_flux_kg_m2_s: np.ndarray,
-        surface_flux_kg_m2_s: np.ndarray,
-        ustar_m_s: np.ndarray,
-        area_m2: np.ndarray,
-        dt_s: float,
-        ntopfl: int,
-        npbl: int,
-        ml2: np.ndarray,
-        surface_flux_is_zero: bool,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
-        nlon = tracer_top.shape[0]
-        nlev = tracer_top.shape[1]
-        ntracer = tracer_top.shape[2]
-
-        kvf = np.zeros((nlon, nlev + 1), dtype=np.float64)
-        kvh = np.zeros((nlon, nlev + 1), dtype=np.float64)
-        kvm = np.zeros((nlon, nlev + 1), dtype=np.float64)
-        cgsh = np.zeros((nlon, nlev + 1), dtype=np.float64)
-        cgs = np.zeros((nlon, nlev + 1), dtype=np.float64)
-        cgq = np.zeros((nlon, nlev + 1, ntracer), dtype=np.float64)
-        tpert = np.zeros(nlon, dtype=np.float64)
-        qpert = np.zeros(nlon, dtype=np.float64)
-
-        tmp1 = np.empty(nlon, dtype=np.float64)
-        dshbot = np.empty(nlon, dtype=np.float64)
-        dqbot = np.empty((nlon, ntracer), dtype=np.float64)
-
-        for lon in range(nlon):
-            tmp1[lon] = dt_s * G0_M_PER_S2 * rpdel_top[lon, nlev - 1]
-            dshbot[lon] = water_flux_kg_m2_s[lon] * tmp1[lon]
-            if not surface_flux_is_zero:
-                for tracer in range(ntracer):
-                    dqbot[lon, tracer] = surface_flux_kg_m2_s[lon, tracer] * tmp1[lon]
-
-        for lev in range(ntopfl, nlev - 1):
-            for lon in range(nlon):
-                dvdz2 = (u_top[lon, lev] - u_top[lon, lev + 1]) ** 2
-                dvdz2 += (v_top[lon, lev] - v_top[lon, lev + 1]) ** 2
-                if dvdz2 < 1.0e-36:
-                    dvdz2 = 1.0e-36
-                dz = zm_top[lon, lev] - zm_top[lon, lev + 1]
-                dvdz2 = dvdz2 / (dz * dz)
-                thv_lev = thp_top[lon, lev] * (1.0 + ZVIR * sphu_top[lon, lev])
-                thv_next = thp_top[lon, lev + 1] * (1.0 + ZVIR * sphu_top[lon, lev + 1])
-                sstab = G0_M_PER_S2 * 2.0 * (thv_lev - thv_next) / ((thv_lev + thv_next) * dz)
-                rinub = sstab / dvdz2
-                fstab = 1.0 / (1.0 + 10.0 * rinub * (1.0 + 8.0 * rinub))
-                if rinub < 0.0:
-                    funst = 1.0 - 18.0 * rinub
-                    if funst < 0.0:
-                        funst = 0.0
-                    fstab = np.sqrt(funst)
-                kvn = ml2[lev] * np.sqrt(dvdz2)
-                value = kvn * fstab
-                if value < ZKMIN_M2_S:
-                    value = ZKMIN_M2_S
-                kvf[lon, lev + 1] = value
-
-        for lon in range(nlon):
-            for edge in range(nlev + 1):
-                kvh[lon, edge] = kvf[lon, edge]
-                kvm[lon, edge] = kvf[lon, edge]
-
-        rrho = np.empty(nlon, dtype=np.float64)
-        khfs = np.empty(nlon, dtype=np.float64)
-        kshfs = np.empty(nlon, dtype=np.float64)
-        thvsrf = np.empty(nlon, dtype=np.float64)
-        heatv = np.empty(nlon, dtype=np.float64)
-        obklen = np.empty(nlon, dtype=np.float64)
-        fak1 = np.empty(nlon, dtype=np.float64)
-        phiminv = np.zeros(nlon, dtype=np.float64)
-        phihinv = np.zeros(nlon, dtype=np.float64)
-        wm = np.zeros(nlon, dtype=np.float64)
-        fak2 = np.zeros(nlon, dtype=np.float64)
-        fak3 = np.zeros(nlon, dtype=np.float64)
-        pblk = np.zeros(nlon, dtype=np.float64)
-        pr = np.zeros(nlon, dtype=np.float64)
-
-        for lon in range(nlon):
-            rrho[lon] = RD_J_PER_KG_K * temperature_top[lon, nlev - 1] / pmid_top[lon, nlev - 1]
-            khfs[lon] = hflux_w_m2[lon] * rrho[lon] / CPAIR_J_PER_KG_K
-            kshfs[lon] = water_flux_kg_m2_s[lon] * rrho[lon]
-            thvsrf[lon] = thp_top[lon, nlev - 1] * (1.0 + 0.61 * sphu_top[lon, nlev - 1])
-            heatv[lon] = khfs[lon] + 0.61 * thp_top[lon, nlev - 1] * kshfs[lon]
-            sign_heat = 1.0e-10
-            if heatv[lon] < 0.0:
-                sign_heat = -1.0e-10
-            obklen[lon] = -thvsrf[lon] * ustar_m_s[lon] ** 3 / (
-                G0_M_PER_S2 * VON_KARMAN * (heatv[lon] + sign_heat)
-            )
-            fak1[lon] = ustar_m_s[lon] * pblh_m[lon] * VON_KARMAN
-            if heatv[lon] > 0.0:
-                phiminv[lon] = (1.0 - _BINM * pblh_m[lon] / obklen[lon]) ** _ONET
-                phihinv[lon] = np.sqrt(1.0 - _BINH * pblh_m[lon] / obklen[lon])
-                wm[lon] = ustar_m_s[lon] * phiminv[lon]
-                fak2[lon] = wm[lon] * pblh_m[lon] * VON_KARMAN
-                wstr = (heatv[lon] * G0_M_PER_S2 * pblh_m[lon] / thvsrf[lon]) ** _ONET
-                fak3[lon] = _FAKN * wstr / wm[lon]
-                t_val = khfs[lon] * _FAK / wm[lon]
-                q_val = kshfs[lon] * _FAK / wm[lon]
-            else:
-                t_val = khfs[lon] * _FAK / ustar_m_s[lon]
-                q_val = kshfs[lon] * _FAK / ustar_m_s[lon]
-            if t_val < 0.0:
-                t_val = 0.0
-            if q_val < 0.0:
-                q_val = 0.0
-            tpert[lon] = t_val
-            qpert[lon] = q_val
-
-        for lev in range(nlev - 1, nlev - npbl, -1):
-            if lev <= 0:
-                break
-            for lon in range(nlon):
-                zm = zm_top[lon, lev]
-                if zm >= pblh_m[lon]:
-                    continue
-                zp = zm_top[lon, lev - 1]
-                zmzp = 0.5 * (zm + zp)
-                zh = zmzp / pblh_m[lon]
-                zl = zmzp / obklen[lon]
-                zzh = 0.0
-                if zh <= 1.0:
-                    zzh = (1.0 - zh) ** 2
-
-                if heatv[lon] <= 0.0:
-                    if zl <= 1.0:
-                        pblk[lon] = fak1[lon] * zh * zzh / (1.0 + _BETAS * zl)
-                    else:
-                        pblk[lon] = fak1[lon] * zh * zzh / (_BETAS + zl)
-                    if pblk[lon] > kvf[lon, lev]:
-                        kvm[lon, lev] = pblk[lon]
-                        kvh[lon, lev] = pblk[lon]
-                    else:
-                        kvm[lon, lev] = kvf[lon, lev]
-                        kvh[lon, lev] = kvf[lon, lev]
-                else:
-                    if zh < _SFFRAC:
-                        term = (1.0 - _BETAM * zl) ** _ONET
-                        pblk[lon] = fak1[lon] * zh * zzh * term
-                        pr[lon] = term / np.sqrt(1.0 - _BETAH * zl)
-                    else:
-                        pblk[lon] = fak2[lon] * zh * zzh
-                        cgs[lon, lev] = fak3[lon] / (pblh_m[lon] * wm[lon])
-                        pr[lon] = phiminv[lon] / phihinv[lon] + _CCON * fak3[lon] / _FAK
-                        cgsh[lon, lev] = kshfs[lon] * cgs[lon, lev]
-                        if not surface_flux_is_zero:
-                            for tracer in range(ntracer):
-                                cgq[lon, lev, tracer] = (
-                                    surface_flux_kg_m2_s[lon, tracer] * rrho[lon] * cgs[lon, lev]
-                                )
-                    if pblk[lon] > kvf[lon, lev]:
-                        kvm[lon, lev] = pblk[lon]
-                    else:
-                        kvm[lon, lev] = kvf[lon, lev]
-                    kh = pblk[lon] / pr[lon]
-                    if kh > kvf[lon, lev]:
-                        kvh[lon, lev] = kh
-                    else:
-                        kvh[lon, lev] = kvf[lon, lev]
-
-        potbar = np.zeros((nlon, nlev + 1), dtype=np.float64)
-        for lev in range(1, nlev):
-            for lon in range(nlon):
-                potbar[lon, lev] = pint_top[lon, lev] / (
-                    0.5 * (temperature_top[lon, lev] + temperature_top[lon, lev - 1])
-                )
-        for lon in range(nlon):
-            potbar[lon, nlev] = pint_top[lon, nlev] / temperature_top[lon, nlev - 1]
-
-        start = ntopfl
-        if nlev - npbl > start:
-            start = nlev - npbl
-        ztodtgor = dt_s * G0_M_PER_S2 / RD_J_PER_KG_K
-
-        if surface_flux_is_zero:
-            qmx = tracer_top
-        else:
-            qmx = tracer_top.copy()
-        if npbl > 1 and not surface_flux_is_zero:
-            adjust = np.zeros((nlon, ntracer), dtype=np.bool_)
-            for lev in range(start, nlev):
-                for lon in range(nlon):
-                    scale = ztodtgor * rpdel_top[lon, lev]
-                    term_next = potbar[lon, lev + 1] * kvh[lon, lev + 1]
-                    term_now = potbar[lon, lev] * kvh[lon, lev]
-                    for tracer in range(ntracer):
-                        qmx[lon, lev, tracer] = tracer_top[lon, lev, tracer] + scale * (
-                            term_next * cgq[lon, lev + 1, tracer] - term_now * cgq[lon, lev, tracer]
-                        )
-                        if qmx[lon, lev, tracer] < 0.0:
-                            adjust[lon, tracer] = True
-            for lon in range(nlon):
-                for tracer in range(ntracer):
-                    if adjust[lon, tracer]:
-                        for lev in range(start, nlev):
-                            qmx[lon, lev, tracer] = tracer_top[lon, lev, tracer]
-
-        shmx = sphu_top.copy()
-        if npbl > 1:
-            for lev in range(start, nlev):
-                for lon in range(nlon):
-                    scale = ztodtgor * rpdel_top[lon, lev]
-                    shmx[lon, lev] = sphu_top[lon, lev] + scale * (
-                        potbar[lon, lev + 1] * kvh[lon, lev + 1] * cgsh[lon, lev + 1]
-                        - potbar[lon, lev] * kvh[lon, lev] * cgsh[lon, lev]
-                    )
-            for lon in range(nlon):
-                restore = False
-                for lev in range(start, nlev):
-                    if shmx[lon, lev] < 1.0e-12:
-                        restore = True
-                if restore:
-                    for lev in range(start, nlev):
-                        shmx[lon, lev] = sphu_top[lon, lev]
-
-        cah = np.zeros((nlon, nlev), dtype=np.float64)
-        cch = np.zeros((nlon, nlev), dtype=np.float64)
-        zeh = np.zeros((nlon, nlev), dtype=np.float64)
-        termh = np.zeros((nlon, nlev), dtype=np.float64)
-        gorsq = (G0_M_PER_S2 / RD_J_PER_KG_K) ** 2
-        for lev in range(ntopfl, nlev - 1):
-            for lon in range(nlon):
-                tmp2 = dt_s * gorsq * rpdeli_top[lon, lev] * potbar[lon, lev + 1] ** 2
-                cah[lon, lev] = kvh[lon, lev + 1] * tmp2 * rpdel_top[lon, lev]
-                cch[lon, lev + 1] = kvh[lon, lev + 1] * tmp2 * rpdel_top[lon, lev + 1]
-        for lon in range(nlon):
-            termh[lon, ntopfl] = 1.0 / (1.0 + cah[lon, ntopfl])
-            zeh[lon, ntopfl] = cah[lon, ntopfl] * termh[lon, ntopfl]
-        for lev in range(ntopfl + 1, nlev - 1):
-            for lon in range(nlon):
-                termh[lon, lev] = 1.0 / (
-                    1.0 + cah[lon, lev] + cch[lon, lev] * (1.0 - zeh[lon, lev - 1])
-                )
-                zeh[lon, lev] = cah[lon, lev] * termh[lon, lev]
-
-        tracer_diffused = np.zeros((nlon, nlev, ntracer), dtype=np.float64)
-        for lon in range(nlon):
-            for tracer in range(ntracer):
-                tracer_diffused[lon, ntopfl, tracer] = qmx[lon, ntopfl, tracer] * termh[lon, ntopfl]
-        for lev in range(ntopfl + 1, nlev - 1):
-            for lon in range(nlon):
-                for tracer in range(ntracer):
-                    tracer_diffused[lon, lev, tracer] = (
-                        qmx[lon, lev, tracer] + cch[lon, lev] * tracer_diffused[lon, lev - 1, tracer]
-                    ) * termh[lon, lev]
-        for lon in range(nlon):
-            tmp1d = 1.0 / (1.0 + cch[lon, nlev - 1] * (1.0 - zeh[lon, nlev - 2]))
-            for tracer in range(ntracer):
-                tracer_diffused[lon, nlev - 1, tracer] = (
-                    qmx[lon, nlev - 1, tracer]
-                    + (0.0 if surface_flux_is_zero else dqbot[lon, tracer])
-                    + cch[lon, nlev - 1] * tracer_diffused[lon, nlev - 2, tracer]
-                ) * tmp1d
-        for lev in range(nlev - 2, ntopfl - 1, -1):
-            for lon in range(nlon):
-                for tracer in range(ntracer):
-                    tracer_diffused[lon, lev, tracer] = (
-                        tracer_diffused[lon, lev, tracer] + zeh[lon, lev] * tracer_diffused[lon, lev + 1, tracer]
-                    )
-
-        negative_count = 0
-        for lon in range(nlon):
-            for lev in range(nlev):
-                for tracer in range(ntracer):
-                    if tracer_diffused[lon, lev, tracer] < 0.0:
-                        negative_count += 1
-                        tracer_diffused[lon, lev, tracer] = 0.0
-
-        for lon in range(nlon):
-            for tracer in range(ntracer):
-                before_mass = 0.0
-                if not surface_flux_is_zero:
-                    before_mass = surface_flux_kg_m2_s[lon, tracer] * area_m2[lon] * dt_s
-                after_mass = 0.0
-                for lev in range(ntopfl, nlev):
-                    before_mass += tracer_top[lon, lev, tracer] * dry_mass_top[lon, lev]
-                    after_mass += tracer_diffused[lon, lev, tracer] * dry_mass_top[lon, lev]
-                if abs(before_mass) > 0.0 and abs(after_mass) > 0.0:
-                    ratio = before_mass / after_mass
-                    for lev in range(ntopfl, nlev):
-                        tracer_diffused[lon, lev, tracer] *= ratio
-
-        zfq_scalar = np.zeros((nlon, nlev), dtype=np.float64)
-        sphu_diffused = np.zeros((nlon, nlev), dtype=np.float64)
-        for lon in range(nlon):
-            zfq_scalar[lon, ntopfl] = shmx[lon, ntopfl] * termh[lon, ntopfl]
-        for lev in range(ntopfl + 1, nlev - 1):
-            for lon in range(nlon):
-                zfq_scalar[lon, lev] = (shmx[lon, lev] + cch[lon, lev] * zfq_scalar[lon, lev - 1]) * termh[
-                    lon, lev
-                ]
-        for lon in range(nlon):
-            tmp1d = 1.0 / (1.0 + cch[lon, nlev - 1] * (1.0 - zeh[lon, nlev - 2]))
-            zfq_scalar[lon, nlev - 1] = (
-                shmx[lon, nlev - 1] + dshbot[lon] + cch[lon, nlev - 1] * zfq_scalar[lon, nlev - 2]
-            ) * tmp1d
-            sphu_diffused[lon, nlev - 1] = zfq_scalar[lon, nlev - 1]
-        for lev in range(nlev - 2, ntopfl - 1, -1):
-            for lon in range(nlon):
-                sphu_diffused[lon, lev] = zfq_scalar[lon, lev] + zeh[lon, lev] * sphu_diffused[lon, lev + 1]
-        for lon in range(nlon):
-            for lev in range(nlev):
-                if sphu_diffused[lon, lev] < 1.0e-12:
-                    sphu_diffused[lon, lev] = 0.0
-
-        return tracer_diffused, sphu_diffused, kvh, kvm, tpert, qpert, negative_count
-
 else:
 
     def _finalize_deferred_tpcore_poles_numba_kernel(
@@ -1365,34 +983,6 @@ else:
 
     def _tracer_working_mass_numba_kernel(tracer_conc: np.ndarray, dry_air_mass_top: np.ndarray) -> np.ndarray:
         raise RuntimeError("numba is not available")
-
-
-    def _run_vdiff_latitude_numba_kernel(
-        tracer_top: np.ndarray,
-        u_top: np.ndarray,
-        v_top: np.ndarray,
-        temperature_top: np.ndarray,
-        sphu_top: np.ndarray,
-        pmid_top: np.ndarray,
-        pint_top: np.ndarray,
-        rpdel_top: np.ndarray,
-        rpdeli_top: np.ndarray,
-        zm_top: np.ndarray,
-        thp_top: np.ndarray,
-        dry_mass_top: np.ndarray,
-        pblh_m: np.ndarray,
-        hflux_w_m2: np.ndarray,
-        water_flux_kg_m2_s: np.ndarray,
-        surface_flux_kg_m2_s: np.ndarray,
-        ustar_m_s: np.ndarray,
-        area_m2: np.ndarray,
-        dt_s: float,
-        ntopfl: int,
-        npbl: int,
-        ml2: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
-        raise RuntimeError("numba is not available")
-
 
     def _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
         tracer_top: np.ndarray,

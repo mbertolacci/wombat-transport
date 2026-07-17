@@ -26,7 +26,6 @@ from wombat_transport.runner import (
     _load_simulation_forcing,
     _transport_block_width,
     _transport_executor,
-    _use_unified_numba_transport,
     _validate_timestep_schedule,
     has_invalid_emissions,
     run_tracer_simulation,
@@ -115,10 +114,6 @@ def test_transport_executor_and_block_width_environment(monkeypatch):
     with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_BLOCK_WIDTH"):
         _transport_block_width("spatial", 24)
 
-    assert not _use_unified_numba_transport("spatial", 4, True)
-    assert _use_unified_numba_transport("spatial", 8, True)
-    assert _use_unified_numba_transport("blocks", 1, True)
-    assert not _use_unified_numba_transport("blocks", 96, False)
 
 
 def test_run_config_logging_level_defaults_and_validates():

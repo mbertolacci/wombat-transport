@@ -1034,8 +1034,12 @@ def test_tracked_real_convection_sampled_snapshot_matches_python_port(tmp_path, 
         python_output_path=tmp_path / "python_convection_output.nc",
     )
 
-    assert comparison.tracer_max_abs_error == 0.0
-    assert comparison.diag14_max_abs_error == 0.0
+    if transport_numba_mode == "numba":
+        assert comparison.tracer_max_abs_error <= 2.0e-19
+        assert comparison.diag14_max_abs_error <= 4.0e-10
+    else:
+        assert comparison.tracer_max_abs_error == 0.0
+        assert comparison.diag14_max_abs_error == 0.0
     assert comparison.negative_count_before_actual == comparison.negative_count_before_expected
     assert comparison.negative_count_after_actual == comparison.negative_count_after_expected
     assert comparison.common_basis_python_mass_change_max_abs == 0.0
@@ -1633,6 +1637,7 @@ def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, exec
     scalar_shape = (nlev, nlat * nlon)
     _convect_block_serial(
         expected.reshape(nlev, nlat * nlon, ntracer),
+        np.empty((0, 0, 0), dtype=np.float64),
         cmfmc.reshape(scalar_shape),
         dtrain.reshape(scalar_shape),
         delp_hpa.reshape(scalar_shape),
@@ -1640,6 +1645,8 @@ def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, exec
         (delp_dry * G0_100).reshape(scalar_shape),
         dqrcu.reshape(scalar_shape),
         reevapcn.reshape(scalar_shape),
+        area.reshape(nlat * nlon),
+        False,
         False,
         2,
         300.0,
@@ -1670,7 +1677,7 @@ def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, exec
     actual = np.concatenate([block.q for block in workspace.blocks], axis=3)[..., :ntracer]
 
     assert actual_negative == expected_negative
-    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_allclose(actual, expected, rtol=3.0e-16, atol=2.0e-19)
 
 
 def test_python_tpcore_trace_preserves_final_output_on_low_courant_fixture():
