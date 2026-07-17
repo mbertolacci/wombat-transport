@@ -157,7 +157,9 @@ if njit is not None:
         return negative_count
 
     _apply_vdiff_block_serial = njit(nogil=True)(_apply_vdiff_block_impl)
-    _apply_vdiff_block_spatial = njit(parallel=True, nogil=True)(_apply_vdiff_block_impl)
+    _apply_vdiff_block_spatial = njit(parallel=True, nogil=True, cache=True)(
+        _apply_vdiff_block_impl
+    )
 
 else:
     _apply_vdiff_block_serial = None

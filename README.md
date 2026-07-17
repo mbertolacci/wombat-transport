@@ -103,11 +103,11 @@ End-to-end local comparisons on an Intel Core i7-14700KF included MERRA-2
 reading, residual emissions where configured, ObsOperator sampling, and
 output:
 
-- At 2x2.5 with 100 tracers and four threads, Wombat achieved 176.2
-  tracer-steps/s and was 3.51 times faster than GEOS-Chem.
-- At 4x5 with 100 tracers and four threads, Wombat achieved 703.9
-  tracer-steps/s and was 3.41 times faster than GEOS-Chem.
-- One-tracer runs were approximately 1.7--1.9 times faster than GEOS-Chem in
+- At 2x2.5 with 100 tracers and eight threads, width-16 block execution achieved
+  228.8 tracer-steps/s and was 3.48 times faster than GEOS-Chem.
+- At 4x5 with 100 tracers and eight threads, width-16 block execution achieved
+  951.3 tracer-steps/s and was 3.59 times faster than GEOS-Chem.
+- One-tracer runs were approximately 1.6--1.8 times faster than GEOS-Chem in
   the measured local cases.
 
 A separate high-tracer experiment on one 40-core CPU socket of the Hercules
