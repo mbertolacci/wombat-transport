@@ -113,7 +113,7 @@ def compare_scenario(run_dir: str | Path, hemco_diagnostic: str | Path | None = 
     grid = _transport_grid(root)
     wombat = EmissionsOperator.from_yaml("wombat_emissions.yml", root=root, species=list(SPECIES), grid=grid).evaluate(HARNESS_START)
     wombat_data = wombat.to_canonical()
-    hemco_data = hemco.to_canonical()
+    hemco_data = hemco.data
     area_5d = grid.area_m2[np.newaxis, np.newaxis, :, :, np.newaxis]
     comparisons: list[HemcoHarnessComparison] = []
     for index, species in enumerate(wombat.names):
