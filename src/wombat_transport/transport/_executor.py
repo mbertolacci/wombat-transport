@@ -369,7 +369,7 @@ def _one_block_transport_step_spatial(
 
 if njit is not None:
 
-    @njit(nogil=True)
+    @njit(nogil=True, cache=True)
     def _one_block_transport_step_serial(
         q,
         dq1,
@@ -539,8 +539,10 @@ if njit is not None:
                 vdiff_worker_work, convection_inputs, convection_work,
             )
 
-    _multi_block_transport_step_serial = njit(nogil=True)(_multi_block_transport_step_impl)
-    _multi_block_transport_step_parallel = njit(parallel=True, nogil=True)(
+    _multi_block_transport_step_serial = njit(nogil=True, cache=True)(
+        _multi_block_transport_step_impl
+    )
+    _multi_block_transport_step_parallel = njit(parallel=True, nogil=True, cache=True)(
         _multi_block_transport_step_impl
     )
 

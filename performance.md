@@ -2806,3 +2806,21 @@ driver APIs, a warmed global 2x2.5 full-chain check with eight workers measured
 execution. Parallel block execution measured 1.29x at 64 tracers with width 8
 and 1.19x at 96 tracers with width 16. Spatial results were bitwise equal to
 the direct operator chain; block-parallel results remained within one ULP.
+
+### Fresh-process compilation cache correction
+
+The first documentation refresh initially showed a roughly three-second fixed
+spatial regression and a 20-25 second block-executor regression in every fresh
+process. These were compilation artifacts: the dynamically compiled spatial
+VDIFF dispatcher and top-level block pipeline did not request Numba disk
+caching. Adding `cache=True` restored the second-process 4x5 one-tracer,
+four-thread spatial run from 9.92 to 6.85 seconds, close to the previous 6.70
+second snapshot. The equivalent 4x5 100-tracer, eight-thread block run fell
+from 40.20 to 15.28 seconds after populating its cache.
+
+With caches populated and full application costs included, 100 tracers favored
+width-25 block execution at four threads (76.69 seconds at 2x2.5 and 17.92
+seconds at 4x5) and width-16 block execution at eight threads (62.94 and 15.14
+seconds). Full-width spatial execution remained preferable through 24 tracers.
+The documentation refresh harness now performs an unmeasured run for each
+selected executor before timing and sweeps widths 8, 16, and 25 by default.

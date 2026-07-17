@@ -108,40 +108,57 @@ block-native tracer storage: storage is blocked in every execution mode.
 
 ## Local end-to-end comparison
 
-These timings were measured on 16 July 2026 on an Intel Core i7-14700KF. The
-one-tracer cases cover two days; the 24- and 100-tracer cases cover one day.
+The one- to four-thread GEOS-Chem timings were measured on 16 July 2026; the
+eight-thread GEOS-Chem timings and all Wombat timings were refreshed on 17
+July 2026, on the same Intel Core i7-14700KF. The one-tracer cases cover two
+days; the 24- and 100-tracer cases cover one day.
 The 100-tracer workload adds 76 synthetic background-only CO2 tracers to the
-residual case.
+residual case. Each Wombat row reports the faster applicable transport
+executor and its storage width. Direct transport sweeps narrowed the candidate
+widths before end-to-end timing. Spatial execution won through 24 tracers and
+at one or two threads; block execution won the 100-tracer rows with width 25
+at four threads and width 16 at eight threads.
 
 Both engines read MERRA-2 meteorology, run ObsOperator, and write configured
 output. Multi-tracer cases also read and apply residual emissions. Runs were
 sequential and unpinned, so this is a practical snapshot rather than a
 controlled microbenchmark.
 
-| Grid | Tracers | Threads | GEOS-Chem wall s | Wombat wall s | GEOS-Chem tracer-steps/s | Wombat tracer-steps/s | Wombat speedup |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 2x2.5 | 1 | 1 | 66.10 | 36.20 | 4.4 | 8.0 | 1.83x |
-| 2x2.5 | 1 | 2 | 49.25 | 26.29 | 5.8 | 11.0 | 1.87x |
-| 2x2.5 | 1 | 4 | 39.06 | 21.03 | 7.4 | 13.7 | 1.86x |
-| 2x2.5 | 24 | 1 | 200.46 | 49.16 | 17.2 | 70.3 | 4.08x |
-| 2x2.5 | 24 | 2 | 124.01 | 35.30 | 27.9 | 97.9 | 3.51x |
-| 2x2.5 | 24 | 4 | 83.28 | 25.79 | 41.5 | 134.0 | 3.23x |
-| 2x2.5 | 100 | 1 | 710.41 | 158.86 | 20.3 | 90.6 | 4.47x |
-| 2x2.5 | 100 | 2 | 436.12 | 108.35 | 33.0 | 132.9 | 4.03x |
-| 2x2.5 | 100 | 4 | 286.84 | 81.70 | 50.2 | 176.2 | 3.51x |
-| 4x5 | 1 | 1 | 16.51 | 9.45 | 17.4 | 30.5 | 1.75x |
-| 4x5 | 1 | 2 | 13.61 | 7.67 | 21.2 | 37.5 | 1.77x |
-| 4x5 | 1 | 4 | 11.49 | 6.70 | 25.1 | 43.0 | 1.71x |
-| 4x5 | 24 | 1 | 49.38 | 13.30 | 70.0 | 259.8 | 3.71x |
-| 4x5 | 24 | 2 | 30.46 | 10.02 | 113.4 | 345.0 | 3.04x |
-| 4x5 | 24 | 4 | 20.30 | 7.75 | 170.3 | 445.7 | 2.62x |
-| 4x5 | 100 | 1 | 176.16 | 37.81 | 81.7 | 380.9 | 4.66x |
-| 4x5 | 100 | 2 | 105.78 | 26.58 | 136.1 | 541.7 | 3.98x |
-| 4x5 | 100 | 4 | 69.75 | 20.46 | 206.5 | 703.9 | 3.41x |
+| Grid | Tracers | Threads | Executor | Width | GEOS-Chem wall s | Wombat wall s | GEOS-Chem tracer-steps/s | Wombat tracer-steps/s | Wombat speedup |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| 2x2.5 | 1 | 1 | spatial | 1 | 66.10 | 36.99 | 4.4 | 7.8 | 1.79x |
+| 2x2.5 | 1 | 2 | spatial | 1 | 49.25 | 27.34 | 5.8 | 10.5 | 1.80x |
+| 2x2.5 | 1 | 4 | spatial | 1 | 39.06 | 21.58 | 7.4 | 13.3 | 1.81x |
+| 2x2.5 | 1 | 8 | spatial | 1 | 34.44 | 19.34 | 8.4 | 14.9 | 1.78x |
+| 2x2.5 | 24 | 1 | spatial | 24 | 200.46 | 50.79 | 17.2 | 68.0 | 3.95x |
+| 2x2.5 | 24 | 2 | spatial | 24 | 124.01 | 35.67 | 27.9 | 96.9 | 3.48x |
+| 2x2.5 | 24 | 4 | spatial | 24 | 83.28 | 26.21 | 41.5 | 131.9 | 3.18x |
+| 2x2.5 | 24 | 8 | spatial | 24 | 65.83 | 21.75 | 52.5 | 158.9 | 3.03x |
+| 2x2.5 | 100 | 1 | spatial | 100 | 710.41 | 158.14 | 20.3 | 91.1 | 4.49x |
+| 2x2.5 | 100 | 2 | spatial | 100 | 436.12 | 110.08 | 33.0 | 130.8 | 3.96x |
+| 2x2.5 | 100 | 4 | blocks | 25 | 286.84 | 76.69 | 50.2 | 187.8 | 3.74x |
+| 2x2.5 | 100 | 8 | blocks | 16 | 219.09 | 62.94 | 65.7 | 228.8 | 3.48x |
+| 4x5 | 1 | 1 | spatial | 1 | 16.51 | 9.93 | 17.4 | 29.0 | 1.66x |
+| 4x5 | 1 | 2 | spatial | 1 | 13.61 | 7.85 | 21.2 | 36.7 | 1.73x |
+| 4x5 | 1 | 4 | spatial | 1 | 11.49 | 6.85 | 25.1 | 42.0 | 1.68x |
+| 4x5 | 1 | 8 | spatial | 1 | 10.63 | 6.77 | 27.1 | 42.6 | 1.57x |
+| 4x5 | 24 | 1 | spatial | 24 | 49.38 | 12.91 | 70.0 | 267.8 | 3.83x |
+| 4x5 | 24 | 2 | spatial | 24 | 30.46 | 9.85 | 113.4 | 350.7 | 3.09x |
+| 4x5 | 24 | 4 | spatial | 24 | 20.30 | 7.71 | 170.3 | 448.3 | 2.63x |
+| 4x5 | 24 | 8 | spatial | 24 | 15.80 | 6.76 | 218.7 | 511.2 | 2.34x |
+| 4x5 | 100 | 1 | spatial | 100 | 176.16 | 37.33 | 81.7 | 385.7 | 4.72x |
+| 4x5 | 100 | 2 | spatial | 100 | 105.78 | 26.56 | 136.1 | 542.2 | 3.98x |
+| 4x5 | 100 | 4 | blocks | 25 | 69.75 | 17.92 | 206.5 | 803.7 | 3.89x |
+| 4x5 | 100 | 8 | blocks | 16 | 54.37 | 15.14 | 264.9 | 951.3 | 3.59x |
 
 Wombat speedup is GEOS-Chem wall time divided by Wombat wall time. Fixed
 startup, meteorology, ObsOperator, and output costs make scaling with tracer
 count deliberately nonlinear.
+
+`tools/benchmark_documented_runs.py` reruns only the Wombat side from existing
+materialized validation directories, compares the applicable executors, and
+prints the selected rows as Markdown. See its `--help` output for the required
+materialized-data, Python, work, and result paths.
 
 ## High-tracer cluster result
 
