@@ -104,6 +104,15 @@ def test_operator_numba_falsey_flag_overrides_global_enabled(monkeypatch):
     assert not convection._numba_convection_enabled()
 
 
+def test_unified_transport_requires_every_numba_operator(monkeypatch):
+    monkeypatch.setattr(numba_control, "set_num_threads", lambda count: None)
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    assert numba_control.transport_numba_enabled()
+
+    monkeypatch.setenv("WOMBAT_VDIFF_NUMBA", "0")
+    assert not numba_control.transport_numba_enabled()
+
+
 def test_transport_performance_warning_when_numba_unavailable(monkeypatch, caplog):
     monkeypatch.setattr(numba_control, "set_num_threads", None)
     monkeypatch.setattr(numba_control, "_transport_warning_emitted", False)

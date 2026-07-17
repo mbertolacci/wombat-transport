@@ -7,10 +7,13 @@ from dataclasses import dataclass
 import numpy as np
 
 from wombat_transport.transport.pbl import _numba as nb
+
 if nb._NUMBA_AVAILABLE:
-    from numba import njit, set_num_threads
+    from numba import get_thread_id, njit, prange, set_num_threads
 else:  # pragma: no cover - exercised in environments without numba.
+    get_thread_id = None
     njit = None
+    prange = range
     set_num_threads = None
 
 _G0_M_PER_S2 = nb.G0_M_PER_S2
@@ -123,8 +126,7 @@ def prepare_vdiff_zero_flux_block_plan(
 
 
 if njit is not None:
-    @njit(nogil=True)
-    def _apply_vdiff_zero_flux_block(
+    def _apply_vdiff_block_impl(
         tracer_in: np.ndarray,
         tracer_out: np.ndarray,
         cch: np.ndarray,
@@ -142,16 +144,22 @@ if njit is not None:
         start_level: int,
         surface_flux: np.ndarray,
         has_flux: bool,
-        tracer_diffused: np.ndarray,
-        before_mass: np.ndarray,
-        after_mass: np.ndarray,
-        qmx: np.ndarray,
-        adjust: np.ndarray,
+        tracer_diffused_workspace: np.ndarray,
+        before_mass_workspace: np.ndarray,
+        after_mass_workspace: np.ndarray,
+        qmx_workspace: np.ndarray,
+        adjust_workspace: np.ndarray,
     ) -> int:
         nlev, nlat, nlon, nlane = tracer_in.shape
         negative_count = 0
         ztodtgor = dt_s * _G0_M_PER_S2 / _RD_J_PER_KG_K
-        for lat in range(nlat):
+        for lat in prange(nlat):
+            thread = get_thread_id()
+            tracer_diffused = tracer_diffused_workspace[thread]
+            before_mass = before_mass_workspace[thread]
+            after_mass = after_mass_workspace[thread]
+            qmx = qmx_workspace[thread]
+            adjust = adjust_workspace[thread]
             if has_flux:
                 for lon in range(nlon):
                     for lane in range(nlane):
@@ -239,5 +247,9 @@ if njit is not None:
                         tracer_out[lev, lat, lon, lane] = tracer_diffused[lon, lev, lane] * before_mass[lon, lane]
         return negative_count
 
+    _apply_vdiff_block_serial = njit(nogil=True)(_apply_vdiff_block_impl)
+    _apply_vdiff_block_spatial = njit(parallel=True, nogil=True)(_apply_vdiff_block_impl)
+
 else:
-    _apply_vdiff_zero_flux_block = None
+    _apply_vdiff_block_serial = None
+    _apply_vdiff_block_spatial = None

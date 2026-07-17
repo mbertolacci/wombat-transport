@@ -35,19 +35,19 @@ from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
-    NumbaBlockTransportExecutor,
+    NumbaBlockedTransportExecutor,
     run_transport_one_step_blocked,
-    run_transport_one_step_numba_blocks,
+    run_numba_blocked_transport_step,
 )
 from wombat_transport.transport.numba_control import (
-    FALSEY_NUMBA_VALUES,
-    numba_mode,
     numba_thread_count,
+    transport_numba_enabled,
     warn_if_transport_numba_disabled,
 )
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
+MIN_UNIFIED_SPATIAL_TRACERS = 8
 
 
 @dataclass(frozen=True)
@@ -87,28 +87,21 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         template_path=config.grid_template,
     )
     parallel_strategy = _transport_executor()
-    if parallel_strategy == "blocks":
-        disabled = [
-            name
-            for name in (
-                "WOMBAT_TPCORE_NUMBA",
-                "WOMBAT_VDIFF_NUMBA",
-                "WOMBAT_CONVECTION_NUMBA",
-            )
-            if numba_mode(name) in FALSEY_NUMBA_VALUES
-        ]
-        if disabled:
-            raise ValueError(
-                "WOMBAT_TRANSPORT_EXECUTOR=blocks requires all Numba transport operators; "
-                f"disabled: {', '.join(disabled)}"
-            )
+    numba_transport = transport_numba_enabled()
+    if parallel_strategy == "blocks" and not numba_transport:
+        raise ValueError(
+            "WOMBAT_TRANSPORT_EXECUTOR=blocks requires Numba and all Numba transport operators"
+        )
     block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
     state = BlockedTracerField.from_tracer_field(initial_state, block_width)
+    use_unified_numba = _use_unified_numba_transport(
+        parallel_strategy, initial_state.tracer_count, numba_transport
+    )
     block_executor = (
-        NumbaBlockTransportExecutor.create(
+        NumbaBlockedTransportExecutor.create(
             state, numba_thread_count("WOMBAT_NUMBA")
         )
-        if parallel_strategy == "blocks"
+        if use_unified_numba
         else None
     )
     surface_flux_to_vmr_factor = _surface_flux_to_vmr_factor(state, species)
@@ -207,8 +200,13 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
                 state, forcing, grid, consume_input=True, **transport_kwargs
             )
         else:
-            transport_result = run_transport_one_step_numba_blocks(
-                state, forcing, grid, block_executor, **transport_kwargs
+            transport_result = run_numba_blocked_transport_step(
+                state,
+                forcing,
+                grid,
+                block_executor,
+                execution="blocked" if parallel_strategy == "blocks" else "spatial",
+                **transport_kwargs,
             )
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg
@@ -358,6 +356,14 @@ def _transport_block_width(executor: str, tracer_count: int) -> int:
     if width < 1:
         raise ValueError("WOMBAT_TRANSPORT_BLOCK_WIDTH must be a positive integer")
     return width
+
+
+def _use_unified_numba_transport(
+    executor: str, tracer_count: int, numba_enabled: bool
+) -> bool:
+    return numba_enabled and (
+        executor == "blocks" or tracer_count >= MIN_UNIFIED_SPATIAL_TRACERS
+    )
 
 
 def _initial_dry_air_mass(config: RunConfig, forcing, grid) -> np.ndarray:

@@ -26,6 +26,7 @@ from wombat_transport.runner import (
     _load_simulation_forcing,
     _transport_block_width,
     _transport_executor,
+    _use_unified_numba_transport,
     _validate_timestep_schedule,
     has_invalid_emissions,
     run_tracer_simulation,
@@ -114,6 +115,11 @@ def test_transport_executor_and_block_width_environment(monkeypatch):
     with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_BLOCK_WIDTH"):
         _transport_block_width("spatial", 24)
 
+    assert not _use_unified_numba_transport("spatial", 4, True)
+    assert _use_unified_numba_transport("spatial", 8, True)
+    assert _use_unified_numba_transport("blocks", 1, True)
+    assert not _use_unified_numba_transport("blocks", 96, False)
+
 
 def test_run_config_logging_level_defaults_and_validates():
     config = load_run_config(RESIDUAL_CONFIG)
@@ -180,6 +186,7 @@ def test_tracer_simulation_uses_configured_residual_emissions_source(tmp_path):
 
 @requires_restart
 def test_tracer_simulation_holds_active_emissions_for_transport_substeps(monkeypatch, tmp_path):
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
     config = _isolated_config(load_run_config(RESIDUAL_CONFIG), tmp_path, outputs={})
     initial = initialize_tracers(config.initial_restart, config.species_database, template_path=config.grid_template)
     active_emissions_seen = []

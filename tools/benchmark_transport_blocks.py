@@ -14,14 +14,13 @@ from _scaling_support import positive_int
 from benchmark_tpcore_scaling import _build_synthetic_tpcore_inputs
 from benchmark_vdiff_scaling import _build_synthetic_vdiff_inputs
 from benchmark_convection_scaling import _build_synthetic_convection_inputs
-from wombat_transport.transport._numba_blocked import apply_numba_block_pipeline
-from wombat_transport.transport._numba_blocked import make_numba_block_pipeline_scratch
+from wombat_transport.transport._numba_blocked import apply_numba_blocked_transport
+from wombat_transport.transport._numba_blocked import make_numba_blocked_transport_workspace
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
 from wombat_transport.transport.pbl._numba_blocked import prepare_vdiff_zero_flux_block_plan
 from wombat_transport.transport.tpcore import run_tpcore_one_step_with_setup, setup_tpcore_terms
 from wombat_transport.transport.tpcore._numba_blocked import load_tracer_block_workspace
-from wombat_transport.transport.tpcore._numba_blocked import make_tpcore_block_workspace
 from wombat_transport.transport.tpcore._numba_blocked import prepare_tpcore_block_plan
 
 
@@ -143,20 +142,20 @@ def main(argv: list[str] | None = None) -> int:
                 workers=args.workers,
             )
             plan_s = time.perf_counter() - plan_start
-            workspace = make_tpcore_block_workspace(tpcore.tracer_conc.shape, lane_width)
+            transport_workspace = make_numba_blocked_transport_workspace(
+                tpcore.tracer_conc.shape, lane_width, args.workers
+            )
+            workspace = transport_workspace.tpcore
 
             def load() -> None:
                 load_tracer_block_workspace(tpcore.tracer_conc, workspace)
 
             if args.include_convection:
-                pipeline_scratch = make_numba_block_pipeline_scratch(workspace, args.workers)
-
-                def numba_pipeline() -> np.ndarray:
-                    apply_numba_block_pipeline(
+                def numba_transport(execution: str) -> np.ndarray:
+                    apply_numba_blocked_transport(
                         tpcore_plan=tpcore_plan,
                         vdiff_plan=vdiff_plan,
-                        workspace=workspace,
-                        scratch=pipeline_scratch,
+                        workspace=transport_workspace,
                         surface_flux_kg_m2_s=vdiff.surface_flux_kg_m2_s,
                         cmfmc=convection.cmfmc_kg_m2_s,
                         dtrain=convection.dtrain_kg_m2_s,
@@ -170,26 +169,31 @@ def main(argv: list[str] | None = None) -> int:
                         internal_dt_s=(
                             convection.dt_s / max(int(convection.dt_s) // 300, 1)
                         ),
+                        execution=execution,
                     )
                     return workspace.blocks[0].q
 
-                pipeline_times, _ = _time_preloaded(
-                    load, numba_pipeline, args.warmup, args.repeat
-                )
-                pipeline_actual = _unpack_q(workspace)
-                rows.append(
-                    _row(
-                        ntracer,
-                        "blocked-numba-pipeline",
-                        lane_width,
-                        args.workers,
-                        pipeline_times,
-                        plan_s,
-                        fused_best,
-                        pipeline_actual,
-                        reference,
+                for execution in ("serial", "spatial", "blocked"):
+                    transport_times, _ = _time_preloaded(
+                        load,
+                        lambda execution=execution: numba_transport(execution),
+                        args.warmup,
+                        args.repeat,
                     )
-                )
+                    transport_actual = _unpack_q(workspace)
+                    rows.append(
+                        _row(
+                            ntracer,
+                            f"{execution}-numba-transport",
+                            lane_width,
+                            args.workers,
+                            transport_times,
+                            plan_s,
+                            fused_best,
+                            transport_actual,
+                            reference,
+                        )
+                    )
 
     output = args.output.open("w", newline="", encoding="utf-8") if args.output else sys.stdout
     try:

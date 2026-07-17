@@ -27,9 +27,9 @@ from wombat_transport.transport.convection import (
     run_cloud_convection_one_step,
 )
 from wombat_transport.transport._numba_blocked import (
-    NumbaBlockPipelineScratch,
-    apply_numba_block_pipeline,
-    make_numba_block_pipeline_scratch,
+    NumbaBlockedTransportWorkspace,
+    apply_numba_blocked_transport,
+    make_numba_blocked_transport_workspace,
 )
 from wombat_transport.transport.forcing import (
     TransportForcing,
@@ -43,11 +43,7 @@ from wombat_transport.transport.pbl import (
     run_vdiffdr_one_step,
 )
 from wombat_transport.transport.pbl._numba_blocked import prepare_vdiff_zero_flux_block_plan
-from wombat_transport.transport.tpcore._numba_blocked import (
-    TpcoreBlockWorkspace,
-    make_tpcore_block_workspace,
-    prepare_tpcore_block_plan,
-)
+from wombat_transport.transport.tpcore._numba_blocked import prepare_tpcore_block_plan
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
@@ -150,27 +146,24 @@ class TransportWindowResult:
 
 
 @dataclass
-class NumbaBlockTransportExecutor:
-    """Persistent workspace for the outer-Numba tracer-block strategy."""
+class NumbaBlockedTransportExecutor:
+    """Persistent state and scratch for blocked Numba transport policies."""
 
-    workspace: TpcoreBlockWorkspace
-    scratch: NumbaBlockPipelineScratch
-    workers: int
+    workspace: NumbaBlockedTransportWorkspace
 
     @classmethod
-    def create(cls, field: BlockedTracerField, workers: int) -> NumbaBlockTransportExecutor:
+    def create(cls, field: BlockedTracerField, workers: int) -> NumbaBlockedTransportExecutor:
         if field.data.shape[0] != 1:
             raise ValueError("block transport requires exactly one time slice")
-        workspace = make_tpcore_block_workspace(field.shape[1:], field.block_width)
-        workspace.state_a = field.data[0]
-        for block_index, block in enumerate(workspace.blocks):
-            block.q = workspace.state_a[block_index]
-            block.dq1 = workspace.state_b[block_index]
-        return cls(
-            workspace=workspace,
-            scratch=make_numba_block_pipeline_scratch(workspace, workers),
-            workers=workers,
+        workspace = make_numba_blocked_transport_workspace(
+            field.shape[1:], field.block_width, workers
         )
+        tpcore = workspace.tpcore
+        tpcore.state_a = field.data[0]
+        for block_index, block in enumerate(tpcore.blocks):
+            block.q = tpcore.state_a[block_index]
+            block.dq1 = tpcore.state_b[block_index]
+        return cls(workspace=workspace)
 
 
 def run_transport_one_step(
@@ -299,11 +292,11 @@ def run_transport_one_step_blocked(
     )
 
 
-def run_transport_one_step_numba_blocks(
+def run_numba_blocked_transport_step(
     tracer_field: BlockedTracerField,
     forcing: TransportForcing,
     grid: TransportGrid,
-    executor: NumbaBlockTransportExecutor,
+    executor: NumbaBlockedTransportExecutor,
     *,
     dt_s: float = 600.0,
     active_emissions: SurfaceEmissions | None = None,
@@ -311,10 +304,12 @@ def run_transport_one_step_numba_blocks(
     dry_air_mass_kg: np.ndarray | None = None,
     tpcore_static_terms: TpcoreStaticTerms | None = None,
     validate_tpcore_branches: bool = True,
+    execution: str = "blocked",
 ) -> TransportStepResult:
-    """Run one persistent block state through the single-region Numba pipeline."""
+    """Run one prepared Numba transport step over persistent blocked state."""
 
-    if not np.shares_memory(executor.workspace.state_a, tracer_field.data):
+    tpcore_workspace = executor.workspace.tpcore
+    if not np.shares_memory(tpcore_workspace.state_a, tracer_field.data):
         raise ValueError("block executor does not own the supplied tracer field")
     if active_emissions is not None and active_emissions.names != tracer_field.names:
         raise ValueError("active emissions names do not match tracer field names")
@@ -374,7 +369,7 @@ def run_transport_one_step_numba_blocks(
         ustar_m_s=np.asarray(forcing.friction_velocity_m_s[0], dtype=np.float64),
         area_m2=area,
         dt_s=dt_s,
-        workers=executor.workers,
+        workers=executor.workspace.workers,
     )
     if active_emissions is None:
         surface_flux = np.zeros((*area.shape, tracer_field.tracer_count), dtype=np.float64)
@@ -387,11 +382,10 @@ def run_transport_one_step_numba_blocks(
     )
     delp_top = np.asarray(next_delp[0], dtype=np.float64)[::-1]
     internal_steps = max(int(dt_s) // 300, 1)
-    apply_numba_block_pipeline(
+    apply_numba_blocked_transport(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
         workspace=executor.workspace,
-        scratch=executor.scratch,
         surface_flux_kg_m2_s=surface_flux,
         cmfmc=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64)[::-1],
         dtrain=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64)[::-1],
@@ -403,10 +397,11 @@ def run_transport_one_step_numba_blocks(
         reconstruct_conv_precip_flux=False,
         internal_steps=internal_steps,
         internal_dt_s=dt_s / internal_steps,
+        execution=execution,
     )
     state = BlockedTracerField(
         names=tracer_field.names,
-        data=executor.workspace.state_a[np.newaxis, ...],
+        data=tpcore_workspace.state_a[np.newaxis, ...],
         units=tracer_field.units,
         coords=tracer_field.coords,
     )

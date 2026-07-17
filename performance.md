@@ -2693,22 +2693,53 @@ zero-copy views; joining multiple blocks into the old canonical array is an
 explicit conversion rather than an implicit property access.
 
 `WOMBAT_TRANSPORT_EXECUTOR=spatial` is the default. Its default width is the
-complete tracer count, giving one block and the previous contiguous canonical
-kernel input. An explicit `WOMBAT_TRANSPORT_BLOCK_WIDTH` makes the spatial
-executor process several block views sequentially while retaining the existing
-within-operator Numba parallelism. This path was bitwise equal at widths 8 and
-24 on the real 24-tracer fixture.
+complete tracer count. From eight tracers upward it uses a shared prepared
+one-block transport step; below eight it retains the previous operator path to
+avoid fixed plan overhead. An explicit `WOMBAT_TRANSPORT_BLOCK_WIDTH` makes the
+spatial executor process several block views sequentially with within-operator
+parallelism. Both Numba forms and the native NumPy path were bitwise equal at
+widths 8 and 24 on the real 24-tracer fixture.
 
-`WOMBAT_TRANSPORT_EXECUTOR=blocks` defaults to width 8. It owns one persistent
-TPCORE workspace and one worker-indexed scratch set, and calls the sole
-top-level `prange(block)` TPCORE -> VDIFF -> convection pipeline. The Python
-thread scheduler and its per-operator application wrappers were removed. The
-production driver comparison on the real 24-tracer fixture was bitwise equal
-through tracer state, humidity, and dry mass; zero- and nonzero-emission
-pipeline fixtures remain bitwise equal.
+`WOMBAT_TRANSPORT_EXECUTOR=blocks` defaults to width 8. One transport workspace
+owns persistent TPCORE state, block-shared intermediates, and worker-local
+scratch. Its top-level `prange(block)` calls a serial one-block TPCORE -> VDIFF
+-> convection step. The Python thread scheduler and its per-operator wrappers
+were removed. Two consecutive production-driver steps on the real 24-tracer
+fixture were bitwise equal through tracer state, humidity, and dry mass;
+zero- and nonzero-emission fixtures remain bitwise equal.
 
 HISTORY accumulation operates directly on contiguous blocked storage. Species
 and restart writers map each logical tracer index to `(block, lane)`, and the
 ObsOperator sampling kernel performs the same mapping for its prepared global
 field indices. Consequently the runner does not repack the complete tracer
 cube at output or observation boundaries.
+
+### Unified one-block transport policies
+
+The prepared Numba transport step now supports three policies over the same
+state, plans, and workspace:
+
+- `serial`: a serial block loop calling the serial one-block step;
+- `spatial`: a serial block loop calling spatially parallel TPCORE, VDIFF, and
+  convection variants;
+- `blocked`: one outer `prange(block)` calling the serial one-block step.
+
+VDIFF's tracer solve is one source function containing `prange(latitude)`,
+compiled with and without `parallel=True`. Convection already follows the same
+pattern through its Python kernel source. TPCORE shares all leaf arithmetic
+while retaining thin serial and spatial orchestration variants.
+
+On the local 2x2.5 grid with eight workers, including plan construction, the
+full-width spatial policy was about neutral at 8, 16, and 24 tracers and ranged
+from roughly neutral to 14% faster at 32--96 tracers across repeated runs. It
+was 8--11% slower at 1--4 tracers because fixed plan cost dominates, which
+motivates the below-eight fallback. At 24 and 96 tracers it was
+neutral-to-positive with one, two, four, and eight workers except for noisy
+comparisons within roughly 2%.
+
+Width-8 outer-block execution retained its high-thread crossover. With eight
+workers it was 27% faster than the direct chain at 64 tracers in one repeat and
+3% faster at 96 in a noisier repeat. At two workers it was 28% slower for 96
+tracers and at four workers roughly neutral. Block execution therefore remains
+explicit rather than automatically selected; spatial execution remains the
+default.

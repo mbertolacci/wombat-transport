@@ -165,6 +165,7 @@ if njit is not None:
     _qck_needs_fill_serial = njit(nogil=True)(nb._qckxyz_needs_fill_numba_kernel.py_func)
     _qck_serial = njit(nogil=True)(nb._qckxyz_batch_numba_kernel.py_func)
     _finalize_serial = njit(nogil=True)(nb._finalize_tpcore_output_numba_kernel.py_func)
+    _advect_one_block_spatial = nb._advect_tracers_fused_numba_kernel
 
     @njit(nogil=True)
     def _advect_one_block_serial(
@@ -232,3 +233,4 @@ if njit is not None:
 
 else:
     _advect_one_block_serial = None
+    _advect_one_block_spatial = None

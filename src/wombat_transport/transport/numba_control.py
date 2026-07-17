@@ -50,6 +50,21 @@ def numba_enabled(operator_env: str, *, available: bool) -> bool:
     return numba_mode(operator_env) not in FALSEY_NUMBA_VALUES
 
 
+def transport_numba_enabled() -> bool:
+    """Return whether every operator required by unified transport is enabled."""
+
+    if set_num_threads is None:
+        return False
+    return all(
+        numba_mode(name) not in FALSEY_NUMBA_VALUES
+        for name in (
+            "WOMBAT_TPCORE_NUMBA",
+            "WOMBAT_VDIFF_NUMBA",
+            "WOMBAT_CONVECTION_NUMBA",
+        )
+    )
+
+
 def numba_thread_count(operator_env: str) -> int:
     """Return configured Numba worker count for one transport operator."""
 

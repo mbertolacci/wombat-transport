@@ -29,7 +29,7 @@ from wombat_transport.transport import (
     MERRA2_72_AP_HPA,
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
-    NumbaBlockTransportExecutor,
+    NumbaBlockedTransportExecutor,
     compute_transport_stage_masses,
     compute_pbl_height,
     dry_air_mass_from_pressure,
@@ -41,7 +41,7 @@ from wombat_transport.transport import (
     mix_full_pbl,
     run_transport_one_step,
     run_transport_one_step_blocked,
-    run_transport_one_step_numba_blocks,
+    run_numba_blocked_transport_step,
     run_transport_window,
     trace_transport_one_step,
     wet_surface_pressure_hpa,
@@ -794,9 +794,9 @@ def test_spatial_transport_over_blocks_matches_single_field(
     np.testing.assert_array_equal(actual.dry_air_mass_kg, expected.dry_air_mass_kg)
     np.testing.assert_array_equal(actual.specific_humidity_kg_kg, expected.specific_humidity_kg_kg)
 
-
 @requires_transport_data
-def test_numba_block_transport_executor_matches_single_field(monkeypatch):
+@pytest.mark.parametrize("execution", ("spatial", "blocked"))
+def test_numba_block_transport_executor_matches_single_field(monkeypatch, execution):
     monkeypatch.setenv("WOMBAT_NUMBA", "1")
     monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
     config = load_run_config(RESIDUAL_CONFIG)
@@ -810,14 +810,34 @@ def test_numba_block_transport_executor_matches_single_field(monkeypatch):
 
     expected = run_transport_one_step(field, forcing, grid, dt_s=600.0)
     blocked = BlockedTracerField.from_tracer_field(field, 8)
-    executor = NumbaBlockTransportExecutor.create(blocked, workers=2)
-    actual = run_transport_one_step_numba_blocks(
-        blocked, forcing, grid, executor, dt_s=600.0
+    executor = NumbaBlockedTransportExecutor.create(blocked, workers=2)
+    actual = run_numba_blocked_transport_step(
+        blocked, forcing, grid, executor, dt_s=600.0, execution=execution
     )
 
     np.testing.assert_array_equal(actual.state.to_tracer_field().data, expected.state.data)
     np.testing.assert_array_equal(actual.dry_air_mass_kg, expected.dry_air_mass_kg)
     np.testing.assert_array_equal(actual.specific_humidity_kg_kg, expected.specific_humidity_kg_kg)
+
+    expected_next = run_transport_one_step(
+        expected.state,
+        forcing,
+        grid,
+        dt_s=600.0,
+        dry_air_mass_kg=expected.dry_air_mass_kg,
+    )
+    actual_next = run_numba_blocked_transport_step(
+        actual.state,
+        forcing,
+        grid,
+        executor,
+        dt_s=600.0,
+        dry_air_mass_kg=actual.dry_air_mass_kg,
+        execution=execution,
+    )
+    np.testing.assert_array_equal(
+        actual_next.state.to_tracer_field().data, expected_next.state.data
+    )
 
 
 @pytest.mark.parametrize("tracer_count", (1, 24))

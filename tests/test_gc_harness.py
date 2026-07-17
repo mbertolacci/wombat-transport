@@ -91,12 +91,12 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.transport.convection import _native as convection_native
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
-from wombat_transport.transport._numba_blocked import apply_numba_block_pipeline
-from wombat_transport.transport._numba_blocked import make_numba_block_pipeline_scratch
+from wombat_transport.transport._numba_blocked import apply_numba_blocked_transport
+from wombat_transport.transport._numba_blocked import make_numba_blocked_transport_workspace
 from wombat_transport.transport.convection._numba_blocked import _convect_block_serial
 from wombat_transport.transport.pbl import run_vdiffdr_one_step
 from wombat_transport.transport.pbl import _numba as pbl_numba
-from wombat_transport.transport.pbl._numba_blocked import _apply_vdiff_zero_flux_block
+from wombat_transport.transport.pbl._numba_blocked import _apply_vdiff_block_serial
 from wombat_transport.transport.pbl._numba_blocked import VdiffBlockPlan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
@@ -1543,7 +1543,8 @@ def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_widt
 
 @pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
 @pytest.mark.parametrize("surface_flux_value", (0.0, 1.0e-12))
-def test_numba_blocked_pipeline_matches_direct_kernels(surface_flux_value):
+@pytest.mark.parametrize("execution", ("serial", "spatial", "blocked"))
+def test_numba_blocked_transport_matches_direct_kernels(surface_flux_value, execution):
     ntracer = 9
     lane_width = 8
     workers = 2
@@ -1595,13 +1596,16 @@ def test_numba_blocked_pipeline_matches_direct_kernels(surface_flux_value):
     reevapcn = np.zeros(shape)
     surface_flux = np.full((nlat, nlon, ntracer), surface_flux_value)
     tpcore_plan = prepare_tpcore_block_plan(setup=setup, area_m2=area)
-    workspace = make_tpcore_block_workspace(tracer.shape, lane_width)
+    transport_workspace = make_numba_blocked_transport_workspace(
+        tracer.shape, lane_width, workers
+    )
+    workspace = transport_workspace.tpcore
 
     expected_tpcore = tpcore_numba._advect_tracers_fused_numba(
         tracer_conc=tracer, setup=setup, area_m2=area, fill=True
     )
     expected = np.empty_like(expected_tpcore)
-    expected_negative = _apply_vdiff_zero_flux_block(
+    expected_negative = _apply_vdiff_block_serial(
         expected_tpcore,
         expected,
         vdiff_plan.cch,
@@ -1619,11 +1623,11 @@ def test_numba_blocked_pipeline_matches_direct_kernels(surface_flux_value):
         vdiff_plan.start_level,
         surface_flux,
         bool(surface_flux_value),
-        np.empty((nlon, nlev, ntracer)),
-        np.empty((nlon, ntracer)),
-        np.empty((nlon, ntracer)),
-        np.empty((nlon, nlev, ntracer)),
-        np.empty((nlon, ntracer), dtype=np.bool_),
+        np.empty((1, nlon, nlev, ntracer)),
+        np.empty((1, nlon, ntracer)),
+        np.empty((1, nlon, ntracer)),
+        np.empty((1, nlon, nlev, ntracer)),
+        np.empty((1, nlon, ntracer), dtype=np.bool_),
     )
     stride = max(ntracer, 16)
     scalar_shape = (nlev, nlat * nlon)
@@ -1646,11 +1650,10 @@ def test_numba_blocked_pipeline_matches_direct_kernels(surface_flux_value):
     )
 
     load_tracer_block_workspace(tracer, workspace)
-    actual_negative = apply_numba_block_pipeline(
+    actual_negative = apply_numba_blocked_transport(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
-        workspace=workspace,
-        scratch=make_numba_block_pipeline_scratch(workspace, workers),
+        workspace=transport_workspace,
         surface_flux_kg_m2_s=surface_flux,
         cmfmc=cmfmc,
         dtrain=dtrain,
@@ -1662,6 +1665,7 @@ def test_numba_blocked_pipeline_matches_direct_kernels(surface_flux_value):
         reconstruct_conv_precip_flux=False,
         internal_steps=2,
         internal_dt_s=300.0,
+        execution=execution,
     )
     actual = np.concatenate([block.q for block in workspace.blocks], axis=3)[..., :ntracer]
 
