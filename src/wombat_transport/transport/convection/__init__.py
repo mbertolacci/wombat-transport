@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from wombat_transport.transport.convection import _operator as _operator
+from wombat_transport.transport.convection._operator import (
+    _numba_convection_enabled as _numba_convection_enabled,
+    _numba_convection_mode as _numba_convection_mode,
+)
+from wombat_transport.transport.convection._operator import run_cloud_convection_one_step
+from wombat_transport.transport.convection._reference import ConvectionResult, G0_100
 
-for _name in dir(_operator):
-    if _name in {"__builtins__", "__cached__", "__doc__", "__file__", "__loader__", "__name__", "__package__", "__spec__"}:
-        continue
-    globals()[_name] = getattr(_operator, _name)
-
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["ConvectionResult", "G0_100", "run_cloud_convection_one_step"]

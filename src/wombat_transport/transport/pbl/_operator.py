@@ -12,7 +12,6 @@ from wombat_transport.transport.numba_control import NoAliasCompiler
 from wombat_transport.transport.numba_control import synchronized_transport_numba
 from wombat_transport.transport.pbl import _kernels as nb
 from wombat_transport.transport.pbl import _reference
-from wombat_transport.transport.pbl._plan import VdiffPlan
 from wombat_transport.transport.pbl._plan import VdiffPlanWorkspace
 from wombat_transport.transport.pbl._plan import make_vdiff_plan_workspace
 from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
@@ -29,11 +28,6 @@ _RD_J_PER_KG_K = nb.RD_J_PER_KG_K
 _numba_vdiff_mode = nb._numba_vdiff_mode
 _numba_vdiff_enabled = nb._numba_vdiff_enabled
 _numba_vdiff_thread_count = nb._numba_vdiff_thread_count
-
-for _name in dir(_reference):
-    if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_reference, _name))
-
 
 if njit is not None:
     def _apply_vdiff_block_impl(

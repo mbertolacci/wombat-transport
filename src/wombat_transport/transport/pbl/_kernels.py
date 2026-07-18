@@ -7,12 +7,30 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from wombat_transport.constants import G0_M_PER_S2, RD_J_PER_KG_K
 from wombat_transport.transport.numba_control import (
     configure_numba_threads,
     numba_available_and_enabled,
     numba_mode,
 )
-from wombat_transport.transport.pbl import _reference
+from wombat_transport.transport.pbl._reference import (
+    CAPPA,
+    CPAIR_J_PER_KG_K,
+    VdiffDrResult,
+    VON_KARMAN,
+    ZKMIN_M2_S,
+    ZVIR,
+    _BETAH,
+    _BETAM,
+    _BETAS,
+    _BINH,
+    _BINM,
+    _CCON,
+    _FAK,
+    _FAKN,
+    _ONET,
+    _SFFRAC,
+)
 
 try:  # Optional acceleration path; NumPy remains the reference fallback.
     from numba import get_thread_id, njit, prange
@@ -20,10 +38,6 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     get_thread_id = None
     njit = None
     prange = range
-
-for _name in dir(_reference):
-    if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_reference, _name))
 
 _NUMBA_AVAILABLE = njit is not None
 

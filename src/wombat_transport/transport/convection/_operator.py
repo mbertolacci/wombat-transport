@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from functools import wraps
 
 import numpy as np
 
-from functools import wraps
-
 from wombat_transport.transport.convection import _reference
+from wombat_transport.transport.convection._reference import (
+    _CONVECTION_SCRATCH_PAD_TRACERS,
+    _TINYNUM,
+)
 from wombat_transport.transport.numba_control import (
     configure_numba_threads,
     NoAliasCompiler,
@@ -24,10 +27,6 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
     get_thread_id = None
     njit = None
     prange = range
-
-for _name in dir(_reference):
-    if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_reference, _name))
 
 _NUMBA_AVAILABLE = njit is not None
 

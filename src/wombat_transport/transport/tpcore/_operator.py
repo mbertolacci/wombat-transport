@@ -9,17 +9,11 @@ import numpy as np
 
 from wombat_transport.transport.tpcore import _kernels as nb
 from wombat_transport.transport.tpcore import _reference
-from wombat_transport.transport.tpcore._plan import TpcorePlan
-from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 
 if nb._NUMBA_AVAILABLE:
     from numba import njit
 else:  # pragma: no cover - exercised in environments without numba.
     njit = None
-
-for _name in dir(_reference):
-    if not _name.startswith("__"):
-        globals().setdefault(_name, getattr(_reference, _name))
 
 _numba_tpcore_mode = nb._numba_tpcore_mode
 _numba_tpcore_enabled = nb._numba_tpcore_enabled

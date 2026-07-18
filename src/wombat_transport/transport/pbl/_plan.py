@@ -8,6 +8,7 @@ import numpy as np
 
 from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.pbl import _kernels
+from wombat_transport.transport.pbl._reference import _max_pbl_levels_from_pressure
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ def prepare_vdiff_plan(
         workspace = make_vdiff_plan_workspace(nlev, nlat, nlon)
     if workspace.cch.shape != (nlev, nlat, nlon):
         raise ValueError("VDIFF plan workspace does not match the grid")
-    npbl = _kernels._max_pbl_levels_from_pressure(np.asarray(pmid_hpa, dtype=np.float64))
+    npbl = _max_pbl_levels_from_pressure(np.asarray(pmid_hpa, dtype=np.float64))
     configured_workers = configure_numba_threads(available=True)
     if workers != configured_workers:
         raise ValueError(
