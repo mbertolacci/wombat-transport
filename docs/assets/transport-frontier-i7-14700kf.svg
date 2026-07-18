@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1050" viewBox="0 0 1200 1050">
+<rect width="100%" height="100%" fill="white"/>
+<text x="600.0" y="32" text-anchor="middle" font-family="sans-serif" font-size="22">Optimal transport frontier by execution strategy</text>
+<text x="600.0" y="58" text-anchor="middle" font-family="sans-serif" font-size="19">Aggregate transport throughput</text>
+<line x1="120" y1="80" x2="120" y2="470" stroke="#111827"/>
+<line x1="120" y1="470" x2="1080" y2="470" stroke="#111827"/>
+<line x1="120" y1="470.00" x2="1080" y2="470.00" stroke="#e5e7eb"/>
+<text x="110" y="474.00" text-anchor="end" font-family="sans-serif" font-size="12">0.0</text>
+<line x1="120" y1="392.00" x2="1080" y2="392.00" stroke="#e5e7eb"/>
+<text x="110" y="396.00" text-anchor="end" font-family="sans-serif" font-size="12">99.8</text>
+<line x1="120" y1="314.00" x2="1080" y2="314.00" stroke="#e5e7eb"/>
+<text x="110" y="318.00" text-anchor="end" font-family="sans-serif" font-size="12">199.6</text>
+<line x1="120" y1="236.00" x2="1080" y2="236.00" stroke="#e5e7eb"/>
+<text x="110" y="240.00" text-anchor="end" font-family="sans-serif" font-size="12">299.4</text>
+<line x1="120" y1="158.00" x2="1080" y2="158.00" stroke="#e5e7eb"/>
+<text x="110" y="162.00" text-anchor="end" font-family="sans-serif" font-size="12">399.2</text>
+<line x1="120" y1="80.00" x2="1080" y2="80.00" stroke="#e5e7eb"/>
+<text x="110" y="84.00" text-anchor="end" font-family="sans-serif" font-size="12">499.1</text>
+<text x="20" y="275.0" text-anchor="middle" transform="rotate(-90 20 275.0)" font-family="sans-serif" font-size="14">tracer-steps / s</text>
+<text x="600.0" y="548" text-anchor="middle" font-family="sans-serif" font-size="19">Fastest transport step time</text>
+<line x1="120" y1="570" x2="120" y2="960" stroke="#111827"/>
+<line x1="120" y1="960" x2="1080" y2="960" stroke="#111827"/>
+<line x1="120" y1="960.00" x2="1080" y2="960.00" stroke="#e5e7eb"/>
+<text x="110" y="964.00" text-anchor="end" font-family="sans-serif" font-size="12">0.0</text>
+<line x1="120" y1="882.00" x2="1080" y2="882.00" stroke="#e5e7eb"/>
+<text x="110" y="886.00" text-anchor="end" font-family="sans-serif" font-size="12">0.4</text>
+<line x1="120" y1="804.00" x2="1080" y2="804.00" stroke="#e5e7eb"/>
+<text x="110" y="808.00" text-anchor="end" font-family="sans-serif" font-size="12">0.8</text>
+<line x1="120" y1="726.00" x2="1080" y2="726.00" stroke="#e5e7eb"/>
+<text x="110" y="730.00" text-anchor="end" font-family="sans-serif" font-size="12">1.2</text>
+<line x1="120" y1="648.00" x2="1080" y2="648.00" stroke="#e5e7eb"/>
+<text x="110" y="652.00" text-anchor="end" font-family="sans-serif" font-size="12">1.6</text>
+<line x1="120" y1="570.00" x2="1080" y2="570.00" stroke="#e5e7eb"/>
+<text x="110" y="574.00" text-anchor="end" font-family="sans-serif" font-size="12">1.9</text>
+<text x="20" y="765.0" text-anchor="middle" transform="rotate(-90 20 765.0)" font-family="sans-serif" font-size="14">seconds / step</text>
+<line x1="120.00" y1="80" x2="120.00" y2="470" stroke="#f3f4f6"/>
+<line x1="120.00" y1="570" x2="120.00" y2="960" stroke="#f3f4f6"/>
+<text x="120.00" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">1</text>
+<line x1="193.85" y1="80" x2="193.85" y2="470" stroke="#f3f4f6"/>
+<line x1="193.85" y1="570" x2="193.85" y2="960" stroke="#f3f4f6"/>
+<text x="193.85" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">2</text>
+<line x1="267.69" y1="80" x2="267.69" y2="470" stroke="#f3f4f6"/>
+<line x1="267.69" y1="570" x2="267.69" y2="960" stroke="#f3f4f6"/>
+<text x="267.69" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">4</text>
+<line x1="341.54" y1="80" x2="341.54" y2="470" stroke="#f3f4f6"/>
+<line x1="341.54" y1="570" x2="341.54" y2="960" stroke="#f3f4f6"/>
+<text x="341.54" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">8</text>
+<line x1="415.38" y1="80" x2="415.38" y2="470" stroke="#f3f4f6"/>
+<line x1="415.38" y1="570" x2="415.38" y2="960" stroke="#f3f4f6"/>
+<text x="415.38" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">16</text>
+<line x1="489.23" y1="80" x2="489.23" y2="470" stroke="#f3f4f6"/>
+<line x1="489.23" y1="570" x2="489.23" y2="960" stroke="#f3f4f6"/>
+<text x="489.23" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">24</text>
+<line x1="563.08" y1="80" x2="563.08" y2="470" stroke="#f3f4f6"/>
+<line x1="563.08" y1="570" x2="563.08" y2="960" stroke="#f3f4f6"/>
+<text x="563.08" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">32</text>
+<line x1="636.92" y1="80" x2="636.92" y2="470" stroke="#f3f4f6"/>
+<line x1="636.92" y1="570" x2="636.92" y2="960" stroke="#f3f4f6"/>
+<text x="636.92" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">48</text>
+<line x1="710.77" y1="80" x2="710.77" y2="470" stroke="#f3f4f6"/>
+<line x1="710.77" y1="570" x2="710.77" y2="960" stroke="#f3f4f6"/>
+<text x="710.77" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">64</text>
+<line x1="784.62" y1="80" x2="784.62" y2="470" stroke="#f3f4f6"/>
+<line x1="784.62" y1="570" x2="784.62" y2="960" stroke="#f3f4f6"/>
+<text x="784.62" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">96</text>
+<line x1="858.46" y1="80" x2="858.46" y2="470" stroke="#f3f4f6"/>
+<line x1="858.46" y1="570" x2="858.46" y2="960" stroke="#f3f4f6"/>
+<text x="858.46" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">128</text>
+<line x1="932.31" y1="80" x2="932.31" y2="470" stroke="#f3f4f6"/>
+<line x1="932.31" y1="570" x2="932.31" y2="960" stroke="#f3f4f6"/>
+<text x="932.31" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">192</text>
+<line x1="1006.15" y1="80" x2="1006.15" y2="470" stroke="#f3f4f6"/>
+<line x1="1006.15" y1="570" x2="1006.15" y2="960" stroke="#f3f4f6"/>
+<text x="1006.15" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">256</text>
+<line x1="1080.00" y1="80" x2="1080.00" y2="470" stroke="#f3f4f6"/>
+<line x1="1080.00" y1="570" x2="1080.00" y2="960" stroke="#f3f4f6"/>
+<text x="1080.00" y="984" text-anchor="middle" font-family="sans-serif" font-size="12">512</text>
+<text x="600.0" y="1025" text-anchor="middle" font-family="sans-serif" font-size="14">tracers in ensemble</text>
+<polyline points="120.00,454.51 193.85,439.67 267.69,411.73 341.54,369.90 415.38,315.25 489.23,266.60 563.08,261.01 636.92,239.54 710.77,213.56 784.62,198.88 858.46,193.19 932.31,213.00 1006.15,216.41 1080.00,227.20" fill="none" stroke="#2563eb" stroke-width="3"/>
+<circle cx="120.00" cy="454.51" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="120.00" y="441.51" text-anchor="middle" transform="rotate(-32 120.00 441.51)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="193.85" cy="439.67" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="193.85" y="426.67" text-anchor="middle" transform="rotate(-32 193.85 426.67)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="267.69" cy="411.73" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="267.69" y="398.73" text-anchor="middle" transform="rotate(-32 267.69 398.73)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="341.54" cy="369.90" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="341.54" y="356.90" text-anchor="middle" transform="rotate(-32 341.54 356.90)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="415.38" cy="315.25" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="415.38" y="302.25" text-anchor="middle" transform="rotate(-32 415.38 302.25)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="489.23" cy="266.60" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="489.23" y="253.60" text-anchor="middle" transform="rotate(-32 489.23 253.60)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="563.08" cy="261.01" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<text x="563.08" y="248.01" text-anchor="middle" transform="rotate(-32 563.08 248.01)" font-family="sans-serif" font-size="10" fill="#2563eb">2p×4t</text>
+<circle cx="636.92" cy="239.54" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<text x="636.92" y="226.54" text-anchor="middle" transform="rotate(-32 636.92 226.54)" font-family="sans-serif" font-size="10" fill="#2563eb">2p×4t</text>
+<circle cx="710.77" cy="213.56" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<text x="710.77" y="200.56" text-anchor="middle" transform="rotate(-32 710.77 200.56)" font-family="sans-serif" font-size="10" fill="#2563eb">1p×8t</text>
+<circle cx="784.62" cy="198.88" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<text x="784.62" y="185.88" text-anchor="middle" transform="rotate(-32 784.62 185.88)" font-family="sans-serif" font-size="10" fill="#2563eb">2p×4t</text>
+<circle cx="858.46" cy="193.19" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<text x="858.46" y="180.19" text-anchor="middle" transform="rotate(-32 858.46 180.19)" font-family="sans-serif" font-size="10" fill="#2563eb">2p×4t</text>
+<circle cx="932.31" cy="213.00" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<text x="932.31" y="200.00" text-anchor="middle" transform="rotate(-32 932.31 200.00)" font-family="sans-serif" font-size="10" fill="#2563eb">2p×4t</text>
+<circle cx="1006.15" cy="216.41" r="5" fill="#2563eb"><title>4p×2t/spatial</title></circle>
+<text x="1006.15" y="203.41" text-anchor="middle" transform="rotate(-32 1006.15 203.41)" font-family="sans-serif" font-size="10" fill="#2563eb">4p×2t</text>
+<circle cx="1080.00" cy="227.20" r="5" fill="#2563eb"><title>4p×2t/spatial</title></circle>
+<text x="1080.00" y="214.20" text-anchor="middle" transform="rotate(-32 1080.00 214.20)" font-family="sans-serif" font-size="10" fill="#2563eb">4p×2t</text>
+<polyline points="415.38,396.46 489.23,362.52 563.08,330.65 636.92,266.69 710.77,220.74 784.62,223.24 858.46,188.32 932.31,176.99 1006.15,167.02 1080.00,139.49" fill="none" stroke="#dc2626" stroke-width="3"/>
+<circle cx="415.38" cy="396.46" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<text x="415.38" y="417.46" text-anchor="middle" transform="rotate(-32 415.38 417.46)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b8</text>
+<circle cx="489.23" cy="362.52" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<text x="489.23" y="383.52" text-anchor="middle" transform="rotate(-32 489.23 383.52)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b8</text>
+<circle cx="563.08" cy="330.65" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<text x="563.08" y="351.65" text-anchor="middle" transform="rotate(-32 563.08 351.65)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b8</text>
+<circle cx="636.92" cy="266.69" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<text x="636.92" y="287.69" text-anchor="middle" transform="rotate(-32 636.92 287.69)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b8</text>
+<circle cx="710.77" cy="220.74" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<text x="710.77" y="241.74" text-anchor="middle" transform="rotate(-32 710.77 241.74)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b8</text>
+<circle cx="784.62" cy="223.24" r="5" fill="#dc2626"><title>1p×8t/blocks-16</title></circle>
+<text x="784.62" y="244.24" text-anchor="middle" transform="rotate(-32 784.62 244.24)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b16</text>
+<circle cx="858.46" cy="188.32" r="5" fill="#dc2626"><title>1p×8t/blocks-16</title></circle>
+<text x="858.46" y="209.32" text-anchor="middle" transform="rotate(-32 858.46 209.32)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b16</text>
+<circle cx="932.31" cy="176.99" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<text x="932.31" y="197.99" text-anchor="middle" transform="rotate(-32 932.31 197.99)" font-family="sans-serif" font-size="10" fill="#dc2626">1p×8t b8</text>
+<circle cx="1006.15" cy="167.02" r="5" fill="#dc2626"><title>2p×4t/blocks-16</title></circle>
+<text x="1006.15" y="188.02" text-anchor="middle" transform="rotate(-32 1006.15 188.02)" font-family="sans-serif" font-size="10" fill="#dc2626">2p×4t b16</text>
+<circle cx="1080.00" cy="139.49" r="5" fill="#dc2626"><title>2p×4t/blocks-16</title></circle>
+<text x="1080.00" y="160.49" text-anchor="middle" transform="rotate(-32 1080.00 160.49)" font-family="sans-serif" font-size="10" fill="#dc2626">2p×4t b16</text>
+<polyline points="120.00,949.88 193.85,949.67 267.69,949.24 341.54,947.47 415.38,943.80 489.23,941.51 563.08,936.00 636.92,927.36 710.77,920.88 784.62,904.50 858.46,887.53 932.31,842.91 1006.15,801.78 1080.00,629.49" fill="none" stroke="#2563eb" stroke-width="3"/>
+<circle cx="120.00" cy="949.88" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="193.85" cy="949.67" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="267.69" cy="949.24" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="341.54" cy="947.47" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="415.38" cy="943.80" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="489.23" cy="941.51" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="563.08" cy="936.00" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<circle cx="636.92" cy="927.36" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<circle cx="710.77" cy="920.88" r="5" fill="#2563eb"><title>1p×8t/spatial</title></circle>
+<circle cx="784.62" cy="904.50" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<circle cx="858.46" cy="887.53" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<circle cx="932.31" cy="842.91" r="5" fill="#2563eb"><title>2p×4t/spatial</title></circle>
+<circle cx="1006.15" cy="801.78" r="5" fill="#2563eb"><title>4p×2t/spatial</title></circle>
+<circle cx="1080.00" cy="629.49" r="5" fill="#2563eb"><title>4p×2t/spatial</title></circle>
+<polyline points="415.38,925.90 489.23,925.00 563.08,924.01 636.92,923.00 710.77,919.76 784.62,899.03 858.46,888.78 932.31,857.30 1006.15,827.57 1080.00,717.20" fill="none" stroke="#dc2626" stroke-width="3"/>
+<circle cx="415.38" cy="925.90" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<circle cx="489.23" cy="925.00" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<circle cx="563.08" cy="924.01" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<circle cx="636.92" cy="923.00" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<circle cx="710.77" cy="919.76" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<circle cx="784.62" cy="899.03" r="5" fill="#dc2626"><title>1p×8t/blocks-16</title></circle>
+<circle cx="858.46" cy="888.78" r="5" fill="#dc2626"><title>1p×8t/blocks-16</title></circle>
+<circle cx="932.31" cy="857.30" r="5" fill="#dc2626"><title>1p×8t/blocks-8</title></circle>
+<circle cx="1006.15" cy="827.57" r="5" fill="#dc2626"><title>2p×4t/blocks-16</title></circle>
+<circle cx="1080.00" cy="717.20" r="5" fill="#dc2626"><title>2p×4t/blocks-16</title></circle>
+<line x1="138" y1="100" x2="162" y2="100" stroke="#2563eb" stroke-width="3"/>
+<text x="168" y="104" font-family="sans-serif" font-size="12">spatial</text>
+<line x1="248" y1="100" x2="272" y2="100" stroke="#dc2626" stroke-width="3"/>
+<text x="278" y="104" font-family="sans-serif" font-size="12">blocks</text>
+</svg>
