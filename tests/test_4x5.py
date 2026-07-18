@@ -74,6 +74,27 @@ def test_conservative_regrid_to_4x5_preserves_constant_and_uniform_poles():
     np.testing.assert_array_equal(np.ptp(result[:, -1, :], axis=-1), 0.0)
     np.testing.assert_allclose(result[:, 2:-2, :], 1.0, rtol=0.0, atol=0.0)
 
+    source_edges = geos_chem_latitude_edges_deg(source_lat)
+    target_edges = geos_chem_latitude_edges_deg(target_lat)
+    source_area = geos_chem_grid_cell_area_m2(source_lat, source_lon)
+    target_area = geos_chem_grid_cell_area_m2(target_lat, target_lon)
+    for source_values, target_values in zip(values, result, strict=True):
+        np.testing.assert_allclose(
+            np.sum(target_values * target_area),
+            np.sum(source_values * source_area),
+            rtol=2.0e-15,
+        )
+        for target_row in (0, target_lat.size - 1):
+            low = target_edges[target_row]
+            high = target_edges[target_row + 1]
+            overlap = np.maximum(
+                0.0,
+                np.sin(np.deg2rad(np.minimum(source_edges[1:], high)))
+                - np.sin(np.deg2rad(np.maximum(source_edges[:-1], low))),
+            )
+            expected = np.sum(overlap * np.mean(source_values, axis=1)) / np.sum(overlap)
+            np.testing.assert_allclose(target_values[target_row], expected, rtol=2.0e-15)
+
 
 def test_restart_converter_produces_dynamic_4x5_template(tmp_path):
     output = tmp_path / "restart_4x5.nc4"

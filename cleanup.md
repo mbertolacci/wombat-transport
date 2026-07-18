@@ -28,31 +28,14 @@ remains the governing constraint for any transport refactor.
 
 ## Production correctness and lifecycle backlog
 
-- Output mode, field, frequency, and interval validation is spread between
-  parsing, writer construction, and first use. Consolidate semantic validation
-  before a run begins.
-- Supported grids are recognized mainly by latitude/longitude counts. Validate
-  canonical coordinate centers and ordering with a documented tolerance.
-- Dry-pressure comparison infers vertical orientation from array rank. Require
-  an explicit ordering or pressure representation.
 - Conservative emissions remapping is duplicated between the cached operator
   and leading-dimension implementation, including polar-row behavior.
 
 ## Transport API and abstraction backlog
 
-- Pole averaging assumes zonally invariant cell area although the public API
-  accepts arbitrary two-dimensional areas. Validate the supported invariant.
-- Scalar reference helpers and several packing/predicate helpers appear to be
-  stale compatibility surface. Confirm external use, then quarantine as oracle
-  code or remove.
 - The unified executor independently reconstructs pressure, vertical reversal,
   VDIFF inputs, and convection handoffs instead of sharing driver preparation.
   Consolidate only in small, parity-tested changes.
-- Executor ownership accepts any `shares_memory` relationship; validate exact
-  shape, strides, offset, and expected layout.
-- Several convection fields are built and validated but not consumed:
-  `bxheight`, `pficu`, `pflcu`, `temp`, and `precccon`. Remove them or document
-  them as intentionally reserved inputs.
 - `TracerField` is frozen but owns writable NumPy arrays and mutable coordinate
   metadata. Model mutable buffer ownership directly; copying storage would be a
   parity-sensitive behavioral change.
@@ -71,10 +54,10 @@ remains the governing constraint for any transport refactor.
    operator is prepared, capturing the immutable identity once.
    **Resolved in the met-planning batch.**
 5. Validate the supported zonally uniform cell-area invariant before TPCORE
-   pole averaging. **Selected for the current low-risk batch.**
+   pole averaging. **Resolved in the low-risk design batch.**
 6. Confirm use of the scalar TPCORE/reference compatibility helpers, then
    remove unreachable code or quarantine deliberately retained oracle code.
-   **Selected for the current low-risk batch.**
+   **Resolved in the low-risk design batch.**
 7. Extract backend-neutral pressure, TPCORE, VDIFF, and convection preparation
    functions, proving their arrays exactly equal before switching the unified
    executor. This is a later, parity-sensitive change.
@@ -83,18 +66,17 @@ remains the governing constraint for any transport refactor.
    **Resolved in the met-planning batch.**
 9. Replace the executor's broad `shares_memory` ownership test with exact
    constant-time storage validation: pointer, shape, strides, dtype, and
-   layout. **Selected for the current low-risk batch.**
+   layout. **Resolved in the low-risk design batch.**
 10. Remove inert convection arguments from the operator API while retaining
     any fields actually needed as trace/oracle diagnostic payload.
-    **Selected for the current low-risk batch.**
+    **Resolved in the low-risk design batch.**
 11. Make `TracerField` buffer mutability explicit while keeping names, units,
     and coordinate metadata immutable; do not introduce implicit array copies.
 12. Parse and semantically validate every output collection before constructing
-    writers or loading simulation data. **Selected for the current low-risk
-    batch.**
+    writers or loading simulation data. **Resolved in the low-risk design batch.**
 13. Validate grid coordinates and orientation against the canonical GEOS 2x2.5
-    and 4x5 centers with a documented tight tolerance. **Selected for the
-    current low-risk batch.**
+    and 4x5 centers with a documented tight tolerance.
+    **Resolved in the low-risk design batch.**
 14. Introduce one immutable conservative-remapping weights object and one
     leading-dimension application routine, preserving existing polar arithmetic
     exactly. This is a later, parity-sensitive change.
@@ -202,6 +184,26 @@ moved from 77.992/79.827 microseconds to 77.847/78.929 microseconds with the
 same checksum. The validation and writer changes do not enter the sampling
 kernel or per-observation loop.
 
+## Safety-net batch outcome
+
+- **Dry-pressure ordering — resolved.** Harness comparisons require callers to
+  declare whether oracle levels are bottom-to-top or top-to-bottom, and a
+  reversed-level regression test covers both representations.
+- **Reader values — resolved.** Restart, species-concentration, and HEMCO tests
+  compare representative interior and boundary values with named NetCDF source
+  variables, including the expected vertical reversal and tracer selection.
+- **4x5 polar conservation — resolved.** The polar-row test now checks the
+  independently calculated overlap-weighted polar means and the global area
+  integral in addition to row uniformity.
+- **Failure cleanup — resolved.** A concrete runner test forces transport to
+  raise after both managers are constructed and verifies ObsOperator and output
+  closure, including the restart boundary passed to ObsOperator.
+- **ObsOperator duplicate parity — resolved.** Optional parity preserves row
+  multiplicity and has direct coverage for duplicate `(id, field)` samples.
+
+These changes affect harness and test code only; no production transport or
+sampling path changed.
+
 ## Harness and tooling backlog
 
 - `--skip-oracle-run` accepts cached fixed-name files without checking config,
@@ -227,15 +229,6 @@ kernel or per-observation loop.
 
 ## Test backlog
 
-- Species concentration, restart, and HEMCO reader tests often assert names and
-  shapes without asserting representative values; transposition or wrong-field
-  bugs could pass.
-- The 4x5 polar-row test checks uniformity but not the expected weighted mean or
-  global integral; an all-zero result can pass.
-- Expand runner failure-path coverage to assert both concrete output and
-  ObsOperator managers close when a transport operation raises.
-- Optional ObsOperator parity comparison stores rows in a dictionary keyed by
-  `(id, field)`, losing duplicate-row multiplicity.
 - External-data markers check broad directories instead of the exact dated
   files required by a test, leading to lower-level failures rather than skips.
 - The broad HEMCO scenario test checks shape and finiteness but allows all-zero

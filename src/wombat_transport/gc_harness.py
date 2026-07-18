@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from urllib.parse import urlparse
 from urllib.request import urlretrieve
 
@@ -2785,6 +2786,7 @@ def compare_dry_pressure_output(
     input_path: str | Path,
     expected_output_path: str | Path,
     *,
+    expected_vertical_order: Literal["bottom_to_top", "top_to_bottom"],
     python_output_path: str | Path | None = None,
 ) -> DryPressureComparison:
     output_path = Path(expected_output_path)
@@ -2792,6 +2794,20 @@ def compare_dry_pressure_output(
     write_python_dry_pressure_output(input_path, python_path)
     expected = read_dry_pressure_output(output_path)
     actual = read_dry_pressure_output(python_path)
+    if expected_vertical_order == "top_to_bottom":
+        expected = DryPressureOutput(
+            ps1_wet_hpa=expected.ps1_wet_hpa,
+            ps2_wet_hpa=expected.ps2_wet_hpa,
+            ps1_dry_hpa=expected.ps1_dry_hpa,
+            ps2_dry_hpa=expected.ps2_dry_hpa,
+            psc2_wet_hpa=expected.psc2_wet_hpa,
+            psc2_dry_hpa=expected.psc2_dry_hpa,
+            delp_dry_hpa=expected.delp_dry_hpa[::-1],
+            specific_humidity_kg_kg=expected.specific_humidity_kg_kg[::-1],
+            temperature_k=expected.temperature_k[::-1],
+        )
+    elif expected_vertical_order != "bottom_to_top":
+        raise ValueError(f"unsupported expected vertical order {expected_vertical_order!r}")
     delp_error = np.abs(actual.delp_dry_hpa - expected.delp_dry_hpa)
     return DryPressureComparison(
         ps1_wet_max_abs_error_hpa=float(np.max(np.abs(actual.ps1_wet_hpa - expected.ps1_wet_hpa))),

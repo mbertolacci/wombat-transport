@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import netCDF4
 import numpy as np
 
 from wombat_transport.io import (
@@ -45,6 +46,7 @@ def test_base_restart_initializes_from_restart_variable():
     assert initialized.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
     np.testing.assert_array_equal(initialized.data, direct.data.astype(np.float32).astype(np.float64))
     assert not np.all(initialized.data == 0.000355)
+    _assert_loaded_samples(direct, BASE_RESTART, "SpeciesRst_CO2", tracer_index=0)
 
 
 def test_residual_missing_restart_initializes_from_background():
@@ -65,6 +67,12 @@ def test_residual_monthly_restart_stacks_in_species_order():
 
     assert restart.names == tuple(item.name for item in species)
     assert restart.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
+    _assert_loaded_samples(
+        restart,
+        RESIDUAL_MONTHLY_RESTART,
+        "SpeciesRst_r0002p001s013",
+        tracer_index=12,
+    )
 
 
 def test_write_restart_like_roundtrips_base_initialized_field(tmp_path):
@@ -101,6 +109,13 @@ def test_species_conc_readers_stack_base_and_residual():
     assert base.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
     assert len(residual.names) == 24
     assert residual.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
+    _assert_loaded_samples(base, BASE_SPECIES_CONC, "SpeciesConcVV_CO2", tracer_index=0)
+    _assert_loaded_samples(
+        residual,
+        RESIDUAL_SPECIES_CONC,
+        "SpeciesConcVV_r0002p001s024",
+        tracer_index=23,
+    )
 
 
 def test_hemco_reader_stacks_residual_emissions():
@@ -109,6 +124,21 @@ def test_hemco_reader_stacks_residual_emissions():
     assert len(emissions.names) == 24
     assert emissions.shape == (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 24)
     assert set(emissions.units) == {"kg/m2/s"}
+    _assert_loaded_samples(
+        emissions,
+        RESIDUAL_HEMCO,
+        "Emis_r0002p001s007",
+        tracer_index=6,
+    )
+
+
+def _assert_loaded_samples(field, path: str, variable_name: str, *, tracer_index: int) -> None:
+    points = ((0, 0, 0), (11, 37, 53), (46, 90, 143))
+    with netCDF4.Dataset(path) as dataset:
+        source = np.asarray(dataset.variables[variable_name][0], dtype=np.float64)
+    expected = np.asarray([source[46 - lev, lat, lon] for lev, lat, lon in points])
+    actual = np.asarray([field.tracer(tracer_index)[0, lev, lat, lon] for lev, lat, lon in points])
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_base_met_reader_loads_expected_variables():

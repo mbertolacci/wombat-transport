@@ -289,6 +289,7 @@ def test_dry_pressure_fixture_matches_wombat_pressure_bookkeeping(tmp_path):
     comparison = compare_dry_pressure_output(
         input_path,
         output_path,
+        expected_vertical_order="bottom_to_top",
         python_output_path=tmp_path / "python_dry_pressure_output.nc",
     )
 
@@ -338,7 +339,9 @@ def test_dry_pressure_harness_optional_geos_chem_compare(tmp_path):
     output_path = tmp_path / DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME
 
     run_operator_harness(DRY_PRESSURE_HARNESS_EXE, input_path, output_path)
-    comparison = compare_dry_pressure_output(input_path, output_path)
+    comparison = compare_dry_pressure_output(
+        input_path, output_path, expected_vertical_order="bottom_to_top"
+    )
 
     assert comparison.ps1_dry_max_abs_error_hpa < 1.0e-12
     assert comparison.ps2_dry_max_abs_error_hpa < 1.0e-12
@@ -648,9 +651,31 @@ def test_python_dry_pressure_output_roundtrips_through_comparison_contract(tmp_p
     np.testing.assert_allclose(output.ps1_wet_hpa[0, :], output.ps1_wet_hpa[1, :])
     np.testing.assert_allclose(output.ps1_wet_hpa[-1, :], output.ps1_wet_hpa[-2, :])
 
-    comparison = compare_dry_pressure_output(input_path, output_path)
+    comparison = compare_dry_pressure_output(
+        input_path, output_path, expected_vertical_order="bottom_to_top"
+    )
     assert comparison.delp_dry_max_abs_error_hpa == 0.0
     assert "delp_dry_max_abs_error_hpa,0.00000000e+00" in format_dry_pressure_comparison(comparison)
+
+
+def test_dry_pressure_comparison_uses_declared_vertical_order(tmp_path):
+    input_path = write_synthetic_dry_pressure_input(tmp_path / DRY_PRESSURE_SNAPSHOT_INPUT_NAME)
+    output_path = write_python_dry_pressure_output(input_path, tmp_path / DRY_PRESSURE_SNAPSHOT_OUTPUT_NAME)
+    with netCDF4.Dataset(output_path, "r+") as dataset:
+        for name in ("delp_dry_hpa", "specific_humidity_kg_kg", "temperature_k"):
+            variable = dataset.variables[name]
+            variable[:] = variable[::-1]
+
+    comparison = compare_dry_pressure_output(
+        input_path,
+        output_path,
+        expected_vertical_order="top_to_bottom",
+        python_output_path=tmp_path / "python_bottom_to_top.nc",
+    )
+
+    assert comparison.delp_dry_max_abs_error_hpa == 0.0
+    assert comparison.specific_humidity_max_abs_error == 0.0
+    assert comparison.temperature_max_abs_error == 0.0
 
 
 def test_python_met_airqnt_output_roundtrips_through_comparison_contract(tmp_path):

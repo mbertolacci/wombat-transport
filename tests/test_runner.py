@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from yaml12 import write_yaml
 
+import wombat_transport.runner as runner_module
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
@@ -107,6 +108,56 @@ def test_tracer_simulation_closes_registered_resources_after_failure(monkeypatch
         run_tracer_simulation(SimpleNamespace())  # type: ignore[arg-type]
 
     assert closed == ["closed"]
+
+
+@requires_restart
+def test_transport_failure_closes_output_and_obsoperator_managers(monkeypatch, tmp_path):
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
+    events: list[object] = []
+
+    class FakeOutputManager:
+        def close(self):
+            events.append("output")
+
+    class FakeObsOperatorManager:
+        def close(self, *, boundary_time):
+            events.append(("obsoperator", boundary_time))
+
+    output_manager = FakeOutputManager()
+    obsoperator_manager = FakeObsOperatorManager()
+    monkeypatch.setattr(
+        runner_module,
+        "HistoryOutputManager",
+        SimpleNamespace(from_run_config=lambda *args, **kwargs: output_manager),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "ObsOperatorManager",
+        SimpleNamespace(from_run_config=lambda *args, **kwargs: obsoperator_manager),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_load_simulation_forcing",
+        lambda *args, **kwargs: SimpleNamespace(
+            dry_surface_pressure_start_hpa=np.full(
+                (1, FIXED_GRID["lat"], FIXED_GRID["lon"]), 1000.0
+            )
+        ),
+    )
+
+    def fail_transport(*args, **kwargs):
+        raise RuntimeError("transport failed")
+
+    monkeypatch.setattr(runner_module, "run_transport_one_step", fail_transport)
+    config = _isolated_config(load_run_config(BASE_CONFIG), tmp_path, outputs={})
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        run_tracer_simulation(config, max_steps=1)
+
+    assert events == [
+        ("obsoperator", datetime(2014, 9, 1)),
+        "output",
+    ]
 
 
 def test_transport_executor_and_block_width_environment(monkeypatch):

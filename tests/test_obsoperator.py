@@ -1071,25 +1071,47 @@ def test_local_geos_chem_obsoperator_output_parity_if_available():
             assert actual_variable.ncattrs() == expected_variable.ncattrs()
             for attribute in expected_variable.ncattrs():
                 assert getattr(actual_variable, attribute) == getattr(expected_variable, attribute)
-        expected_samples = _obsoperator_output_samples(expected)
-        actual_samples = _obsoperator_output_samples(actual)
-        assert actual_samples.keys() == expected_samples.keys()
-        keys = sorted(expected_samples)
-        expected_values = np.asarray([expected_samples[key] for key in keys])
-        actual_values = np.asarray([actual_samples[key] for key in keys])
+        expected_samples = sorted(_obsoperator_output_samples(expected))
+        actual_samples = sorted(_obsoperator_output_samples(actual))
+        expected_keys = [row[:2] for row in expected_samples]
+        actual_keys = [row[:2] for row in actual_samples]
+        assert actual_keys == expected_keys
+        expected_values = np.asarray([row[2] for row in expected_samples])
+        actual_values = np.asarray([row[2] for row in actual_samples])
         close = np.isclose(actual_values, expected_values, rtol=1.0e-6, atol=1.0e-12)
         if not np.all(close):
             absolute_error = np.abs(actual_values - expected_values)
             worst = np.argsort(absolute_error)[-5:][::-1]
             details = "; ".join(
-                f"{keys[index]!r}: GC={expected_values[index]:.9g}, "
+                f"{expected_keys[index]!r}: GC={expected_values[index]:.9g}, "
                 f"Wombat={actual_values[index]:.9g}, abs={absolute_error[index]:.3g}"
                 for index in worst
             )
             pytest.fail(
-                f"{np.count_nonzero(~close)}/{len(keys)} canonical ObsOperator samples differ; "
+                f"{np.count_nonzero(~close)}/{len(expected_keys)} canonical ObsOperator samples differ; "
                 f"max abs error={np.max(absolute_error):.3g}; worst: {details}"
             )
+
+
+def test_obsoperator_output_samples_preserve_duplicate_rows():
+    id_chars = np.zeros((1, 3), dtype="S1")
+    id_chars[0] = np.frombuffer(b"dup", dtype="S1")
+    field_chars = np.zeros((1, 5), dtype="S1")
+    field_chars[0] = np.frombuffer(b"field", dtype="S1")
+    dataset = SimpleNamespace(
+        variables={
+            "id": id_chars,
+            "field": field_chars,
+            "id_index": np.array([1, 1], dtype=np.int32),
+            "field_index": np.array([1, 1], dtype=np.int32),
+            "sample": np.array([2.0, 3.0], dtype=np.float64),
+        }
+    )
+
+    assert _obsoperator_output_samples(dataset) == [
+        ("dup", "field", 2.0),
+        ("dup", "field", 3.0),
+    ]
 
 
 def test_local_daily_input_contains_restartable_cross_day_entries_if_available(tmp_path: Path):
@@ -1327,16 +1349,16 @@ def _filled_chars(values: np.ndarray) -> np.ndarray:
     return np.asarray(values)
 
 
-def _obsoperator_output_samples(dataset: netCDF4.Dataset) -> dict[tuple[str, str], float]:
+def _obsoperator_output_samples(dataset: netCDF4.Dataset) -> list[tuple[str, str, float]]:
     ids = _decode_rows(_filled_chars(dataset.variables["id"][:]))
     fields = _decode_rows(_filled_chars(dataset.variables["field"][:]))
     id_index = np.asarray(dataset.variables["id_index"][:], dtype=np.int64) - 1
     field_index = np.asarray(dataset.variables["field_index"][:], dtype=np.int64) - 1
     samples = np.asarray(dataset.variables["sample"][:], dtype=np.float64)
-    return {
-        (ids[int(id_value)], fields[int(field_value)]): float(sample)
+    return [
+        (ids[int(id_value)], fields[int(field_value)], float(sample))
         for id_value, field_value, sample in zip(id_index, field_index, samples, strict=True)
-    }
+    ]
 
 
 def _time_us(value: datetime) -> int:
