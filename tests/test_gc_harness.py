@@ -1535,6 +1535,23 @@ def test_numba_fzppm_does_not_read_uninitialized_workspace():
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_numba_column_qck_matches_guarded_global_correction():
+    rng = np.random.default_rng(17)
+    original = rng.uniform(0.0, 2.0, size=(6, 9, 7, 3))
+    original[0, 2, 3, 0] = -0.25
+    original[3, 5, 4, 2] = -0.75
+    original[-1, 6, 1, 1] = -0.5
+    expected = original.copy()
+    actual = original.copy()
+
+    assert tpcore_numba._qckxyz_needs_fill_numba_kernel(expected)
+    tpcore_numba._qckxyz_batch_numba_kernel(expected)
+    tpcore_numba._qckxyz_columns_numba_kernel(actual)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
 @pytest.mark.parametrize(("ntracer", "lane_width"), ((1, 8), (7, 8), (8, 8), (9, 8), (17, 16)))
 def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_width):
     tracer = np.arange(2 * 3 * 4 * ntracer, dtype=np.float64).reshape(2, 3, 4, ntracer)

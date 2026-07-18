@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pytest
 
 from wombat_transport import history_accumulation
@@ -11,6 +12,11 @@ from wombat_transport.transport import numba_control
 from wombat_transport.transport.convection import _operator as convection_numba
 from wombat_transport.transport.pbl import _kernels as pbl_numba
 from wombat_transport.transport.tpcore import _kernels as tpcore_numba
+
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - exercised in environments without numba.
+    njit = None
 
 
 def test_numba_defaults_to_enabled_for_every_subsystem(monkeypatch):
@@ -73,6 +79,28 @@ def test_numba_threads_are_not_configured_when_unavailable(monkeypatch):
 
     assert numba_control.configure_numba_threads(available=False) == 2
     assert calls == []
+
+
+@pytest.mark.skipif(njit is None, reason="numba is unavailable")
+def test_noalias_compiler_marks_array_data_arguments():
+    @njit(pipeline_class=numba_control.NoAliasCompiler)
+    def copy_plus_one(source, target):
+        for index in range(source.size):
+            target[index] = source[index] + 1.0
+
+    source = np.arange(4, dtype=np.float64)
+    target = np.empty_like(source)
+    copy_plus_one(source, target)
+
+    llvm = copy_plus_one.inspect_llvm(copy_plus_one.signatures[0])
+    definition = next(line for line in llvm.splitlines() if line.startswith("define"))
+    data_arguments = [
+        argument
+        for argument in definition.split(", ")
+        if "%arg." in argument and ".4" in argument
+    ]
+    assert len(data_arguments) == 2
+    assert all("noalias" in argument for argument in data_arguments)
 
 
 def test_numba_performance_warning_when_unavailable(monkeypatch, caplog):
