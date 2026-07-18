@@ -144,6 +144,10 @@ def test_report_selects_median_winner_and_writes_plots(tmp_path):
     assert winner["config_id"] == "underloaded"
     assert float(winner["median_effective_s"]) == 0.8
     assert float(winner["aggregate_tracer_steps_per_s"]) == 20.0
+    strategy_winners = {
+        row["config_id"] for row in rows if row["best_for_tracer_and_executor"] == "True"
+    }
+    assert strategy_winners == {"fast", "underloaded"}
     assert (tmp_path / "transport_frontier.svg").is_file()
     assert not (tmp_path / "seconds_per_step.svg").exists()
     assert not (tmp_path / "ensemble_steps_per_s.svg").exists()
@@ -153,3 +157,5 @@ def test_report_selects_median_winner_and_writes_plots(tmp_path):
     assert "1p×2t/spatial" in plot
     assert "Aggregate transport throughput" in plot
     assert "Fastest transport step time" in plot
+    assert "spatial" in plot
+    assert "blocks" in plot

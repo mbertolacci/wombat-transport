@@ -74,6 +74,7 @@ SUMMARY_FIELDS = (
     "estimated_peak_gib",
     "best_for_tracers_and_cores",
     "best_for_tracer_count",
+    "best_for_tracer_and_executor",
     "rank_cpus",
     "threading_layers",
     "reason",
@@ -620,6 +621,7 @@ def _write_reports(root: Path) -> None:
     completed = [row for row in rows if row["status"] == "completed"]
     core_winners: dict[tuple[int, int], dict[str, Any]] = {}
     winners: dict[int, dict[str, Any]] = {}
+    strategy_winners: dict[tuple[int, str], dict[str, Any]] = {}
     for row in completed:
         tracers = int(row["total_tracers"])
         core_key = (tracers, int(row["total_cores"]))
@@ -629,18 +631,28 @@ def _write_reports(root: Path) -> None:
         current = winners.get(tracers)
         if current is None or float(row["median_effective_s"]) < float(current["median_effective_s"]):
             winners[tracers] = row
+        strategy_key = (tracers, str(row["executor"]))
+        current = strategy_winners.get(strategy_key)
+        if current is None or float(row["median_effective_s"]) < float(current["median_effective_s"]):
+            strategy_winners[strategy_key] = row
     for row in rows:
         tracers = int(row["total_tracers"])
         core_key = (tracers, int(row["total_cores"]))
         row["best_for_tracers_and_cores"] = row is core_winners.get(core_key)
         row["best_for_tracer_count"] = row is winners.get(tracers)
+        row["best_for_tracer_and_executor"] = row is strategy_winners.get(
+            (tracers, str(row["executor"]))
+        )
 
     _write_csv(root / "summary.csv", SUMMARY_FIELDS, rows)
     _write_csv(root / "iterations.csv", ITERATION_FIELDS, iterations)
     _write_winners(root / "winners.md", winners.values())
-    winner_rows = sorted(winners.values(), key=lambda row: int(row["total_tracers"]))
-    if winner_rows:
-        _write_frontier_svg(root / "transport_frontier.svg", winner_rows)
+    strategy_rows = sorted(
+        strategy_winners.values(),
+        key=lambda row: (int(row["total_tracers"]), str(row["executor"])),
+    )
+    if strategy_rows:
+        _write_frontier_svg(root / "transport_frontier.svg", strategy_rows)
     (root / "ensemble_steps_per_s.svg").unlink(missing_ok=True)
     (root / "seconds_per_step.svg").unlink(missing_ok=True)
     (root / "aggregate_tracer_steps_per_s.svg").unlink(missing_ok=True)
@@ -706,6 +718,7 @@ def _read_results(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]
             "estimated_peak_gib": int(config["estimated_peak_bytes"]) / 1024.0**3,
             "best_for_tracers_and_cores": False,
             "best_for_tracer_count": False,
+            "best_for_tracer_and_executor": False,
             "rank_cpus": ";".join(_format_cpu_tuple(value) for value in config["rank_cpus"]),
             "threading_layers": ";".join(str(worker.get("threading_layer", "")) for worker in workers),
             "reason": result.get("reason", ""),
@@ -720,14 +733,22 @@ def _write_frontier_svg(path: Path, rows: list[dict[str, Any]]) -> None:
     top_plot_y, bottom_plot_y = 80, 570
     plot_height = 390
     plot_width = width - left - right
-    ordered = sorted(rows, key=lambda row: int(row["total_tracers"]))
-    throughput_max = max(float(row["aggregate_tracer_steps_per_s"]) for row in ordered) * 1.18
-    seconds_max = max(float(row["median_effective_s"]) for row in ordered) * 1.18
+    tracer_values = sorted({int(row["total_tracers"]) for row in rows})
+    x_indices = {tracers: index for index, tracers in enumerate(tracer_values)}
+    series = {
+        executor: sorted(
+            (row for row in rows if row["executor"] == executor),
+            key=lambda row: int(row["total_tracers"]),
+        )
+        for executor in ("spatial", "blocks")
+    }
+    throughput_max = max(float(row["aggregate_tracer_steps_per_s"]) for row in rows) * 1.18
+    seconds_max = max(float(row["median_effective_s"]) for row in rows) * 1.18
 
     def x_pos(index: int) -> float:
-        if len(ordered) == 1:
+        if len(tracer_values) == 1:
             return left + plot_width / 2.0
-        return left + index * plot_width / (len(ordered) - 1)
+        return left + index * plot_width / (len(tracer_values) - 1)
 
     def y_pos(value: float, plot_y: float, maximum: float) -> float:
         return plot_y + plot_height - (value / maximum) * plot_height
@@ -735,7 +756,7 @@ def _write_frontier_svg(path: Path, rows: list[dict[str, Any]]) -> None:
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{width / 2}" y="32" text-anchor="middle" font-family="sans-serif" font-size="22">Optimal transport frontier</text>',
+        f'<text x="{width / 2}" y="32" text-anchor="middle" font-family="sans-serif" font-size="22">Optimal transport frontier by execution strategy</text>',
     ]
 
     panels = (
@@ -753,27 +774,44 @@ def _write_frontier_svg(path: Path, rows: list[dict[str, Any]]) -> None:
             lines.append(f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" font-family="sans-serif" font-size="12">{value:.1f}</text>')
         lines.append(f'<text x="20" y="{plot_y + plot_height / 2}" text-anchor="middle" transform="rotate(-90 20 {plot_y + plot_height / 2})" font-family="sans-serif" font-size="14">{escape(y_label)}</text>')
 
-    for index, row in enumerate(ordered):
+    for index, tracers in enumerate(tracer_values):
         x = x_pos(index)
         for plot_y in (top_plot_y, bottom_plot_y):
             lines.append(f'<line x1="{x:.2f}" y1="{plot_y}" x2="{x:.2f}" y2="{plot_y + plot_height}" stroke="#f3f4f6"/>')
-        lines.append(f'<text x="{x:.2f}" y="{bottom_plot_y + plot_height + 24}" text-anchor="middle" font-family="sans-serif" font-size="12">{row["total_tracers"]}</text>')
+        lines.append(f'<text x="{x:.2f}" y="{bottom_plot_y + plot_height + 24}" text-anchor="middle" font-family="sans-serif" font-size="12">{tracers}</text>')
     lines.append(f'<text x="{left + plot_width / 2}" y="{height - 25}" text-anchor="middle" font-family="sans-serif" font-size="14">tracers in ensemble</text>')
 
+    styles = {
+        "spatial": ("#2563eb", -13),
+        "blocks": ("#dc2626", 21),
+    }
     for plot_y, maximum, value_field, _, _ in panels:
-        points = " ".join(
-            f'{x_pos(index):.2f},{y_pos(float(row[value_field]), plot_y, maximum):.2f}'
-            for index, row in enumerate(ordered)
-        )
-        lines.append(f'<polyline points="{points}" fill="none" stroke="#2563eb" stroke-width="3"/>')
-        for index, row in enumerate(ordered):
-            x = x_pos(index)
-            y = y_pos(float(row[value_field]), plot_y, maximum)
-            label = _winner_label(row)
-            lines.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="#2563eb"><title>{escape(label)}</title></circle>')
-            if plot_y == top_plot_y:
-                label_y = max(plot_y + 10, y - 13)
-                lines.append(f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="middle" transform="rotate(-32 {x:.2f} {label_y:.2f})" font-family="sans-serif" font-size="11" fill="#374151">{escape(label)}</text>')
+        for executor in ("spatial", "blocks"):
+            group = series[executor]
+            if not group:
+                continue
+            color, label_offset = styles[executor]
+            points = " ".join(
+                f'{x_pos(x_indices[int(row["total_tracers"])]):.2f},'
+                f'{y_pos(float(row[value_field]), plot_y, maximum):.2f}'
+                for row in group
+            )
+            lines.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="3"/>')
+            for row in group:
+                x = x_pos(x_indices[int(row["total_tracers"])])
+                y = y_pos(float(row[value_field]), plot_y, maximum)
+                label = _winner_label(row)
+                lines.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="{color}"><title>{escape(label)}</title></circle>')
+                if plot_y == top_plot_y:
+                    label_y = max(plot_y + 10, y + label_offset)
+                    annotation = _plot_label(row)
+                    lines.append(f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="middle" transform="rotate(-32 {x:.2f} {label_y:.2f})" font-family="sans-serif" font-size="10" fill="{color}">{escape(annotation)}</text>')
+    legend_y = top_plot_y + 20
+    for index, executor in enumerate(("spatial", "blocks")):
+        color, _ = styles[executor]
+        legend_x = left + 18 + index * 110
+        lines.append(f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x + 24}" y2="{legend_y}" stroke="{color}" stroke-width="3"/>')
+        lines.append(f'<text x="{legend_x + 30}" y="{legend_y + 4}" font-family="sans-serif" font-size="12">{executor}</text>')
     lines.append("</svg>")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -797,6 +835,11 @@ def _write_winners(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 def _winner_label(row: dict[str, Any]) -> str:
     base = f"{row['processes']}p×{row['threads_per_process']}t"
     return f"{base}/spatial" if row["executor"] == "spatial" else f"{base}/blocks-{row['block_width']}"
+
+
+def _plot_label(row: dict[str, Any]) -> str:
+    base = f"{row['processes']}p×{row['threads_per_process']}t"
+    return base if row["executor"] == "spatial" else f"{base} b{row['block_width']}"
 
 
 def _system_manifest(

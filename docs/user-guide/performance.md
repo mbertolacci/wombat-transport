@@ -160,11 +160,11 @@ The output directory contains:
 - `manifest.json`: command, Git state, system, CPU, NUMA, and sweep metadata;
 - `iterations.csv`: raw synchronized rank and makespan measurements;
 - `summary.csv`: every configuration, per-core-budget winners, and the overall
-  winner for each tracer count;
+  and per-executor winners for each tracer count;
 - `winners.md`: a compact deployment table;
 - `transport_frontier.svg`: aligned throughput and seconds-per-step panels for
-  the fastest measured configuration at each tracer count, annotated with its
-  topology;
+  the fastest spatial and blocked configurations at each tracer count,
+  annotated with their topologies;
 - `cases/`: resumable per-configuration inputs, results, and worker logs.
 
 Use `--dry-run` to inspect the generated matrix, `--resume` to continue an
