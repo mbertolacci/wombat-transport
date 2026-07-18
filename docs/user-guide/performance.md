@@ -106,6 +106,157 @@ WOMBAT_TRANSPORT_BLOCK_WIDTH=16 \
 This can be useful for controlled comparisons, but it is not required to use
 block-native tracer storage: storage is blocked in every execution mode.
 
+## Calibrating a new machine
+
+`tools/benchmark_transport_frontier.py` measures the synthetic full transport
+chain across process, thread, executor, and block-width configurations. It is
+transport-only: meteorology I/O, HISTORY, emissions, and ObsOperator are not
+included. The synthetic forcing uses the selected run configuration only for
+its supported grid definition.
+
+Provide an ordered list of Linux CPU identifiers, the core budgets to test,
+and total tracer counts:
+
+```bash
+.venv/bin/python tools/benchmark_transport_frontier.py run \
+  --run-config validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml \
+  --cpus 0,2,4,6,8,10,12,14 \
+  --core-counts 1 2 4 8 \
+  --tracer-counts 16 32 64 96 128 192 256 512 \
+  --binder auto \
+  --block-widths 8 16 32 \
+  --output-dir benchmark-results/transport-frontier
+```
+
+For each core budget `C`, the tool tests every balanced factorization
+`processes * threads/process = C`. Total tracers are divided as evenly as
+possible between processes. Multithreaded configurations compare full-width
+spatial execution with useful requested block widths; one-thread processes use
+the ordinary spatial path because block parallelism has no work to expose.
+
+The CPU list defines nested scopes: a four-core case uses the first four
+entries and an eight-core case uses the first eight. Select one logical CPU
+from each physical core unless SMT is deliberate. The tool warns when the
+chosen list contains detected SMT siblings.
+
+Binding modes are `taskset`, `numactl`, `none`, or `auto`. `auto` prefers a
+usable `numactl` installation and falls back to `taskset` when its binding
+probe fails. The numactl backend binds each rank to its exact CPUs and supports
+`bind`, `local`, and `interleave` memory policies. On a multi-socket system,
+benchmark one NUMA node or socket at a time unless cross-node placement is the
+intended workload.
+
+Workers compile and warm up after binding, then start each measured iteration
+at a shared monotonic-clock target. Effective step time ends when the slowest
+rank finishes. The two headline metrics are:
+
+```text
+seconds/step = effective step time
+aggregate tracer-steps/s = total tracers / effective step time
+```
+
+At a fixed tracer count, these metrics always select the same configuration:
+the tracer count is a constant, so maximizing `tracers / seconds` is identical
+to minimizing `seconds`. They are both retained because they answer different
+operational questions. Seconds per step predicts turnaround time, while
+tracer-steps per second measures how effectively a machine processes a large
+ensemble.
+
+The output directory contains:
+
+- `manifest.json`: command, Git state, system, CPU, NUMA, and sweep metadata;
+- `iterations.csv`: raw synchronized rank and makespan measurements;
+- `summary.csv`: every configuration, per-core-budget winners, and the overall
+  and per-executor winners for each tracer count;
+- `winners.md`: a compact deployment table;
+- `transport_frontier.svg`: aligned throughput and seconds-per-step panels for
+  the fastest spatial and blocked configurations at each tracer count,
+  annotated with their topologies;
+- `cases/`: resumable per-configuration inputs, results, and worker logs.
+
+Use `--dry-run` to inspect the generated matrix, `--resume` to continue an
+interrupted output directory, and rebuild reports without rerunning with:
+
+```bash
+.venv/bin/python tools/benchmark_transport_frontier.py report \
+  benchmark-results/transport-frontier
+```
+
+### Reading the frontier
+
+The report first selects the fastest configuration separately for spatial and
+blocked execution at every tested tracer count. It is allowed to choose a
+different core budget, process count, thread count, or block width at each
+point. The annotations have forms such as `1p×8t` for one process with eight
+threads and `2p×4t b16` for two four-thread processes using blocked execution
+with width 16.
+
+The upper panel answers: "How much aggregate tracer work can one machine
+complete?" The lower panel answers: "How long does one transport step take?"
+Their x axes and points are aligned, and both panels use the same winning
+configuration for a given strategy and tracer count.
+
+![Measured transport frontier on eight i7-14700KF P-cores](../assets/transport-frontier-i7-14700kf.svg)
+
+This example used the 2x2.5 synthetic transport chain, one hardware thread on
+each of eight Intel Core i7-14700KF P-cores, no SMT, two warmups, and five
+measured iterations per configuration. It swept every balanced process/thread
+factorization and block widths 8, 16, and 32. It is an example of the decision
+process, not a portable recommendation for other machines.
+
+The spatial frontier reaches about 347 tracer-steps/s at 96 tracers and then
+falls to 311 at 512. The blocked frontier overtakes it around 128 tracers and
+continues to 423 tracer-steps/s at 512. This is consistent with blocked
+execution improving locality while a larger ensemble amortizes fixed setup
+work. It does not, by itself, prove perfect scaling with core count; that claim
+would require comparing speedup as cores are added.
+
+### Choosing a deployment
+
+If one machine must transport a fixed number of tracers, find that tracer
+count on the x axis and use the lowest point in the seconds-per-step panel.
+The annotation supplies the execution strategy and topology. For example,
+`2p×4t b16` means dividing the ensemble evenly between two independently
+bound Wombat processes, giving each four CPUs, and setting:
+
+```bash
+WOMBAT_NUMBA_THREADS=4 \
+WOMBAT_TRANSPORT_EXECUTOR=blocks \
+WOMBAT_TRANSPORT_BLOCK_WIDTH=16 \
+  .venv/bin/python -m wombat_transport.run path/to/shard.yml
+```
+
+The frontier benchmark coordinates its worker processes internally, but a
+production multi-process run remains an ensemble of separate Wombat jobs.
+Launch and bind those jobs with the site scheduler or workflow manager, split
+the tracers as evenly as possible, and give each job the indicated thread
+count. A one-process winner can be used directly without ensemble sharding.
+
+If the tracer load per machine is flexible, use both panels to choose a knee.
+Moving right generally improves per-machine throughput because fixed work is
+amortized over more tracers, but it also increases the wall time of every
+step. In the example, 64 tracers deliver 328 tracer-steps/s at 0.195
+seconds/step: about 78% of the measured 512-tracer throughput with only 16% of
+its step latency. At 128 tracers the corresponding figures are 360
+tracer-steps/s and 0.355 seconds/step. Either may be a better operating point
+than the maximum-throughput 512-tracer load when turnaround time matters.
+
+For a fixed total tracer ensemble distributed across several identical
+machines, divide the total by each candidate number of machines and consult
+the point nearest that per-machine shard size. With `M` equal shards, fleet
+throughput is approximately `M` times the plotted per-machine throughput,
+while synchronized step latency is approximately the plotted seconds per
+step. More, smaller shards reduce wall time but usually use each machine less
+efficiently; fewer, larger shards improve per-machine throughput but take
+longer per step. Benchmark the exact shard sizes when this tradeoff affects a
+large production allocation.
+
+The calibration is transport-only. Meteorology reading, emissions, HISTORY,
+and ObsOperator work can shift the best end-to-end operating point, especially
+for small tracer counts. Use the synthetic frontier to choose a short list of
+topologies, then confirm the selected deployment with a representative full
+run before committing a large allocation.
+
 ## Local end-to-end comparison
 
 The one- to four-thread GEOS-Chem timings were measured on 16 July 2026; the

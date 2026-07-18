@@ -115,6 +115,23 @@ cluster at MSU sustained approximately 700 tracer-steps/s with 400 tracers.
 See [performance and threading](https://mbertolacci.github.io/wombat-transport/user-guide/performance/)
 for the full table, measurement conditions, and interpretation.
 
+Deployment should be calibrated on the target machine rather than inferred
+from core count alone. `tools/benchmark_transport_frontier.py` finds the
+fastest process/thread topology, execution strategy, and block width at each
+tracer load. For a fixed tracer count, the configuration with the shortest
+step is also the one with the highest tracer throughput; the two aligned
+panels show the resulting latency/throughput tradeoff.
+
+![Example transport frontier on eight i7-14700KF P-cores](docs/assets/transport-frontier-i7-14700kf.svg)
+
+In this example, 64 tracers already provide 328 tracer-steps/s at 0.195
+seconds per step, while loading 512 tracers raises per-machine throughput to
+423 tracer-steps/s but takes 1.211 seconds per step. A user can therefore
+choose a knee for lower latency, fill one machine for aggregate throughput, or
+use the curve to choose how many tracers to assign to each machine. See
+[calibrating a new machine](https://mbertolacci.github.io/wombat-transport/user-guide/performance/#calibrating-a-new-machine)
+for the workflow and caveats.
+
 ## Validation and development
 
 GEOS-Chem is the numerical reference. Differences beyond expected
@@ -127,6 +144,9 @@ deviations.
   GEOS-Chem operator and tracing harnesses.
 - [`tools/hemco_harness/README.md`](tools/hemco_harness/README.md) describes
   emissions parity scenarios.
+- [`tools/benchmark_transport_frontier.py`](tools/benchmark_transport_frontier.py)
+  calibrates process, thread, executor, and block-width choices on a selected
+  CPU set using synthetic transport.
 - [`performance.md`](performance.md) is the benchmark and profiling notebook.
 - [`oracle_data/README.md`](oracle_data/README.md) describes the local
   large-fixture cache.
