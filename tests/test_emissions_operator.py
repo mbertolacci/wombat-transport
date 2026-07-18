@@ -7,7 +7,11 @@ import netCDF4
 import numpy as np
 from yaml12 import write_yaml
 
-from wombat_transport.emissions import EmissionsOperator
+from wombat_transport.emissions import (
+    ConservativeRemappingWeights,
+    EmissionsOperator,
+    _average_regridded_polar_rows,
+)
 from wombat_transport.grid import TransportGrid
 from wombat_transport.species import Species
 
@@ -382,6 +386,88 @@ def test_regridding_averages_polar_cap_longitudes_like_hemco(tmp_path):
     target_values = emissions.data[0, -1, :, :, 0]
     np.testing.assert_array_equal(target_values[0], np.full(target_lon.size, np.mean(source_values[0])))
     np.testing.assert_array_equal(target_values[-1], np.full(target_lon.size, np.mean(source_values[-1])))
+
+
+def test_cached_remapping_matches_specialized_arithmetic_bitwise_for_leading_dimensions():
+    source_lat = np.array([-89.5, 0.0, 89.5])
+    source_lon = np.array([0.0, 90.0, 180.0, 270.0])
+    target_lat = np.array([-89.5, 0.0, 89.5])
+    target_lon = np.array([45.0, 135.0, 225.0, 315.0])
+    values = np.arange(2 * 3 * 3 * 4, dtype=np.float64).reshape(2, 3, 3, 4)
+    remapping = ConservativeRemappingWeights(
+        source_lat=source_lat,
+        source_lon=source_lon,
+        target_lat=target_lat,
+        target_lon=target_lon,
+    )
+
+    expected_planes = []
+    for plane in values.reshape((-1, source_lat.size, source_lon.size)):
+        lat_regridded = remapping.latitude_overlap @ plane
+        lat_regridded /= remapping.latitude_denominator[:, np.newaxis]
+        _average_regridded_polar_rows(lat_regridded, source_lat, target_lat, source_lon)
+        regridded = lat_regridded @ remapping.longitude_overlap.T
+        regridded /= remapping.longitude_denominator[np.newaxis, :]
+        expected_planes.append(regridded)
+    expected = np.stack(expected_planes).reshape(2, 3, target_lat.size, target_lon.size)
+
+    original = values.copy()
+    actual = remapping.apply(values)
+
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(values, original)
+    assert actual.flags.c_contiguous
+
+
+def test_remapping_geometry_snapshots_coordinates_and_is_read_only():
+    source_lat = np.array([-45.0, 45.0])
+    source_lon = np.array([45.0, 135.0, 225.0, 315.0])
+    remapping = ConservativeRemappingWeights(
+        source_lat=source_lat,
+        source_lon=source_lon,
+        target_lat=np.array([-60.0, 0.0, 60.0]),
+        target_lon=np.array([0.0, 90.0, 180.0, 270.0]),
+    )
+    source_lat[:] = 0.0
+    source_lon[:] = 0.0
+
+    np.testing.assert_array_equal(remapping.source_lat, [-45.0, 45.0])
+    np.testing.assert_array_equal(remapping.source_lon, [45.0, 135.0, 225.0, 315.0])
+    for array in (
+        remapping.source_lat,
+        remapping.source_lon,
+        remapping.target_lat,
+        remapping.target_lon,
+        remapping.latitude_overlap,
+        remapping.longitude_overlap,
+        remapping.latitude_denominator,
+        remapping.longitude_denominator,
+    ):
+        assert not array.flags.writeable
+
+    with np.testing.assert_raises_regex(ValueError, "source field shape"):
+        remapping.apply(np.ones((3, 3)))
+
+
+def test_emissions_operator_reuses_one_remapping_geometry():
+    grid = _grid(lat=[-45.0, 45.0], lon=[45.0, 135.0, 225.0, 315.0], nlev=1)
+    operator = EmissionsOperator.from_mapping(
+        {"unit_conversion": "none", "missing_species": "zero", "scales": {}, "fields": []},
+        root=Path("."),
+        species=_species("A"),
+        grid=grid,
+    )
+    source_lat = np.array([-60.0, 0.0, 60.0])
+    source_lon = np.array([0.0, 90.0, 180.0, 270.0])
+    values = np.arange(12.0).reshape(3, 4)
+
+    first = operator._regrid_to_target(values, source_lat, source_lon)
+    geometry = next(iter(operator._regrid_cache.values()))
+    second = operator._regrid_to_target(values + 1.0, source_lat.copy(), source_lon.copy())
+
+    assert len(operator._regrid_cache) == 1
+    assert next(iter(operator._regrid_cache.values())) is geometry
+    np.testing.assert_allclose(second - first, np.ones(grid.shape[1:]), rtol=0.0, atol=5.0e-16)
 
 
 def _species(*names: str) -> list[Species]:

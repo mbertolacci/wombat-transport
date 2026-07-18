@@ -28,8 +28,7 @@ remains the governing constraint for any transport refactor.
 
 ## Production correctness and lifecycle backlog
 
-- Conservative emissions remapping is duplicated between the cached operator
-  and leading-dimension implementation, including polar-row behavior.
+No active items from the original audit remain in this section.
 
 ## Transport API and abstraction backlog
 
@@ -79,7 +78,7 @@ remains the governing constraint for any transport refactor.
     **Resolved in the low-risk design batch.**
 14. Introduce one immutable conservative-remapping weights object and one
     leading-dimension application routine, preserving existing polar arithmetic
-    exactly. This is a later, parity-sensitive change.
+    exactly. **Resolved in the emissions-remapping batch.**
 15. Normalize ObsOperator YAML and restart data into one intermediate form and
     pass both through a shared validator and array-state builder.
 
@@ -203,6 +202,29 @@ kernel or per-observation loop.
 
 These changes affect harness and test code only; no production transport or
 sampling path changed.
+
+## Emissions-remapping batch outcome
+
+- **Shared geometry — resolved.** `ConservativeRemappingWeights` owns immutable
+  snapshots of source and target coordinates, overlap matrices, and
+  denominators. Its single application path handles arbitrary leading
+  dimensions while preserving the existing polar-row operation order.
+- **Production cache — resolved.** `EmissionsOperator` caches one complete
+  geometry object for each source grid instead of maintaining a separate 2-D
+  remapping implementation.
+- **Restart reuse — resolved.** Restart conversion builds geometry once and
+  applies it to every species instead of rebuilding latitude and longitude
+  weights per variable.
+- **Contracts — verified.** Tests cover exact agreement with the former 2-D
+  arithmetic, leading dimensions, polar behavior, global conservation,
+  coordinate snapshots, read-only geometry, source preservation, shape
+  rejection, and operator cache reuse.
+
+For a deterministic 1-degree-to-2x2.5 field, the shared application was bitwise
+identical to the former specialized arithmetic. Best/mean application times
+were 0.651/0.668 ms shared versus 0.648/0.671 ms specialized. Geometry
+construction was 17.95 ms versus 17.94 ms for the former raw-weight setup.
+There is no measurable regression and no new per-application input copy.
 
 ## Harness and tooling backlog
 

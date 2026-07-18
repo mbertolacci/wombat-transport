@@ -6,7 +6,7 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
-from wombat_transport.emissions import conservative_regrid_horizontal
+from wombat_transport.emissions import ConservativeRemappingWeights
 from wombat_transport.grid import (
     MODEL_LEVELS,
     geos_chem_grid_cell_area_m2,
@@ -35,6 +35,12 @@ def regrid_restart(source_path: Path, output_path: Path, *, target_grid: str, ov
         species_names = sorted(name for name in source.variables if name.startswith("SpeciesRst_"))
         if not species_names:
             raise ValueError(f"{source_path} contains no SpeciesRst_* variables")
+        remapping = ConservativeRemappingWeights(
+            source_lat=source_lat,
+            source_lon=source_lon,
+            target_lat=target_lat,
+            target_lon=target_lon,
+        )
 
         temporary = output_path.with_suffix(output_path.suffix + ".tmp")
         if temporary.exists():
@@ -50,7 +56,7 @@ def regrid_restart(source_path: Path, output_path: Path, *, target_grid: str, ov
                 _write_area(source, output, target_lat, target_lon)
                 for name in species_names:
                     _regrid_species(
-                        source.variables[name], output, source_lat, source_lon, target_lat, target_lon
+                        source.variables[name], output, remapping
                     )
             temporary.replace(output_path)
         except BaseException:
@@ -125,10 +131,7 @@ def _write_area(
 def _regrid_species(
     source: netCDF4.Variable,
     output: netCDF4.Dataset,
-    source_lat: np.ndarray,
-    source_lon: np.ndarray,
-    target_lat: np.ndarray,
-    target_lon: np.ndarray,
+    remapping: ConservativeRemappingWeights,
 ) -> None:
     if source.dimensions != ("time", "lev", "lat", "lon"):
         raise ValueError(f"{source.name} has unsupported dimensions {source.dimensions}")
@@ -136,9 +139,7 @@ def _regrid_species(
     if not np.all(np.isfinite(values)):
         raise ValueError(f"{source.name} contains missing or non-finite values")
     variable = _create_variable_like(source, output)
-    variable[:] = conservative_regrid_horizontal(
-        values, source_lat, source_lon, target_lat, target_lon
-    )
+    variable[:] = remapping.apply(values)
 
 
 def main(argv: list[str] | None = None) -> int:

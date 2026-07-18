@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -80,7 +80,7 @@ class EmissionsOperator:
         self._field_cache: dict[tuple[object, ...], np.ndarray] = {}
         self._scale_cache: dict[tuple[str, datetime], np.ndarray | float] = {}
         self._source_cache: dict[tuple[object, ...], _SourceSlice] = {}
-        self._regrid_cache: dict[tuple[bytes, bytes], tuple[np.ndarray, np.ndarray]] = {}
+        self._regrid_cache: dict[tuple[bytes, bytes], ConservativeRemappingWeights] = {}
 
         for field in self.config.fields:
             species_name = str(field["species"])
@@ -233,22 +233,13 @@ class EmissionsOperator:
     def _regrid_to_target(self, values: np.ndarray, source_lat: np.ndarray, source_lon: np.ndarray) -> np.ndarray:
         key = (np.ascontiguousarray(source_lat).tobytes(), np.ascontiguousarray(source_lon).tobytes())
         if key not in self._regrid_cache:
-            self._regrid_cache[key] = (
-                _latitude_overlap_weights(source_lat, self.grid.lat_deg),
-                _longitude_overlap_weights(source_lon, self.grid.lon_deg),
+            self._regrid_cache[key] = ConservativeRemappingWeights(
+                source_lat=source_lat,
+                source_lon=source_lon,
+                target_lat=self.grid.lat_deg,
+                target_lon=self.grid.lon_deg,
             )
-        lat_weights, lon_weights = self._regrid_cache[key]
-        lat_denominator = lat_weights.sum(axis=1)
-        lon_denominator = lon_weights.sum(axis=1)
-        if np.any(lat_denominator <= 0.0) or np.any(lon_denominator <= 0.0):
-            raise ValueError("source grid does not overlap target grid")
-
-        lat_regridded = lat_weights @ values
-        lat_regridded /= lat_denominator[:, np.newaxis]
-        _average_regridded_polar_rows(lat_regridded, source_lat, self.grid.lat_deg, source_lon)
-        regridded = lat_regridded @ lon_weights.T
-        regridded /= lon_denominator[np.newaxis, :]
-        return np.ascontiguousarray(regridded)
+        return self._regrid_cache[key].apply(values)
 
     def _configured_array_key(self, spec: dict[str, Any], selection_time: datetime) -> tuple[object, ...]:
         select = spec.get("select") or {}
@@ -384,6 +375,67 @@ def _latitude_overlap_weights(source_lat: np.ndarray, target_lat: np.ndarray) ->
     return weights
 
 
+@dataclass(frozen=True, eq=False)
+class ConservativeRemappingWeights:
+    """Immutable conservative horizontal-remapping geometry."""
+
+    source_lat: np.ndarray
+    source_lon: np.ndarray
+    target_lat: np.ndarray
+    target_lon: np.ndarray
+    latitude_overlap: np.ndarray = dataclass_field(init=False, repr=False)
+    longitude_overlap: np.ndarray = dataclass_field(init=False, repr=False)
+    latitude_denominator: np.ndarray = dataclass_field(init=False, repr=False)
+    longitude_denominator: np.ndarray = dataclass_field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        source_lat = _immutable_float64_copy(self.source_lat)
+        source_lon = _immutable_float64_copy(self.source_lon)
+        target_lat = _immutable_float64_copy(self.target_lat)
+        target_lon = _immutable_float64_copy(self.target_lon)
+        latitude_overlap = _latitude_overlap_weights(source_lat, target_lat)
+        longitude_overlap = _longitude_overlap_weights(source_lon, target_lon)
+        latitude_denominator = latitude_overlap.sum(axis=1)
+        longitude_denominator = longitude_overlap.sum(axis=1)
+        if np.any(latitude_denominator <= 0.0) or np.any(longitude_denominator <= 0.0):
+            raise ValueError("source grid does not overlap target grid")
+
+        object.__setattr__(self, "source_lat", source_lat)
+        object.__setattr__(self, "source_lon", source_lon)
+        object.__setattr__(self, "target_lat", target_lat)
+        object.__setattr__(self, "target_lon", target_lon)
+        object.__setattr__(self, "latitude_overlap", _immutable_float64_copy(latitude_overlap))
+        object.__setattr__(self, "longitude_overlap", _immutable_float64_copy(longitude_overlap))
+        object.__setattr__(self, "latitude_denominator", _immutable_float64_copy(latitude_denominator))
+        object.__setattr__(self, "longitude_denominator", _immutable_float64_copy(longitude_denominator))
+
+    def apply(self, values: np.ndarray) -> np.ndarray:
+        """Apply cached weights to arrays ending in source latitude/longitude."""
+
+        array = np.asarray(values, dtype=np.float64)
+        source_shape = (self.source_lat.size, self.source_lon.size)
+        if array.shape[-2:] != source_shape:
+            raise ValueError(
+                f"source field shape {array.shape[-2:]} does not match coordinates {source_shape}"
+            )
+
+        leading_shape = array.shape[:-2]
+        planes = array.reshape((-1, *source_shape))
+        lat_regridded = np.matmul(self.latitude_overlap[np.newaxis, :, :], planes)
+        lat_regridded /= self.latitude_denominator[np.newaxis, :, np.newaxis]
+        for plane in lat_regridded:
+            _average_regridded_polar_rows(
+                plane,
+                self.source_lat,
+                self.target_lat,
+                self.source_lon,
+            )
+        regridded = np.matmul(lat_regridded, self.longitude_overlap.T)
+        regridded /= self.longitude_denominator[np.newaxis, np.newaxis, :]
+        target_shape = (self.target_lat.size, self.target_lon.size)
+        return np.ascontiguousarray(regridded.reshape((*leading_shape, *target_shape)))
+
+
 def conservative_regrid_horizontal(
     values: np.ndarray,
     source_lat: np.ndarray,
@@ -393,28 +445,13 @@ def conservative_regrid_horizontal(
 ) -> np.ndarray:
     """Conservatively remap arrays whose final dimensions are latitude/longitude."""
 
-    array = np.asarray(values, dtype=np.float64)
-    if array.shape[-2:] != (source_lat.size, source_lon.size):
-        raise ValueError(
-            f"source field shape {array.shape[-2:]} does not match coordinates "
-            f"{(source_lat.size, source_lon.size)}"
-        )
-    lat_weights = _latitude_overlap_weights(source_lat, target_lat)
-    lon_weights = _longitude_overlap_weights(source_lon, target_lon)
-    lat_denominator = lat_weights.sum(axis=1)
-    lon_denominator = lon_weights.sum(axis=1)
-    if np.any(lat_denominator <= 0.0) or np.any(lon_denominator <= 0.0):
-        raise ValueError("source grid does not overlap target grid")
-
-    leading_shape = array.shape[:-2]
-    planes = array.reshape((-1, source_lat.size, source_lon.size))
-    lat_regridded = np.matmul(lat_weights[np.newaxis, :, :], planes)
-    lat_regridded /= lat_denominator[np.newaxis, :, np.newaxis]
-    for plane in lat_regridded:
-        _average_regridded_polar_rows(plane, source_lat, target_lat, source_lon)
-    regridded = np.matmul(lat_regridded, lon_weights.T)
-    regridded /= lon_denominator[np.newaxis, np.newaxis, :]
-    return np.ascontiguousarray(regridded.reshape((*leading_shape, target_lat.size, target_lon.size)))
+    weights = ConservativeRemappingWeights(
+        source_lat=source_lat,
+        source_lon=source_lon,
+        target_lat=target_lat,
+        target_lon=target_lon,
+    )
+    return weights.apply(values)
 
 
 def _longitude_overlap_weights(source_lon: np.ndarray, target_lon: np.ndarray) -> np.ndarray:
@@ -462,6 +499,12 @@ def _longitude_cell_widths(lon: np.ndarray) -> np.ndarray:
         [sum(high - low for low, high in intervals) for intervals in _cyclic_cell_intervals(lon)],
         dtype=np.float64,
     )
+
+
+def _immutable_float64_copy(values: np.ndarray) -> np.ndarray:
+    snapshot = np.array(values, dtype=np.float64, copy=True, order="C")
+    snapshot.flags.writeable = False
+    return snapshot
 
 
 def _cyclic_cell_intervals(lon: np.ndarray) -> list[tuple[tuple[float, float], ...]]:
