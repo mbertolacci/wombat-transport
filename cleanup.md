@@ -32,9 +32,9 @@ No active items from the original audit remain in this section.
 
 ## Transport API and abstraction backlog
 
-- The unified executor independently reconstructs pressure, vertical reversal,
-  VDIFF inputs, and convection handoffs instead of sharing driver preparation.
-  Consolidate only in small, parity-tested changes.
+- The unified executor still independently prepares vertical reversals, VDIFF
+  inputs, and convection handoffs. Consolidate only where an existing operator
+  boundary can be shared without new per-step objects or array copies.
 - `TracerField` is frozen but owns writable NumPy arrays and mutable coordinate
   metadata. Model mutable buffer ownership directly; copying storage would be a
   parity-sensitive behavioral change.
@@ -58,8 +58,9 @@ No active items from the original audit remain in this section.
    remove unreachable code or quarantine deliberately retained oracle code.
    **Resolved in the low-risk design batch.**
 7. Extract backend-neutral pressure, TPCORE, VDIFF, and convection preparation
-   functions, proving their arrays exactly equal before switching the unified
-   executor. This is a later, parity-sensitive change.
+    functions, proving their arrays exactly equal before switching the unified
+    executor. **Pressure boundary resolved; later handoffs remain
+    parity-sensitive.**
 8. Add a met-only `prepare_vdiff_met_plan()` and remove the misleading
    tracer-shaped planning surface.
    **Resolved in the met-planning batch.**
@@ -81,6 +82,10 @@ No active items from the original audit remain in this section.
     exactly. **Resolved in the emissions-remapping batch.**
 15. Normalize ObsOperator YAML and restart data into one intermediate form and
     pass both through a shared validator and array-state builder.
+    **Rejected.** That intermediate representation previously made large input
+    setup substantially slower. The current separate ingestion paths converge
+    directly on the flat sampling arrays and share focused validators without
+    adding per-entry objects or another full-state construction pass.
 
 ## Low-risk design batch outcome
 
@@ -225,6 +230,25 @@ identical to the former specialized arithmetic. Best/mean application times
 were 0.651/0.668 ms shared versus 0.648/0.671 ms specialized. Geometry
 construction was 17.95 ms versus 17.94 ms for the former raw-weight setup.
 There is no measurable regression and no new per-application input copy.
+
+## Shared pressure-preparation batch outcome
+
+- **Dry-pressure boundary — resolved.** Regular, trace, and unified transport
+  paths now use the same allocation-neutral functions to reconstruct current
+  dry surface pressure and to construct paired next-boundary pressure thickness
+  and dry-air mass.
+- **Arithmetic and ownership — preserved.** The helpers contain the former
+  expressions unchanged, return the same newly required pressure/mass arrays,
+  and introduce no intermediate state object or additional array copy.
+- **Vertical preparation — deliberately unchanged.** The regular driver enters
+  the complete VDIFF operator while the unified executor prepares a persistent
+  VDIFF plan. Sharing their reversal bundle would require a new per-step object
+  or a wider operator-boundary change, so it remains deferred.
+
+The exact pressure tests and complete transport parity suite retained identical
+pressure and mass arrays. In alternating 2x2.5, 24-tracer, one-thread controls,
+the second parent/current pair measured 0.299489/0.299400 seconds best-of-15
+with the same checksum. The 0.03% difference is below host noise.
 
 ## Harness and tooling backlog
 

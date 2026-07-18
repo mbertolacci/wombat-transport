@@ -3047,3 +3047,18 @@ operators, and the compiled array sampler:
 Sampling checksums were identical at 5.5. The runner adds one constant-time
 timestamp invariant before dispatching ObsOperator sampling; scheduling still
 uses `step_start` and the sampled data remains the completed `step_end` state.
+
+## Shared transport pressure preparation (2026-07-18)
+
+Regular, trace, and unified transport now share the exact existing expressions
+for reconstructing current dry surface pressure from dry-air mass and for
+constructing next-boundary dry pressure thickness plus mass. The helpers do not
+create a preparation object or add an array copy. Vertical reversals and VDIFF
+planning remain separate because the regular path enters the complete operator
+while the unified path fills a persistent plan workspace.
+
+The pressure tests retained bitwise-identical arrays. Alternating parent and
+current 2x2.5, 24-tracer, one-thread compiled-driver controls retained checksum
+`0.0004011625392252`; the second matched pair measured 0.299489 and 0.299400
+seconds best-of-15 respectively. The 0.03% difference is below observed host
+noise.

@@ -83,6 +83,34 @@ def dry_pressure_edges_from_thickness_hpa(delp_dry_hpa: np.ndarray, top_edge_hpa
 def _dry_air_mass_to_pressure(dry_air_mass_kg: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
     return np.asarray(dry_air_mass_kg, dtype=np.float64) / area_m2[np.newaxis, np.newaxis, :, :] * G0_M_PER_S2 / 100.0
 
+
+def _dry_surface_pressure_from_mass_hpa(
+    dry_air_mass_kg: np.ndarray,
+    area_m2: np.ndarray,
+    top_edge_hpa: float,
+) -> np.ndarray:
+    """Recover surface pressure from bottom-to-top dry-air layer mass."""
+
+    return np.sum(_dry_air_mass_to_pressure(dry_air_mass_kg, area_m2), axis=1)[0] + float(
+        top_edge_hpa
+    )
+
+
+def _dry_pressure_and_mass_from_surface_hpa(
+    dry_surface_pressure_hpa: np.ndarray,
+    area_m2: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the paired dry-pressure thickness and mass arrays for one boundary."""
+
+    delp_dry_hpa = dry_pressure_thickness_from_surface_hpa(
+        dry_surface_pressure_hpa,
+        hyai_hpa,
+        hybi,
+    )
+    return delp_dry_hpa, dry_air_mass_from_pressure(delp_dry_hpa, area_m2)
+
 def _pressure_flux_to_mass_kg(pressure_flux_hpa: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
     return np.asarray(pressure_flux_hpa, dtype=np.float64) * 100.0 / G0_M_PER_S2 * area_m2[np.newaxis, np.newaxis, :, :]
 

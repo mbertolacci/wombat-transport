@@ -56,6 +56,11 @@ from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
 )
+from wombat_transport.transport.pressure import (
+    _dry_air_mass_to_pressure,
+    _dry_pressure_and_mass_from_surface_hpa,
+    _dry_surface_pressure_from_mass_hpa,
+)
 from wombat_transport.transport.driver import (
     _is_exact_storage,
     _load_window_forcing,
@@ -486,6 +491,30 @@ def test_pressure_bookkeeping_returns_positive_dry_air_mass():
     assert np.all(delp > 0.0)
     assert np.all(dry_air_mass > 0.0)
     assert np.all(forcing.dry_surface_pressure_hpa <= forcing.wet_surface_pressure_hpa)
+
+
+def test_shared_pressure_preparation_preserves_driver_arithmetic_exactly():
+    surface_pressure = np.array([[[975.0, 980.0], [985.0, 990.0]]])
+    area = np.array([[2.0e10, 2.1e10], [2.2e10, 2.3e10]])
+    hyai = np.array([0.0, 4.0, 0.01])
+    hybi = np.array([1.0, 0.4, 0.0])
+    expected_delp = dry_pressure_thickness_from_surface_hpa(surface_pressure, hyai, hybi)
+    expected_mass = dry_air_mass_from_pressure(expected_delp, area)
+    expected_surface = np.sum(_dry_air_mass_to_pressure(expected_mass, area), axis=1)[0] + float(
+        hyai[-1]
+    )
+
+    actual_delp, actual_mass = _dry_pressure_and_mass_from_surface_hpa(
+        surface_pressure,
+        area,
+        hyai,
+        hybi,
+    )
+    actual_surface = _dry_surface_pressure_from_mass_hpa(actual_mass, area, hyai[-1])
+
+    np.testing.assert_array_equal(actual_delp, expected_delp)
+    np.testing.assert_array_equal(actual_mass, expected_mass)
+    np.testing.assert_array_equal(actual_surface, expected_surface)
 
 
 def test_dry_pressure_edges_from_thickness_reconstructs_bottom_to_top_edges():
