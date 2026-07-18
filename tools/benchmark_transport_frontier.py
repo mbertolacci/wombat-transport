@@ -540,7 +540,7 @@ def _worker_main(spec_path: Path) -> int:
         Path(spec["run_config"]), int(spec["tracer_count"]), dt_s=600.0
     )
     if int(spec["tracer_offset"]):
-        inputs.tracer_field.block_data += int(spec["tracer_offset"]) * 1.0e-7
+        inputs.tracer_field.block_data[...] += int(spec["tracer_offset"]) * 1.0e-7
     state = inputs.tracer_field.reblock(int(spec["block_width"]))
     executor = TransportExecutor.create(state)
     static_terms = build_tpcore_static_terms(
