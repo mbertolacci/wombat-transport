@@ -11,6 +11,7 @@ import threading
 import numpy as np
 
 from wombat_transport.transport.numba_control import configure_numba_threads
+from wombat_transport.transport.numba_control import NoAliasCompiler
 from wombat_transport.transport.numba_control import synchronized_transport_numba
 from wombat_transport.transport.numba_control import numba_available_and_enabled
 from wombat_transport.transport.numba_control import numba_mode
@@ -428,6 +429,49 @@ if njit is not None:
 
 
     @njit(cache=True, parallel=True, nogil=True)
+    def _qckxyz_columns_numba_kernel(dq1: np.ndarray) -> None:
+        nlev = dq1.shape[0]
+        nlat = dq1.shape[1]
+        nlon = dq1.shape[2]
+        ntracer = dq1.shape[3]
+        j1p = 2
+        nrows = nlat - 4
+        for column in prange(nrows * nlon):
+            j = j1p + column // nlon
+            i = column % nlon
+            needs_fill = False
+            for k in range(nlev):
+                for tracer in range(ntracer):
+                    if dq1[k, j, i, tracer] < 0.0:
+                        needs_fill = True
+                        break
+                if needs_fill:
+                    break
+            if not needs_fill:
+                continue
+
+            for tracer in range(ntracer):
+                if dq1[0, j, i, tracer] < 0.0:
+                    dq1[1, j, i, tracer] += dq1[0, j, i, tracer]
+                    dq1[0, j, i, tracer] = 0.0
+                for k in range(1, nlev - 1):
+                    if dq1[k, j, i, tracer] < 0.0:
+                        qup = dq1[k - 1, j, i, tracer]
+                        qly = -dq1[k, j, i, tracer]
+                        dup = min(qly, qup)
+                        dq1[k - 1, j, i, tracer] = qup - dup
+                        dq1[k, j, i, tracer] = dup - qly
+                        dq1[k + 1, j, i, tracer] += dq1[k, j, i, tracer]
+                        dq1[k, j, i, tracer] = 0.0
+                if dq1[nlev - 1, j, i, tracer] < 0.0:
+                    qup = dq1[nlev - 2, j, i, tracer]
+                    qly = -dq1[nlev - 1, j, i, tracer]
+                    dup = min(qly, qup)
+                    dq1[nlev - 2, j, i, tracer] = qup - dup
+                    dq1[nlev - 1, j, i, tracer] = 0.0
+
+
+    @njit(cache=True, parallel=True, nogil=True)
     def _finalize_tpcore_output_numba_kernel(dq1: np.ndarray, delp2: np.ndarray) -> None:
         nlev = dq1.shape[0]
         nlat = dq1.shape[1]
@@ -552,8 +596,7 @@ if njit is not None:
 
         _fzppm_batch_numba_kernel(delp1, wz, dq1, q, dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z)
         if fill:
-            if _qckxyz_needs_fill_numba_kernel(dq1):
-                _qckxyz_batch_numba_kernel(dq1)
+            _qckxyz_columns_numba_kernel(dq1)
         if finalize_output:
             _finalize_tpcore_output_numba_kernel(dq1, delp2)
 
@@ -893,7 +936,7 @@ if njit is not None:
                 q[nlat - 1, i, tracer] += north
 
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, pipeline_class=NoAliasCompiler)
     def _xtp_batch_numba_kernel(
         dq1: np.ndarray,
         qqv: np.ndarray,
@@ -1053,7 +1096,7 @@ if njit is not None:
                 dq1[j, nlon - 1, tracer] += fx_row[nlon - 1, tracer] - fx_row[0, tracer]
 
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, pipeline_class=NoAliasCompiler)
     def _ytp_batch_numba_kernel(
         dq1: np.ndarray,
         qqu: np.ndarray,
@@ -1168,7 +1211,7 @@ if njit is not None:
                 dq1[nlat - 2, i, tracer] = dq_np
 
 
-    @njit(cache=True, parallel=True, nogil=True)
+    @njit(cache=True, parallel=True, nogil=True, pipeline_class=NoAliasCompiler)
     def _fzppm_batch_numba_kernel(
         delp1: np.ndarray,
         wz: np.ndarray,
@@ -1398,6 +1441,10 @@ else:
 
 
     def _qckxyz_needs_fill_numba_kernel(dq1: np.ndarray) -> bool:
+        raise RuntimeError("numba is not available")
+
+
+    def _qckxyz_columns_numba_kernel(dq1: np.ndarray) -> None:
         raise RuntimeError("numba is not available")
 
 

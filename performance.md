@@ -2884,3 +2884,77 @@ timing, do not repeat fixed-width plumbing without a new compiler, target
 architecture, or materially different kernel shape that gives a reason to
 expect a different result. All experimental source changes were removed after
 measurement.
+
+### Numba no-alias contracts and column-local QCK (2026-07-18)
+
+Two remaining compiler/code-shape proposals were tested from `main` at
+`6075b82` on global 2x2.5 synthetic inputs. Timings used the parent checkout's
+Numba 0.66.0 environment and materialized grid data, while importing source
+from the experiment branch. Each comparison used warmed compilation, four or
+eight Numba workers, and best-of-four or best-of-six apply timings. Checksums
+and full arrays were compared in addition to timing.
+
+Numba's internal `noalias` compilation flag was enabled through a small custom
+compiler pipeline. The contract was restricted to spatial kernels whose array
+arguments and workspaces are owned as disjoint allocations by the transport
+executor: TPCORE X, Y, and vertical transport; the VDIFF tracer solve; and the
+convection tracer update. The serial kernels used by outer block parallelism
+retain the default compiler pipeline. Applying the contract to their TPCORE
+clones measured between about -1% and +1% depending on block width, so it was
+not retained there.
+
+Isolated four-worker results were:
+
+| Operator/path | Tracers | Baseline s | No-alias s | Change |
+| --- | ---: | ---: | ---: | ---: |
+| Complete chain, spatial width 8 | 24 | 0.13929 | 0.12250 | 13.7% faster |
+| Complete chain, spatial width 8 | 96 | 0.55276 | 0.48384 | 14.2% faster |
+| VDIFF, zero flux | 24 | 0.01745 | 0.01680 | 3.9% faster |
+| VDIFF, zero flux | 96 | 0.04754 | 0.04303 | 10.5% faster |
+| VDIFF, nonzero flux | 24 | 0.02254 | 0.02028 | 11.2% faster |
+| VDIFF, nonzero flux | 96 | 0.10448 | 0.10097 | 3.5% faster |
+| Convection | 24 | 0.01475 | 0.01251 | 17.9% faster |
+| Convection | 96 | 0.07096 | 0.06377 | 11.3% faster |
+
+The TPCORE result includes only its no-alias leaf changes; the later QCK,
+VDIFF, and convection changes were absent from that matched comparison. A
+fresh-process eight-worker comparison of all retained changes against the
+parent `main` checkout improved the direct fused chain from 0.08803 to
+0.07391 seconds at 24 tracers and from 0.31862 to 0.29492 seconds at 96
+tracers. The width-8 spatial executor improved by 21.4% and 13.2%
+respectively. The block executor varied between 2.5% slower and 0.6% faster
+across widths 8 and 16, consistent with noise because none of its serial
+operator kernels changed.
+
+As an application-level smoke test, the materialized 4x5 24-tracer residual
+emissions case completed all 144 one-day transport steps with eight spatial
+workers in 9.02 seconds. This test reused the existing GEOS-Chem inputs and did
+not rerun GEOS-Chem.
+
+QCK's guarded global negative scan was replaced only in spatial TPCORE by a
+parallel column kernel that scans and, when needed, corrects each completed
+column. Each tracer retains the original top-to-bottom correction order.
+Outer-block TPCORE keeps the old serial global scan/correction, since its
+blocks already provide the outer parallelism. Direct kernel timings were:
+
+| Tracers | Workers | Smooth old/new s | Sharp old/new s |
+| ---: | ---: | ---: | ---: |
+| 24 | 4 | 0.00609 / 0.00219 | 0.00750 / 0.00261 |
+| 24 | 8 | 0.00715 / 0.00168 | 0.00759 / 0.00214 |
+| 96 | 4 | 0.02454 / 0.01004 | 0.03508 / 0.01044 |
+| 96 | 8 | 0.03151 / 0.00789 | 0.03472 / 0.00833 |
+
+The column kernel was bitwise equal to the previous guarded correction for
+smooth inputs and explicit negative values at the top, interior, and bottom
+levels. Existing transport policy tests cover all three execution strategies;
+the spatial complete-chain comparisons remained bitwise equal and block
+comparisons retained their existing one-ULP difference from spatial execution.
+
+The no-alias pipeline uses private Numba compiler APIs, so it is more
+upgrade-sensitive than an ordinary decorator option. A focused codegen test
+compiles a two-array probe and asserts that array data pointers still receive
+LLVM `noalias`; a future Numba change should therefore fail visibly rather
+than silently dropping the contract. This is a small localized maintenance
+cost, but less elegant than the column-local QCK kernel. Both changes were
+retained because the spatial gains are material and block execution is
+unchanged by construction.

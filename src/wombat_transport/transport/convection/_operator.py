@@ -12,6 +12,7 @@ from functools import wraps
 from wombat_transport.transport.convection import _reference
 from wombat_transport.transport.numba_control import (
     configure_numba_threads,
+    NoAliasCompiler,
     numba_available_and_enabled,
     numba_mode,
     synchronized_transport_numba,
@@ -115,7 +116,13 @@ def _convect_fullgrid_top_numba(
 
 if njit is not None:
 
-    @njit(cache=True, parallel=True, nogil=True, fastmath={"contract"})
+    @njit(
+        cache=True,
+        parallel=True,
+        nogil=True,
+        fastmath={"contract"},
+        pipeline_class=NoAliasCompiler,
+    )
     def _convect_fullgrid_top_numba_kernel(
         q_all: np.ndarray,
         diag_all: np.ndarray,

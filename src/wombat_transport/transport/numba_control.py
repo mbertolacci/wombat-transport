@@ -14,8 +14,24 @@ NUMBA_THREADS_ENV = "WOMBAT_NUMBA_THREADS"
 
 try:  # Optional acceleration dependency.
     from numba import set_num_threads
+    from numba.core.compiler import CompilerBase, DefaultPassBuilder
 except ImportError:  # pragma: no cover - exercised in environments without numba.
     set_num_threads = None
+    CompilerBase = None
+    DefaultPassBuilder = None
+
+
+if CompilerBase is not None:
+
+    class NoAliasCompiler(CompilerBase):
+        """Compile an internal kernel whose array arguments never overlap."""
+
+        def define_pipelines(self):
+            self.state.flags.noalias = True
+            return [DefaultPassBuilder.define_nopython_pipeline(self.state)]
+
+else:  # pragma: no cover - exercised in environments without numba.
+    NoAliasCompiler = None
 
 
 _numba_warning_emitted = False

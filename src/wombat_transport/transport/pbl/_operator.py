@@ -8,6 +8,7 @@ from functools import wraps
 
 import numpy as np
 
+from wombat_transport.transport.numba_control import NoAliasCompiler
 from wombat_transport.transport.numba_control import synchronized_transport_numba
 from wombat_transport.transport.pbl import _kernels as nb
 from wombat_transport.transport.pbl import _reference
@@ -157,7 +158,12 @@ if njit is not None:
         return negative_count
 
     _apply_vdiff_block_serial = njit(nogil=True)(_apply_vdiff_block_impl)
-    _apply_vdiff_block_spatial = njit(parallel=True, nogil=True, cache=True)(
+    _apply_vdiff_block_spatial = njit(
+        parallel=True,
+        nogil=True,
+        cache=True,
+        pipeline_class=NoAliasCompiler,
+    )(
         _apply_vdiff_block_impl
     )
 
