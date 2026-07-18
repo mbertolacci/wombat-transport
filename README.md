@@ -156,3 +156,15 @@ Run the test suite with:
 ```bash
 .venv/bin/python -m pytest
 ```
+
+Install the development tools and run the static-analysis baseline with:
+
+```bash
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/ruff check
+.venv/bin/vulture --config pyproject.toml
+```
+
+Ruff is configured for high-signal correctness and unused-code checks rather
+than broad style enforcement. Vulture supplements it with conservative
+dead-symbol detection.

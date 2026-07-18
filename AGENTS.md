@@ -71,6 +71,9 @@ itself. It is vendored reference source for reading, harnessing, and tracing.
 ## Validation Pointers
 
 - Full test suite: `.venv/bin/python -m pytest`.
+- Static analysis: `.venv/bin/ruff check` and
+  `.venv/bin/vulture --config pyproject.toml`. Run both for Python source,
+  test, or tool changes; keep the configured high-signal baseline clean.
 - HEMCO standalone: see `tools/hemco_harness/README.md`. Generated
   `HEMCO_sa_Grid.rc` must include explicit GEOS 2x2.5 latitude edges; polar-row
   failures usually mean the synthetic target grid is wrong.
