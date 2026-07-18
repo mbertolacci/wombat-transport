@@ -12,9 +12,10 @@ from wombat_transport.transport.numba_control import NoAliasCompiler
 from wombat_transport.transport.numba_control import synchronized_transport_numba
 from wombat_transport.transport.pbl import _kernels as nb
 from wombat_transport.transport.pbl import _reference
+from wombat_transport.transport.pbl._reference import VdiffDrResult
 from wombat_transport.transport.pbl._plan import VdiffPlanWorkspace
 from wombat_transport.transport.pbl._plan import make_vdiff_plan_workspace
-from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
+from wombat_transport.transport.pbl._plan import prepare_vdiff_met_plan
 
 if nb._NUMBA_AVAILABLE:
     from numba import get_thread_id, njit, prange
@@ -267,7 +268,7 @@ def run_vdiff_one_block_compiled(
         if diagnostics
         else np.empty((0,), dtype=np.float64)
     )
-    plan = prepare_vdiff_plan(
+    plan = prepare_vdiff_met_plan(
         u_top=u_top,
         v_top=v_top,
         temperature_top=temperature_top,
@@ -316,7 +317,7 @@ def run_vdiff_one_block_compiled(
         else np.empty((0,), dtype=np.float64)
     )
     empty = np.empty((0,), dtype=np.float64)
-    return nb.VdiffDrResult(
+    return VdiffDrResult(
         tracer_conc=tracer_out,
         specific_humidity_kg_kg=(
             plan.specific_humidity_after

@@ -3007,3 +3007,23 @@ Matched 2x2.5, 24-tracer, single-thread measurements found no regression:
 The consuming comparison ran the parent commit and new source
 contemporaneously with the same cache and environment. Best times were
 effectively identical and means differed by 0.16%, within observed host noise.
+
+## Static identity and met-only planning (2026-07-18)
+
+Cached `TpcoreStaticTerms` now retain immutable source snapshots and validate
+area, hybrid coefficients, and latitude before reuse. The 2x2.5 identity check
+measured about 6 microseconds, approximately 0.002% of a 24-tracer transport
+step. Snapshot storage is allocated once and is roughly one area grid plus
+three coordinate vectors.
+
+VDIFF plan preparation now exposes a meteorology-only adapter and no longer
+stores one-lane dummy tracer and surface-flux arrays in each plan workspace.
+The adapter reaches the established plan-only arithmetic with zero-width
+views, so it introduces no tracer data allocation and does not change the
+compiled coefficient calculations.
+
+The matched 2x2.5, 24-tracer, one-thread driver benchmark retained checksum
+`0.0004011625392252` and moved from 0.299870/0.301335 seconds best/mean to
+0.298970/0.300629 seconds. Alternating production-style cached-static controls
+against the parent commit varied in both directions by more than this delta;
+no runtime regression was measurable.

@@ -33,7 +33,7 @@ class VdiffPlan:
 
 @dataclass
 class VdiffPlanWorkspace:
-    """Reusable outputs and dummy inputs for VDIFF preparation."""
+    """Reusable meteorological outputs for VDIFF preparation."""
 
     cch: np.ndarray
     zeh: np.ndarray
@@ -45,8 +45,6 @@ class VdiffPlanWorkspace:
     rrho: np.ndarray
     tmp1: np.ndarray
     specific_humidity_after: np.ndarray
-    dummy_tracer: np.ndarray
-    dummy_flux: np.ndarray
     diagnostic_kvm: np.ndarray
     diagnostic_tpert: np.ndarray
     diagnostic_qpert: np.ndarray
@@ -71,8 +69,6 @@ def make_vdiff_plan_workspace(
         rrho=horizontal,
         tmp1=np.empty_like(horizontal),
         specific_humidity_after=np.empty_like(center),
-        dummy_tracer=np.zeros((nlev, nlat, nlon, 1), dtype=np.float64),
-        dummy_flux=np.zeros((nlat, nlon, 1), dtype=np.float64),
         diagnostic_kvm=(
             np.empty((nlev + 1, nlat, nlon), dtype=np.float64)
             if diagnostics
@@ -91,7 +87,7 @@ def make_vdiff_plan_workspace(
     )
 
 
-def prepare_vdiff_plan(
+def prepare_vdiff_met_plan(
     *,
     u_top: np.ndarray,
     v_top: np.ndarray,
@@ -111,7 +107,7 @@ def prepare_vdiff_plan(
     workers: int,
     workspace: VdiffPlanWorkspace | None = None,
 ) -> VdiffPlan:
-    """Prepare exact zero-surface-flux coefficients for all tracer blocks."""
+    """Prepare tracer-independent VDIFF meteorology for all tracer blocks."""
 
     if not _kernels._NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
@@ -131,8 +127,7 @@ def prepare_vdiff_plan(
             f"VDIFF plan requested {workers} workers but "
             f"WOMBAT_NUMBA_THREADS configured {configured_workers}"
         )
-    result = _kernels._prepare_vdiff_plan_numba(
-        tracer_top=workspace.dummy_tracer,
+    specific_humidity_after = _kernels._prepare_vdiff_met_plan_numba(
         u_top=np.asarray(u_top, dtype=np.float64),
         v_top=np.asarray(v_top, dtype=np.float64),
         temperature_top=np.asarray(temperature_top, dtype=np.float64),
@@ -145,16 +140,11 @@ def prepare_vdiff_plan(
         pblh_m=np.asarray(pblh_m, dtype=np.float64),
         hflux_w_m2=np.asarray(hflux_w_m2, dtype=np.float64),
         water_flux_kg_m2_s=np.asarray(water_flux_kg_m2_s, dtype=np.float64),
-        surface_flux_kg_m2_s=workspace.dummy_flux,
         ustar_m_s=np.asarray(ustar_m_s, dtype=np.float64),
         area_m2=np.asarray(area_m2, dtype=np.float64),
         dt_s=float(dt_s),
         npbl=int(npbl),
-        surface_flux_is_zero=True,
         nthreads=workers,
-        reuse_output=True,
-        output_buffer=None,
-        input_mass_pressure_hpa=None,
         plan_output=(
             workspace.cch,
             workspace.zeh,
@@ -166,7 +156,6 @@ def prepare_vdiff_plan(
             workspace.rrho,
             workspace.tmp1,
         ),
-        plan_only=True,
         sphu_output_buffer=workspace.specific_humidity_after,
         diagnostic_plan_output=(
             workspace.diagnostic_kvm,
@@ -190,5 +179,5 @@ def prepare_vdiff_plan(
         area_m2=np.asarray(area_m2, dtype=np.float64),
         dt_s=float(dt_s),
         start_level=max(0, nlev - int(npbl)),
-        specific_humidity_after=result.specific_humidity_kg_kg,
+        specific_humidity_after=specific_humidity_after,
     )

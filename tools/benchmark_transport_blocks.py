@@ -18,7 +18,7 @@ from wombat_transport.transport._executor import make_transport_workspace
 from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
-from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
+from wombat_transport.transport.pbl._plan import prepare_vdiff_met_plan
 from wombat_transport.transport.tpcore import setup_tpcore_terms
 from wombat_transport.transport.tpcore._operator import (
     _run_tpcore_borrowed_with_setup,
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace = transport_workspace.tpcore
             def prepare_plans():
                 tpcore_plan = prepare_tpcore_plan(setup=setup, area_m2=tpcore.area_m2)
-                vdiff_plan = prepare_vdiff_plan(
+                vdiff_plan = prepare_vdiff_met_plan(
                     u_top=vdiff.u_m_s,
                     v_top=vdiff.v_m_s,
                     temperature_top=vdiff.temperature_k,

@@ -21,6 +21,7 @@ from wombat_transport.transport.pjc import build_pjc_horizontal_geometry, pjc_ma
 from wombat_transport.transport.tpcore.types import (
     TpcoreBranchReport,
     TpcoreDeferredState,
+    TpcoreGridIdentity,
     TpcoreSetup,
     TpcoreState,
     TpcoreStaticTerms,
@@ -389,11 +390,16 @@ def setup_tpcore_terms(
     hyai = np.asarray(hyai_hpa, dtype=np.float64)
     hybi_arr = np.asarray(hybi, dtype=np.float64)
     lat = np.asarray(lat_deg, dtype=np.float64)
-    static = (
-        build_tpcore_static_terms(area_m2=area, hyai_hpa=hyai, hybi=hybi_arr, lat_deg=lat)
-        if static_terms is None
-        else static_terms
-    )
+    if static_terms is None:
+        static = build_tpcore_static_terms(
+            area_m2=area,
+            hyai_hpa=hyai,
+            hybi=hybi_arr,
+            lat_deg=lat,
+        )
+    else:
+        static = static_terms
+        _validate_tpcore_grid_identity(static.grid_identity, area, hyai, hybi_arr, lat)
 
     xmass, ymass = pjc_mass_flux_hpa(
         p1_hpa=p1,
@@ -465,6 +471,12 @@ def build_tpcore_static_terms(
     ak_top = hyai[::-1].copy()
     bk_top = hybi_arr[::-1]
     return TpcoreStaticTerms(
+        grid_identity=TpcoreGridIdentity(
+            area_m2=_immutable_float64_copy(area),
+            hyai_hpa=_immutable_float64_copy(hyai),
+            hybi=_immutable_float64_copy(hybi_arr),
+            lat_deg=_immutable_float64_copy(lat),
+        ),
         pjc_geometry=geometry,
         ak_top_hpa=ak_top,
         dap_top_hpa=(ak_top[1:] - ak_top[:-1]).copy(),
@@ -472,6 +484,30 @@ def build_tpcore_static_terms(
         dap_geos_hpa=(hyai[:-1] - hyai[1:]).copy(),
         dbk_geos=(hybi_arr[:-1] - hybi_arr[1:]).copy(),
     )
+
+
+def _immutable_float64_copy(values: np.ndarray) -> np.ndarray:
+    snapshot = np.array(values, dtype=np.float64, copy=True, order="C")
+    snapshot.flags.writeable = False
+    return snapshot
+
+
+def _validate_tpcore_grid_identity(
+    identity: TpcoreGridIdentity,
+    area_m2: np.ndarray,
+    hyai_hpa: np.ndarray,
+    hybi: np.ndarray,
+    lat_deg: np.ndarray,
+) -> None:
+    supplied = {
+        "area_m2": area_m2,
+        "hyai_hpa": hyai_hpa,
+        "hybi": hybi,
+        "lat_deg": lat_deg,
+    }
+    for name, values in supplied.items():
+        if not np.array_equal(values, getattr(identity, name)):
+            raise ValueError(f"TPCORE static terms do not match supplied {name}")
 
 
 def _validate_zonally_uniform_area(area_m2: np.ndarray) -> None:

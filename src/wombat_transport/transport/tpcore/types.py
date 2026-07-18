@@ -76,7 +76,18 @@ class TpcoreSetup:
 
 
 @dataclass(frozen=True)
+class TpcoreGridIdentity:
+    """Immutable source values used to build cached TPCORE grid terms."""
+
+    area_m2: np.ndarray
+    hyai_hpa: np.ndarray
+    hybi: np.ndarray
+    lat_deg: np.ndarray
+
+
+@dataclass(frozen=True)
 class TpcoreStaticTerms:
+    grid_identity: TpcoreGridIdentity
     pjc_geometry: PjcHorizontalGeometry
     ak_top_hpa: np.ndarray
     dap_top_hpa: np.ndarray

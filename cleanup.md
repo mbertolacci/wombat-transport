@@ -49,8 +49,6 @@ remains the governing constraint for any transport refactor.
 
 ## Transport API and abstraction backlog
 
-- Supplied TPCORE static terms are shape-checked but not tied to the grid and
-  hybrid coordinates from which they were prepared.
 - Pole averaging assumes zonally invariant cell area although the public API
   accepts arbitrary two-dimensional areas. Validate the supported invariant.
 - Scalar reference helpers and several packing/predicate helpers appear to be
@@ -59,8 +57,6 @@ remains the governing constraint for any transport refactor.
 - The unified executor independently reconstructs pressure, vertical reversal,
   VDIFF inputs, and convection handoffs instead of sharing driver preparation.
   Consolidate only in small, parity-tested changes.
-- VDIFF plan preparation uses dummy tracer and flux arrays to reach met-only
-  planning logic. Give the kernel a dedicated met-plan interface.
 - Executor ownership accepts any `shares_memory` relationship; validate exact
   shape, strides, offset, and expected layout.
 - Several convection fields are built and validated but not consumed:
@@ -81,7 +77,8 @@ remains the governing constraint for any transport refactor.
 3. Add one TPCORE `bind_state_storage()` operation that validates and updates
    all workspace aliases atomically. **Resolved in the ownership-API batch.**
 4. Store grid identity metadata in `TpcoreStaticTerms` and validate it when an
-   operator is prepared, computing any fingerprint only once.
+   operator is prepared, capturing the immutable identity once.
+   **Resolved in the met-planning batch.**
 5. Validate the supported zonally uniform cell-area invariant before TPCORE
    pole averaging. **Selected for the current low-risk batch.**
 6. Confirm use of the scalar TPCORE/reference compatibility helpers, then
@@ -90,8 +87,9 @@ remains the governing constraint for any transport refactor.
 7. Extract backend-neutral pressure, TPCORE, VDIFF, and convection preparation
    functions, proving their arrays exactly equal before switching the unified
    executor. This is a later, parity-sensitive change.
-8. Add a met-only `prepare_vdiff_met_plan()` and retain the existing
-   tracer-shaped entry point temporarily as a compatibility wrapper.
+8. Add a met-only `prepare_vdiff_met_plan()` and remove the misleading
+   tracer-shaped planning surface.
+   **Resolved in the met-planning batch.**
 9. Replace the executor's broad `shares_memory` ownership test with exact
    constant-time storage validation: pointer, shape, strides, dtype, and
    layout. **Selected for the current low-risk batch.**
@@ -168,6 +166,27 @@ the new source measured 0.295155 seconds with the identical chained checksum.
 Their means differed by 0.16%, within host noise. Ownership tests also verify
 input mutation, owned-result stability, borrowed-result invalidation, and
 zero-copy workspace binding directly.
+
+## TPCORE identity and VDIFF met-planning batch outcome
+
+- **TPCORE static identity — resolved.** Cached terms carry immutable snapshots
+  of cell area, hybrid coefficients, and latitude. Reuse validates those source
+  values before applying cached geometry or pressure terms and rejects a
+  mismatch explicitly.
+- **VDIFF met planning — resolved.** `prepare_vdiff_met_plan()` and its kernel
+  adapter accept meteorology only. Persistent plan workspaces no longer contain
+  dummy tracer or surface-flux arrays, and the misleading old plan name was
+  removed rather than retained as compatibility surface.
+- **Numerical identity — verified.** Independent met-plan workspaces produce
+  exactly equal plan arrays, while the full VDIFF and transport oracle tests
+  continue to pass.
+
+The immutable TPCORE snapshots add about one grid's area plus three coordinate
+vectors once per run. Their full reuse check measured about 6 microseconds on
+2x2.5. The 24-tracer one-thread driver retained its checksum and moved from
+0.299870 to 0.298970 seconds best-of-15; alternating cached-static old/new
+controls varied in both directions by more than the observed difference, so
+there is no measurable regression.
 
 ## Harness and tooling backlog
 

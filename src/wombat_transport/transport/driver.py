@@ -38,7 +38,7 @@ from wombat_transport.transport.pbl import (
     VdiffDrResult,
     run_vdiffdr_one_step,
 )
-from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
+from wombat_transport.transport.pbl._plan import prepare_vdiff_met_plan
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 from wombat_transport.transport.tpcore._operator import (
     _run_tpcore_borrowed_mass_with_setup,
@@ -322,7 +322,7 @@ def run_transport_step_with_executor(
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
 
     tpcore_plan = prepare_tpcore_plan(setup=setup, area_m2=area)
-    vdiff_plan = prepare_vdiff_plan(
+    vdiff_plan = prepare_vdiff_met_plan(
         u_top=np.asarray(forcing.u_m_s[0], dtype=np.float64)[::-1],
         v_top=np.asarray(forcing.v_m_s[0], dtype=np.float64)[::-1],
         temperature_top=temperature[::-1],

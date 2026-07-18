@@ -93,14 +93,19 @@ from wombat_transport.transport.convection import G0_100, run_cloud_convection_o
 from wombat_transport.transport._executor import apply_transport
 from wombat_transport.transport._executor import make_transport_workspace
 from wombat_transport.transport.convection._operator import _convect_block_serial
-from wombat_transport.transport.pbl import run_vdiffdr_one_step
+from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
 from wombat_transport.transport.pbl import _kernels as pbl_numba
 from wombat_transport.transport.pbl._operator import _apply_vdiff_block_serial
-from wombat_transport.transport.pbl._plan import VdiffPlan
+from wombat_transport.transport.pbl._plan import (
+    VdiffPlan,
+    make_vdiff_plan_workspace,
+    prepare_vdiff_met_plan,
+)
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
     analyze_tpcore_branches,
+    build_tpcore_static_terms,
     run_tpcore_one_step,
     setup_tpcore_terms,
     trace_tpcore_one_step,
@@ -1064,6 +1069,45 @@ def test_tracked_vdiff_snapshot_matches_python_port(tmp_path, transport_numba_mo
     assert comparison.common_basis_final_mass_max_abs_error < 1.0e-12
 
 
+@pytest.mark.skipif(not pbl_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_vdiff_met_plan_is_stable_across_workspaces(monkeypatch):
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
+    with netCDF4.Dataset(VDIFF_FIXTURE_DIR / "vdiff_input.nc") as dataset:
+        kwargs = {
+            "u_top": np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            "v_top": np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            "temperature_top": np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
+            "sphu_top": np.asarray(dataset.variables["specific_humidity_kg_kg"][:], dtype=np.float64),
+            "pmid_hpa": np.asarray(dataset.variables["pmid_hpa"][:], dtype=np.float64),
+            "pint_hpa": np.asarray(dataset.variables["pedge_hpa"][:], dtype=np.float64),
+            "virtual_temperature_top": np.asarray(
+                dataset.variables["virtual_temperature_k"][:], dtype=np.float64
+            ),
+            "bxheight_top": np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
+            "dry_mass_top": np.asarray(dataset.variables["dry_air_mass_kg"][:], dtype=np.float64),
+            "pblh_m": np.asarray(dataset.variables["pbl_top_m"][:], dtype=np.float64),
+            "hflux_w_m2": np.asarray(dataset.variables["hflux_w_m2"][:], dtype=np.float64),
+            "water_flux_kg_m2_s": np.asarray(dataset.variables["eflux_w_m2"][:], dtype=np.float64)
+            / LATVAP_J_PER_KG,
+            "ustar_m_s": np.asarray(dataset.variables["ustar_m_s"][:], dtype=np.float64),
+            "area_m2": np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            "dt_s": float(dataset.dt_s),
+            "workers": 1,
+        }
+    shape = kwargs["temperature_top"].shape
+    direct_workspace = make_vdiff_plan_workspace(*shape, diagnostics=True)
+    second_workspace = make_vdiff_plan_workspace(*shape, diagnostics=True)
+
+    direct = prepare_vdiff_met_plan(**kwargs, workspace=direct_workspace)
+    repeated = prepare_vdiff_met_plan(**kwargs, workspace=second_workspace)
+
+    for name in VdiffPlan.__dataclass_fields__:
+        np.testing.assert_array_equal(getattr(direct, name), getattr(repeated, name))
+    assert not hasattr(direct_workspace, "dummy_tracer")
+    assert not hasattr(direct_workspace, "dummy_flux")
+
+
 def test_tracked_vdiff_nonzero_surface_flux_snapshot_matches_python_port(tmp_path, transport_numba_mode):
     comparison = compare_vdiff_output(
         VDIFF_NONZERO_FLUX_FIXTURE_DIR / "vdiff_input.nc",
@@ -1337,6 +1381,35 @@ def test_python_tpcore_setup_matches_oracle_pressure_on_low_courant_fixture():
     np.testing.assert_array_equal(setup.surface_pressure_hpa, oracle.surface_pressure_hpa)
     assert float(np.max(np.abs(setup.cx))) < 1.0
     assert float(np.max(np.abs(setup.cy))) < 1.0
+
+
+def test_tpcore_static_terms_reject_different_grid_inputs():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        inputs = {
+            "p1_hpa": np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            "p2_hpa": np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            "u_m_s": np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            "v_m_s": np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            "area_m2": np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            "hyai_hpa": np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            "hybi": np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            "lat_deg": np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            "dt_s": float(dataset.dt_s),
+        }
+    static = build_tpcore_static_terms(
+        area_m2=inputs["area_m2"],
+        hyai_hpa=inputs["hyai_hpa"],
+        hybi=inputs["hybi"],
+        lat_deg=inputs["lat_deg"],
+    )
+    assert not static.grid_identity.area_m2.flags.writeable
+    assert not static.grid_identity.hyai_hpa.flags.writeable
+    setup_tpcore_terms(**inputs, static_terms=static)
+
+    different_hyai = inputs["hyai_hpa"].copy()
+    different_hyai[1] += 1.0e-12
+    with pytest.raises(ValueError, match="hyai_hpa"):
+        setup_tpcore_terms(**(inputs | {"hyai_hpa": different_hyai}), static_terms=static)
 
 
 def test_tpcore_fixture_can_distinguish_raw_p2_from_pjc_adjusted_pressure_branch(tmp_path):

@@ -16,7 +16,6 @@ from wombat_transport.transport.numba_control import (
 from wombat_transport.transport.pbl._reference import (
     CAPPA,
     CPAIR_J_PER_KG_K,
-    VdiffDrResult,
     VON_KARMAN,
     ZKMIN_M2_S,
     ZVIR,
@@ -185,9 +184,8 @@ def _numba_vdiff_thread_count() -> int:
     return configure_numba_threads(available=_NUMBA_AVAILABLE)
 
 
-def _prepare_vdiff_plan_numba(
+def _prepare_vdiff_met_plan_numba(
     *,
-    tracer_top: np.ndarray,
     u_top: np.ndarray,
     v_top: np.ndarray,
     temperature_top: np.ndarray,
@@ -200,47 +198,23 @@ def _prepare_vdiff_plan_numba(
     pblh_m: np.ndarray,
     hflux_w_m2: np.ndarray,
     water_flux_kg_m2_s: np.ndarray,
-    surface_flux_kg_m2_s: np.ndarray,
     ustar_m_s: np.ndarray,
     area_m2: np.ndarray,
     dt_s: float,
     npbl: int,
-    surface_flux_is_zero: bool,
     nthreads: int,
-    reuse_output: bool,
-    output_buffer: np.ndarray | None,
-    input_mass_pressure_hpa: np.ndarray | None,
-    plan_output: tuple[np.ndarray, ...] | None = None,
-    plan_only: bool = False,
+    plan_output: tuple[np.ndarray, ...],
     sphu_output_buffer: np.ndarray | None = None,
     diagnostic_plan_output: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
-) -> VdiffDrResult:
-    """Prepare meteorology-only VDIFF coefficients for the shared apply kernels."""
+) -> np.ndarray:
+    """Prepare meteorology-only VDIFF coefficients without tracer inputs."""
     if not _NUMBA_AVAILABLE:
         raise RuntimeError("numba is not available")
-    if plan_output is None or not plan_only:
-        raise ValueError("VDIFF plan preparation requires plan_output and plan_only=True")
-    nlev, nlat, nlon, ntracer = tracer_top.shape
-    workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlat, nlon, ntracer)
-    if output_buffer is not None:
-        tracer_out = np.asarray(output_buffer)
-        if tracer_out.shape != tracer_top.shape or tracer_out.dtype != np.float64:
-            raise ValueError("output_buffer must match tracer_conc shape and float64 dtype")
-        if not tracer_out.flags.c_contiguous or not tracer_out.flags.writeable:
-            raise ValueError("output_buffer must be writable and C-contiguous")
-        if np.shares_memory(tracer_out, tracer_top):
-            raise ValueError("output_buffer must not overlap tracer_conc")
-        sphu_out = workspace.sphu_out
-    elif reuse_output:
-        tracer_out = (
-            np.empty_like(tracer_top)
-            if np.shares_memory(tracer_top, workspace.tracer_out)
-            else workspace.tracer_out
-        )
-        sphu_out = workspace.sphu_out
-    else:
-        tracer_out = np.empty_like(tracer_top)
-        sphu_out = np.empty_like(sphu_top)
+    nlev, nlat, nlon = temperature_top.shape
+    workspace = _get_vdiff_fullgrid_workspace(nthreads, nlev, nlat, nlon, 0)
+    empty_tracer = workspace.tracer_out
+    empty_flux = empty_tracer[0]
+    sphu_out = workspace.sphu_out
     if sphu_output_buffer is not None:
         sphu_out = np.asarray(sphu_output_buffer)
         if sphu_out.shape != sphu_top.shape or sphu_out.dtype != np.float64:
@@ -249,39 +223,28 @@ def _prepare_vdiff_plan_numba(
             raise ValueError("sphu_output_buffer must be writable and C-contiguous")
         if np.shares_memory(sphu_out, sphu_top):
             raise ValueError("sphu_output_buffer must not overlap sphu_top")
-    if input_mass_pressure_hpa is not None:
-        _finalize_deferred_tpcore_poles_numba_kernel(tracer_top, input_mass_pressure_hpa)
-    if plan_output is None:
-        plan_cch = np.empty((1, 1, 1), dtype=np.float64)
-        plan_zeh = np.empty((1, 1, 1), dtype=np.float64)
-        plan_termh = np.empty((1, 1, 1), dtype=np.float64)
-        plan_cgs = np.empty((1, 1, 1), dtype=np.float64)
-        plan_kvh = np.empty((1, 1, 1), dtype=np.float64)
-        plan_potbar = np.empty((1, 1, 1), dtype=np.float64)
-        plan_rpdel = np.empty((1, 1, 1), dtype=np.float64)
-        plan_rrho = np.empty((1, 1), dtype=np.float64)
-        plan_tmp1 = np.empty((1, 1), dtype=np.float64)
-        capture_plan = False
-    else:
-        (
-            plan_cch,
-            plan_zeh,
-            plan_termh,
-            plan_cgs,
-            plan_kvh,
-            plan_potbar,
-            plan_rpdel,
-            plan_rrho,
-            plan_tmp1,
-        ) = plan_output
-        expected_plan_shape = (nlev, nlat, nlon)
-        if any(array.shape != expected_plan_shape for array in plan_output[:3]):
-            raise ValueError(f"plan coefficient arrays must have shape {expected_plan_shape}")
-        if any(array.shape != (nlev + 1, nlat, nlon) for array in plan_output[3:6]):
-            raise ValueError("plan edge arrays have the wrong shape")
-        if plan_rpdel.shape != expected_plan_shape or plan_rrho.shape != (nlat, nlon) or plan_tmp1.shape != (nlat, nlon):
-            raise ValueError("plan source arrays have the wrong shape")
-        capture_plan = True
+    (
+        plan_cch,
+        plan_zeh,
+        plan_termh,
+        plan_cgs,
+        plan_kvh,
+        plan_potbar,
+        plan_rpdel,
+        plan_rrho,
+        plan_tmp1,
+    ) = plan_output
+    expected_plan_shape = (nlev, nlat, nlon)
+    if any(array.shape != expected_plan_shape for array in plan_output[:3]):
+        raise ValueError(f"plan coefficient arrays must have shape {expected_plan_shape}")
+    if any(array.shape != (nlev + 1, nlat, nlon) for array in plan_output[3:6]):
+        raise ValueError("plan edge arrays have the wrong shape")
+    if (
+        plan_rpdel.shape != expected_plan_shape
+        or plan_rrho.shape != (nlat, nlon)
+        or plan_tmp1.shape != (nlat, nlon)
+    ):
+        raise ValueError("plan source arrays have the wrong shape")
     if diagnostic_plan_output is None:
         plan_kvm = np.empty((1, 1, 1), dtype=np.float64)
         plan_tpert = np.empty((1, 1), dtype=np.float64)
@@ -294,8 +257,8 @@ def _prepare_vdiff_plan_numba(
         if plan_tpert.shape != (nlat, nlon) or plan_qpert.shape != (nlat, nlon):
             raise ValueError("diagnostic plan perturbation arrays have the wrong shape")
         capture_plan_diagnostics = True
-    negative_count = _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
-        tracer_top,
+    _run_vdiffdr_fullgrid_zero_flux_numba_kernel(
+        empty_tracer,
         u_top,
         v_top,
         temperature_top,
@@ -308,16 +271,16 @@ def _prepare_vdiff_plan_numba(
         pblh_m,
         hflux_w_m2,
         water_flux_kg_m2_s,
-        surface_flux_kg_m2_s,
+        empty_flux,
         ustar_m_s,
         area_m2,
         dt_s,
         npbl,
-        surface_flux_is_zero,
-        tracer_out,
+        True,
+        empty_tracer,
         sphu_out,
-        pmid_hpa if input_mass_pressure_hpa is None else input_mass_pressure_hpa,
-        input_mass_pressure_hpa is not None,
+        pmid_hpa,
+        False,
         workspace.pmid,
         workspace.pint,
         workspace.rpdel,
@@ -369,27 +332,14 @@ def _prepare_vdiff_plan_numba(
         plan_rpdel,
         plan_rrho,
         plan_tmp1,
-        capture_plan,
-        plan_only,
+        True,
+        True,
         plan_kvm,
         plan_tpert,
         plan_qpert,
         capture_plan_diagnostics,
     )
-    empty = np.empty(0, dtype=np.float64)
-    return VdiffDrResult(
-        tracer_conc=tracer_out,
-        specific_humidity_kg_kg=sphu_out,
-        kvh_m2_s=empty,
-        kvm_m2_s=empty,
-        pbl_top_m=pblh_m.copy(),
-        tpert_k=empty,
-        qpert_kg_kg=empty,
-        negative_count_before_clip=int(negative_count),
-        negative_count_after_clip=0,
-        initial_tracer_mass=empty,
-        final_tracer_mass=empty,
-    )
+    return sphu_out
 
 
 if njit is not None:
