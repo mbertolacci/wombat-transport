@@ -100,6 +100,7 @@ class HistoryOutputManager:
         start: datetime,
         writer: OutputWriterConfig | None = None,
     ) -> None:
+        validate_output_collections(collections)
         self._root = root
         self._template_path = template_path
         self._expid = expid
@@ -619,6 +620,31 @@ def parse_output_writer(raw: dict[str, Any]) -> OutputWriterConfig:
     if mode not in {"sync", "threaded"}:
         raise ValueError("outputs.writer must be 'sync' or 'threaded'")
     return OutputWriterConfig(mode=mode)
+
+
+def validate_output_collections(collections: tuple[OutputCollectionConfig, ...]) -> None:
+    """Validate collection semantics without constructing any output resources."""
+
+    for collection in collections:
+        if collection.filename is None and collection.template is None:
+            raise ValueError(f"output collection {collection.name} requires filename or template")
+        if collection.frequency.is_zero:
+            raise ValueError(f"output collection {collection.name} frequency must be nonzero")
+        if collection.duration.is_zero:
+            raise ValueError(f"output collection {collection.name} duration must be nonzero")
+        time_average = (
+            collection.mode == "time-averaged"
+            and collection.fields == ("SpeciesConcVV_?ADV?",)
+        )
+        restart = (
+            collection.mode == "instantaneous"
+            and "SpeciesRst_?ALL?" in collection.fields
+        )
+        if not time_average and not restart:
+            raise ValueError(
+                f"unsupported output collection {collection.name}: "
+                f"mode={collection.mode}, fields={collection.fields}"
+            )
 
 
 def parse_output_storage(raw: dict[str, Any]) -> OutputStorageConfig:

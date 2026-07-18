@@ -10,6 +10,7 @@ from wombat_transport.constants import EARTH_RADIUS_M
 
 
 MODEL_LEVELS = 47
+CANONICAL_COORD_ATOL_DEG = 1.0e-10
 GEOS_HORIZONTAL_GRIDS = {
     (91, 144): "2x25",
     (46, 72): "4x5",
@@ -64,9 +65,16 @@ def geos_chem_horizontal_resolution(lat_deg: np.ndarray, lon_deg: np.ndarray) ->
 
     lat = np.asarray(lat_deg, dtype=np.float64)
     lon = np.asarray(lon_deg, dtype=np.float64)
+    if lat.ndim != 1 or lon.ndim != 1:
+        raise ValueError("GEOS latitude and longitude coordinates must be one-dimensional")
     resolution = GEOS_HORIZONTAL_GRIDS.get((lat.size, lon.size))
     if resolution is None:
         raise ValueError(f"unsupported GEOS horizontal grid {lat.size}x{lon.size}")
+    expected_lat, expected_lon = geos_chem_horizontal_centers(resolution)
+    if not np.allclose(lat, expected_lat, rtol=0.0, atol=CANONICAL_COORD_ATOL_DEG):
+        raise ValueError(f"latitude coordinates do not match the canonical GEOS {resolution} grid")
+    if not np.allclose(lon, expected_lon, rtol=0.0, atol=CANONICAL_COORD_ATOL_DEG):
+        raise ValueError(f"longitude coordinates do not match the canonical GEOS {resolution} grid")
     return resolution
 
 

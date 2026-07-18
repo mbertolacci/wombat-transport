@@ -68,11 +68,6 @@ def run_cloud_convection_one_step(
     delp_dry_hpa: np.ndarray,
     delp_hpa: np.ndarray,
     area_m2: np.ndarray,
-    bxheight_m: np.ndarray | None = None,
-    pficu_kg_m2_s: np.ndarray | None = None,
-    pflcu_kg_m2_s: np.ndarray | None = None,
-    temperature_k: np.ndarray | None = None,
-    precccon_mm_day: np.ndarray | None = None,
     dt_s: float = 600.0,
     reconstruct_conv_precip_flux: bool = False,
     diagnostics: bool = True,
@@ -117,18 +112,6 @@ def run_cloud_convection_one_step(
             raise ValueError(f"{name} shape {value.shape} does not match tracer grid {grid_shape}")
     if area.shape != horizontal_shape:
         raise ValueError(f"area_m2 shape {area.shape} does not match horizontal grid {horizontal_shape}")
-    for name, value in (
-        ("bxheight_m", bxheight_m),
-        ("pficu_kg_m2_s", pficu_kg_m2_s),
-        ("pflcu_kg_m2_s", pflcu_kg_m2_s),
-        ("temperature_k", temperature_k),
-    ):
-        if value is not None and np.asarray(value).shape != grid_shape:
-            raise ValueError(f"{name} shape {np.asarray(value).shape} does not match tracer grid {grid_shape}")
-    if precccon_mm_day is not None and np.asarray(precccon_mm_day).shape != horizontal_shape:
-        raise ValueError(
-            f"precccon_mm_day shape {np.asarray(precccon_mm_day).shape} does not match horizontal grid {horizontal_shape}"
-        )
     if dt_s <= 0.0:
         raise ValueError("dt_s must be positive")
     if np.any(delp_dry <= 0.0):

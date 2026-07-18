@@ -61,7 +61,7 @@ def make_tpcore_workspace(
 
 
 def pack_tracer_blocks(tracer_conc: np.ndarray, lane_width: int) -> tuple[np.ndarray, int]:
-    """Pack canonical tracers into padded contiguous block-major storage."""
+    """Pack canonical tracers for private harness and benchmark tooling."""
 
     if tracer_conc.ndim != 4:
         raise ValueError("tracer_conc must have shape (lev, lat, lon, tracer)")
@@ -78,7 +78,7 @@ def pack_tracer_blocks(tracer_conc: np.ndarray, lane_width: int) -> tuple[np.nda
 
 
 def unpack_tracer_blocks(blocks: np.ndarray, ntracer: int) -> np.ndarray:
-    """Unpack active block lanes into the canonical tracer layout."""
+    """Unpack private harness block storage into canonical tracer layout."""
 
     if blocks.ndim != 5:
         raise ValueError("blocks must have shape (block, lev, lat, lon, lane)")
@@ -96,7 +96,7 @@ def unpack_tracer_blocks(blocks: np.ndarray, ntracer: int) -> np.ndarray:
 
 
 def load_tpcore_workspace(tracer_conc: np.ndarray, workspace: TpcoreWorkspace) -> None:
-    """Copy canonical active tracers into reusable padded block inputs."""
+    """Load private harness and benchmark workspace storage."""
 
     tracer_conc = np.asarray(tracer_conc, dtype=np.float64)
     if tracer_conc.shape != workspace.tracer_shape:
@@ -111,7 +111,7 @@ def load_tpcore_workspace(tracer_conc: np.ndarray, workspace: TpcoreWorkspace) -
 
 
 def unpack_tpcore_workspace(workspace: TpcoreWorkspace) -> np.ndarray:
-    """Copy active block outputs back to canonical tracer storage."""
+    """Copy private harness block outputs back to canonical storage."""
 
     nlev, nlat, nlon, ntracer = workspace.tracer_shape
     lane_width = workspace.lane_width

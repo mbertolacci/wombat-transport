@@ -7,6 +7,10 @@ the ordinary low-Courant branches. Additional branch fixtures cover X full-PPM
 and compact large-Courant E-W behavior. Full-grid validation must
 keep those branch limits visible instead of treating any compact fixture as
 comprehensive TPCORE parity.
+
+Scalar helper ports in this private module are retained only as readable oracle
+implementations for branch-level tests. Production callers use the batched or
+compiled paths and must not import those helpers through the package API.
 """
 
 from __future__ import annotations
@@ -328,6 +332,7 @@ def build_tpcore_static_terms(
     hyai = np.asarray(hyai_hpa, dtype=np.float64)
     hybi_arr = np.asarray(hybi, dtype=np.float64)
     lat = np.asarray(lat_deg, dtype=np.float64)
+    _validate_zonally_uniform_area(area)
     geometry = build_pjc_horizontal_geometry(area, lat)
     ak_top = hyai[::-1].copy()
     bk_top = hybi_arr[::-1]
@@ -339,6 +344,13 @@ def build_tpcore_static_terms(
         dap_geos_hpa=(hyai[:-1] - hyai[1:]).copy(),
         dbk_geos=(hybi_arr[:-1] - hybi_arr[1:]).copy(),
     )
+
+
+def _validate_zonally_uniform_area(area_m2: np.ndarray) -> None:
+    if area_m2.ndim != 2:
+        raise ValueError("area_m2 must be two-dimensional")
+    if not np.all(area_m2 == area_m2[:, :1]):
+        raise ValueError("TPCORE requires zonally uniform cell area within each latitude row")
 
 
 def _average_poles_in_place(pressure_hpa: np.ndarray, rel_area: np.ndarray) -> None:

@@ -40,6 +40,7 @@ from wombat_transport.transport.pbl import (
 )
 from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
+from wombat_transport.transport.tpcore._reference import _average_const_poles_batch
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
     dry_air_mass_from_pressure,
@@ -49,7 +50,6 @@ from wombat_transport.transport.pressure import (
 from wombat_transport.transport.tpcore import (
     TpcoreState,
     TpcoreStaticTerms,
-    _average_const_poles_batch,
     analyze_tpcore_branches,
     build_tpcore_static_terms,
     run_tpcore_one_step_with_setup,
@@ -276,7 +276,7 @@ def run_transport_step_with_executor(
     """Run one prepared compiled step over persistent block-native state."""
 
     tpcore_workspace = executor.workspace.tpcore
-    if not np.shares_memory(tpcore_workspace.state_a, tracer_field.block_data):
+    if not _is_exact_storage(tpcore_workspace.state_a, tracer_field.block_data[0]):
         raise ValueError("transport executor does not own the supplied tracer field")
     if active_emissions is not None and active_emissions.names != tracer_field.names:
         raise ValueError("active emissions names do not match tracer field names")
@@ -1018,11 +1018,6 @@ def _run_convection_input(
         delp_dry_hpa=state.delp_dry_hpa,
         delp_hpa=state.delp_hpa,
         area_m2=state.area_m2,
-        bxheight_m=state.bxheight_m,
-        pficu_kg_m2_s=state.pficu_kg_m2_s,
-        pflcu_kg_m2_s=state.pflcu_kg_m2_s,
-        temperature_k=state.temperature_k,
-        precccon_mm_day=state.precccon_mm_day,
         dt_s=state.dt_s,
         diagnostics=diagnostics,
         reuse_output=not diagnostics and numba_available_and_enabled(),
@@ -1037,6 +1032,17 @@ def _tpcore_initial_scalar_mass(field_data: np.ndarray, delp1_hpa: np.ndarray, a
         _average_const_poles_batch(tracer[level], delp1_hpa[level], area_1d)
     dry_mass_top = dry_air_mass_from_pressure(delp1_hpa[np.newaxis, ::-1, :, :], area_m2)[:, ::-1, :, :]
     return scalar_mass_by_tracer(transport_tracer_to_canonical(tracer), dry_mass_top)
+
+
+def _is_exact_storage(owned: np.ndarray, supplied: np.ndarray) -> bool:
+    return bool(
+        owned.shape == supplied.shape
+        and owned.strides == supplied.strides
+        and owned.dtype == supplied.dtype
+        and owned.flags.c_contiguous == supplied.flags.c_contiguous
+        and owned.flags.writeable == supplied.flags.writeable
+        and owned.__array_interface__["data"][0] == supplied.__array_interface__["data"][0]
+    )
 
 
 def _hydrostatic_box_height_m(pedge_hpa: np.ndarray, virtual_temperature_k: np.ndarray) -> np.ndarray:

@@ -21,6 +21,7 @@ from wombat_transport.output import (
     parse_history_interval,
     parse_output_storage,
     parse_output_writer,
+    validate_output_collections,
     validate_restart_output_alignment,
     write_restart_collection,
     write_species_conc_collection,
@@ -51,7 +52,6 @@ def test_instantaneous_restart_frequency_must_align_with_transport_steps():
         mode="instantaneous",
         fields=("SpeciesRst_?ALL?",),
     )
-
     with pytest.raises(ValueError, match="not aligned"):
         validate_restart_output_alignment(
             (collection,),
@@ -71,13 +71,38 @@ def test_instantaneous_restart_frequency_accepts_aligned_transport_steps():
         mode="instantaneous",
         fields=("SpeciesRst_?ALL?",),
     )
-
     validate_restart_output_alignment(
         (collection,),
         start=datetime(2014, 9, 1),
         end=datetime(2014, 9, 1) + timedelta(hours=1),
         transport_dt_s=600.0,
     )
+
+
+def test_output_collection_semantics_are_validated_before_writer_construction():
+    missing_path = OutputCollectionConfig(
+        name="SpeciesConc",
+        filename=None,
+        template=None,
+        frequency=parse_history_interval("00000000 010000"),
+        duration=parse_history_interval("00000001 000000"),
+        mode="time-averaged",
+        fields=("SpeciesConcVV_?ADV?",),
+    )
+    unsupported_mode = OutputCollectionConfig(
+        name="SpeciesConc",
+        filename="output.nc4",
+        template=None,
+        frequency=parse_history_interval("00000000 010000"),
+        duration=parse_history_interval("00000001 000000"),
+        mode="instantaneous",
+        fields=("SpeciesConcVV_?ADV?",),
+    )
+
+    with pytest.raises(ValueError, match="requires filename or template"):
+        validate_output_collections((missing_path,))
+    with pytest.raises(ValueError, match="unsupported output collection"):
+        validate_output_collections((unsupported_mode,))
 
 
 def test_history_template_expands_geos_chem_date_tokens():

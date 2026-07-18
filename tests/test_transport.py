@@ -16,6 +16,8 @@ from wombat_transport.fields import (
     canonical_time_slice,
 )
 from wombat_transport.grid import geos_chem_grid_cell_area_m2
+from wombat_transport.grid import geos_chem_horizontal_centers
+from wombat_transport.grid import geos_chem_horizontal_resolution
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers
 from wombat_transport.run_config import (
@@ -30,6 +32,7 @@ from wombat_transport.transport import (
     MERRA2_72_TO_47_GROUPS,
     MERRA2_72_TO_47_MAPPING,
     TransportExecutor,
+    build_tpcore_static_terms,
     compute_transport_stage_masses,
     compute_pbl_height,
     dry_air_mass_from_pressure,
@@ -53,7 +56,11 @@ from wombat_transport.transport.pbl import (
     ZVIR,
     run_vdiffdr_one_step,
 )
-from wombat_transport.transport.driver import _load_window_forcing, _surface_flux_from_active_emissions
+from wombat_transport.transport.driver import (
+    _is_exact_storage,
+    _load_window_forcing,
+    _surface_flux_from_active_emissions,
+)
 
 @requires_transport_data
 def test_transport_forcing_loads_merra2_on_47_level_grid():
@@ -197,6 +204,41 @@ def test_load_transport_grid_uses_geos_chem_area_formula():
     assert not np.allclose(grid.area_m2, template_area, rtol=0.0, atol=1.0)
     np.testing.assert_allclose(grid.area_m2[45, 0], 6.18185596759564e10)
     np.testing.assert_allclose(grid.area_m2[0, 0], 2.697411986535481e8)
+
+
+def test_supported_grid_requires_canonical_coordinates_and_orientation():
+    lat, lon = geos_chem_horizontal_centers("4x5")
+    assert geos_chem_horizontal_resolution(lat, lon) == "4x5"
+
+    shifted_lon = lon.copy()
+    shifted_lon += 1.0
+    with pytest.raises(ValueError, match="longitude coordinates"):
+        geos_chem_horizontal_resolution(lat, shifted_lon)
+    with pytest.raises(ValueError, match="latitude coordinates"):
+        geos_chem_horizontal_resolution(lat[::-1], lon)
+
+
+def test_tpcore_rejects_area_that_varies_with_longitude():
+    area = np.ones((3, 4), dtype=np.float64)
+    area[1, 2] = 1.01
+
+    with pytest.raises(ValueError, match="zonally uniform"):
+        build_tpcore_static_terms(
+            area_m2=area,
+            hyai_hpa=np.array([0.0, 1.0, 2.0]),
+            hybi=np.array([1.0, 0.5, 0.0]),
+            lat_deg=np.array([-1.0, 0.0, 1.0]),
+        )
+
+
+def test_exact_storage_rejects_offset_views_that_only_share_memory():
+    storage = np.zeros(11, dtype=np.float64)
+    owned = storage[:10]
+    supplied = storage[1:]
+
+    assert np.shares_memory(owned, supplied)
+    assert _is_exact_storage(owned, owned.view())
+    assert not _is_exact_storage(owned, supplied)
 
 
 @requires_transport_data

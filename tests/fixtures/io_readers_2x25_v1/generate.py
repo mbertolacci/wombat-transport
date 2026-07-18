@@ -21,8 +21,9 @@ def _create_grid(path: Path) -> netCDF4.Dataset:
     dataset.createVariable("time", "f8", ("time",))[:] = [0.0]
     dataset.createVariable("lev", "f8", ("lev",))[:] = np.arange(47)
     dataset.createVariable("ilev", "f8", ("ilev",))[:] = np.arange(48)
-    dataset.createVariable("lat", "f8", ("lat",))[:] = np.linspace(-90.0, 90.0, 91)
-    dataset.createVariable("lon", "f8", ("lon",))[:] = np.linspace(-180.0, 177.5, 144)
+    lat = np.concatenate(([-89.5], np.arange(-88.0, 90.0, 2.0), [89.5]))
+    dataset.createVariable("lat", "f8", ("lat",))[:] = lat
+    dataset.createVariable("lon", "f8", ("lon",))[:] = np.arange(-180.0, 180.0, 2.5)
     dataset.createVariable("hyam", "f8", ("lev",))[:] = np.linspace(0.0, 1.0, 47)
     dataset.createVariable("hybm", "f8", ("lev",))[:] = np.linspace(1.0, 0.0, 47)
     dataset.createVariable("hyai", "f8", ("ilev",))[:] = np.linspace(0.0, 1.0, 48)

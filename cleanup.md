@@ -78,6 +78,76 @@ remains the governing constraint for any transport refactor.
   metadata. Model mutable buffer ownership directly; copying storage would be a
   parity-sensitive behavioral change.
 
+## Proposed design-debt solutions
+
+1. Give deferred TPCORE output a distinct result type and a field such as
+   `tracer_mass_after`; reserve `tracer_conc_after` for finalized concentration.
+2. Replace the `reuse_input` and `reuse_output` booleans with explicit in-place
+   and workspace entry points; keep borrowed scratch results internal.
+3. Add one TPCORE `bind_state_storage()` operation that validates and updates
+   all workspace aliases atomically.
+4. Store grid identity metadata in `TpcoreStaticTerms` and validate it when an
+   operator is prepared, computing any fingerprint only once.
+5. Validate the supported zonally uniform cell-area invariant before TPCORE
+   pole averaging. **Selected for the current low-risk batch.**
+6. Confirm use of the scalar TPCORE/reference compatibility helpers, then
+   remove unreachable code or quarantine deliberately retained oracle code.
+   **Selected for the current low-risk batch.**
+7. Extract backend-neutral pressure, TPCORE, VDIFF, and convection preparation
+   functions, proving their arrays exactly equal before switching the unified
+   executor. This is a later, parity-sensitive change.
+8. Add a met-only `prepare_vdiff_met_plan()` and retain the existing
+   tracer-shaped entry point temporarily as a compatibility wrapper.
+9. Replace the executor's broad `shares_memory` ownership test with exact
+   constant-time storage validation: pointer, shape, strides, dtype, and
+   layout. **Selected for the current low-risk batch.**
+10. Remove inert convection arguments from the operator API while retaining
+    any fields actually needed as trace/oracle diagnostic payload.
+    **Selected for the current low-risk batch.**
+11. Make `TracerField` buffer mutability explicit while keeping names, units,
+    and coordinate metadata immutable; do not introduce implicit array copies.
+12. Parse and semantically validate every output collection before constructing
+    writers or loading simulation data. **Selected for the current low-risk
+    batch.**
+13. Validate grid coordinates and orientation against the canonical GEOS 2x2.5
+    and 4x5 centers with a documented tight tolerance. **Selected for the
+    current low-risk batch.**
+14. Introduce one immutable conservative-remapping weights object and one
+    leading-dimension application routine, preserving existing polar arithmetic
+    exactly. This is a later, parity-sensitive change.
+15. Normalize ObsOperator YAML and restart data into one intermediate form and
+    pass both through a shared validator and array-state builder.
+
+## Low-risk design batch outcome
+
+- **Zonal-area invariant — resolved.** TPCORE static-term construction rejects
+  cell areas that vary with longitude within a latitude row. The check uses an
+  allocation-light exact comparison and production runs perform it only during
+  static setup.
+- **Reference compatibility surface — resolved.** Scalar oracle helpers remain
+  in the private `_reference` module for branch tests, but are no longer
+  re-exported through the TPCORE package. Packing helpers are explicitly marked
+  as private harness/benchmark utilities.
+- **Executor ownership — resolved.** Persistent executor state now requires an
+  exact pointer, shape, strides, dtype, contiguity, and writability match rather
+  than any overlapping memory region.
+- **Inert convection arguments — resolved.** The operator no longer accepts or
+  validates fields it does not consume. Those fields remain in trace input
+  state where harnesses use them as GEOS-Chem handoff diagnostics.
+- **Output semantics — resolved.** Collection path, interval, mode, and field
+  combinations are validated before any writer or thread is constructed.
+- **Canonical grid identity — resolved.** Supported grids must match canonical
+  GEOS 2x2.5 or 4x5 coordinates and orientation within `1e-10` degrees. The
+  tracked synthetic I/O fixture was corrected to use standard half-polar rows.
+
+Benchmark: the 2x2.5, 24-tracer, single-thread compiled driver retained the
+same checksum. The initial seven-repeat baseline was 0.298517 seconds/step;
+after replacing an allocation-heavy validation implementation, the 15-repeat
+post-change best was 0.299569 seconds/step (0.35% slower than that baseline).
+A contemporaneous old-source control varied by about one percent across
+unchanged numerical kernels, so this difference is below the observed host
+noise. Production runs also prebuild the newly validated static terms once.
+
 ## Harness and tooling backlog
 
 - `--skip-oracle-run` accepts cached fixed-name files without checking config,

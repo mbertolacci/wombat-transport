@@ -100,13 +100,13 @@ from wombat_transport.transport.pbl._plan import VdiffPlan
 from wombat_transport.transport import pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore import (
     TpcoreSetup,
-    _calc_advec_cross_terms,
     analyze_tpcore_branches,
     run_tpcore_one_step,
     setup_tpcore_terms,
     trace_tpcore_one_step,
     validate_tpcore_branch_support,
 )
+from wombat_transport.transport.tpcore._reference import _calc_advec_cross_terms
 from wombat_transport.transport.tpcore import _kernels as tpcore_numba
 from wombat_transport.transport.tpcore._operator import load_tpcore_workspace
 from wombat_transport.transport.tpcore._operator import pack_tracer_blocks
@@ -767,11 +767,6 @@ def test_convection_no_cloud_leaves_tracer_unchanged(tmp_path):
             delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
             delp_hpa=np.asarray(dataset.variables["delp_hpa"][:], dtype=np.float64),
             area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
-            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
-            pficu_kg_m2_s=np.asarray(dataset.variables["pficu_kg_m2_s"][:], dtype=np.float64),
-            pflcu_kg_m2_s=np.asarray(dataset.variables["pflcu_kg_m2_s"][:], dtype=np.float64),
-            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
-            precccon_mm_day=np.asarray(dataset.variables["precccon_mm_day"][:], dtype=np.float64),
             dt_s=float(dataset.dt_s),
         )
 
@@ -803,11 +798,6 @@ def test_convection_diagnostics_light_preserves_tracer_update(tmp_path):
             delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
             delp_hpa=np.asarray(dataset.variables["delp_hpa"][:], dtype=np.float64),
             area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
-            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
-            pficu_kg_m2_s=np.asarray(dataset.variables["pficu_kg_m2_s"][:], dtype=np.float64),
-            pflcu_kg_m2_s=np.asarray(dataset.variables["pflcu_kg_m2_s"][:], dtype=np.float64),
-            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
-            precccon_mm_day=np.asarray(dataset.variables["precccon_mm_day"][:], dtype=np.float64),
             dt_s=float(dataset.dt_s),
         )
 

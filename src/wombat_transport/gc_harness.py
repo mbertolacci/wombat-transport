@@ -2994,11 +2994,6 @@ def write_python_convection_output(input_path: str | Path, output_path: str | Pa
             delp_dry_hpa=np.asarray(dataset.variables["delp_dry_hpa"][:], dtype=np.float64),
             delp_hpa=np.asarray(dataset.variables["delp_hpa"][:], dtype=np.float64),
             area_m2=np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
-            bxheight_m=np.asarray(dataset.variables["bxheight_m"][:], dtype=np.float64),
-            pficu_kg_m2_s=np.asarray(dataset.variables["pficu_kg_m2_s"][:], dtype=np.float64),
-            pflcu_kg_m2_s=np.asarray(dataset.variables["pflcu_kg_m2_s"][:], dtype=np.float64),
-            temperature_k=np.asarray(dataset.variables["temperature_k"][:], dtype=np.float64),
-            precccon_mm_day=np.asarray(dataset.variables["precccon_mm_day"][:], dtype=np.float64),
             dt_s=float(dataset.dt_s),
             reconstruct_conv_precip_flux=bool(getattr(dataset, "reconstruct_conv_precip_flux", 0)),
         )
