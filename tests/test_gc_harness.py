@@ -108,9 +108,16 @@ from wombat_transport.transport.tpcore import (
 )
 from wombat_transport.transport.tpcore._reference import _calc_advec_cross_terms
 from wombat_transport.transport.tpcore import _kernels as tpcore_numba
-from wombat_transport.transport.tpcore._operator import load_tpcore_workspace
-from wombat_transport.transport.tpcore._operator import pack_tracer_blocks
-from wombat_transport.transport.tpcore._operator import unpack_tracer_blocks
+from wombat_transport.transport.tpcore._operator import (
+    _run_tpcore_borrowed_mass_with_setup,
+    _run_tpcore_consuming_mass_with_setup,
+    load_tpcore_workspace,
+    make_tpcore_workspace,
+    pack_tracer_blocks,
+    run_tpcore_one_step_with_setup,
+    unpack_tracer_blocks,
+)
+from wombat_transport.transport.tpcore.types import TpcoreDeferredState
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
@@ -1485,6 +1492,94 @@ def test_python_tpcore_preserves_constant_tracer_on_low_courant_fixture(transpor
         )
 
     np.testing.assert_allclose(state.tracer_conc_after, 4.0e-4, atol=1.0e-18, rtol=0.0)
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_tpcore_result_ownership_contracts_are_explicit(monkeypatch):
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "1")
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        tracer = np.asarray(dataset.variables["tracer_conc"][:], dtype=np.float64)
+        area = np.asarray(dataset.variables["area_m2"][:], dtype=np.float64)
+        setup = setup_tpcore_terms(
+            p1_hpa=np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            p2_hpa=np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            u_m_s=np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            v_m_s=np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            area_m2=area,
+            hyai_hpa=np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            hybi=np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            lat_deg=np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            dt_s=float(dataset.dt_s),
+        )
+
+    copy_safe_input = tracer.copy()
+    copy_safe_before = copy_safe_input.copy()
+    owned = run_tpcore_one_step_with_setup(
+        tracer_conc=copy_safe_input,
+        setup=setup,
+        area_m2=area,
+    )
+    owned_before = owned.tracer_conc_after.copy()
+    np.testing.assert_array_equal(copy_safe_input, copy_safe_before)
+
+    borrowed_input = tracer.copy()
+    borrowed_before = borrowed_input.copy()
+    borrowed = _run_tpcore_borrowed_mass_with_setup(
+        tracer_conc=borrowed_input,
+        setup=setup,
+        area_m2=area,
+    )
+    assert isinstance(borrowed, TpcoreDeferredState)
+    np.testing.assert_array_equal(borrowed_input, borrowed_before)
+    borrowed_storage = borrowed.tracer_mass_after_hpa
+    borrowed_snapshot = borrowed_storage.copy()
+
+    consuming_input = np.ascontiguousarray(tracer * 1.01)
+    consuming_before = consuming_input.copy()
+    consuming_expected = run_tpcore_one_step_with_setup(
+        tracer_conc=consuming_before,
+        setup=setup,
+        area_m2=area,
+    )
+    consumed = _run_tpcore_consuming_mass_with_setup(
+        tracer_conc=consuming_input,
+        setup=setup,
+        area_m2=area,
+    )
+
+    assert np.shares_memory(borrowed_storage, consumed.tracer_mass_after_hpa)
+    assert not np.array_equal(borrowed_storage, borrowed_snapshot)
+    assert not np.array_equal(consuming_input, consuming_before)
+    np.testing.assert_array_equal(owned.tracer_conc_after, owned_before)
+    np.testing.assert_allclose(
+        consumed.tracer_mass_after_hpa[:, 2:-2] / setup.delp2_hpa[:, 2:-2, :, np.newaxis],
+        consuming_expected.tracer_conc_after[:, 2:-2],
+        rtol=2.0e-16,
+        atol=0.0,
+    )
+
+    with pytest.raises(ValueError, match="float64"):
+        _run_tpcore_consuming_mass_with_setup(
+            tracer_conc=tracer.astype(np.float32),
+            setup=setup,
+            area_m2=area,
+        )
+
+
+def test_tpcore_workspace_binds_caller_storage_without_a_copy():
+    workspace = make_tpcore_workspace((3, 4, 5, 6), lane_width=8)
+    storage = np.zeros_like(workspace.state_a)
+
+    workspace.bind_state_storage(storage)
+
+    assert workspace.state_a is storage
+    assert np.shares_memory(workspace.blocks[0].q, storage)
+    storage[0, 1, 2, 3, 4] = 7.0
+    assert workspace.blocks[0].q[1, 2, 3, 4] == 7.0
+
+    with pytest.raises(ValueError, match="C-contiguous"):
+        workspace.bind_state_storage(storage[..., ::-1])
 
 
 @pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")

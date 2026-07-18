@@ -49,14 +49,6 @@ remains the governing constraint for any transport refactor.
 
 ## Transport API and abstraction backlog
 
-- TPCORE deferred finalization returns pressure-weighted tracer mass through a
-  field named `tracer_conc_after`. Use a distinct result type or field name for
-  the deferred handoff.
-- TPCORE `reuse_input` mutates caller storage and `reuse_output` may return
-  thread-local scratch that is overwritten by a later call. Make ownership and
-  borrowed lifetimes explicit.
-- TPCORE workspace rebinding currently relies on distributed alias invariants
-  between the operator and executor. Provide one owned rebinding operation.
 - Supplied TPCORE static terms are shape-checked but not tied to the grid and
   hybrid coordinates from which they were prepared.
 - Pole averaging assumes zonally invariant cell area although the public API
@@ -82,10 +74,12 @@ remains the governing constraint for any transport refactor.
 
 1. Give deferred TPCORE output a distinct result type and a field such as
    `tracer_mass_after`; reserve `tracer_conc_after` for finalized concentration.
+   **Resolved in the ownership-API batch.**
 2. Replace the `reuse_input` and `reuse_output` booleans with explicit in-place
    and workspace entry points; keep borrowed scratch results internal.
+   **Resolved in the ownership-API batch.**
 3. Add one TPCORE `bind_state_storage()` operation that validates and updates
-   all workspace aliases atomically.
+   all workspace aliases atomically. **Resolved in the ownership-API batch.**
 4. Store grid identity metadata in `TpcoreStaticTerms` and validate it when an
    operator is prepared, computing any fingerprint only once.
 5. Validate the supported zonally uniform cell-area invariant before TPCORE
@@ -147,6 +141,33 @@ post-change best was 0.299569 seconds/step (0.35% slower than that baseline).
 A contemporaneous old-source control varied by about one percent across
 unchanged numerical kernels, so this difference is below the observed host
 noise. Production runs also prebuild the newly validated static terms once.
+
+## TPCORE ownership-API batch outcome
+
+- **Deferred result semantics — resolved.** Compiled deferred finalization now
+  returns `TpcoreDeferredState.tracer_mass_after_hpa`; finalized public results
+  continue to use `TpcoreState.tracer_conc_after`.
+- **Input and result ownership — resolved.** The public prepared-step API is
+  copy-safe and caller-owned. Private production adapters separately express a
+  borrowed finalized result, borrowed deferred mass, and consuming deferred
+  mass. Borrowed lifetime and synchronous VDIFF consumption are documented.
+- **No hidden consuming copy — resolved.** Consuming calls require writable,
+  C-contiguous float64 arrays and reject inputs that would require conversion.
+- **Workspace rebinding — resolved.** `bind_state_storage()` validates the
+  complete storage contract and updates every block alias without `copy` or
+  `copyto`.
+- **Benchmark attribution — resolved.** Driver timing wraps all explicit
+  TPCORE entry points, so introducing the adapters does not misclassify TPCORE
+  time as driver overhead.
+
+There were no numerical or performance-semantic changes to the kernels. The
+2x2.5, 24-tracer, one-thread copy-safe benchmark retained its checksum and
+moved from 0.300658 to 0.299742 seconds best-of-15. A matched consuming-chain
+control built from the parent commit measured 0.295158 seconds best-of-15;
+the new source measured 0.295155 seconds with the identical chained checksum.
+Their means differed by 0.16%, within host noise. Ownership tests also verify
+input mutation, owned-result stability, borrowed-result invalidation, and
+zero-copy workspace binding directly.
 
 ## Harness and tooling backlog
 

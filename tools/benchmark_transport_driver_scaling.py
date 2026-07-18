@@ -363,6 +363,8 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
     originals: dict[str, Callable] = {
         "setup_tpcore_terms": driver_mod.setup_tpcore_terms,
         "run_tpcore_one_step_with_setup": driver_mod.run_tpcore_one_step_with_setup,
+        "_run_tpcore_borrowed_mass_with_setup": driver_mod._run_tpcore_borrowed_mass_with_setup,
+        "_run_tpcore_consuming_mass_with_setup": driver_mod._run_tpcore_consuming_mass_with_setup,
         "run_vdiffdr_one_step": driver_mod.run_vdiffdr_one_step,
         "run_cloud_convection_one_step": driver_mod.run_cloud_convection_one_step,
     }
@@ -385,6 +387,12 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
     try:
         driver_mod.setup_tpcore_terms = timed("setup", originals["setup_tpcore_terms"])
         driver_mod.run_tpcore_one_step_with_setup = timed("tpcore", originals["run_tpcore_one_step_with_setup"])
+        driver_mod._run_tpcore_borrowed_mass_with_setup = timed(
+            "tpcore", originals["_run_tpcore_borrowed_mass_with_setup"]
+        )
+        driver_mod._run_tpcore_consuming_mass_with_setup = timed(
+            "tpcore", originals["_run_tpcore_consuming_mass_with_setup"]
+        )
         driver_mod.run_vdiffdr_one_step = timed("vdiff", originals["run_vdiffdr_one_step"])
         driver_mod.run_cloud_convection_one_step = timed("convection", originals["run_cloud_convection_one_step"])
         start = time.perf_counter()
@@ -398,6 +406,8 @@ def _run_timed_step(inputs: SyntheticDriverInputs) -> TimedRun:
     finally:
         driver_mod.setup_tpcore_terms = originals["setup_tpcore_terms"]
         driver_mod.run_tpcore_one_step_with_setup = originals["run_tpcore_one_step_with_setup"]
+        driver_mod._run_tpcore_borrowed_mass_with_setup = originals["_run_tpcore_borrowed_mass_with_setup"]
+        driver_mod._run_tpcore_consuming_mass_with_setup = originals["_run_tpcore_consuming_mass_with_setup"]
         driver_mod.run_vdiffdr_one_step = originals["run_vdiffdr_one_step"]
         driver_mod.run_cloud_convection_one_step = originals["run_cloud_convection_one_step"]
 

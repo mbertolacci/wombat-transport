@@ -71,11 +71,7 @@ class TransportExecutor:
             raise ValueError("transport requires exactly one time slice")
         workers = configure_numba_threads(available=True)
         workspace = make_transport_workspace(field.shape[1:], field.block_width, workers)
-        tpcore = workspace.tpcore
-        tpcore.state_a = field.block_data[0]
-        for block_index, block in enumerate(tpcore.blocks):
-            block.q = tpcore.state_a[block_index]
-            block.dq1 = tpcore.state_b[block_index]
+        workspace.tpcore.bind_state_storage(field.block_data[0])
         return cls(workspace=workspace)
 
 

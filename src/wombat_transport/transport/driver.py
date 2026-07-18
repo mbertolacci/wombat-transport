@@ -40,6 +40,10 @@ from wombat_transport.transport.pbl import (
 )
 from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
+from wombat_transport.transport.tpcore._operator import (
+    _run_tpcore_borrowed_mass_with_setup,
+    _run_tpcore_consuming_mass_with_setup,
+)
 from wombat_transport.transport.tpcore._reference import _average_const_poles_batch
 from wombat_transport.transport.pressure import (
     _dry_air_mass_to_pressure,
@@ -590,16 +594,30 @@ def _run_tpcore_one_step_from_mass(
     use_numba = numba_available_and_enabled()
     recycle_input = consume_input and use_numba
     recycled_tracer = input_tracer if recycle_input else None
-    defer_tpcore_finalization = use_numba
-    tpcore = run_tpcore_one_step_with_setup(
-        tracer_conc=input_tracer,
-        setup=setup,
-        area_m2=area,
-        validate_branches=False,
-        reuse_output=use_numba,
-        reuse_input=recycle_input,
-        defer_finalization=defer_tpcore_finalization,
-    )
+    if recycle_input:
+        tpcore = _run_tpcore_consuming_mass_with_setup(
+            tracer_conc=input_tracer,
+            setup=setup,
+            area_m2=area,
+            validate_branches=False,
+        )
+        tpcore_tracer = tpcore.tracer_mass_after_hpa
+    elif use_numba:
+        tpcore = _run_tpcore_borrowed_mass_with_setup(
+            tracer_conc=input_tracer,
+            setup=setup,
+            area_m2=area,
+            validate_branches=False,
+        )
+        tpcore_tracer = tpcore.tracer_mass_after_hpa
+    else:
+        tpcore = run_tpcore_one_step_with_setup(
+            tracer_conc=input_tracer,
+            setup=setup,
+            area_m2=area,
+            validate_branches=False,
+        )
+        tpcore_tracer = tpcore.tracer_conc_after
     next_delp = dry_pressure_thickness_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,
         hyai,
@@ -608,7 +626,7 @@ def _run_tpcore_one_step_from_mass(
     next_dry_air_mass = dry_air_mass_from_pressure(next_delp, area)
     tpcore_state = TracerField(
         names=tracer_field.names,
-        data=transport_tracer_to_canonical(tpcore.tracer_conc_after),
+        data=transport_tracer_to_canonical(tpcore_tracer),
         units=tracer_field.units,
         coords=tracer_field.coords,
     )
@@ -628,7 +646,7 @@ def _run_tpcore_one_step_from_mass(
         vdiff_input,
         diagnostics=False,
         output_buffer=recycled_tracer,
-        input_mass_pressure_hpa=setup.delp2_hpa if defer_tpcore_finalization else None,
+        input_mass_pressure_hpa=setup.delp2_hpa if use_numba else None,
     )
     state = TracerField(
         names=tracer_field.names,

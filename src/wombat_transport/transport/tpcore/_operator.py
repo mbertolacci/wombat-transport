@@ -33,6 +33,22 @@ class TpcoreWorkspace:
     state_b: np.ndarray
     blocks: list[nb._TpcoreNumbaWorkspace]
 
+    def bind_state_storage(self, storage: np.ndarray) -> None:
+        """Bind caller-owned block storage without copying tracer values."""
+
+        if not isinstance(storage, np.ndarray):
+            raise TypeError("TPCORE state storage must be a NumPy array")
+        if storage.shape != self.state_a.shape:
+            raise ValueError("TPCORE state storage shape does not match the workspace")
+        if storage.dtype != np.dtype(np.float64):
+            raise ValueError("TPCORE state storage must use float64")
+        if not storage.flags.c_contiguous or not storage.flags.writeable:
+            raise ValueError("TPCORE state storage must be writable and C-contiguous")
+        self.state_a = storage
+        for block_index, block in enumerate(self.blocks):
+            block.q = self.state_a[block_index]
+            block.dq1 = self.state_b[block_index]
+
 
 def make_tpcore_workspace(
     tracer_shape: tuple[int, int, int, int], lane_width: int
@@ -225,3 +241,32 @@ def run_tpcore_one_step_with_setup(*args, **kwargs):
     if _numba_tpcore_enabled():
         kwargs["_compiled_impl"] = nb._advect_tracers_fused_numba
     return _reference.run_tpcore_one_step_with_setup(*args, **kwargs)
+
+
+def _run_tpcore_borrowed_with_setup(*args, **kwargs):
+    """Return finalized concentration borrowed from the compiled workspace."""
+
+    _require_compiled_tpcore()
+    kwargs["_compiled_impl"] = nb._advect_tracers_fused_numba
+    return _reference._run_tpcore_borrowed_with_setup(*args, **kwargs)
+
+
+def _run_tpcore_borrowed_mass_with_setup(*args, **kwargs):
+    """Return deferred tracer mass borrowed from the compiled workspace."""
+
+    _require_compiled_tpcore()
+    kwargs["_compiled_impl"] = nb._advect_tracers_fused_numba
+    return _reference._run_tpcore_borrowed_mass_with_setup(*args, **kwargs)
+
+
+def _run_tpcore_consuming_mass_with_setup(*args, **kwargs):
+    """Consume input and return deferred mass borrowed from compiled workspace."""
+
+    _require_compiled_tpcore()
+    kwargs["_compiled_impl"] = nb._advect_tracers_fused_numba
+    return _reference._run_tpcore_consuming_mass_with_setup(*args, **kwargs)
+
+
+def _require_compiled_tpcore() -> None:
+    if not _numba_tpcore_enabled():
+        raise RuntimeError("borrowed TPCORE storage requires the compiled path")

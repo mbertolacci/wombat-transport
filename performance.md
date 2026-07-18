@@ -2985,3 +2985,25 @@ runs validated orchestration, synchronized timing, result collection, report
 generation, and resume state; their timings are not recorded as machine
 performance results because the locally available two-CPU affinity set used
 SMT siblings.
+
+## TPCORE ownership API clarification (2026-07-18)
+
+TPCORE's existing no-copy production behavior is now expressed by distinct
+private entry points instead of the public `reuse_input`, `reuse_output`, and
+`defer_finalization` boolean combination. The consuming path still uses the
+incoming writable tracer cube directly as TPCORE `q`; the deferred result is
+still the reusable pressure-weighted-mass buffer consumed synchronously by
+VDIFF. The public prepared-step API remains copy-safe and returns owned,
+finalized concentration. `TpcoreWorkspace.bind_state_storage()` now owns all
+executor alias updates and performs validation only—there is no array copy.
+
+Matched 2x2.5, 24-tracer, single-thread measurements found no regression:
+
+| Path | Parent best/mean s | New best/mean s | Checksum |
+| --- | ---: | ---: | ---: |
+| Copy-safe driver, 15 repeats | 0.300658 / 0.304931 | 0.299742 / 0.301730 | 0.0004011625392252 |
+| Consuming 17-step chain, 15 measured | 0.295158 / 0.297311 | 0.295155 / 0.297789 | 0.0004011628756930 |
+
+The consuming comparison ran the parent commit and new source
+contemporaneously with the same cache and environment. Best times were
+effectively identical and means differed by 0.16%, within observed host noise.

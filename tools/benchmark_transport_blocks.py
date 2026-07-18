@@ -19,8 +19,11 @@ from wombat_transport.transport.numba_control import configure_numba_threads
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
 from wombat_transport.transport.pbl import LATVAP_J_PER_KG, run_vdiffdr_one_step
 from wombat_transport.transport.pbl._plan import prepare_vdiff_plan
-from wombat_transport.transport.tpcore import run_tpcore_one_step_with_setup, setup_tpcore_terms
-from wombat_transport.transport.tpcore._operator import load_tpcore_workspace
+from wombat_transport.transport.tpcore import setup_tpcore_terms
+from wombat_transport.transport.tpcore._operator import (
+    _run_tpcore_borrowed_with_setup,
+    load_tpcore_workspace,
+)
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
 
 
@@ -66,12 +69,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         def fused_chain() -> np.ndarray:
-            after_tpcore = run_tpcore_one_step_with_setup(
+            after_tpcore = _run_tpcore_borrowed_with_setup(
                 tracer_conc=tpcore.tracer_conc,
                 setup=setup,
                 area_m2=tpcore.area_m2,
                 validate_branches=False,
-                reuse_output=True,
             ).tracer_conc_after
             after_vdiff = run_vdiffdr_one_step(
                 tracer_conc=after_tpcore,

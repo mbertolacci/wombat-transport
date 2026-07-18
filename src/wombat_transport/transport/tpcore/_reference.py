@@ -20,6 +20,7 @@ import numpy as np
 from wombat_transport.transport.pjc import build_pjc_horizontal_geometry, pjc_mass_flux_hpa
 from wombat_transport.transport.tpcore.types import (
     TpcoreBranchReport,
+    TpcoreDeferredState,
     TpcoreSetup,
     TpcoreState,
     TpcoreStaticTerms,
@@ -75,16 +76,128 @@ def run_tpcore_one_step_with_setup(
     area_m2: np.ndarray,
     fill: bool = True,
     validate_branches: bool = True,
-    reuse_output: bool = False,
-    reuse_input: bool = False,
-    defer_finalization: bool = False,
     _compiled_impl=None,
 ) -> TpcoreState:
-    """Run TPCORE tracer advection using an already computed setup."""
+    """Run a copy-safe TPCORE step and return caller-owned concentration."""
+
+    tracer = _run_tpcore_with_setup(
+        tracer_conc=tracer_conc,
+        setup=setup,
+        area_m2=area_m2,
+        fill=fill,
+        validate_branches=validate_branches,
+        reuse_output=False,
+        reuse_input=False,
+        defer_finalization=False,
+        compiled_impl=_compiled_impl,
+    )
+    return _tpcore_state_from_setup(setup, tracer)
+
+
+def _run_tpcore_borrowed_with_setup(
+    *,
+    tracer_conc: np.ndarray,
+    setup: TpcoreSetup,
+    area_m2: np.ndarray,
+    fill: bool = True,
+    validate_branches: bool = True,
+    _compiled_impl=None,
+) -> TpcoreState:
+    """Return finalized concentration in reusable workspace storage."""
+
+    tracer = _run_tpcore_with_setup(
+        tracer_conc=tracer_conc,
+        setup=setup,
+        area_m2=area_m2,
+        fill=fill,
+        validate_branches=validate_branches,
+        reuse_output=True,
+        reuse_input=False,
+        defer_finalization=False,
+        compiled_impl=_compiled_impl,
+    )
+    return _tpcore_state_from_setup(setup, tracer)
+
+
+def _run_tpcore_borrowed_mass_with_setup(
+    *,
+    tracer_conc: np.ndarray,
+    setup: TpcoreSetup,
+    area_m2: np.ndarray,
+    fill: bool = True,
+    validate_branches: bool = True,
+    _compiled_impl=None,
+) -> TpcoreDeferredState:
+    """Copy input into workspace and return borrowed pressure-weighted mass."""
+
+    tracer_mass = _run_tpcore_with_setup(
+        tracer_conc=tracer_conc,
+        setup=setup,
+        area_m2=area_m2,
+        fill=fill,
+        validate_branches=validate_branches,
+        reuse_output=True,
+        reuse_input=False,
+        defer_finalization=True,
+        compiled_impl=_compiled_impl,
+    )
+    return _tpcore_deferred_state_from_setup(setup, tracer_mass)
+
+
+def _run_tpcore_consuming_mass_with_setup(
+    *,
+    tracer_conc: np.ndarray,
+    setup: TpcoreSetup,
+    area_m2: np.ndarray,
+    fill: bool = True,
+    validate_branches: bool = True,
+    _compiled_impl=None,
+) -> TpcoreDeferredState:
+    """Consume writable input and return borrowed pressure-weighted mass."""
+
+    _validate_consumable_tracer(tracer_conc)
+    tracer_mass = _run_tpcore_with_setup(
+        tracer_conc=tracer_conc,
+        setup=setup,
+        area_m2=area_m2,
+        fill=fill,
+        validate_branches=validate_branches,
+        reuse_output=True,
+        reuse_input=True,
+        defer_finalization=True,
+        compiled_impl=_compiled_impl,
+    )
+    return _tpcore_deferred_state_from_setup(setup, tracer_mass)
+
+
+def _validate_consumable_tracer(tracer_conc: np.ndarray) -> None:
+    """Reject inputs that would turn the consuming contract into a hidden copy."""
+
+    if not isinstance(tracer_conc, np.ndarray):
+        raise TypeError("consuming TPCORE input must be a NumPy array")
+    if tracer_conc.dtype != np.dtype(np.float64):
+        raise ValueError("consuming TPCORE input must use float64")
+    if not tracer_conc.flags.c_contiguous or not tracer_conc.flags.writeable:
+        raise ValueError("consuming TPCORE input must be writable and C-contiguous")
+
+
+def _run_tpcore_with_setup(
+    *,
+    tracer_conc: np.ndarray,
+    setup: TpcoreSetup,
+    area_m2: np.ndarray,
+    fill: bool,
+    validate_branches: bool,
+    reuse_output: bool,
+    reuse_input: bool,
+    defer_finalization: bool,
+    compiled_impl,
+) -> np.ndarray:
+    """Internal ownership-policy adapter around the unchanged tracer kernel."""
 
     if validate_branches:
         validate_tpcore_branch_support(setup)
-    tracer = _advect_tracers(
+    return _advect_tracers(
         tracer_conc=np.asarray(tracer_conc, dtype=np.float64),
         setup=setup,
         area_m2=np.asarray(area_m2, dtype=np.float64),
@@ -92,9 +205,8 @@ def run_tpcore_one_step_with_setup(
         reuse_output=reuse_output,
         reuse_input=reuse_input,
         defer_finalization=defer_finalization,
-        compiled_impl=_compiled_impl,
+        compiled_impl=compiled_impl,
     )
-    return _tpcore_state_from_setup(setup, tracer)
 
 
 def trace_tpcore_one_step(
@@ -162,6 +274,22 @@ def trace_tpcore_one_step_with_setup(
 def _tpcore_state_from_setup(setup: TpcoreSetup, tracer_conc_after: np.ndarray) -> TpcoreState:
     return TpcoreState(
         tracer_conc_after=tracer_conc_after,
+        xmass_hpa=setup.xmass_hpa,
+        ymass_hpa=setup.ymass_hpa,
+        surface_pressure_hpa=setup.surface_pressure_hpa,
+        delp1_hpa=setup.delp1_hpa,
+        delpm_hpa=setup.delpm_hpa,
+        delp2_hpa=setup.delp2_hpa,
+        vertical_mass_flux_hpa=setup.vertical_mass_flux_hpa,
+    )
+
+
+def _tpcore_deferred_state_from_setup(
+    setup: TpcoreSetup,
+    tracer_mass_after_hpa: np.ndarray,
+) -> TpcoreDeferredState:
+    return TpcoreDeferredState(
+        tracer_mass_after_hpa=tracer_mass_after_hpa,
         xmass_hpa=setup.xmass_hpa,
         ymass_hpa=setup.ymass_hpa,
         surface_pressure_hpa=setup.surface_pressure_hpa,

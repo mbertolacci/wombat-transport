@@ -27,6 +27,25 @@ class TpcoreState:
 
 
 @dataclass(frozen=True)
+class TpcoreDeferredState:
+    """Borrowed TPCORE handoff with tracers still stored as pressure-weighted mass.
+
+    ``tracer_mass_after_hpa`` is workspace-owned and remains valid only until
+    the next TPCORE call with the same shape and thread configuration. Production
+    transport consumes it synchronously in VDIFF before that can occur.
+    """
+
+    tracer_mass_after_hpa: np.ndarray
+    xmass_hpa: np.ndarray
+    ymass_hpa: np.ndarray
+    surface_pressure_hpa: np.ndarray
+    delp1_hpa: np.ndarray
+    delpm_hpa: np.ndarray
+    delp2_hpa: np.ndarray
+    vertical_mass_flux_hpa: np.ndarray
+
+
+@dataclass(frozen=True)
 class TpcoreTrace:
     """Optional one-step tracer checkpoints in canonical transport order."""
 
