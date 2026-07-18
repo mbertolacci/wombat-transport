@@ -73,6 +73,7 @@ SUMMARY_FIELDS = (
     "total_peak_rss_gib",
     "estimated_peak_gib",
     "best_for_tracers_and_cores",
+    "best_for_tracer_count",
     "rank_cpus",
     "threading_layers",
     "reason",
@@ -617,27 +618,34 @@ def _worker_main(spec_path: Path) -> int:
 def _write_reports(root: Path) -> None:
     rows, iterations = _read_results(root)
     completed = [row for row in rows if row["status"] == "completed"]
-    winners: dict[tuple[int, int], dict[str, Any]] = {}
+    core_winners: dict[tuple[int, int], dict[str, Any]] = {}
+    winners: dict[int, dict[str, Any]] = {}
     for row in completed:
-        key = (int(row["total_tracers"]), int(row["total_cores"]))
-        current = winners.get(key)
+        tracers = int(row["total_tracers"])
+        core_key = (tracers, int(row["total_cores"]))
+        current = core_winners.get(core_key)
         if current is None or float(row["median_effective_s"]) < float(current["median_effective_s"]):
-            winners[key] = row
+            core_winners[core_key] = row
+        current = winners.get(tracers)
+        if current is None or float(row["median_effective_s"]) < float(current["median_effective_s"]):
+            winners[tracers] = row
     for row in rows:
-        key = (int(row["total_tracers"]), int(row["total_cores"]))
-        row["best_for_tracers_and_cores"] = row is winners.get(key)
+        tracers = int(row["total_tracers"])
+        core_key = (tracers, int(row["total_cores"]))
+        row["best_for_tracers_and_cores"] = row is core_winners.get(core_key)
+        row["best_for_tracer_count"] = row is winners.get(tracers)
 
     _write_csv(root / "summary.csv", SUMMARY_FIELDS, rows)
     _write_csv(root / "iterations.csv", ITERATION_FIELDS, iterations)
     _write_winners(root / "winners.md", winners.values())
-    winner_rows = sorted(winners.values(), key=lambda row: (int(row["total_tracers"]), int(row["total_cores"])))
+    winner_rows = sorted(winners.values(), key=lambda row: int(row["total_tracers"]))
     if winner_rows:
         _write_svg(
-            root / "ensemble_steps_per_s.svg",
+            root / "seconds_per_step.svg",
             winner_rows,
-            value_field="ensemble_steps_per_s",
-            title="Transport ensemble step rate",
-            y_label="ensemble steps / s",
+            value_field="median_effective_s",
+            title="Fastest transport step time",
+            y_label="seconds / step",
         )
         _write_svg(
             root / "aggregate_tracer_steps_per_s.svg",
@@ -646,6 +654,7 @@ def _write_reports(root: Path) -> None:
             title="Aggregate transport throughput",
             y_label="tracer-steps / s",
         )
+    (root / "ensemble_steps_per_s.svg").unlink(missing_ok=True)
     print(f"Wrote {len(rows)} configurations to {root / 'summary.csv'}")
 
 
@@ -707,6 +716,7 @@ def _read_results(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]
             "total_peak_rss_gib": peak_rss / 1024.0 if peak_rss else "",
             "estimated_peak_gib": int(config["estimated_peak_bytes"]) / 1024.0**3,
             "best_for_tracers_and_cores": False,
+            "best_for_tracer_count": False,
             "rank_cpus": ";".join(_format_cpu_tuple(value) for value in config["rank_cpus"]),
             "threading_layers": ";".join(str(worker.get("threading_layer", "")) for worker in workers),
             "reason": result.get("reason", ""),
@@ -723,18 +733,17 @@ def _write_svg(
     title: str,
     y_label: str,
 ) -> None:
-    width, height = 900, 560
-    left, right, top, bottom = 90, 30, 55, 75
+    width, height = 1200, 650
+    left, right, top, bottom = 120, 120, 70, 95
     plot_width = width - left - right
     plot_height = height - top - bottom
-    core_values = sorted({int(row["total_cores"]) for row in rows})
-    tracer_values = sorted({int(row["total_tracers"]) for row in rows})
-    max_x = max(core_values)
-    max_y = max(float(row[value_field]) for row in rows) * 1.08
-    colors = ("#2563eb", "#dc2626", "#059669", "#7c3aed", "#d97706", "#0891b2", "#4b5563")
+    ordered = sorted(rows, key=lambda row: int(row["total_tracers"]))
+    max_y = max(float(row[value_field]) for row in ordered) * 1.18
 
-    def x_pos(value: int) -> float:
-        return left + (value / max_x) * plot_width
+    def x_pos(index: int) -> float:
+        if len(ordered) == 1:
+            return left + plot_width / 2.0
+        return left + index * plot_width / (len(ordered) - 1)
 
     def y_pos(value: float) -> float:
         return top + plot_height - (value / max_y) * plot_height
@@ -751,45 +760,38 @@ def _write_svg(
         y = y_pos(value)
         lines.append(f'<line x1="{left}" y1="{y:.2f}" x2="{left + plot_width}" y2="{y:.2f}" stroke="#e5e7eb"/>')
         lines.append(f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" font-family="sans-serif" font-size="12">{value:.1f}</text>')
-    for core in core_values:
-        x = x_pos(core)
-        lines.append(f'<text x="{x:.2f}" y="{top + plot_height + 24}" text-anchor="middle" font-family="sans-serif" font-size="12">{core}</text>')
-    lines.append(f'<text x="{left + plot_width / 2}" y="{height - 20}" text-anchor="middle" font-family="sans-serif" font-size="14">selected CPUs occupied</text>')
+    for index, row in enumerate(ordered):
+        x = x_pos(index)
+        lines.append(f'<text x="{x:.2f}" y="{top + plot_height + 24}" text-anchor="middle" font-family="sans-serif" font-size="12">{row["total_tracers"]}</text>')
+    lines.append(f'<text x="{left + plot_width / 2}" y="{height - 20}" text-anchor="middle" font-family="sans-serif" font-size="14">tracers in ensemble</text>')
     lines.append(f'<text x="20" y="{top + plot_height / 2}" text-anchor="middle" transform="rotate(-90 20 {top + plot_height / 2})" font-family="sans-serif" font-size="14">{escape(y_label)}</text>')
 
-    for index, tracers in enumerate(tracer_values):
-        color = colors[index % len(colors)]
-        group = sorted(
-            (row for row in rows if int(row["total_tracers"]) == tracers),
-            key=lambda row: int(row["total_cores"]),
-        )
-        points = " ".join(
-            f'{x_pos(int(row["total_cores"])):.2f},{y_pos(float(row[value_field])):.2f}'
-            for row in group
-        )
-        lines.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2"/>')
-        for row in group:
-            x = x_pos(int(row["total_cores"]))
-            y = y_pos(float(row[value_field]))
-            label = _winner_label(row)
-            lines.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="{color}"><title>{escape(label)}</title></circle>')
-        legend_y = top + 18 * index
-        lines.append(f'<line x1="{left + 12}" y1="{legend_y}" x2="{left + 32}" y2="{legend_y}" stroke="{color}" stroke-width="3"/>')
-        lines.append(f'<text x="{left + 38}" y="{legend_y + 4}" font-family="sans-serif" font-size="12">{tracers} tracers</text>')
+    points = " ".join(
+        f'{x_pos(index):.2f},{y_pos(float(row[value_field])):.2f}'
+        for index, row in enumerate(ordered)
+    )
+    lines.append(f'<polyline points="{points}" fill="none" stroke="#2563eb" stroke-width="3"/>')
+    for index, row in enumerate(ordered):
+        x = x_pos(index)
+        y = y_pos(float(row[value_field]))
+        label = _winner_label(row)
+        label_y = max(top + 10, y - 13)
+        lines.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="#2563eb"><title>{escape(label)}</title></circle>')
+        lines.append(f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="middle" transform="rotate(-32 {x:.2f} {label_y:.2f})" font-family="sans-serif" font-size="11" fill="#374151">{escape(label)}</text>')
     lines.append("</svg>")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_winners(path: Path, rows: Iterable[dict[str, Any]]) -> None:
-    ordered = sorted(rows, key=lambda row: (int(row["total_tracers"]), int(row["total_cores"])))
+    ordered = sorted(rows, key=lambda row: int(row["total_tracers"]))
     lines = [
-        "| Tracers | Cores | Winner | Step/s | Tracer-step/s | RSS GiB |",
+        "| Tracers | Cores | Winner | Seconds/step | Tracer-step/s | RSS GiB |",
         "|---:|---:|---|---:|---:|---:|",
     ]
     for row in ordered:
         lines.append(
             f"| {row['total_tracers']} | {row['total_cores']} | {_winner_label(row)} | "
-            f"{float(row['ensemble_steps_per_s']):.3f} | "
+            f"{float(row['median_effective_s']):.6f} | "
             f"{float(row['aggregate_tracer_steps_per_s']):.1f} | "
             f"{float(row['total_peak_rss_gib'] or 0.0):.2f} |"
         )

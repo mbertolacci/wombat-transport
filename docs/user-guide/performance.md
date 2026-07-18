@@ -159,10 +159,11 @@ The output directory contains:
 
 - `manifest.json`: command, Git state, system, CPU, NUMA, and sweep metadata;
 - `iterations.csv`: raw synchronized rank and makespan measurements;
-- `summary.csv`: every configuration and the winner for each tracer/core pair;
+- `summary.csv`: every configuration, per-core-budget winners, and the overall
+  winner for each tracer count;
 - `winners.md`: a compact deployment table;
-- `ensemble_steps_per_s.svg` and `aggregate_tracer_steps_per_s.svg`: winner
-  frontiers by core count and total tracer count;
+- `seconds_per_step.svg` and `aggregate_tracer_steps_per_s.svg`: the fastest
+  measured configuration at each tracer count, annotated with its topology;
 - `cases/`: resumable per-configuration inputs, results, and worker logs.
 
 Use `--dry-run` to inspect the generated matrix, `--resume` to continue an

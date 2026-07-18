@@ -84,22 +84,23 @@ def test_dry_run_matrix_is_valid_csv(capsys):
 
 def test_report_selects_median_winner_and_writes_plots(tmp_path):
     cases = tmp_path / "cases"
-    for config_id, wall, executor in (
-        ("slow", 2.0, "spatial"),
-        ("fast", 1.0, "blocks"),
+    for config_id, wall, executor, cores in (
+        ("slow", 2.0, "spatial", 4),
+        ("fast", 1.0, "blocks", 4),
+        ("underloaded", 0.8, "spatial", 2),
     ):
         case = cases / config_id
         case.mkdir(parents=True)
         config = {
             "config_id": config_id,
             "total_tracers": 16,
-            "total_cores": 4,
+            "total_cores": cores,
             "processes": 1,
-            "threads_per_process": 4,
+            "threads_per_process": cores,
             "executor": executor,
             "block_width": 8 if executor == "blocks" else 0,
             "rank_tracers": [16],
-            "rank_cpus": [[0, 1, 2, 3]],
+            "rank_cpus": [list(range(cores))],
             "estimated_peak_bytes": 1024,
             "binder": "taskset",
         }
@@ -133,10 +134,18 @@ def test_report_selects_median_winner_and_writes_plots(tmp_path):
 
     with (tmp_path / "summary.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    winner = next(row for row in rows if row["best_for_tracers_and_cores"] == "True")
-    assert winner["config_id"] == "fast"
-    assert float(winner["ensemble_steps_per_s"]) == 1.0
-    assert float(winner["aggregate_tracer_steps_per_s"]) == 16.0
-    assert (tmp_path / "ensemble_steps_per_s.svg").is_file()
+    core_winner = next(
+        row
+        for row in rows
+        if row["best_for_tracers_and_cores"] == "True" and row["total_cores"] == "4"
+    )
+    assert core_winner["config_id"] == "fast"
+    winner = next(row for row in rows if row["best_for_tracer_count"] == "True")
+    assert winner["config_id"] == "underloaded"
+    assert float(winner["median_effective_s"]) == 0.8
+    assert float(winner["aggregate_tracer_steps_per_s"]) == 20.0
+    assert (tmp_path / "seconds_per_step.svg").is_file()
+    assert not (tmp_path / "ensemble_steps_per_s.svg").exists()
     assert (tmp_path / "aggregate_tracer_steps_per_s.svg").is_file()
-    assert "1p×4t/blocks-8" in (tmp_path / "winners.md").read_text(encoding="utf-8")
+    assert "1p×2t/spatial" in (tmp_path / "winners.md").read_text(encoding="utf-8")
+    assert "1p×2t/spatial" in (tmp_path / "seconds_per_step.svg").read_text(encoding="utf-8")
