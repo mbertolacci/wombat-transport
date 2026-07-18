@@ -640,21 +640,10 @@ def _write_reports(root: Path) -> None:
     _write_winners(root / "winners.md", winners.values())
     winner_rows = sorted(winners.values(), key=lambda row: int(row["total_tracers"]))
     if winner_rows:
-        _write_svg(
-            root / "seconds_per_step.svg",
-            winner_rows,
-            value_field="median_effective_s",
-            title="Fastest transport step time",
-            y_label="seconds / step",
-        )
-        _write_svg(
-            root / "aggregate_tracer_steps_per_s.svg",
-            winner_rows,
-            value_field="aggregate_tracer_steps_per_s",
-            title="Aggregate transport throughput",
-            y_label="tracer-steps / s",
-        )
+        _write_frontier_svg(root / "transport_frontier.svg", winner_rows)
     (root / "ensemble_steps_per_s.svg").unlink(missing_ok=True)
+    (root / "seconds_per_step.svg").unlink(missing_ok=True)
+    (root / "aggregate_tracer_steps_per_s.svg").unlink(missing_ok=True)
     print(f"Wrote {len(rows)} configurations to {root / 'summary.csv'}")
 
 
@@ -725,59 +714,66 @@ def _read_results(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]
     return rows, iteration_rows
 
 
-def _write_svg(
-    path: Path,
-    rows: list[dict[str, Any]],
-    *,
-    value_field: str,
-    title: str,
-    y_label: str,
-) -> None:
-    width, height = 1200, 650
-    left, right, top, bottom = 120, 120, 70, 95
+def _write_frontier_svg(path: Path, rows: list[dict[str, Any]]) -> None:
+    width, height = 1200, 1050
+    left, right = 120, 120
+    top_plot_y, bottom_plot_y = 80, 570
+    plot_height = 390
     plot_width = width - left - right
-    plot_height = height - top - bottom
     ordered = sorted(rows, key=lambda row: int(row["total_tracers"]))
-    max_y = max(float(row[value_field]) for row in ordered) * 1.18
+    throughput_max = max(float(row["aggregate_tracer_steps_per_s"]) for row in ordered) * 1.18
+    seconds_max = max(float(row["median_effective_s"]) for row in ordered) * 1.18
 
     def x_pos(index: int) -> float:
         if len(ordered) == 1:
             return left + plot_width / 2.0
         return left + index * plot_width / (len(ordered) - 1)
 
-    def y_pos(value: float) -> float:
-        return top + plot_height - (value / max_y) * plot_height
+    def y_pos(value: float, plot_y: float, maximum: float) -> float:
+        return plot_y + plot_height - (value / maximum) * plot_height
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{width / 2}" y="30" text-anchor="middle" font-family="sans-serif" font-size="20">{escape(title)}</text>',
-        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" stroke="#111827"/>',
-        f'<line x1="{left}" y1="{top + plot_height}" x2="{left + plot_width}" y2="{top + plot_height}" stroke="#111827"/>',
+        f'<text x="{width / 2}" y="32" text-anchor="middle" font-family="sans-serif" font-size="22">Optimal transport frontier</text>',
     ]
-    for tick in range(6):
-        value = max_y * tick / 5.0
-        y = y_pos(value)
-        lines.append(f'<line x1="{left}" y1="{y:.2f}" x2="{left + plot_width}" y2="{y:.2f}" stroke="#e5e7eb"/>')
-        lines.append(f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" font-family="sans-serif" font-size="12">{value:.1f}</text>')
-    for index, row in enumerate(ordered):
-        x = x_pos(index)
-        lines.append(f'<text x="{x:.2f}" y="{top + plot_height + 24}" text-anchor="middle" font-family="sans-serif" font-size="12">{row["total_tracers"]}</text>')
-    lines.append(f'<text x="{left + plot_width / 2}" y="{height - 20}" text-anchor="middle" font-family="sans-serif" font-size="14">tracers in ensemble</text>')
-    lines.append(f'<text x="20" y="{top + plot_height / 2}" text-anchor="middle" transform="rotate(-90 20 {top + plot_height / 2})" font-family="sans-serif" font-size="14">{escape(y_label)}</text>')
 
-    points = " ".join(
-        f'{x_pos(index):.2f},{y_pos(float(row[value_field])):.2f}'
-        for index, row in enumerate(ordered)
+    panels = (
+        (top_plot_y, throughput_max, "aggregate_tracer_steps_per_s", "Aggregate transport throughput", "tracer-steps / s"),
+        (bottom_plot_y, seconds_max, "median_effective_s", "Fastest transport step time", "seconds / step"),
     )
-    lines.append(f'<polyline points="{points}" fill="none" stroke="#2563eb" stroke-width="3"/>')
+    for plot_y, maximum, value_field, title, y_label in panels:
+        lines.append(f'<text x="{width / 2}" y="{plot_y - 22}" text-anchor="middle" font-family="sans-serif" font-size="19">{escape(title)}</text>')
+        lines.append(f'<line x1="{left}" y1="{plot_y}" x2="{left}" y2="{plot_y + plot_height}" stroke="#111827"/>')
+        lines.append(f'<line x1="{left}" y1="{plot_y + plot_height}" x2="{left + plot_width}" y2="{plot_y + plot_height}" stroke="#111827"/>')
+        for tick in range(6):
+            value = maximum * tick / 5.0
+            y = y_pos(value, plot_y, maximum)
+            lines.append(f'<line x1="{left}" y1="{y:.2f}" x2="{left + plot_width}" y2="{y:.2f}" stroke="#e5e7eb"/>')
+            lines.append(f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" font-family="sans-serif" font-size="12">{value:.1f}</text>')
+        lines.append(f'<text x="20" y="{plot_y + plot_height / 2}" text-anchor="middle" transform="rotate(-90 20 {plot_y + plot_height / 2})" font-family="sans-serif" font-size="14">{escape(y_label)}</text>')
+
     for index, row in enumerate(ordered):
         x = x_pos(index)
-        y = y_pos(float(row[value_field]))
-        label = _winner_label(row)
-        label_y = max(top + 10, y - 13)
-        lines.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="#2563eb"><title>{escape(label)}</title></circle>')
-        lines.append(f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="middle" transform="rotate(-32 {x:.2f} {label_y:.2f})" font-family="sans-serif" font-size="11" fill="#374151">{escape(label)}</text>')
+        for plot_y in (top_plot_y, bottom_plot_y):
+            lines.append(f'<line x1="{x:.2f}" y1="{plot_y}" x2="{x:.2f}" y2="{plot_y + plot_height}" stroke="#f3f4f6"/>')
+        lines.append(f'<text x="{x:.2f}" y="{bottom_plot_y + plot_height + 24}" text-anchor="middle" font-family="sans-serif" font-size="12">{row["total_tracers"]}</text>')
+    lines.append(f'<text x="{left + plot_width / 2}" y="{height - 25}" text-anchor="middle" font-family="sans-serif" font-size="14">tracers in ensemble</text>')
+
+    for plot_y, maximum, value_field, _, _ in panels:
+        points = " ".join(
+            f'{x_pos(index):.2f},{y_pos(float(row[value_field]), plot_y, maximum):.2f}'
+            for index, row in enumerate(ordered)
+        )
+        lines.append(f'<polyline points="{points}" fill="none" stroke="#2563eb" stroke-width="3"/>')
+        for index, row in enumerate(ordered):
+            x = x_pos(index)
+            y = y_pos(float(row[value_field]), plot_y, maximum)
+            label = _winner_label(row)
+            lines.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="5" fill="#2563eb"><title>{escape(label)}</title></circle>')
+            if plot_y == top_plot_y:
+                label_y = max(plot_y + 10, y - 13)
+                lines.append(f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="middle" transform="rotate(-32 {x:.2f} {label_y:.2f})" font-family="sans-serif" font-size="11" fill="#374151">{escape(label)}</text>')
     lines.append("</svg>")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

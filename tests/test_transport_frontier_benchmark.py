@@ -144,8 +144,12 @@ def test_report_selects_median_winner_and_writes_plots(tmp_path):
     assert winner["config_id"] == "underloaded"
     assert float(winner["median_effective_s"]) == 0.8
     assert float(winner["aggregate_tracer_steps_per_s"]) == 20.0
-    assert (tmp_path / "seconds_per_step.svg").is_file()
+    assert (tmp_path / "transport_frontier.svg").is_file()
+    assert not (tmp_path / "seconds_per_step.svg").exists()
     assert not (tmp_path / "ensemble_steps_per_s.svg").exists()
-    assert (tmp_path / "aggregate_tracer_steps_per_s.svg").is_file()
+    assert not (tmp_path / "aggregate_tracer_steps_per_s.svg").exists()
     assert "1p×2t/spatial" in (tmp_path / "winners.md").read_text(encoding="utf-8")
-    assert "1p×2t/spatial" in (tmp_path / "seconds_per_step.svg").read_text(encoding="utf-8")
+    plot = (tmp_path / "transport_frontier.svg").read_text(encoding="utf-8")
+    assert "1p×2t/spatial" in plot
+    assert "Aggregate transport throughput" in plot
+    assert "Fastest transport step time" in plot
