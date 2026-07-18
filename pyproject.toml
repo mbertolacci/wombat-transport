@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "ruff==0.15.22",
+    "vulture==2.16",
 ]
 docs = [
     "zensical==0.0.50",
@@ -28,3 +30,14 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E9", "F", "B007", "B905"]
+
+[tool.vulture]
+paths = ["src", "tests", "tools"]
+min_confidence = 80
+sort_by_size = true
