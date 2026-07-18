@@ -157,7 +157,10 @@ def _wombat_record_lookup(dataset: netCDF4.Dataset) -> dict[tuple[str, int], int
 def _wombat_column_lookup(dataset: netCDF4.Dataset) -> dict[tuple[int, int], int]:
     lat_indices = np.asarray(dataset.variables["lat_index"][:], dtype=np.int64)
     lon_indices = np.asarray(dataset.variables["lon_index"][:], dtype=np.int64)
-    return {(int(lat), int(lon)): index for index, (lat, lon) in enumerate(zip(lat_indices, lon_indices))}
+    return {
+        (int(lat), int(lon)): index
+        for index, (lat, lon) in enumerate(zip(lat_indices, lon_indices, strict=True))
+    }
 
 
 def _load_wombat_values(dataset: netCDF4.Dataset, fields: tuple[str, ...]) -> dict[str, np.ndarray]:

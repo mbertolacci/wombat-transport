@@ -44,7 +44,6 @@ from wombat_transport.run_config import (
 from wombat_transport.transport import (
     merra2_filename,
     dry_air_mass_from_pressure,
-    dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
     dry_pressure_thickness_hpa,
     dry_surface_pressure_hpa,
@@ -765,8 +764,6 @@ def write_synthetic_tpcore_snapshot_input(path: str | Path, *, dt_s: float = 600
     path = write_synthetic_pjc_snapshot_input(path, dt_s=dt_s)
     with netCDF4.Dataset(path) as dataset:
         nlev = len(dataset.dimensions["lev"])
-        nlat = len(dataset.dimensions["lat"])
-        nlon = len(dataset.dimensions["lon"])
         lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
         lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
 
@@ -1575,7 +1572,6 @@ def generate_transport_chain_oracle_fixture(
     _write_chain_convection_input(
         run_config,
         paths.input_path,
-        tpcore_output,
         vdiff_output,
         convection_input,
         time_index=time_index,
@@ -1670,7 +1666,6 @@ def generate_convection_fullgrid_oracle_fixture(
     _write_chain_convection_input(
         run_config,
         tpcore_input,
-        tpcore_output,
         vdiff_output,
         paths.input_path,
         time_index=time_index,
@@ -1779,7 +1774,6 @@ def _write_chain_vdiff_input(
 def _write_chain_convection_input(
     run_config_path: Path,
     chain_input_path: Path,
-    tpcore_output_path: Path,
     vdiff_output_path: Path,
     output_path: Path,
     *,
@@ -1801,7 +1795,6 @@ def _write_chain_convection_input(
         hybi = np.asarray(source.variables["hybi"][:], dtype=np.float64)
         dt_s = float(source.dt_s)
         tracer_names = _read_transport_step_tracer_names(chain_input_path)
-    tpcore = read_transport_step_output(tpcore_output_path)
     vdiff = read_vdiff_output(vdiff_output_path)
     delp = dry_pressure_thickness_from_surface_hpa(forcing.dry_surface_pressure_hpa, hyai, hybi)
     vdiff_state = TracerField(
@@ -2095,8 +2088,6 @@ def compare_transport_chain_oracle_fixture(
     result = trace.result
     stage_masses = compute_transport_stage_masses(trace, field, area)
     initial_scalar_mass = stage_masses[0].initial_scalar_mass
-    tpcore_scalar_mass = stage_masses[0].final_scalar_mass
-    vdiff_scalar_mass = stage_masses[1].final_scalar_mass
     convection_scalar_mass = stage_masses[2].final_scalar_mass
     with netCDF4.Dataset(paths.output_path) as dataset:
         expected_tracer = np.asarray(dataset.variables["tracer_conc_after"][:], dtype=np.float64)
@@ -3500,7 +3491,7 @@ def _top_axis_rows(section: str, error: np.ndarray, *, axis: int, top_n: int) ->
 def _bin_rows(section: str, error: np.ndarray, values: np.ndarray, edges: tuple[float, ...]) -> list[str]:
     rows = []
     value_4d = values[:, :, :, np.newaxis] if values.ndim == 3 else values
-    for low, high in zip(edges[:-1], edges[1:]):
+    for low, high in zip(edges[:-1], edges[1:], strict=True):
         mask = (value_4d >= low) & (value_4d < high)
         mask = np.broadcast_to(mask, error.shape)
         if not np.any(mask):

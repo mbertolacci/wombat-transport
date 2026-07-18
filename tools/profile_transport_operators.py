@@ -5,7 +5,6 @@ import csv
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 from _perf_support import parse_perf_stat_summary, profile_environment, run_perf_bundle
 

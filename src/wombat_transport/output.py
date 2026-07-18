@@ -502,7 +502,7 @@ class _StreamingSpeciesConcFile:
         try:
             with netCDF4.Dataset(template_path) as template:
                 self._dataset = netCDF4.Dataset(self._path, "w")
-                _create_common_dimensions(self._dataset, template, time_size=0, include_bounds=True)
+                _create_common_dimensions(self._dataset, template, include_bounds=True)
                 _assert_compatible_samples(
                     [first_state],
                     expected_shape=(
@@ -685,7 +685,7 @@ def write_species_conc_collection(
     times = [timestamp for timestamp, _ in samples]
     fields = [field for _, field in samples]
     with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
-        _create_common_dimensions(output, template, time_size=len(samples), include_bounds=True)
+        _create_common_dimensions(output, template, include_bounds=True)
         _assert_compatible_samples(
             fields,
             expected_shape=(
@@ -728,7 +728,7 @@ def write_restart_collection(
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with netCDF4.Dataset(template_path) as template, netCDF4.Dataset(output_path, "w") as output:
-        _create_common_dimensions(output, template, time_size=1, include_bounds=False)
+        _create_common_dimensions(output, template, include_bounds=False)
         _copy_common_coordinates(output, template, include_bounds=False, storage=storage)
         _write_time(output, [snapshot.timestamp], base=snapshot.timestamp, utc=True, storage=storage)
         output.title = title
@@ -834,7 +834,6 @@ def _create_common_dimensions(
     output: netCDF4.Dataset,
     template: netCDF4.Dataset,
     *,
-    time_size: int,
     include_bounds: bool,
 ) -> None:
     output.createDimension("time", None)
@@ -992,13 +991,13 @@ def _assert_compatible_samples(
     fields: list[TracerField], *, expected_shape: tuple[int, int, int, int]
 ) -> None:
     first = fields[0]
-    for field in fields:
-        if field.names != first.names:
+    for sample in fields:
+        if sample.names != first.names:
             raise ValueError("all SpeciesConc samples must have the same tracer names")
-        if field.shape != first.shape:
+        if sample.shape != first.shape:
             raise ValueError("all SpeciesConc samples must have the same shape")
-        if field.shape[0:4] != expected_shape:
-            raise ValueError(f"SpeciesConc sample shape {field.shape} does not match template shape {expected_shape}")
+        if sample.shape[0:4] != expected_shape:
+            raise ValueError(f"SpeciesConc sample shape {sample.shape} does not match template shape {expected_shape}")
 
 
 def _summed_tracer(

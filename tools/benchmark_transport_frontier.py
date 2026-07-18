@@ -763,7 +763,7 @@ def _write_frontier_svg(path: Path, rows: list[dict[str, Any]]) -> None:
         (top_plot_y, throughput_max, "aggregate_tracer_steps_per_s", "Aggregate transport throughput", "tracer-steps / s"),
         (bottom_plot_y, seconds_max, "median_effective_s", "Fastest transport step time", "seconds / step"),
     )
-    for plot_y, maximum, value_field, title, y_label in panels:
+    for plot_y, maximum, _value_field, title, y_label in panels:
         lines.append(f'<text x="{width / 2}" y="{plot_y - 22}" text-anchor="middle" font-family="sans-serif" font-size="19">{escape(title)}</text>')
         lines.append(f'<line x1="{left}" y1="{plot_y}" x2="{left}" y2="{plot_y + plot_height}" stroke="#111827"/>')
         lines.append(f'<line x1="{left}" y1="{plot_y + plot_height}" x2="{left + plot_width}" y2="{plot_y + plot_height}" stroke="#111827"/>')

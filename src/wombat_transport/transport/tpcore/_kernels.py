@@ -542,9 +542,6 @@ if njit is not None:
         finalize_output: bool,
     ) -> None:
         nlev = q.shape[0]
-        nlat = q.shape[1]
-        nlon = q.shape[2]
-        ntracer = q.shape[3]
 
         for level in range(nlev):
             _average_const_poles_batch_numba_kernel(q[level], delp1[level], area_1d)

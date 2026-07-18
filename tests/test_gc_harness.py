@@ -39,7 +39,6 @@ from wombat_transport.gc_harness import (
     MET_AIRQNT_SNAPSHOT_VERSION,
     HISTORY_HARNESS_OUTPUT_NAME,
     VDIFF_INPUT_VERSION,
-    VDIFF_OUTPUT_VERSION,
     append_transport_step_tracers,
     attribute_python_tpcore_error,
     check_large_oracle_fixture,
@@ -110,7 +109,6 @@ from wombat_transport.transport.tpcore import (
 )
 from wombat_transport.transport.tpcore import _kernels as tpcore_numba
 from wombat_transport.transport.tpcore._operator import load_tpcore_workspace
-from wombat_transport.transport.tpcore._operator import make_tpcore_workspace
 from wombat_transport.transport.tpcore._operator import pack_tracer_blocks
 from wombat_transport.transport.tpcore._operator import unpack_tracer_blocks
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan

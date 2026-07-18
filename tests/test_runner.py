@@ -14,7 +14,6 @@ import pytest
 from yaml12 import write_yaml
 
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
-from wombat_transport.emissions import EmissionsOperator
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart

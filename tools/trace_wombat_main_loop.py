@@ -451,7 +451,10 @@ def _sample_top4(values: np.ndarray, columns: TraceColumns) -> np.ndarray:
     if array.ndim != 4:
         raise ValueError(f"expected tracer field (lev_top, lat, lon, tracer), got {array.shape}")
     return np.stack(
-        [array[::-1, lat_index, lon_index, :] for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices)],
+        [
+            array[::-1, lat_index, lon_index, :]
+            for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices, strict=True)
+        ],
         axis=1,
     )
 
@@ -465,19 +468,30 @@ def _sample_optional(values, columns: TraceColumns) -> np.ndarray:
     if array.ndim == 3:
         if array.shape[:2] == (columns.nlat, columns.nlon):
             return np.stack(
-                [array[lat_index, lon_index, :] for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices)],
+                [
+                    array[lat_index, lon_index, :]
+                    for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices, strict=True)
+                ],
                 axis=0,
             )
         if array.shape[1:] != (columns.nlat, columns.nlon):
             raise ValueError(f"cannot infer 3-D field layout for shape {array.shape}")
         return np.stack(
-            [array[::-1, lat_index, lon_index] for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices)],
+            [
+                array[::-1, lat_index, lon_index]
+                for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices, strict=True)
+            ],
             axis=1,
         )
     if array.ndim == 2:
         if array.shape != (columns.nlat, columns.nlon):
             raise ValueError(f"cannot infer 2-D field layout for shape {array.shape}")
-        return np.asarray([array[lat_index, lon_index] for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices)])
+        return np.asarray(
+            [
+                array[lat_index, lon_index]
+                for lat_index, lon_index in zip(columns.lat_indices, columns.lon_indices, strict=True)
+            ]
+        )
     raise ValueError(f"cannot sample array with shape {array.shape}")
 
 

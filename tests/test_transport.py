@@ -35,7 +35,6 @@ from wombat_transport.transport import (
     dry_air_mass_from_pressure,
     dry_pressure_edges_from_thickness_hpa,
     dry_pressure_thickness_from_surface_hpa,
-    dry_pressure_thickness_hpa,
     dry_surface_pressure_hpa,
     load_transport_forcing,
     mix_full_pbl,
@@ -45,7 +44,6 @@ from wombat_transport.transport import (
     trace_transport_one_step,
     wet_surface_pressure_hpa,
     _map_met_levels_to_47,
-    load_transport_forcing_for_step,
 )
 import wombat_transport.transport.forcing as forcing_module
 import wombat_transport.transport.pbl._kernels as pbl_numba

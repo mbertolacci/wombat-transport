@@ -392,7 +392,6 @@ def _read_obsoperator_restart_dataset(
 
         time_slice = _ragged_slice(time_starts, time_counts, index)
         entry_times = remaining_times[time_slice].copy()
-        entry_weights = remaining_weights[time_slice].copy()
         if np.any(entry_times < expected_time_us) or np.any(np.diff(entry_times) <= 0):
             raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid remaining timestamps")
         deltas = entry_times - expected_time_us
@@ -425,7 +424,7 @@ def _read_obsoperator_restart_dataset(
         else:
             if vertical_counts[index] != 0:
                 raise ValueError(f"ObsOperator restart entry {entry_id!r} has unexpected exact vertical values")
-            weighting = _code_name(
+            _code_name(
                 vertical_weightings[index], vertical_weighting_names, "vertical weighting", entry_id
             )
             start, end = vertical_bounds[index]

@@ -154,18 +154,6 @@ if njit is not None:
             qb_num = qb_num_workspace[thread_id]
             delq_work = delq_work_workspace[thread_id]
             current_work = current_work_workspace[thread_id]
-            active = False
-            for level in range(nlev):
-                cmfmc_value = cmfmc_all[level, col]
-                dtrain_value = dtrain_all[level, col]
-                if (
-                    cmfmc_value > _TINYNUM
-                    or cmfmc_value < -_TINYNUM
-                    or dtrain_value > _TINYNUM
-                    or dtrain_value < -_TINYNUM
-                ):
-                    active = True
-                    break
             cloud_base = bottom_index
             for level in range(bottom_index, -1, -1):
                 dqrcu_value = 0.0

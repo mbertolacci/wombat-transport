@@ -374,7 +374,7 @@ def _latitude_overlap_weights(source_lat: np.ndarray, target_lat: np.ndarray) ->
     source_low, source_high = _noncyclic_bounds(source_lat, lower=-90.0, upper=90.0)
     target_low, target_high = _noncyclic_bounds(target_lat, lower=-90.0, upper=90.0)
     weights = np.zeros((target_lat.size, source_lat.size), dtype=np.float64)
-    for target_index, (low, high) in enumerate(zip(target_low, target_high)):
+    for target_index, (low, high) in enumerate(zip(target_low, target_high, strict=True)):
         overlap_low = np.maximum(source_low, low)
         overlap_high = np.minimum(source_high, high)
         active = overlap_high > overlap_low
