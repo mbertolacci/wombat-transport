@@ -2824,3 +2824,63 @@ seconds at 4x5) and width-16 block execution at eight threads (62.94 and 15.14
 seconds). Full-width spatial execution remained preferable through 24 tracers.
 The documentation refresh harness now performs an unmeasured run for each
 selected executor before timing and sweeps widths 8, 16, and 25 by default.
+
+### Fixed block-width compile-time specialization (2026-07-18)
+
+A temporary experiment tested whether making the tracer-block width a Numba
+compile-time invariant helps the complete block executor. The probe used the
+global 2x2.5 synthetic 96-tracer case, eight workers, width 16, uniform
+`1e-9 kg m-2 s-1` surface flux, and the complete TPCORE -> VDIFF -> convection
+chain. Width 16 was selected because earlier measurements identified it as the
+favorable width for this tracer count. No configuration plumbing was added:
+the experiment temporarily replaced lane extents derived from array shapes
+with a source-level global constant in the compiled TPCORE leaf kernels,
+block VDIFF, and convection.
+
+Optimized LLVM was inspected after forcing fresh compilation rather than
+loading Numba disk-cache entries, for which inspection is unavailable. The
+textual references to the runtime tracer extent fell sharply while literal
+`i64 16` uses increased:
+
+| Kernel | Dynamic extent references | Fixed extent references | Dynamic `i64 16` | Fixed `i64 16` |
+| --- | ---: | ---: | ---: | ---: |
+| TPCORE X transport | 133 | 5 | 13 | 20 |
+| VDIFF | 145 | 8 | 13 | 16 |
+| Convection | 127 | 9 | 5 | 22 |
+
+These LLVM text counts are diagnostic evidence rather than performance
+metrics, but they confirm that Numba and LLVM specialized the relevant loops;
+the timing result cannot be dismissed as a global that remained a runtime
+load. In particular, merely passing width-16 arrays would not produce this
+specialization because Numba array signatures do not encode dimension
+extents.
+
+The matched warmed apply timings used two warmups and seven measured repeats
+in separate fresh processes. Per-step plan construction is common and is not
+included below:
+
+| Width handling | Best apply s | Mean apply s |
+| --- | ---: | ---: |
+| Runtime array extent | 1.123540 | 1.126128 |
+| Compile-time fixed 16 | 1.124451 | 1.127230 |
+
+The fixed form was about 0.08% slower by best time and 0.10% slower by mean,
+which is noise at this measurement scale. Both forms had the same maximum
+absolute difference, `6.993104012531504e-18`, from the independent NumPy
+reference for this synthetic case. There is therefore no observed numerical
+change attributable to specialization, but this is not evidence for
+long-horizon parity.
+
+An important caveat is that this run did not reproduce the previously observed
+block-executor crossover: the restored dynamic width-16 block executor took
+`1.123540 s`, while dynamic width-16 spatial execution took `0.333722 s` in
+the same benchmark sequence. The cause of that current block-parallel
+regression was not investigated as part of this narrow experiment. The result
+therefore answers only whether exposing the already-selected block width as a
+compile-time constant helps this block kernel on the measured environment. It
+does not revalidate the block-versus-spatial policy or rule out specialization
+on another architecture. Given the verified specialization and neutral matched
+timing, do not repeat fixed-width plumbing without a new compiler, target
+architecture, or materially different kernel shape that gives a reason to
+expect a different result. All experimental source changes were removed after
+measurement.
