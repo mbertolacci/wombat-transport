@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import logging
-import math
 import os
 from pathlib import Path
 import tempfile
@@ -28,6 +27,8 @@ from wombat_transport.obsoperator.utils import (
     _datetime_to_microseconds,
     _nul_padded_matrix,
     _seconds_to_microseconds,
+    _validate_vertical_bounds,
+    _validate_vertical_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -417,7 +418,13 @@ def _read_obsoperator_restart_dataset(
                 raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid exact vertical state")
             values = vertical_values[vertical_slice].copy()
             weights = vertical_weights[vertical_slice].copy()
-            _validate_restart_vertical_values(values, weights, vertical_unit, grid.shape[0], entry_id)
+            _validate_vertical_values(
+                values,
+                weights,
+                vertical_unit,
+                grid.shape[0],
+                f"ObsOperator restart entry {entry_id!r}",
+            )
             entry_vertical_weighting[index] = -1
             entry_vertical_lower[index] = np.nan
             entry_vertical_upper[index] = np.nan
@@ -428,7 +435,13 @@ def _read_obsoperator_restart_dataset(
                 vertical_weightings[index], vertical_weighting_names, "vertical weighting", entry_id
             )
             start, end = vertical_bounds[index]
-            _validate_restart_vertical_bounds(start, end, vertical_unit, grid.shape[0], entry_id)
+            _validate_vertical_bounds(
+                start,
+                end,
+                vertical_unit,
+                grid.shape[0],
+                f"ObsOperator restart entry {entry_id!r}",
+            )
             entry_vertical_weighting[index] = int(vertical_weightings[index])
             entry_vertical_lower[index] = start
             entry_vertical_upper[index] = end
@@ -576,29 +589,3 @@ def _horizontal_arrays_from_bounds(
     if weighting in {"normalized_area", "normalized"}:
         weights /= np.sum(weights)
     return lat, lon, weights
-
-
-def _validate_restart_vertical_values(
-    values: np.ndarray,
-    weights: np.ndarray,
-    unit: str,
-    nlev: int,
-    entry_id: str,
-) -> None:
-    if values.size == 0 or values.size != weights.size or not np.all(np.isfinite(values)) or not np.all(np.isfinite(weights)):
-        raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid exact vertical values")
-    if unit == "pressure_level" and (
-        np.any(values != np.floor(values)) or np.any(values < 1) or np.any(values > nlev)
-    ):
-        raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid pressure levels")
-    if unit != "pressure_level" and np.any(values < 0.0):
-        raise ValueError(f"ObsOperator restart entry {entry_id!r} has negative vertical values")
-
-
-def _validate_restart_vertical_bounds(start: float, end: float, unit: str, nlev: int, entry_id: str) -> None:
-    if not np.isfinite(start) or not np.isfinite(end) or start > end or start < 0.0:
-        raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid vertical bounds")
-    if unit == "pressure_level" and (
-        start != math.floor(start) or end != math.floor(end) or start < 1 or end > nlev
-    ):
-        raise ValueError(f"ObsOperator restart entry {entry_id!r} has invalid pressure-level bounds")

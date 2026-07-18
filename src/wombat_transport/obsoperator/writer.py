@@ -80,6 +80,8 @@ class _ObsOperatorNetCDFWriter:
         sample_offset = 0
         array_entry_offset = 0
         array_ids: list[str] = []
+        field_indices_by_name = self._field_indices.copy()
+        field_names = self._field_names.copy()
         for state, entry_indices in self._pending_array_batches:
             for entry_index_value in entry_indices:
                 entry_index = int(entry_index_value)
@@ -88,10 +90,10 @@ class _ObsOperatorNetCDFWriter:
                 field_end = field_start + entry_sample_count
                 entry_slice = slice(sample_offset, sample_offset + entry_sample_count)
                 for field_offset, name in enumerate(state.field_names[entry_index]):
-                    if name not in self._field_indices:
-                        self._field_indices[name] = len(self._field_names) + 1
-                        self._field_names.append(name)
-                    field_indices[sample_offset + field_offset] = self._field_indices[name]
+                    if name not in field_indices_by_name:
+                        field_indices_by_name[name] = len(field_names) + 1
+                        field_names.append(name)
+                    field_indices[sample_offset + field_offset] = field_indices_by_name[name]
                 id_indices[entry_slice] = self._entry_index + array_entry_offset + 1
                 samples[entry_slice] = state.field_accumulator[field_start:field_end]
                 array_ids.append(state.ids[entry_index])
@@ -100,9 +102,9 @@ class _ObsOperatorNetCDFWriter:
 
         self._ensure_created()
         assert self._dataset is not None
-        if len(self._field_names) > previous_field_count:
-            new_field_names = self._field_names[previous_field_count:]
-            self._dataset.variables["field"][previous_field_count : len(self._field_names), :] = (
+        if len(field_names) > previous_field_count:
+            new_field_names = field_names[previous_field_count:]
+            self._dataset.variables["field"][previous_field_count : len(field_names), :] = (
                 _nul_padded_matrix(new_field_names, MAX_FIELD_NAME_LENGTH, len(new_field_names))
             )
         entry_slice = slice(self._entry_index, self._entry_index + entry_count)
@@ -113,6 +115,8 @@ class _ObsOperatorNetCDFWriter:
         self._dataset.variables["id_index"][sample_slice] = id_indices
         self._dataset.variables["field_index"][sample_slice] = field_indices
         self._dataset.variables["sample"][sample_slice] = samples
+        self._field_indices = field_indices_by_name
+        self._field_names = field_names
         self._entry_index += entry_count
         self._sample_index += sample_count
         self._pending_array_batches = []

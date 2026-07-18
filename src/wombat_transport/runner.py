@@ -239,6 +239,8 @@ def _run_tracer_simulation(
             )
         if obsoperator_manager is not None:
             assert snapshot is not None
+            if snapshot.timestamp != step_end:
+                raise AssertionError("ObsOperator must sample the completed transport-step snapshot")
             logger.debug("sampling_obsoperator step=%d time_index=%d", transport_steps + 1, transport_steps)
             obsoperator_manager.sample(step_start=current, time_index=transport_steps, snapshot=snapshot)
         transport_steps += 1

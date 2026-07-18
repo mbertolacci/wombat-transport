@@ -23,7 +23,7 @@ from wombat_transport.obsoperator import (
     expand_obsoperator_template,
     parse_obsoperator_config,
 )
-from wombat_transport.obsoperator.state import MAX_FIELD_NAME_LENGTH, MAX_ID_LENGTH
+from wombat_transport.obsoperator.state import FIELD_PREFIX, MAX_FIELD_NAME_LENGTH, MAX_ID_LENGTH
 from wombat_transport.output import OutputSnapshot
 
 
@@ -473,6 +473,62 @@ def test_parser_rejects_obsolete_species_and_invalid_values(tmp_path: Path):
         _load(path)
 
 
+@pytest.mark.parametrize(
+    "vertical",
+    [
+        {"type": "exact", "unit": "altitude", "values": [np.nan], "weights": [1.0]},
+        {"type": "exact", "unit": "altitude", "values": [10.0], "weights": [np.inf]},
+        {"type": "range", "unit": "altitude", "start": np.nan, "end": 10.0},
+        {"type": "range", "unit": "pressure", "start": 10.0, "end": np.inf},
+    ],
+)
+def test_fresh_input_rejects_nonfinite_vertical_state(tmp_path: Path, vertical: dict):
+    entry = _entry_raw()
+    entry["vertical_operator"] = vertical
+    path = _write_yaml(tmp_path / "obs.yml", {"entries": [entry]})
+
+    with pytest.raises(ValueError, match="vertical"):
+        _load(path)
+
+
+def test_input_string_limits_use_serialized_utf8_bytes(tmp_path: Path):
+    accepted_id = "é" * 127 + "a"
+    accepted_tracer = "é" * ((MAX_FIELD_NAME_LENGTH - len(FIELD_PREFIX)) // 2)
+    accepted_field = f"{FIELD_PREFIX}{accepted_tracer}"
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {"entries": [_entry_raw(entry_id=accepted_id, fields=accepted_field)]},
+    )
+    state = obsoperator_input._load_obsoperator_array_state(
+        path,
+        tracer_names=(accepted_tracer,),
+        grid=_grid(),
+        simulation_start=START,
+        transport_dt_s=600.0,
+    )
+    assert state.ids == (accepted_id,)
+
+    too_wide = _entry_raw(entry_id="é" * 128)
+    _write_yaml(path, {"entries": [too_wide]})
+    with pytest.raises(ValueError, match="255 bytes"):
+        _load(path)
+
+    _write_yaml(path, {"entries": [_entry_raw(entry_id="embedded\x00nul")]})
+    with pytest.raises(ValueError, match="NUL"):
+        _load(path)
+
+    too_wide_field = f"{accepted_field}é"
+    _write_yaml(path, {"entries": [_entry_raw(fields=too_wide_field)]})
+    with pytest.raises(ValueError, match="64 bytes"):
+        obsoperator_input._load_obsoperator_array_state(
+            path,
+            tracer_names=(f"{accepted_tracer}é",),
+            grid=_grid(),
+            simulation_start=START,
+            transport_dt_s=600.0,
+        )
+
+
 def test_manager_writes_fortran_compatible_netcdf_and_first_step_sample(tmp_path: Path):
     raw = {
         "entries": [
@@ -568,6 +624,55 @@ def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
         np.testing.assert_array_equal(dataset.variables["id_index"][:], [1, 1, 2, 3, 3])
         np.testing.assert_array_equal(dataset.variables["field_index"][:], [1, 2, 2, 3, 1])
         np.testing.assert_array_equal(dataset.variables["sample"][:], [1.0, 2.0, 3.0, 4.0, 5.0])
+
+
+def test_science_writer_keeps_pending_registry_state_after_failed_flush(tmp_path: Path):
+    class FakeVariable:
+        def __init__(self, *, fail_once: bool = False) -> None:
+            self.fail_once = fail_once
+            self.writes = 0
+
+        def __setitem__(self, key, value) -> None:
+            self.writes += 1
+            if self.fail_once:
+                self.fail_once = False
+                raise OSError("simulated NetCDF write failure")
+
+    output = tmp_path / "transactional.nc4"
+    writer = obsoperator_writer._ObsOperatorNetCDFWriter(output)
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {"entries": [_entry_raw(entry_id="one", fields="SpeciesConcVV_A")]},
+    )
+    state = _load(path)
+    state.field_accumulator[:] = 3.0
+    writer.write_array_entries(((state, np.array([0])),))
+    variables = {
+        "field": FakeVariable(),
+        "id": FakeVariable(),
+        "id_index": FakeVariable(),
+        "field_index": FakeVariable(),
+        "sample": FakeVariable(fail_once=True),
+    }
+    writer._dataset = SimpleNamespace(variables=variables)
+
+    with pytest.raises(OSError, match="simulated"):
+        writer.flush()
+
+    assert writer._field_indices == {}
+    assert writer._field_names == []
+    assert writer._entry_index == 0
+    assert writer._sample_index == 0
+    assert writer._pending_entry_count == 1
+    assert writer._pending_samples == 1
+
+    writer.flush()
+
+    assert writer._field_indices == {"SpeciesConcVV_A": 1}
+    assert writer._field_names == ["SpeciesConcVV_A"]
+    assert writer._entry_index == 1
+    assert writer._sample_index == 1
+    assert writer._pending_array_batches == []
 
 
 def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
@@ -909,6 +1014,36 @@ def test_restart_missing_policy_and_corrupt_offsets(tmp_path: Path):
     with netCDF4.Dataset(restart_path, "r+") as dataset:
         dataset.variables["field_start"][0] = 1
     with pytest.raises(ValueError, match="invalid contiguous fields offsets"):
+        _manager(
+            tmp_path,
+            start=START + timedelta(minutes=10),
+            restart_file=restart_path.name,
+        )
+
+
+@pytest.mark.parametrize("variable", ["vertical_value", "vertical_weight"])
+def test_restart_and_fresh_input_share_nonfinite_vertical_validation(
+    tmp_path: Path,
+    variable: str,
+):
+    entry = _entry_raw(
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
+    )
+    entry["vertical_operator"] = {
+        "type": "exact",
+        "unit": "altitude",
+        "values": [10.0],
+        "weights": [1.0],
+    }
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+    restart_path = tmp_path / "restart-20140901_001000.nc4"
+    with netCDF4.Dataset(restart_path, "r+") as dataset:
+        dataset.variables[variable][0] = np.nan
+
+    with pytest.raises(ValueError, match="vertical"):
         _manager(
             tmp_path,
             start=START + timedelta(minutes=10),

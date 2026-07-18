@@ -25,7 +25,10 @@ from wombat_transport.obsoperator.state import (
 )
 from wombat_transport.obsoperator.utils import (
     _datetime_to_microseconds,
+    _validate_fixed_width_utf8,
     _seconds_to_microseconds,
+    _validate_vertical_bounds,
+    _validate_vertical_values,
 )
 
 def _load_obsoperator_raw_entries(input_path: Path) -> list[Any]:
@@ -97,8 +100,7 @@ def _array_state_from_raw_entries(
         entry_id = str(_required(mapping, "id", label))
         if not entry_id:
             raise ValueError(f"{label}.id must not be empty")
-        if len(entry_id) > MAX_ID_LENGTH:
-            raise ValueError(f"{label}.id exceeds {MAX_ID_LENGTH} characters")
+        _validate_fixed_width_utf8(entry_id, MAX_ID_LENGTH, f"{label}.id")
         if entry_id in seen_ids:
             raise ValueError(f"duplicate active ObsOperator id {entry_id!r}")
         seen_ids.add(entry_id)
@@ -172,8 +174,8 @@ def _parse_fields(raw: Any, tracer_names: tuple[str, ...], label: str) -> tuple[
                 selected.append(tracer_index)
                 seen.add(tracer_index)
     names = tuple(f"{FIELD_PREFIX}{tracer_names[index]}" for index in selected)
-    if any(len(name) > MAX_FIELD_NAME_LENGTH for name in names):
-        raise ValueError(f"{label}.fields contains a name exceeding {MAX_FIELD_NAME_LENGTH} characters")
+    for name in names:
+        _validate_fixed_width_utf8(name, MAX_FIELD_NAME_LENGTH, f"{label}.fields value")
     return names, np.asarray(selected, dtype=np.int64)
 
 
@@ -353,6 +355,7 @@ def _parse_vertical_arrays(
             raise ValueError(f"{label}.values and weights must have the same length")
         values = _vertical_values(values_raw, unit, nlev, f"{label}.values")
         weights = np.asarray([float(value) for value in weights_raw], dtype=np.float64)
+        _validate_vertical_values(values, weights, unit, nlev, label)
         return (
             VERTICAL_TYPE_CODES["exact"],
             VERTICAL_UNIT_CODES[unit],
@@ -371,8 +374,7 @@ def _parse_vertical_arrays(
     else:
         start = _vertical_value(_required(mapping, "start", label), unit, nlev, f"{label}.start")
         end = _vertical_value(_required(mapping, "end", label), unit, nlev, f"{label}.end")
-    if start > end:
-        raise ValueError(f"{label} start must not exceed end")
+    _validate_vertical_bounds(float(start), float(end), unit, nlev, label)
     return (
         VERTICAL_TYPE_CODES["range"],
         VERTICAL_UNIT_CODES[unit],
@@ -397,7 +399,7 @@ def _vertical_value(raw: Any, unit: str, nlev: int, label: str) -> float | int:
             raise ValueError(f"{label} must be between 1 and {nlev}")
         return value
     value = float(raw)
-    if value < 0.0:
+    if not np.isfinite(value) or value < 0.0:
         raise ValueError(f"{label} must be nonnegative")
     return value
 

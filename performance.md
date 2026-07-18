@@ -3027,3 +3027,23 @@ The matched 2x2.5, 24-tracer, one-thread driver benchmark retained checksum
 0.298970/0.300629 seconds. Alternating production-style cached-static controls
 against the parent commit varied in both directions by more than this delta;
 no runtime regression was measurable.
+
+## ObsOperator correctness checks (2026-07-18)
+
+ObsOperator input now applies byte-accurate UTF-8 limits and shares finite
+vertical-value and weight validation with restart reconstruction. Ordinary
+ASCII IDs and field names use a no-encoding validation fast path. These checks
+run while input state is built, not in sampling. Writer field registries are
+also committed only after all staged NetCDF assignments succeed.
+
+A focused benchmark used 5,000 entries with two fields, cached identical
+operators, and the compiled array sampler:
+
+| Path | Before best/mean | After best/mean | Change in best |
+| --- | ---: | ---: | ---: |
+| Input setup | 63.244 / 66.305 ms | 63.229 / 65.384 ms | -0.02% |
+| Sampling | 77.992 / 79.827 us | 77.847 / 78.929 us | -0.19% |
+
+Sampling checksums were identical at 5.5. The runner adds one constant-time
+timestamp invariant before dispatching ObsOperator sampling; scheduling still
+uses `step_start` and the sampled data remains the completed `step_end` state.

@@ -28,15 +28,6 @@ remains the governing constraint for any transport refactor.
 
 ## Production correctness and lifecycle backlog
 
-- ObsOperator sampling is scheduled by `step_start` but consumes a post-step
-  snapshot. Make that relationship explicit and assert it before changing any
-  timing semantics.
-- The ObsOperator writer mutates its staged-field registry before NetCDF writes
-  complete, making retry behavior inconsistent after an I/O failure.
-- Fresh ObsOperator YAML permits some non-finite vertical values and weights
-  that its restart reader later rejects.
-- ObsOperator character limits differ between ingestion (characters) and
-  serialization (UTF-8 bytes).
 - Output mode, field, frequency, and interval validation is spread between
   parsing, writer construction, and first use. Consolidate semantic validation
   before a run begins.
@@ -187,6 +178,29 @@ vectors once per run. Their full reuse check measured about 6 microseconds on
 0.299870 to 0.298970 seconds best-of-15; alternating cached-static old/new
 controls varied in both directions by more than the observed difference, so
 there is no measurable regression.
+
+## ObsOperator correctness batch outcome
+
+- **Sampling semantics — resolved.** Production scheduling remains keyed by
+  transport `step_start`, while the runner now asserts that the sampled
+  snapshot is the corresponding completed-step state at `step_end`. No timing
+  or time-index semantics changed.
+- **Transactional writer registry — resolved.** Pending field names and indices
+  are built locally and committed only after every NetCDF assignment succeeds.
+  Failed flushes retain their pending batches, counters, and prior registry for
+  a consistent retry.
+- **Vertical validation — resolved.** Fresh YAML and restart reconstruction use
+  the same finite-value, finite-weight, range, and level checks before building
+  sampling state.
+- **String widths — resolved.** IDs and field names are validated in UTF-8
+  bytes during ingestion and serialization, including exact multibyte boundary
+  tests and rejection of embedded NUL characters.
+
+The 5,000-entry setup benchmark moved from 63.244/66.305 ms best/mean to
+63.229/65.384 ms after adding an ASCII validation fast path. Compiled sampling
+moved from 77.992/79.827 microseconds to 77.847/78.929 microseconds with the
+same checksum. The validation and writer changes do not enter the sampling
+kernel or per-observation loop.
 
 ## Harness and tooling backlog
 
