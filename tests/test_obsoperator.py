@@ -511,11 +511,18 @@ def test_manager_writes_fortran_compatible_netcdf_and_first_step_sample(tmp_path
         assert dataset.variables["field_index"].chunking() == [16_384]
         assert dataset.variables["sample"].chunking() == [16_384]
         assert dataset.variables["sample"].description == "sample of the id and field"
-        assert _decode_rows(dataset.variables["id"][:]) == ["first", "average"]
+        assert _decode_rows(dataset.variables["id"][:]) == ["first"]
         assert _decode_rows(dataset.variables["field"][:]) == ["SpeciesConcVV_A", "SpeciesConcVV_B"]
-        np.testing.assert_array_equal(dataset.variables["id_index"][:], np.array([1, 1, 2]))
-        np.testing.assert_array_equal(dataset.variables["field_index"][:], np.array([1, 2, 1]))
-        np.testing.assert_allclose(dataset.variables["sample"][:], np.array([1.0, 10.0, 2.0], dtype=np.float32))
+        np.testing.assert_array_equal(dataset.variables["id_index"][:], np.array([1, 1]))
+        np.testing.assert_array_equal(dataset.variables["field_index"][:], np.array([1, 2]))
+        np.testing.assert_allclose(dataset.variables["sample"][:], np.array([1.0, 10.0], dtype=np.float32))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0010.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["average"]
+        assert _decode_rows(dataset.variables["field"][:]) == ["SpeciesConcVV_A"]
+        np.testing.assert_array_equal(dataset.variables["id_index"][:], np.array([1]))
+        np.testing.assert_array_equal(dataset.variables["field_index"][:], np.array([1]))
+        np.testing.assert_allclose(dataset.variables["sample"][:], np.array([2.0], dtype=np.float32))
 
 
 def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
@@ -584,6 +591,22 @@ def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
     with netCDF4.Dataset(tmp_path / "out-20140902_0000.nc4") as dataset:
         assert _decode_rows(dataset.variables["id"][:]) == ["cross-day", "second-day"]
         np.testing.assert_allclose(dataset.variables["sample"][:], np.array([2.0, 3.0], dtype=np.float32))
+
+
+def test_manager_rotates_output_when_daily_input_path_is_unchanged(tmp_path: Path):
+    manager = _manager(tmp_path)
+    first = START
+    second = START + timedelta(minutes=10)
+
+    manager._initialize_for_date(first)
+    first_input = manager._previous_input_path
+    first_output = manager._current_output_path
+    manager._initialize_for_date(second)
+
+    assert manager._previous_input_path == first_input
+    assert manager._current_output_path != first_output
+    assert manager._current_output_path == tmp_path / "out-20140901_0010.nc4"
+    manager.close(boundary_time=second)
 
 
 def test_manager_skips_missing_day_and_restarts_incomplete_entry_without_partial_output(tmp_path: Path):

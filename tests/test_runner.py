@@ -94,6 +94,21 @@ def test_emissions_timestep_must_be_transport_multiple():
         _validate_timestep_schedule(600.0, 1000.0)
 
 
+def test_tracer_simulation_closes_registered_resources_after_failure(monkeypatch):
+    closed: list[str] = []
+
+    def fail_after_registering(config, *, max_steps, resources):
+        resources.callback(closed.append, "closed")
+        raise RuntimeError("transport failed")
+
+    monkeypatch.setattr("wombat_transport.runner._run_tracer_simulation", fail_after_registering)
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        run_tracer_simulation(SimpleNamespace())  # type: ignore[arg-type]
+
+    assert closed == ["closed"]
+
+
 def test_transport_executor_and_block_width_environment(monkeypatch):
     monkeypatch.delenv("WOMBAT_TRANSPORT_EXECUTOR", raising=False)
     monkeypatch.delenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", raising=False)

@@ -147,7 +147,6 @@ def _run_transport_one_block(
     grid: TransportGrid,
     *,
     dt_s: float = 600.0,
-    max_courant: float = 0.95,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
@@ -188,7 +187,6 @@ def run_transport_one_step(
     grid: TransportGrid,
     *,
     dt_s: float = 600.0,
-    max_courant: float = 0.95,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
@@ -224,7 +222,6 @@ def run_transport_one_step(
             forcing,
             grid,
             dt_s=dt_s,
-            max_courant=max_courant,
             active_emissions=block_emissions,
             surface_flux_to_vmr_factor=block_factor,
             dry_air_mass_kg=dry_air_mass_kg,
@@ -394,7 +391,6 @@ def trace_transport_one_step(
     grid: TransportGrid,
     *,
     dt_s: float = 600.0,
-    max_courant: float = 0.95,
     active_emissions: TracerField | SurfaceEmissions | None = None,
     surface_flux_to_vmr_factor: np.ndarray | None = None,
     dry_air_mass_kg: np.ndarray | None = None,
@@ -469,7 +465,6 @@ def run_transport_window(
     dt_s: float = 600.0,
     initial_met_time_index: int = 0,
     chunk_multiple: int = 1,
-    max_courant: float = 0.95,
 ) -> TransportWindowResult:
     """Run a short transport window and accumulate arithmetic mean state."""
 

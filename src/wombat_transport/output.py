@@ -12,7 +12,7 @@ import numpy as np
 from wombat_transport.fields import TracerField
 from wombat_transport.history_accumulation import accumulate_history_sum
 from wombat_transport.io import GRID_COORDS
-from wombat_transport.run_config import RunConfig, simulation_start
+from wombat_transport.run_config import RunConfig, simulation_end, simulation_start
 from wombat_transport.transport.forcing import TransportForcing
 
 SUPPORTED_RESTART_MET_FIELDS = {"Met_DELPDRY", "Met_PS1DRY", "Met_PS1WET", "Met_SPHU1", "Met_TMPU1"}
@@ -111,15 +111,28 @@ class HistoryOutputManager:
         ]
 
     @classmethod
-    def from_run_config(cls, config: RunConfig) -> HistoryOutputManager | None:
+    def from_run_config(
+        cls,
+        config: RunConfig,
+        *,
+        transport_dt_s: float,
+    ) -> HistoryOutputManager | None:
         if not config.outputs:
             return None
+        collections = parse_output_collections(config.outputs)
+        start = simulation_start(config)
+        validate_restart_output_alignment(
+            collections,
+            start=start,
+            end=simulation_end(config),
+            transport_dt_s=transport_dt_s,
+        )
         return cls(
             root=config.root,
             template_path=config.grid_template,
             expid=str(config.outputs.get("expid", "OutputDir/GEOSChem")),
-            collections=parse_output_collections(config.outputs),
-            start=simulation_start(config),
+            collections=collections,
+            start=start,
             writer=parse_output_writer(config.outputs),
         )
 
@@ -657,6 +670,34 @@ def parse_history_interval(value: str) -> HistoryInterval:
     if years:
         months += years * 12
     return HistoryInterval(months=months, days=days, seconds=hours * 3600 + minutes * 60 + seconds)
+
+
+def validate_restart_output_alignment(
+    collections: tuple[OutputCollectionConfig, ...],
+    *,
+    start: datetime,
+    end: datetime,
+    transport_dt_s: float,
+) -> None:
+    """Require instantaneous restart boundaries to coincide with transport steps."""
+
+    for collection in collections:
+        if collection.mode != "instantaneous" or "SpeciesRst_?ALL?" not in collection.fields:
+            continue
+        boundary = collection.frequency.add_to(start)
+        while boundary <= end:
+            step_index = (boundary - start).total_seconds() / float(transport_dt_s)
+            if not np.isclose(step_index, round(step_index), rtol=0.0, atol=1.0e-9):
+                raise ValueError(
+                    f"instantaneous restart collection {collection.name!r} has an output "
+                    "boundary that is not aligned with transport_timestep_s"
+                )
+            next_boundary = collection.frequency.add_to(boundary)
+            if next_boundary <= boundary:
+                raise ValueError(
+                    f"instantaneous restart collection {collection.name!r} frequency must be positive"
+                )
+            boundary = next_boundary
 
 
 def expand_history_template(template: str, timestamp: datetime) -> str:

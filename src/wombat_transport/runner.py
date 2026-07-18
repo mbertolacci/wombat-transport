@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from datetime import timezone
@@ -74,6 +76,16 @@ class TracerSimulationResult:
 
 
 def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) -> TracerSimulationResult:
+    with ExitStack() as resources:
+        return _run_tracer_simulation(config, max_steps=max_steps, resources=resources)
+
+
+def _run_tracer_simulation(
+    config: RunConfig,
+    *,
+    max_steps: int | None,
+    resources: ExitStack,
+) -> TracerSimulationResult:
     warn_if_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
     _write_run_metadata(config)
@@ -119,10 +131,16 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     transport_dt_s = float(transport_timestep_s(config))
     emissions_dt_s = float(emissions_timestep_s(config))
     _validate_timestep_schedule(transport_dt_s, emissions_dt_s)
+    current = start
 
     configured_emissions = _load_emissions_operator(config, species, grid)
     logger.debug("loaded_emissions_operator")
-    output_manager = HistoryOutputManager.from_run_config(config)
+    output_manager = HistoryOutputManager.from_run_config(
+        config,
+        transport_dt_s=transport_dt_s,
+    )
+    if output_manager is not None:
+        resources.callback(_close_output_manager, output_manager)
     logger.debug("output_manager enabled=%s", output_manager is not None)
     obsoperator_manager = ObsOperatorManager.from_run_config(
         config,
@@ -130,6 +148,8 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         grid=grid,
         transport_dt_s=transport_dt_s,
     )
+    if obsoperator_manager is not None:
+        resources.callback(_close_obsoperator_manager, obsoperator_manager, lambda: current)
     logger.debug("obsoperator_manager enabled=%s", obsoperator_manager is not None)
 
     forcing_provider = TransportForcingProvider(
@@ -152,7 +172,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
     emissions_steps = 0
     active_emissions: SurfaceEmissions | None = None
 
-    current = start
     while current < end:
         if max_steps is not None and transport_steps >= max_steps:
             logger.info("max_steps_stop steps=%d time=%s", transport_steps, current.isoformat())
@@ -229,13 +248,6 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
             output_manager.record_step(snapshot)
         current = step_end
 
-    if output_manager is not None:
-        logger.debug("closing_outputs")
-        output_manager.close()
-    if obsoperator_manager is not None:
-        logger.debug("closing_obsoperator")
-        obsoperator_manager.close(boundary_time=current)
-
     logger.info(
         "simulation_complete transport_steps=%d emissions_steps=%d total_emitted_mass_kg=%.8e",
         transport_steps,
@@ -252,6 +264,19 @@ def run_tracer_simulation(config: RunConfig, *, max_steps: int | None = None) ->
         emissions_dt_s=emissions_dt_s,
         final_delp_dry_hpa=final_delp_dry_hpa,
     )
+
+
+def _close_output_manager(manager: HistoryOutputManager) -> None:
+    logger.debug("closing_outputs")
+    manager.close()
+
+
+def _close_obsoperator_manager(
+    manager: ObsOperatorManager,
+    boundary_time: Callable[[], datetime],
+) -> None:
+    logger.debug("closing_obsoperator")
+    manager.close(boundary_time=boundary_time())
 
 
 def _write_run_metadata(config: RunConfig) -> None:

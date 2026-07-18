@@ -211,6 +211,12 @@ class ObsOperatorManager:
 
     def _initialize_for_date(self, timestamp: datetime) -> None:
         input_path = _resolve_template_path(self._root, self._config.input_file, timestamp)
+        output_path = _resolve_template_path(self._root, self._config.output_file, timestamp)
+        if output_path != self._current_output_path:
+            if self._writer is not None:
+                self._writer.close()
+                self._writer = None
+            self._current_output_path = output_path
         if input_path == self._previous_input_path:
             return
         self._previous_input_path = input_path
@@ -230,12 +236,6 @@ class ObsOperatorManager:
             logger.info("obsoperator_input_loaded path=%s entries=%d", input_path, state.entry_count)
         else:
             logger.info("obsoperator_input_missing path=%s", input_path)
-        output_path = _resolve_template_path(self._root, self._config.output_file, timestamp)
-        if output_path != self._current_output_path:
-            if self._writer is not None:
-                self._writer.close()
-                self._writer = None
-            self._current_output_path = output_path
 
     def _register_state(self, state: _ObsOperatorArrayState, *, earliest_time_us: int) -> None:
         duplicates = self._entry_ids.intersection(state.ids)

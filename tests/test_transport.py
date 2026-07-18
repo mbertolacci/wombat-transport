@@ -152,6 +152,22 @@ def test_transport_forcing_provider_interpolates_i3_like_geos_chem(monkeypatch):
     np.testing.assert_allclose(forcing.restart_surface_pressure_pa, 0.0)
 
 
+def test_transport_forcing_rejects_step_crossing_i3_boundary(monkeypatch):
+    grid = _fake_grid()
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_block", lambda *args: _fake_a1_block(0, 24))
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_a3_block", lambda *args: _fake_a3_block(0, 4))
+    monkeypatch.setattr("wombat_transport.transport.forcing._load_i3_block", lambda *args: _fake_i3_block(0, 4))
+    start = datetime(2014, 9, 1)
+    provider = forcing_module.TransportForcingProvider(
+        "met",
+        start,
+        grid,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="crosses a three-hour"):
+        provider.forcing_for_step(start + timedelta(hours=2, minutes=55), dt_s=600.0)
+
+
 @requires_restart
 def test_load_transport_grid_reads_template_metadata():
     config = load_run_config(BASE_CONFIG)

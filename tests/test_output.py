@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import netCDF4
@@ -21,6 +21,7 @@ from wombat_transport.output import (
     parse_history_interval,
     parse_output_storage,
     parse_output_writer,
+    validate_restart_output_alignment,
     write_restart_collection,
     write_species_conc_collection,
 )
@@ -38,6 +39,45 @@ def test_history_interval_parses_monthly_daily_and_hourly_values():
     assert daily.days == 1
     assert three_hourly.seconds == 3 * 60 * 60
     assert monthly.add_to(datetime(2014, 9, 1)) == datetime(2014, 10, 1)
+
+
+def test_instantaneous_restart_frequency_must_align_with_transport_steps():
+    collection = OutputCollectionConfig(
+        name="Restart",
+        filename=None,
+        template=None,
+        frequency=parse_history_interval("00000000 002500"),
+        duration=parse_history_interval("00000000 002500"),
+        mode="instantaneous",
+        fields=("SpeciesRst_?ALL?",),
+    )
+
+    with pytest.raises(ValueError, match="not aligned"):
+        validate_restart_output_alignment(
+            (collection,),
+            start=datetime(2014, 9, 1),
+            end=datetime(2014, 9, 1) + timedelta(hours=1),
+            transport_dt_s=600.0,
+        )
+
+
+def test_instantaneous_restart_frequency_accepts_aligned_transport_steps():
+    collection = OutputCollectionConfig(
+        name="Restart",
+        filename=None,
+        template=None,
+        frequency=parse_history_interval("00000000 003000"),
+        duration=parse_history_interval("00000000 003000"),
+        mode="instantaneous",
+        fields=("SpeciesRst_?ALL?",),
+    )
+
+    validate_restart_output_alignment(
+        (collection,),
+        start=datetime(2014, 9, 1),
+        end=datetime(2014, 9, 1) + timedelta(hours=1),
+        transport_dt_s=600.0,
+    )
 
 
 def test_history_template_expands_geos_chem_date_tokens():

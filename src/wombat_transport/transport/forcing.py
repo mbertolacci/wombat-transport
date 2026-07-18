@@ -340,6 +340,10 @@ class TransportForcingProvider:
             i3_restart = self._i3_field(restart_i3_index, base=False)
 
         seconds_into_i3_window = elapsed_s % 10800.0
+        if seconds_into_i3_window + float(dt_s) > 10800.0 + 1.0e-9:
+            raise ValueError(
+                "transport step crosses a three-hour meteorology interpolation boundary"
+            )
         start_fraction = seconds_into_i3_window / 10800.0
         end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
         midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
