@@ -106,6 +106,73 @@ WOMBAT_TRANSPORT_BLOCK_WIDTH=16 \
 This can be useful for controlled comparisons, but it is not required to use
 block-native tracer storage: storage is blocked in every execution mode.
 
+## Calibrating a new machine
+
+`tools/benchmark_transport_frontier.py` measures the synthetic full transport
+chain across process, thread, executor, and block-width configurations. It is
+transport-only: meteorology I/O, HISTORY, emissions, and ObsOperator are not
+included. The synthetic forcing uses the selected run configuration only for
+its supported grid definition.
+
+Provide an ordered list of Linux CPU identifiers, the core budgets to test,
+and total tracer counts:
+
+```bash
+.venv/bin/python tools/benchmark_transport_frontier.py run \
+  --run-config validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml \
+  --cpus 0,2,4,6,8,10,12,14 \
+  --core-counts 1 2 4 8 \
+  --tracer-counts 24 48 96 192 \
+  --binder auto \
+  --block-widths 8 16 \
+  --output-dir benchmark-results/transport-frontier
+```
+
+For each core budget `C`, the tool tests every balanced factorization
+`processes * threads/process = C`. Total tracers are divided as evenly as
+possible between processes. Multithreaded configurations compare full-width
+spatial execution with useful requested block widths; one-thread processes use
+the ordinary spatial path because block parallelism has no work to expose.
+
+The CPU list defines nested scopes: a four-core case uses the first four
+entries and an eight-core case uses the first eight. Select one logical CPU
+from each physical core unless SMT is deliberate. The tool warns when the
+chosen list contains detected SMT siblings.
+
+Binding modes are `taskset`, `numactl`, `none`, or `auto`. `auto` prefers a
+usable `numactl` installation and falls back to `taskset` when its binding
+probe fails. The numactl backend binds each rank to its exact CPUs and supports
+`bind`, `local`, and `interleave` memory policies. On a multi-socket system,
+benchmark one NUMA node or socket at a time unless cross-node placement is the
+intended workload.
+
+Workers compile and warm up after binding, then start each measured iteration
+at a shared monotonic-clock target. Effective step time ends when the slowest
+rank finishes. The two headline metrics are:
+
+```text
+ensemble steps/s = 1 / effective step time
+aggregate tracer-steps/s = total tracers / effective step time
+```
+
+The output directory contains:
+
+- `manifest.json`: command, Git state, system, CPU, NUMA, and sweep metadata;
+- `iterations.csv`: raw synchronized rank and makespan measurements;
+- `summary.csv`: every configuration and the winner for each tracer/core pair;
+- `winners.md`: a compact deployment table;
+- `ensemble_steps_per_s.svg` and `aggregate_tracer_steps_per_s.svg`: winner
+  frontiers by core count and total tracer count;
+- `cases/`: resumable per-configuration inputs, results, and worker logs.
+
+Use `--dry-run` to inspect the generated matrix, `--resume` to continue an
+interrupted output directory, and rebuild reports without rerunning with:
+
+```bash
+.venv/bin/python tools/benchmark_transport_frontier.py report \
+  benchmark-results/transport-frontier
+```
+
 ## Local end-to-end comparison
 
 The one- to four-thread GEOS-Chem timings were measured on 16 July 2026; the

@@ -2958,3 +2958,30 @@ than silently dropping the contract. This is a small localized maintenance
 cost, but less elegant than the column-local QCK kernel. Both changes were
 retained because the spatial gains are material and block execution is
 unchanged by construction.
+
+## Portable transport-frontier calibration (2026-07-18)
+
+`tools/benchmark_transport_frontier.py` now automates the synthetic full-chain
+transport sweep used to choose a deployment topology on a new machine. For
+each requested CPU budget it enumerates balanced process/thread
+factorizations, divides the requested total tracer count between processes,
+and compares spatial execution with useful block widths. Persistent workers
+are bound before importing and compiling the transport code, warm up outside
+the measurements, and use coordinated monotonic-clock start targets. The
+reported effective step time ends when the slowest process finishes.
+
+The tool supports exact `taskset` CPU lists and `numactl` CPU plus memory
+binding, records system and topology metadata, estimates configuration memory
+before launch, and can resume an interrupted matrix. Raw rank iterations and
+configuration summaries are written to CSV; Markdown and SVG reports select
+the fastest configuration independently for each tracer-count/CPU-budget
+pair. It intentionally excludes meteorology I/O, HISTORY, emissions, and the
+ObsOperator so that this first workflow remains a reproducible transport
+calibration rather than a synthetic whole-application model.
+
+Smoke sweeps completed at 4x5 for a one-process/one-worker case and a two-CPU
+matrix containing spatial, blocked, and two-process configurations. These
+runs validated orchestration, synchronized timing, result collection, report
+generation, and resume state; their timings are not recorded as machine
+performance results because the locally available two-CPU affinity set used
+SMT siblings.
