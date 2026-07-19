@@ -151,10 +151,60 @@ if njit is not None:
     _xtp_serial = njit(nogil=True)(nb._xtp_batch_numba_kernel.py_func)
     _ytp_serial = njit(nogil=True)(nb._ytp_batch_numba_kernel.py_func)
     _fzppm_serial = njit(nogil=True, fastmath={"contract"})(nb._fzppm_batch_numba_kernel.py_func)
-    _qck_needs_fill_serial = njit(nogil=True)(nb._qckxyz_needs_fill_numba_kernel.py_func)
-    _qck_serial = njit(nogil=True)(nb._qckxyz_batch_numba_kernel.py_func)
-    _finalize_serial = njit(nogil=True)(nb._finalize_tpcore_output_numba_kernel.py_func)
     _advect_one_block_spatial = nb._advect_tracers_fused_numba_kernel
+
+    @njit(nogil=True)
+    def _qck_finalize_columns_serial(
+        dq1: np.ndarray,
+        delp2: np.ndarray,
+        fill: bool,
+    ) -> None:
+        nlev, nlat, nlon, ntracer = dq1.shape
+        for j in range(nlat):
+            if j == 1 or j == nlat - 2:
+                continue
+            for i in range(nlon):
+                if fill and j >= 2 and j <= nlat - 3:
+                    needs_fill = False
+                    for k in range(nlev):
+                        for tracer in range(ntracer):
+                            if dq1[k, j, i, tracer] < 0.0:
+                                needs_fill = True
+                                break
+                        if needs_fill:
+                            break
+                    if needs_fill:
+                        for tracer in range(ntracer):
+                            if dq1[0, j, i, tracer] < 0.0:
+                                dq1[1, j, i, tracer] += dq1[0, j, i, tracer]
+                                dq1[0, j, i, tracer] = 0.0
+                            for k in range(1, nlev - 1):
+                                if dq1[k, j, i, tracer] < 0.0:
+                                    qup = dq1[k - 1, j, i, tracer]
+                                    qly = -dq1[k, j, i, tracer]
+                                    dup = min(qly, qup)
+                                    dq1[k - 1, j, i, tracer] = qup - dup
+                                    dq1[k, j, i, tracer] = dup - qly
+                                    dq1[k + 1, j, i, tracer] += dq1[k, j, i, tracer]
+                                    dq1[k, j, i, tracer] = 0.0
+                            if dq1[nlev - 1, j, i, tracer] < 0.0:
+                                qup = dq1[nlev - 2, j, i, tracer]
+                                qly = -dq1[nlev - 1, j, i, tracer]
+                                dup = min(qly, qup)
+                                dq1[nlev - 2, j, i, tracer] = qup - dup
+                                dq1[nlev - 1, j, i, tracer] = 0.0
+                for k in range(nlev):
+                    inv_delp = 1.0 / delp2[k, j, i]
+                    for tracer in range(ntracer):
+                        value = dq1[k, j, i, tracer] * inv_delp
+                        if value < 0.0:
+                            value = 1.0e-26
+                        dq1[k, j, i, tracer] = value
+        for k in range(nlev):
+            for i in range(nlon):
+                for tracer in range(ntracer):
+                    dq1[k, 1, i, tracer] = dq1[k, 0, i, tracer]
+                    dq1[k, nlat - 2, i, tracer] = dq1[k, nlat - 1, i, tracer]
 
     @njit(nogil=True)
     def _advect_one_block_serial(
@@ -216,9 +266,7 @@ if njit is not None:
                 dcy, al_y, ar_y, a6_y, south_flux_y, north_flux_y,
             )
         _fzppm_serial(delp1, wz, dq1, q, dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z)
-        if fill and _qck_needs_fill_serial(dq1):
-            _qck_serial(dq1)
-        _finalize_serial(dq1, delp2)
+        _qck_finalize_columns_serial(dq1, delp2, fill)
 
 else:
     _advect_one_block_serial = None

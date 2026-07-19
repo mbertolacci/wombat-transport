@@ -67,10 +67,10 @@ The `blocks` executor requires Numba. It uses Numba's worker pool directly; it
 does not create Python threads or a Python scheduling layer. With one Numba
 thread it offers no parallelism advantage over spatial execution.
 
-For ordinary runs, leave the defaults alone. Spatial execution is the natural
-choice for small tracer counts or too few blocks to occupy the configured
-workers. Block execution is intended for larger tracer ensembles where
-independent blocks provide enough outer parallel work:
+Spatial execution is the natural choice for small tracer counts or when there
+are too few blocks to occupy the configured workers. Block execution is
+intended for larger tracer ensembles where independent blocks provide enough
+outer parallel work:
 
 ```bash
 export NUMBA_NUM_THREADS=8
@@ -82,9 +82,8 @@ export WOMBAT_TRANSPORT_EXECUTOR=blocks
 
 Block width controls the tradeoff between the number and size of independent
 tasks. Narrower blocks expose more parallel tasks; wider blocks retain more
-tracer amortization within each operator. The default width of 8 is the
-recommended starting point. Tune it only with a representative end-to-end
-benchmark:
+tracer amortization within each operator. Width 8 remains a safe default;
+widths 12 and 16 are also useful candidates for eight-thread processes:
 
 ```bash
 WOMBAT_TRANSPORT_EXECUTOR=blocks \
@@ -106,6 +105,57 @@ WOMBAT_TRANSPORT_BLOCK_WIDTH=16 \
 This can be useful for controlled comparisons, but it is not required to use
 block-native tracer storage: storage is blocked in every execution mode.
 
+### Choosing an executor and block width
+
+Choose the execution policy per process, after deciding how tracers and CPUs
+will be divided between processes. For `N` tracers, block width `W`, and `T`
+Numba threads, the outer executor has:
+
+```text
+B = ceil(N / W) blocks
+```
+
+Block execution is most likely to win when `B >= T` and the blocks divide
+evenly between workers. A multiple of `T` is ideal. Mild imbalance can still
+be efficient when there are several blocks per worker, but a small remainder
+can be costly when it makes some workers process two blocks while others
+process only one. The final block is padded to width `W`, so widths that avoid
+large amounts of inactive-lane work are preferable.
+
+Task balance is not the only consideration. Very narrow blocks lose
+within-block efficiency even when perfectly balanced, while very wide blocks
+increase the per-worker working set and may leave workers idle. On the tested
+AVX2 machine, widths 8, 12, and 16 form the useful range: all are multiples of
+the four-double SIMD width, while narrower widths 6--7 and wider widths 20--24
+fall outside the best throughput envelope. Treat `{8, 12, 16}` as the initial
+candidate set rather than assuming that powers of two are intrinsically
+better.
+
+For eight threads, representative balanced choices are:
+
+| Tracers per process | Width | Blocks | Blocks per thread |
+|---:|---:|---:|---:|
+| 64 | 8 | 8 | 1 |
+| 96 | 12 | 8 | 1 |
+| 128 | 16 | 8 | 1 |
+| 192 | 12 | 16 | 2 |
+| 256 | 16 | 16 | 2 |
+| 512 | 16 | 32 | 4 |
+
+These examples explain useful candidates; they are not a hard-coded dispatch
+table. If no candidate produces enough reasonably balanced blocks, spatial
+execution is usually the better choice. Process sharding can change both `N`
+and `T`, so the complete frontier may prefer a multi-process spatial layout or
+a different block width from a single-process comparison.
+
+Calibrate each supported grid separately. Block count depends only on tracer
+layout, but the cost and working set of each block depend on the number of
+horizontal cells. Spatial execution also draws its parallelism from the fixed
+grid. Consequently, a result measured at 2x2.5 should not be assumed to select
+the same width or process topology at 4x5, even though the block-count rule is
+the same. Compiler version, SIMD width, cache hierarchy, and CPU topology can
+also shift the final crossover.
+
 ## Calibrating a new machine
 
 `tools/benchmark_transport_frontier.py` measures the synthetic full transport
@@ -124,7 +174,7 @@ and total tracer counts:
   --core-counts 1 2 4 8 \
   --tracer-counts 16 32 64 96 128 192 256 512 \
   --binder auto \
-  --block-widths 8 16 32 \
+  --block-widths 8 12 16 \
   --output-dir benchmark-results/transport-frontier
 ```
 
