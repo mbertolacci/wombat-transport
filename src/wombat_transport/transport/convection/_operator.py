@@ -386,7 +386,11 @@ def _convect_compiled(
 
 
 if njit is not None:
-    _convect_block_serial = njit(nogil=True, fastmath={"contract"})(
+    _convect_block_serial = njit(
+        nogil=True,
+        fastmath={"contract"},
+        pipeline_class=NoAliasCompiler,
+    )(
         _convect_fullgrid_top_numba_kernel.py_func
     )
     _convect_block_spatial = _convect_fullgrid_top_numba_kernel

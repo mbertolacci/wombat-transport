@@ -90,6 +90,7 @@ from wombat_transport.gc_harness import (
 )
 from wombat_transport.transport.convection import _reference as convection_reference
 from wombat_transport.transport.convection import G0_100, run_cloud_convection_one_step
+from wombat_transport.transport import _executor as transport_executor
 from wombat_transport.transport._executor import apply_transport
 from wombat_transport.transport._executor import make_transport_workspace
 from wombat_transport.transport.convection._operator import _convect_block_serial
@@ -113,6 +114,7 @@ from wombat_transport.transport.tpcore import (
 )
 from wombat_transport.transport.tpcore._reference import _calc_advec_cross_terms
 from wombat_transport.transport.tpcore import _kernels as tpcore_numba
+from wombat_transport.transport.tpcore import _operator as tpcore_operator
 from wombat_transport.transport.tpcore._operator import (
     _run_tpcore_borrowed_mass_with_setup,
     _run_tpcore_consuming_mass_with_setup,
@@ -1733,6 +1735,25 @@ def test_numba_column_qck_matches_guarded_global_correction():
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+@pytest.mark.parametrize("fill", (False, True))
+def test_tpcore_serial_qck_finalization_matches_separate_kernels(fill):
+    rng = np.random.default_rng(1729)
+    original = rng.uniform(0.1, 2.0, size=(5, 8, 4, 6))
+    original[0, 2, 1, 1] = -0.25
+    original[2, 4, 3, 5] = -0.5
+    delp2 = rng.uniform(1.0, 100.0, size=(5, 8, 4))
+    expected = original.copy()
+    actual = original.copy()
+
+    if fill and tpcore_numba._qckxyz_needs_fill_numba_kernel(expected):
+        tpcore_numba._qckxyz_batch_numba_kernel(expected)
+    tpcore_numba._finalize_tpcore_output_numba_kernel(expected, delp2)
+    tpcore_operator._qck_finalize_columns_serial(actual, delp2, fill)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
 @pytest.mark.parametrize(("ntracer", "lane_width"), ((1, 8), (7, 8), (8, 8), (9, 8), (17, 16)))
 def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_width):
     tracer = np.arange(2 * 3 * 4 * ntracer, dtype=np.float64).reshape(2, 3, 4, ntracer)
@@ -1745,6 +1766,15 @@ def test_tpcore_block_pack_roundtrips_arbitrary_tracer_counts(ntracer, lane_widt
     np.testing.assert_array_equal(actual, tracer)
     if ntracer % lane_width:
         assert np.count_nonzero(blocks[-1, :, :, :, ntracer % lane_width :]) == 0
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_serial_and_parallel_transport_dispatchers_do_not_share_disk_cache():
+    serial_cache = type(transport_executor._multi_block_transport_step_serial._cache).__name__
+    parallel_cache = type(transport_executor._multi_block_transport_step_parallel._cache).__name__
+
+    assert serial_cache == "NullCache"
+    assert parallel_cache == "FunctionCache"
 
 
 @pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")

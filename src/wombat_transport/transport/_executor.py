@@ -161,7 +161,6 @@ def apply_transport(
         np.ascontiguousarray(value.reshape(scalar_shape))
         for value in (cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn)
     )
-
     configured_workers = configure_numba_threads(available=True)
     if workspace.workers != configured_workers:
         raise ValueError(
@@ -535,7 +534,11 @@ if njit is not None:
                 vdiff_worker_work, convection_inputs, convection_work,
             )
 
-    _multi_block_transport_step_serial = njit(nogil=True, cache=True)(
+    # These dispatchers share one Python function, so Numba gives them the same
+    # disk-cache key even though only one requests the parallel pipeline. Keep
+    # the production parallel specialization cached and compile the diagnostic
+    # serial policy in memory to prevent first-compiler-wins cache poisoning.
+    _multi_block_transport_step_serial = njit(nogil=True)(
         _multi_block_transport_step_impl
     )
     _multi_block_transport_step_parallel = njit(parallel=True, nogil=True, cache=True)(

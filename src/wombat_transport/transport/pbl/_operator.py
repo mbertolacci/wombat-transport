@@ -152,7 +152,9 @@ if njit is not None:
                         tracer_out[lev, lat, lon, lane] = tracer_diffused[lon, lev, lane] * before_mass[lon, lane]
         return negative_count
 
-    _apply_vdiff_block_serial = njit(nogil=True)(_apply_vdiff_block_impl)
+    _apply_vdiff_block_serial = njit(nogil=True, pipeline_class=NoAliasCompiler)(
+        _apply_vdiff_block_impl
+    )
     _apply_vdiff_block_spatial = njit(
         parallel=True,
         nogil=True,

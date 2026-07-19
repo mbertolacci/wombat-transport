@@ -3062,3 +3062,35 @@ current 2x2.5, 24-tracer, one-thread compiled-driver controls retained checksum
 `0.0004011625392252`; the second matched pair measured 0.299489 and 0.299400
 seconds best-of-15 respectively. The 0.03% difference is below observed host
 noise.
+
+## Block-executor cache correction and serial-kernel follow-up (2026-07-19)
+
+The apparent fresh-cache block regression was a Numba disk-cache collision,
+not a cleanup regression. The serial and parallel outer dispatchers were made
+from the same Python function with different compilation flags and
+`cache=True`, giving them the same cache locator. Compiling serial first made
+both policies take about 1.12 seconds; compiling blocks first made both take
+about 0.28 seconds. The production parallel dispatcher remains disk-cached,
+while the diagnostic serial dispatcher now compiles in memory so compilation
+order cannot select the wrong policy.
+
+Every follow-up source state used a distinct empty cache. Applying the no-alias
+contract to serial VDIFF and convection, then combining serial TPCORE's guarded
+QCK correction with column-local finalization, produced these matched medians:
+
+| Tracers | Width | Corrected baseline s | Retained s | Change |
+| ---: | ---: | ---: | ---: | ---: |
+| 24 | 8 | 0.172705 | 0.164657 | -4.7% |
+| 24 | 16 | 0.253185 | 0.236930 | -6.4% |
+| 64 | 8 | 0.195132 | 0.188218 | -3.5% |
+| 64 | 16 | 0.276780 | 0.257923 | -6.8% |
+| 96 | 8 | 0.343340 | 0.321520 | -6.4% |
+| 96 | 16 | 0.308177 | 0.289278 | -6.1% |
+| 128 | 8 | 0.363708 | 0.341190 | -6.2% |
+| 128 | 16 | 0.351226 | 0.334420 | -4.8% |
+
+Checksums were unchanged. Direct tests also require the combined QCK and
+finalization kernel to be bitwise equal to the former separate kernels with
+both fill modes. Fixed-width specialization was 2--5% slower and was removed.
+Standalone column-local QCK retained a width-dependent tradeoff, while shared
+cloud-base preparation was mostly neutral-to-slower; neither was retained.
