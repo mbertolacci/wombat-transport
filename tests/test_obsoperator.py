@@ -855,6 +855,51 @@ def test_manager_rotates_output_when_daily_input_path_is_unchanged(tmp_path: Pat
     manager.close(boundary_time=second)
 
 
+def test_manager_daily_plan_install_is_atomic_and_retryable(tmp_path: Path):
+    active_path = _write_yaml(
+        tmp_path / "active.yml",
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id="active",
+                    time={"type": "range", "unit": "time_index", "start": 0, "end": 2},
+                )
+            ]
+        },
+    )
+    manager = _manager(tmp_path)
+    active_plan = _load(active_path)
+    active_plan.accumulator[:] = 3.0
+    manager._plan = active_plan
+
+    daily_path = tmp_path / "obs-20140901.yml"
+    _write_yaml(daily_path, {"entries": [_entry_raw(fields="SpeciesConcVV_MISSING")]})
+    with pytest.raises(ValueError, match="unknown tracer"):
+        manager._initialize_for_date(START)
+
+    assert manager._plan is active_plan
+    assert manager._previous_input_path is None
+    np.testing.assert_array_equal(manager._plan.accumulator, [3.0])
+
+    _write_yaml(
+        daily_path,
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id="incoming",
+                    time={"type": "point", "unit": "time_index", "time": 1},
+                )
+            ]
+        },
+    )
+    manager._initialize_for_date(START)
+
+    assert manager._plan.ids == ("incoming", "active")
+    assert manager._previous_input_path == daily_path
+    np.testing.assert_array_equal(manager._plan.accumulator, [0.0, 3.0])
+    manager.close(boundary_time=START)
+
+
 def test_manager_skips_missing_day_and_restarts_incomplete_entry_without_partial_output(tmp_path: Path):
     manager = _manager(tmp_path)
     manager.sample(step_start=START, time_index=0, snapshot=_snapshot())

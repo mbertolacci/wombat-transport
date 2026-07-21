@@ -207,13 +207,12 @@ class ObsOperatorManager:
             self._current_output_path = output_path
         if input_path == self._previous_input_path:
             return
-        self._previous_input_path = input_path
         current_time_us = _datetime_to_microseconds(timestamp)
         if self._plan.entry_count and current_time_us != self._position_us:
             raise ValueError(
                 "ObsOperator plan cannot skip model timesteps while changing daily input"
             )
-        self._plan = compact_obs_plan(self._plan, current_time_us)
+        candidate_plan = compact_obs_plan(self._plan, current_time_us)
         if input_path.is_file():
             incoming = _load_obs_plan(
                 input_path,
@@ -229,10 +228,12 @@ class ObsOperatorManager:
                     "ObsOperator entries have sampling times before the current run position; "
                     "a matching ObsOperator restart is required"
                 )
-            self._plan = merge_obs_plans(self._plan, incoming)
+            candidate_plan = merge_obs_plans(candidate_plan, incoming)
             logger.info("obsoperator_input_loaded path=%s entries=%d", input_path, incoming.entry_count)
         else:
             logger.info("obsoperator_input_missing path=%s", input_path)
+        self._plan = candidate_plan
+        self._previous_input_path = input_path
 
     def _ensure_open(self) -> None:
         if self._closed:
