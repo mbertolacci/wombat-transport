@@ -20,8 +20,8 @@ from wombat_transport.obsoperator.state import (
     VERTICAL_TYPE_CODES,
     VERTICAL_UNIT_CODES,
     VERTICAL_WEIGHTING_CODES,
-    _ObsOperatorArrayState,
-    _array_state_from_components,
+    ObsPlan,
+    _allocate_numeric,
 )
 from wombat_transport.obsoperator.utils import (
     _datetime_to_microseconds,
@@ -46,24 +46,16 @@ def _load_obsoperator_raw_entries(input_path: Path) -> list[Any]:
     return entries_raw
 
 
-def _freeze_operator_spec(value: Any) -> Any:
-    if isinstance(value, dict):
-        return tuple((key, _freeze_operator_spec(item)) for key, item in value.items())
-    if isinstance(value, list):
-        return tuple(_freeze_operator_spec(item) for item in value)
-    return value
-
-
-def _load_obsoperator_array_state(
+def _load_obs_plan(
     path: str | Path,
     *,
     tracer_names: tuple[str, ...],
     grid: TransportGrid,
     simulation_start: datetime,
     transport_dt_s: float,
-) -> _ObsOperatorArrayState:
+) -> ObsPlan:
     entries_raw = _load_obsoperator_raw_entries(Path(path))
-    return _array_state_from_raw_entries(
+    return _obs_plan_from_raw_entries(
         entries_raw,
         tracer_names=tracer_names,
         grid=grid,
@@ -72,28 +64,101 @@ def _load_obsoperator_array_state(
     )
 
 
-def _array_state_from_raw_entries(
+def _obs_plan_from_raw_entries(
     entries_raw: list[Any],
     *,
     tracer_names: tuple[str, ...],
     grid: TransportGrid,
     simulation_start: datetime,
     transport_dt_s: float,
-) -> _ObsOperatorArrayState:
+) -> ObsPlan:
     field_cache: dict[Any, tuple[tuple[str, ...], np.ndarray]] = {}
-    time_cache: dict[Any, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    horizontal_cache: dict[Any, tuple[np.ndarray, np.ndarray, np.ndarray, int]] = {}
-    vertical_cache: dict[Any, tuple[int, int, int, float, float, np.ndarray, np.ndarray]] = {}
-    rows: list[
-        tuple[
-            str,
-            tuple[tuple[str, ...], np.ndarray],
-            tuple[np.ndarray, np.ndarray, np.ndarray],
-            tuple[np.ndarray, np.ndarray, np.ndarray, int],
-            tuple[int, int, int, float, float, np.ndarray, np.ndarray],
-        ]
-    ] = []
+    time_cache: dict[Any, tuple[np.ndarray, float]] = {}
+    horizontal_cache: dict[Any, tuple[np.ndarray, int, float, float]] = {}
+    vertical_cache: dict[
+        Any,
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ] = {}
+    resolved_fields: dict[int, tuple[tuple[str, ...], np.ndarray]] = {}
+    resolved_times: dict[int, tuple[np.ndarray, float]] = {}
+    resolved_horizontals: dict[int, tuple[np.ndarray, int, float, float]] = {}
+    resolved_verticals: dict[
+        int,
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ] = {}
+    entry_count = len(entries_raw)
+    field_total = 0
+    time_total = 0
+    horizontal_total = 0
+    vertical_total = 0
+    for index, raw_entry in enumerate(entries_raw):
+        label = f"entries[{index}]"
+        mapping = _require_mapping(raw_entry, label)
+        if "species" in mapping:
+            raise ValueError(f"{label}.species is obsolete; use fields")
+        field_raw = _required(mapping, "fields", label)
+        field_key = _freeze_operator_spec(field_raw)
+        if field_key not in field_cache:
+            field_cache[field_key] = _parse_fields(field_raw, tracer_names, label)
+        resolved_fields[id(field_raw)] = field_cache[field_key]
+        field_total += resolved_fields[id(field_raw)][1].size
+
+        time_raw = _operator_sequence(
+            _required(mapping, "time_operator", label), f"{label}.time_operator"
+        )
+        time_total += len(time_raw)
+        for component_index, time_component in enumerate(time_raw):
+            time_key = _freeze_operator_spec(time_component)
+            if time_key not in time_cache:
+                time_cache[time_key] = _parse_time_operator(
+                    time_component,
+                    label=f"{label}.time_operator[{component_index}]",
+                    simulation_start=simulation_start,
+                    transport_dt_s=transport_dt_s,
+                )
+            resolved_times[id(time_component)] = time_cache[time_key]
+
+        horizontal_raw = _operator_sequence(
+            _required(mapping, "horizontal_operator", label),
+            f"{label}.horizontal_operator",
+        )
+        horizontal_total += len(horizontal_raw)
+        for component_index, horizontal_component in enumerate(horizontal_raw):
+            horizontal_key = _freeze_operator_spec(horizontal_component)
+            if horizontal_key not in horizontal_cache:
+                horizontal_cache[horizontal_key] = _parse_horizontal_operator(
+                    horizontal_component,
+                    label=f"{label}.horizontal_operator[{component_index}]",
+                    grid=grid,
+                )
+            resolved_horizontals[id(horizontal_component)] = horizontal_cache[horizontal_key]
+
+        vertical_raw = _operator_sequence(
+            _required(mapping, "vertical_operator", label), f"{label}.vertical_operator"
+        )
+        for component_index, vertical_component in enumerate(vertical_raw):
+            vertical_key = _freeze_operator_spec(vertical_component)
+            if vertical_key not in vertical_cache:
+                vertical_cache[vertical_key] = _parse_vertical_operators(
+                    vertical_component,
+                    label=f"{label}.vertical_operator[{component_index}]",
+                    nlev=grid.shape[0],
+                )
+            resolved_verticals[id(vertical_component)] = vertical_cache[vertical_key]
+            vertical_total += resolved_verticals[id(vertical_component)][4].size
+
+    arrays = _allocate_numeric(
+        entry_count,
+        field_total,
+        time_total,
+        horizontal_total,
+        vertical_total,
+        field_total,
+    )
+    ids: list[str] = []
+    field_names: list[str] = []
     seen_ids: set[str] = set()
+    field_offset = time_offset = horizontal_offset = vertical_offset = 0
     for index, raw_entry in enumerate(entries_raw):
         label = f"entries[{index}]"
         mapping = _require_mapping(raw_entry, label)
@@ -108,47 +173,106 @@ def _array_state_from_raw_entries(
             raise ValueError(f"{label}.species is obsolete; use fields")
 
         field_raw = _required(mapping, "fields", label)
-        field_key = _freeze_operator_spec(field_raw)
-        fields = field_cache.get(field_key)
-        if fields is None:
-            fields = _parse_fields(field_raw, tracer_names, label)
-            field_cache[field_key] = fields
+        names, tracers = resolved_fields[id(field_raw)]
+        field_count = tracers.size
+        field_slice = slice(field_offset, field_offset + field_count)
+        arrays["entry_field_start"][index] = field_offset
+        arrays["entry_field_count"][index] = field_count
+        arrays["field_tracer"][field_slice] = tracers
+        arrays["field_to_accumulator"][field_slice] = np.arange(
+            field_offset, field_offset + field_count, dtype=np.int64
+        )
+        arrays["accumulator"][field_slice] = 0.0
+        field_names.extend(names)
+        field_offset += field_count
 
-        time_raw = _required(mapping, "time_operator", label)
-        time_key = _freeze_operator_spec(time_raw)
-        time = time_cache.get(time_key)
-        if time is None:
-            time = _parse_time_arrays(
-                time_raw,
-                label=f"{label}.time_operator",
-                simulation_start=simulation_start,
-                transport_dt_s=transport_dt_s,
-            )
-            time_cache[time_key] = time
+        time_raw = _operator_sequence(
+            _required(mapping, "time_operator", label), f"{label}.time_operator"
+        )
+        arrays["time_operator_start"][index] = time_offset
+        arrays["time_operator_count"][index] = len(time_raw)
+        entry_end_us = np.iinfo(np.int64).min
+        for time_component in time_raw:
+            time_bounds, time_weight = resolved_times[id(time_component)]
+            arrays["time_operator_bounds_us"][time_offset] = time_bounds
+            arrays["time_operator_weight"][time_offset] = time_weight
+            entry_end_us = max(entry_end_us, int(time_bounds[1]))
+            time_offset += 1
+        arrays["entry_end_us"][index] = entry_end_us
 
-        horizontal_raw = _required(mapping, "horizontal_operator", label)
-        horizontal_key = _freeze_operator_spec(horizontal_raw)
-        horizontal = horizontal_cache.get(horizontal_key)
-        if horizontal is None:
-            horizontal = _parse_horizontal_arrays(
-                horizontal_raw,
-                label=f"{label}.horizontal_operator",
-                grid=grid,
-            )
-            horizontal_cache[horizontal_key] = horizontal
+        horizontal_raw = _operator_sequence(
+            _required(mapping, "horizontal_operator", label),
+            f"{label}.horizontal_operator",
+        )
+        arrays["horizontal_operator_start"][index] = horizontal_offset
+        arrays["horizontal_operator_count"][index] = len(horizontal_raw)
+        for horizontal_component in horizontal_raw:
+            (
+                horizontal_bounds,
+                horizontal_type,
+                horizontal_weight,
+                horizontal_normalization,
+            ) = resolved_horizontals[id(horizontal_component)]
+            arrays["horizontal_operator_bounds"][horizontal_offset] = horizontal_bounds
+            arrays["horizontal_weight_type"][horizontal_offset] = horizontal_type
+            arrays["horizontal_weight"][horizontal_offset] = horizontal_weight
+            arrays["horizontal_normalization"][horizontal_offset] = horizontal_normalization
+            horizontal_offset += 1
 
-        vertical_raw = _required(mapping, "vertical_operator", label)
-        vertical_key = _freeze_operator_spec(vertical_raw)
-        vertical = vertical_cache.get(vertical_key)
-        if vertical is None:
-            vertical = _parse_vertical_arrays(
-                vertical_raw,
-                label=f"{label}.vertical_operator",
-                nlev=grid.shape[0],
+        vertical_raw = _operator_sequence(
+            _required(mapping, "vertical_operator", label), f"{label}.vertical_operator"
+        )
+        arrays["vertical_operator_start"][index] = vertical_offset
+        entry_vertical_count = 0
+        for vertical_component in vertical_raw:
+            vertical_type, vertical_unit, vertical_bounds, vertical_weight_type, vertical_weight = (
+                resolved_verticals[id(vertical_component)]
             )
-            vertical_cache[vertical_key] = vertical
-        rows.append((entry_id, fields, time, horizontal, vertical))
-    return _array_state_from_components(rows)
+            vertical_count = vertical_weight.size
+            vertical_slice = slice(vertical_offset, vertical_offset + vertical_count)
+            arrays["vertical_operator_type"][vertical_slice] = vertical_type
+            arrays["vertical_operator_unit"][vertical_slice] = vertical_unit
+            arrays["vertical_operator_bounds"][vertical_slice] = vertical_bounds
+            arrays["vertical_weight_type"][vertical_slice] = vertical_weight_type
+            arrays["vertical_weight"][vertical_slice] = vertical_weight
+            vertical_offset += vertical_count
+            entry_vertical_count += vertical_count
+        arrays["vertical_operator_count"][index] = entry_vertical_count
+        ids.append(entry_id)
+
+    order = np.argsort(arrays["entry_end_us"], kind="stable")
+    plan = ObsPlan(ids=tuple(ids), field_names=tuple(field_names), **arrays)
+    if not np.array_equal(order, np.arange(entry_count)):
+        from wombat_transport.obsoperator.state import _copy_ordered_plans, empty_obs_plan
+
+        plan = _copy_ordered_plans(
+            plan,
+            empty_obs_plan(),
+            np.zeros(entry_count, dtype=np.int8),
+            order.astype(np.int64, copy=False),
+            boundary_us=-1,
+        )
+    plan.validate()
+    return plan
+
+
+# Private compatibility alias for callers outside this package during the transition.
+_load_obsoperator_array_state = _load_obs_plan
+
+
+def _freeze_operator_spec(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple((key, _freeze_operator_spec(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return tuple(_freeze_operator_spec(item) for item in value)
+    return value
+
+
+def _operator_sequence(raw: Any, label: str) -> tuple[dict[str, Any], ...]:
+    values = raw if isinstance(raw, list) else [raw]
+    if not values:
+        raise TypeError(f"{label} must be a mapping or nonempty sequence of mappings")
+    return tuple(_require_mapping(value, label) for value in values)
 
 def _parse_fields(raw: Any, tracer_names: tuple[str, ...], label: str) -> tuple[tuple[str, ...], np.ndarray]:
     requested = [raw] if isinstance(raw, str) else raw
@@ -179,13 +303,13 @@ def _parse_fields(raw: Any, tracer_names: tuple[str, ...], label: str) -> tuple[
     return names, np.asarray(selected, dtype=np.int64)
 
 
-def _parse_time_arrays(
+def _parse_time_operator(
     raw: Any,
     *,
     label: str,
     simulation_start: datetime,
     transport_dt_s: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, float]:
     mapping = _require_mapping(raw, label)
     operator_type = str(_required(mapping, "type", label))
     if operator_type not in {"point", "range"}:
@@ -229,15 +353,15 @@ def _parse_time_arrays(
             start = end
     if start > end:
         raise ValueError(f"{label} start must not exceed end")
-    indices = np.arange(start, end + 1, dtype=np.int64)
-    if weighting == "normalized":
-        weights = np.full(indices.size, 1.0 / indices.size, dtype=np.float64)
-    else:
-        weights = np.ones(indices.size, dtype=np.float64)
     start_us = _datetime_to_microseconds(simulation_start)
     dt_us = _seconds_to_microseconds(transport_dt_s, "transport timestep")
-    times_us = start_us + indices * dt_us
-    return indices, weights, times_us
+    count = end - start + 1
+    weight = 1.0 / count if weighting == "normalized" else 1.0
+    bounds = np.asarray(
+        [start_us + start * dt_us, start_us + (end + 1) * dt_us],
+        dtype=np.int64,
+    )
+    return bounds, weight
 
 
 def _parse_time_value(
@@ -265,12 +389,12 @@ def _parse_time_value(
     return math.floor(elapsed / float(transport_dt_s))
 
 
-def _parse_horizontal_arrays(
+def _parse_horizontal_operator(
     raw: Any,
     *,
     label: str,
     grid: TransportGrid,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+) -> tuple[np.ndarray, int, float, float]:
     mapping = _require_mapping(raw, label)
     operator_type = str(_required(mapping, "type", label))
     if operator_type not in {"point", "box"}:
@@ -293,17 +417,19 @@ def _parse_horizontal_arrays(
     if lon_start > lon_end or lat_start > lat_end:
         raise ValueError(f"{label} box start must not exceed end")
 
-    lon_count = lon_end - lon_start + 1
-    lat_count = lat_end - lat_start + 1
-    lon = np.repeat(np.arange(lon_start, lon_end + 1, dtype=np.int32), lat_count)
-    lat = np.tile(np.arange(lat_start, lat_end + 1, dtype=np.int32), lon_count)
-    if weighting in {"area", "normalized_area"}:
-        weights = grid.area_m2[lat, lon].astype(np.float64, copy=True)
+    bounds = np.asarray(
+        [[lat_start, lat_end + 1], [lon_start, lon_end + 1]],
+        dtype=np.int32,
+    )
+    if weighting == "normalized_area":
+        normalization = float(
+            np.sum(grid.area_m2[lat_start : lat_end + 1, lon_start : lon_end + 1])
+        )
+    elif weighting == "normalized":
+        normalization = float((lat_end - lat_start + 1) * (lon_end - lon_start + 1))
     else:
-        weights = np.ones(lat.size, dtype=np.float64)
-    if weighting in {"normalized_area", "normalized"}:
-        weights /= np.sum(weights)
-    return lat, lon, weights, HORIZONTAL_WEIGHTING_CODES[weighting]
+        normalization = 1.0
+    return bounds, HORIZONTAL_WEIGHTING_CODES[weighting], 1.0, normalization
 
 
 def _horizontal_index(
@@ -332,12 +458,12 @@ def _horizontal_index(
     return min(max(index, 0), centers.size - 1)
 
 
-def _parse_vertical_arrays(
+def _parse_vertical_operators(
     raw: Any,
     *,
     label: str,
     nlev: int,
-) -> tuple[int, int, int, float, float, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     mapping = _require_mapping(raw, label)
     operator_type = str(_required(mapping, "type", label))
     if operator_type not in {"point", "range", "exact"}:
@@ -356,13 +482,13 @@ def _parse_vertical_arrays(
         values = _vertical_values(values_raw, unit, nlev, f"{label}.values")
         weights = np.asarray([float(value) for value in weights_raw], dtype=np.float64)
         _validate_vertical_values(values, weights, unit, nlev, label)
+        count = values.size
+        bounds = np.column_stack((values, values)).astype(np.float64, copy=False)
         return (
-            VERTICAL_TYPE_CODES["exact"],
-            VERTICAL_UNIT_CODES[unit],
-            -1,
-            np.nan,
-            np.nan,
-            values,
+            np.full(count, VERTICAL_TYPE_CODES["exact"], dtype=np.int8),
+            np.full(count, VERTICAL_UNIT_CODES[unit], dtype=np.int8),
+            bounds,
+            np.full(count, VERTICAL_WEIGHTING_CODES["exact"], dtype=np.int8),
             weights,
         )
 
@@ -376,13 +502,11 @@ def _parse_vertical_arrays(
         end = _vertical_value(_required(mapping, "end", label), unit, nlev, f"{label}.end")
     _validate_vertical_bounds(float(start), float(end), unit, nlev, label)
     return (
-        VERTICAL_TYPE_CODES["range"],
-        VERTICAL_UNIT_CODES[unit],
-        VERTICAL_WEIGHTING_CODES[weighting],
-        float(start),
-        float(end),
-        np.empty(0, dtype=np.float64),
-        np.empty(0, dtype=np.float64),
+        np.asarray([VERTICAL_TYPE_CODES["range"]], dtype=np.int8),
+        np.asarray([VERTICAL_UNIT_CODES[unit]], dtype=np.int8),
+        np.asarray([[float(start), float(end)]], dtype=np.float64),
+        np.asarray([VERTICAL_WEIGHTING_CODES[weighting]], dtype=np.int8),
+        np.ones(1, dtype=np.float64),
     )
 
 

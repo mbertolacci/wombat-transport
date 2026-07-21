@@ -6,9 +6,9 @@ import netCDF4
 import numpy as np
 
 from wombat_transport.obsoperator.state import (
+    CompletedObsBatch,
     MAX_FIELD_NAME_LENGTH,
     MAX_ID_LENGTH,
-    _ObsOperatorArrayState,
 )
 from wombat_transport.obsoperator.utils import _nul_padded_matrix
 
@@ -26,16 +26,15 @@ class _ObsOperatorNetCDFWriter:
         self._field_names: list[str] = []
         self._entry_index = 0
         self._sample_index = 0
-        self._pending_array_batches: list[tuple[_ObsOperatorArrayState, np.ndarray]] = []
+        self._pending_batches: list[CompletedObsBatch] = []
         self._pending_entry_count = 0
         self._pending_samples = 0
 
-    def write_array_entries(
-        self,
-        batches: tuple[tuple[_ObsOperatorArrayState, np.ndarray], ...],
-    ) -> None:
-        for state, entry_indices in batches:
-            indices = np.asarray(entry_indices, dtype=np.int64)
+    def write_completed(self, batch: CompletedObsBatch) -> None:
+        if not batch.entry_count:
+            return
+        indices = np.arange(batch.entry_count, dtype=np.int64)
+        for _ in (0,):
             offset = 0
             while offset < indices.size:
                 entry_capacity = SCIENCE_STAGE_ENTRIES - self._pending_entry_count
@@ -45,7 +44,7 @@ class _ObsOperatorNetCDFWriter:
                     entry_capacity = SCIENCE_STAGE_ENTRIES
                     sample_capacity = SCIENCE_STAGE_SAMPLES
                 remaining = indices[offset:]
-                field_counts = state.prepared.entry_field_count[remaining].astype(np.int64, copy=False)
+                field_counts = batch.entry_field_count[remaining].astype(np.int64, copy=False)
                 cumulative_samples = np.cumsum(field_counts)
                 sample_limit = int(np.searchsorted(cumulative_samples, sample_capacity, side="right"))
                 if sample_limit == 0:
@@ -54,9 +53,29 @@ class _ObsOperatorNetCDFWriter:
                         continue
                     sample_limit = 1
                 take = min(remaining.size, entry_capacity, sample_limit)
-                selected = remaining[:take].copy()
                 selected_samples = int(np.sum(field_counts[:take]))
-                self._pending_array_batches.append((state, selected))
+                first_entry = int(remaining[0])
+                selected_count = int(take)
+                sample_start = int(batch.entry_field_start[first_entry])
+                sample_end = int(
+                    batch.entry_field_start[first_entry + selected_count - 1]
+                    + batch.entry_field_count[first_entry + selected_count - 1]
+                )
+                selected_starts = (
+                    batch.entry_field_start[first_entry : first_entry + selected_count]
+                    - sample_start
+                )
+                self._pending_batches.append(
+                    CompletedObsBatch(
+                        ids=batch.ids[first_entry : first_entry + selected_count],
+                        field_names=batch.field_names[sample_start:sample_end],
+                        entry_field_start=selected_starts.copy(),
+                        entry_field_count=batch.entry_field_count[
+                            first_entry : first_entry + selected_count
+                        ].copy(),
+                        samples=batch.samples[sample_start:sample_end].copy(),
+                    )
+                )
                 self._pending_entry_count += take
                 self._pending_samples += selected_samples
                 offset += take
@@ -68,7 +87,7 @@ class _ObsOperatorNetCDFWriter:
                     self.flush()
 
     def flush(self) -> None:
-        if not self._pending_array_batches:
+        if not self._pending_batches:
             return
         entry_count = self._pending_entry_count
         sample_count = self._pending_samples
@@ -82,21 +101,20 @@ class _ObsOperatorNetCDFWriter:
         array_ids: list[str] = []
         field_indices_by_name = self._field_indices.copy()
         field_names = self._field_names.copy()
-        for state, entry_indices in self._pending_array_batches:
-            for entry_index_value in entry_indices:
-                entry_index = int(entry_index_value)
-                field_start = int(state.prepared.entry_field_start[entry_index])
-                entry_sample_count = int(state.prepared.entry_field_count[entry_index])
+        for batch in self._pending_batches:
+            for entry_index in range(batch.entry_count):
+                field_start = int(batch.entry_field_start[entry_index])
+                entry_sample_count = int(batch.entry_field_count[entry_index])
                 field_end = field_start + entry_sample_count
                 entry_slice = slice(sample_offset, sample_offset + entry_sample_count)
-                for field_offset, name in enumerate(state.field_names[entry_index]):
+                for field_offset, name in enumerate(batch.field_names[field_start:field_end]):
                     if name not in field_indices_by_name:
                         field_indices_by_name[name] = len(field_names) + 1
                         field_names.append(name)
                     field_indices[sample_offset + field_offset] = field_indices_by_name[name]
                 id_indices[entry_slice] = self._entry_index + array_entry_offset + 1
-                samples[entry_slice] = state.field_accumulator[field_start:field_end]
-                array_ids.append(state.ids[entry_index])
+                samples[entry_slice] = batch.samples[field_start:field_end]
+                array_ids.append(batch.ids[entry_index])
                 array_entry_offset += 1
                 sample_offset += entry_sample_count
 
@@ -119,7 +137,7 @@ class _ObsOperatorNetCDFWriter:
         self._field_names = field_names
         self._entry_index += entry_count
         self._sample_index += sample_count
-        self._pending_array_batches = []
+        self._pending_batches = []
         self._pending_entry_count = 0
         self._pending_samples = 0
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 import gzip
 import os
@@ -23,7 +24,15 @@ from wombat_transport.obsoperator import (
     expand_obsoperator_template,
     parse_obsoperator_config,
 )
-from wombat_transport.obsoperator.state import FIELD_PREFIX, MAX_FIELD_NAME_LENGTH, MAX_ID_LENGTH
+from wombat_transport.obsoperator.state import (
+    CompletedObsBatch,
+    FIELD_PREFIX,
+    MAX_FIELD_NAME_LENGTH,
+    MAX_ID_LENGTH,
+    compact_obs_plan,
+    completed_batch,
+    merge_obs_plans,
+)
 from wombat_transport.output import OutputSnapshot
 
 
@@ -173,13 +182,15 @@ def test_plain_and_gzip_yaml_parse_identically_and_deduplicate_fields(tmp_path: 
     plain_state = _load(plain)
     gzip_state = _load(compressed)
 
-    assert plain_state.field_names[0] == ("SpeciesConcVV_A", "SpeciesConcVV_B")
+    assert plain_state.entry_field_names(0) == ("SpeciesConcVV_A", "SpeciesConcVV_B")
     np.testing.assert_array_equal(_entry_field_indices(plain_state, 0), np.array([0, 1]))
     np.testing.assert_array_equal(_entry_field_indices(gzip_state, 0), _entry_field_indices(plain_state, 0))
-    np.testing.assert_array_equal(gzip_state.remaining_time_us, plain_state.remaining_time_us)
+    np.testing.assert_array_equal(
+        gzip_state.time_operator_bounds_us, plain_state.time_operator_bounds_us
+    )
 
 
-def test_array_loader_builds_flat_selection_and_schedule_tables(tmp_path: Path):
+def test_array_loader_builds_compact_sorted_operator_tables(tmp_path: Path):
     raw = {
         "entries": [
             _entry_raw(
@@ -212,16 +223,145 @@ def test_array_loader_builds_flat_selection_and_schedule_tables(tmp_path: Path):
     path = _write_yaml(tmp_path / "obs.yml", raw)
     state = _load(path)
 
-    assert state.ids == ("range", "exact")
-    assert state.field_names == (("SpeciesConcVV_B", "SpeciesConcVV_A"), ("SpeciesConcVV_A",))
-    np.testing.assert_array_equal(state.prepared.entry_field_start, [0, 2])
-    np.testing.assert_array_equal(state.prepared.entry_field_count, [2, 1])
-    np.testing.assert_array_equal(state.prepared.field_indices, [1, 0, 0])
-    np.testing.assert_array_equal(state.time_start, [0, 3])
-    np.testing.assert_array_equal(state.time_count, [3, 1])
-    np.testing.assert_array_equal(state.schedule_entry, [0, 0, 1, 0])
-    np.testing.assert_array_equal(state.schedule_count, [1, 2, 1])
-    np.testing.assert_array_equal(state.prepared.entry_exact_count, [0, 2])
+    assert state.ids == ("exact", "range")
+    assert state.entry_field_names(0) == ("SpeciesConcVV_A",)
+    assert state.entry_field_names(1) == ("SpeciesConcVV_B", "SpeciesConcVV_A")
+    np.testing.assert_array_equal(state.entry_field_start, [0, 1])
+    np.testing.assert_array_equal(state.entry_field_count, [1, 2])
+    np.testing.assert_array_equal(state.field_tracer, [0, 1, 0])
+    np.testing.assert_array_equal(state.time_operator_start, [0, 1])
+    np.testing.assert_array_equal(state.time_operator_count, [1, 1])
+    np.testing.assert_array_equal(state.vertical_operator_count, [2, 1])
+    assert state.time_operator_bounds_us.shape == (2, 2)
+
+
+def test_loader_parses_repeated_operator_specs_once(tmp_path: Path, monkeypatch):
+    parser_names = (
+        "_parse_fields",
+        "_parse_time_operator",
+        "_parse_horizontal_operator",
+        "_parse_vertical_operators",
+    )
+    calls = dict.fromkeys(parser_names, 0)
+    for name in parser_names:
+        original = getattr(obsoperator_input, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            calls[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(obsoperator_input, name, counted)
+
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {"entries": [_entry_raw(entry_id=f"entry-{index}") for index in range(100)]},
+    )
+    _load(path)
+
+    assert calls == dict.fromkeys(parser_names, 1)
+
+
+def test_disjoint_and_overlapping_time_components_share_one_accumulator(tmp_path: Path):
+    disjoint = _entry_raw(entry_id="disjoint")
+    disjoint["time_operator"] = [
+        {"type": "point", "unit": "time_index", "time": 0},
+        {"type": "point", "unit": "time_index", "time": 2},
+    ]
+    overlap = _entry_raw(entry_id="overlap")
+    overlap["time_operator"] = [
+        {"type": "range", "unit": "time_index", "start": 0, "end": 1, "weights": "equal"},
+        {"type": "range", "unit": "time_index", "start": 1, "end": 2, "weights": "equal"},
+    ]
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [disjoint, overlap]})
+    plan = _load(tmp_path / "obs-20140901.yml")
+    np.testing.assert_array_equal(plan.time_operator_count, [2, 2])
+    assert plan.accumulator.size == 2
+
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot(scale=1.0))
+    manager.sample(
+        step_start=START + timedelta(minutes=10),
+        time_index=1,
+        snapshot=_snapshot(scale=2.0),
+    )
+    manager.sample(
+        step_start=START + timedelta(minutes=20),
+        time_index=2,
+        snapshot=_snapshot(scale=3.0),
+    )
+    manager.close(boundary_time=START + timedelta(minutes=30))
+    with netCDF4.Dataset(tmp_path / "out-20140901_0020.nc4") as dataset:
+        samples = dict((entry_id, sample) for entry_id, _, sample in _obsoperator_output_samples(dataset))
+    assert samples == {"disjoint": 4.0, "overlap": 8.0}
+
+
+def test_block_range_sampler_matches_separate_one_block_calls(tmp_path: Path):
+    entry = _entry_raw(fields=["SpeciesConcVV_A", "SpeciesConcVV_B"])
+    entry["horizontal_operator"] = {
+        "type": "box",
+        "unit": "grid_index",
+        "longitude_start": 1,
+        "longitude_end": 2,
+        "latitude_start": 1,
+        "latitude_end": 2,
+        "weights": "normalized_area",
+    }
+    entry["vertical_operator"] = {
+        "type": "exact",
+        "unit": "pressure_level",
+        "values": [1, 3],
+        "weights": [0.25, 0.75],
+    }
+    path = _write_yaml(tmp_path / "obs.yml", {"entries": [entry]})
+    all_blocks = _load(path)
+    separate_blocks = _load(path)
+    original = _snapshot(horizontal_gradient=True)
+    snapshot = replace(original, state=original.state.reblock(1))
+
+    _sample_plan_range(all_blocks, snapshot, _grid(), 0, 2, np.empty(2))
+    _sample_plan_range(separate_blocks, snapshot, _grid(), 0, 1, np.empty(1))
+    _sample_plan_range(separate_blocks, snapshot, _grid(), 1, 2, np.empty(1))
+
+    np.testing.assert_array_equal(separate_blocks.accumulator, all_blocks.accumulator)
+
+
+def test_plan_merge_is_stable_and_compaction_rewrites_offsets(tmp_path: Path):
+    left = _load(
+        _write_yaml(
+            tmp_path / "left.yml",
+            {
+                "entries": [
+                    _entry_raw(entry_id="left-0", time={"type": "point", "unit": "time_index", "time": 0}),
+                    _entry_raw(entry_id="left-2", time={"type": "point", "unit": "time_index", "time": 2}),
+                ]
+            },
+        )
+    )
+    right = _load(
+        _write_yaml(
+            tmp_path / "right.yml",
+            {
+                "entries": [
+                    _entry_raw(entry_id="right-1", time={"type": "point", "unit": "time_index", "time": 1}),
+                    _entry_raw(entry_id="right-2", time={"type": "point", "unit": "time_index", "time": 2}),
+                ]
+            },
+        )
+    )
+    merged = merge_obs_plans(left, right)
+    assert merged.ids == ("left-0", "right-1", "left-2", "right-2")
+    merged.accumulator[:] = np.arange(1.0, 5.0)
+    batch = completed_batch(merged, 2)
+    assert batch.ids == ("left-0", "right-1")
+    np.testing.assert_array_equal(batch.samples, [1.0, 2.0])
+    compacted = compact_obs_plan(merged, _time_us(START + timedelta(minutes=20)))
+    assert compacted.ids == ("left-2", "right-2")
+    np.testing.assert_array_equal(compacted.entry_field_start, [0, 1])
+    np.testing.assert_array_equal(compacted.field_to_accumulator, [0, 1])
+    np.testing.assert_array_equal(compacted.accumulator, [3.0, 4.0])
+
+    with pytest.raises(ValueError, match="duplicate active"):
+        merge_obs_plans(compacted, compacted)
 
 
 def test_time_date_ranges_are_half_open_model_periods(tmp_path: Path):
@@ -374,8 +514,7 @@ def test_horizontal_box_weight_modes_and_longitude_wrap(tmp_path: Path):
     }
     _write_yaml(path, {"entries": [raw]})
     wrapped = _load(path)
-    np.testing.assert_array_equal(wrapped.prepared.horizontal_lat, np.array([0]))
-    np.testing.assert_array_equal(wrapped.prepared.horizontal_lon, np.array([0]))
+    np.testing.assert_array_equal(wrapped.horizontal_operator_bounds[0], [[0, 1], [0, 1]])
 
 
 @pytest.mark.parametrize(("latitude", "expected_index"), [(-90.0, 0), (-89.0, 1), (89.0, 90), (90.0, 90)])
@@ -408,8 +547,9 @@ def test_geos_polar_degree_boundaries(tmp_path: Path, latitude: float, expected_
         transport_dt_s=600.0,
     )
 
-    np.testing.assert_array_equal(state.prepared.horizontal_lat, np.array([expected_index]))
-    np.testing.assert_array_equal(state.prepared.horizontal_lon, np.array([0]))
+    np.testing.assert_array_equal(
+        state.horizontal_operator_bounds[0], [[expected_index, expected_index + 1], [0, 1]]
+    )
 
 
 @pytest.mark.parametrize(
@@ -444,8 +584,9 @@ def test_geos_4x5_polar_degree_boundaries(tmp_path: Path, latitude: float, expec
         transport_dt_s=600.0,
     )
 
-    np.testing.assert_array_equal(state.prepared.horizontal_lat, np.array([expected_index]))
-    np.testing.assert_array_equal(state.prepared.horizontal_lon, np.array([0]))
+    np.testing.assert_array_equal(
+        state.horizontal_operator_bounds[0], [[expected_index, expected_index + 1], [0, 1]]
+    )
 
 
 def test_parser_rejects_obsolete_species_and_invalid_values(tmp_path: Path):
@@ -605,13 +746,13 @@ def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
         simulation_start=START,
         transport_dt_s=600.0,
     )
-    state.field_accumulator[:] = [1.0, 2.0, 3.0, 4.0, 5.0]
+    state.accumulator[:] = [1.0, 2.0, 3.0, 4.0, 5.0]
 
-    writer.write_array_entries(((state, np.array([0])),))
+    writer.write_completed(_completed_batch_for_entry(state, 0))
     assert not output.exists()
-    writer.write_array_entries(((state, np.array([1])),))
+    writer.write_completed(_completed_batch_for_entry(state, 1))
     assert output.exists()
-    writer.write_array_entries(((state, np.array([2])),))
+    writer.write_completed(_completed_batch_for_entry(state, 2))
     writer.close()
 
     with netCDF4.Dataset(output) as dataset:
@@ -645,8 +786,8 @@ def test_science_writer_keeps_pending_registry_state_after_failed_flush(tmp_path
         {"entries": [_entry_raw(entry_id="one", fields="SpeciesConcVV_A")]},
     )
     state = _load(path)
-    state.field_accumulator[:] = 3.0
-    writer.write_array_entries(((state, np.array([0])),))
+    state.accumulator[:] = 3.0
+    writer.write_completed(_completed_batch_for_entry(state, 0))
     variables = {
         "field": FakeVariable(),
         "id": FakeVariable(),
@@ -672,7 +813,7 @@ def test_science_writer_keeps_pending_registry_state_after_failed_flush(tmp_path
     assert writer._field_names == ["SpeciesConcVV_A"]
     assert writer._entry_index == 1
     assert writer._sample_index == 1
-    assert writer._pending_array_batches == []
+    assert writer._pending_batches == []
 
 
 def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
@@ -712,6 +853,51 @@ def test_manager_rotates_output_when_daily_input_path_is_unchanged(tmp_path: Pat
     assert manager._current_output_path != first_output
     assert manager._current_output_path == tmp_path / "out-20140901_0010.nc4"
     manager.close(boundary_time=second)
+
+
+def test_manager_daily_plan_install_is_atomic_and_retryable(tmp_path: Path):
+    active_path = _write_yaml(
+        tmp_path / "active.yml",
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id="active",
+                    time={"type": "range", "unit": "time_index", "start": 0, "end": 2},
+                )
+            ]
+        },
+    )
+    manager = _manager(tmp_path)
+    active_plan = _load(active_path)
+    active_plan.accumulator[:] = 3.0
+    manager._plan = active_plan
+
+    daily_path = tmp_path / "obs-20140901.yml"
+    _write_yaml(daily_path, {"entries": [_entry_raw(fields="SpeciesConcVV_MISSING")]})
+    with pytest.raises(ValueError, match="unknown tracer"):
+        manager._initialize_for_date(START)
+
+    assert manager._plan is active_plan
+    assert manager._previous_input_path is None
+    np.testing.assert_array_equal(manager._plan.accumulator, [3.0])
+
+    _write_yaml(
+        daily_path,
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id="incoming",
+                    time={"type": "point", "unit": "time_index", "time": 1},
+                )
+            ]
+        },
+    )
+    manager._initialize_for_date(START)
+
+    assert manager._plan.ids == ("incoming", "active")
+    assert manager._previous_input_path == daily_path
+    np.testing.assert_array_equal(manager._plan.accumulator, [0.0, 3.0])
+    manager.close(boundary_time=START)
 
 
 def test_manager_skips_missing_day_and_restarts_incomplete_entry_without_partial_output(tmp_path: Path):
@@ -755,12 +941,12 @@ def test_restart_continues_accumulator_without_partial_output_or_final_division(
     with netCDF4.Dataset(first_restart) as dataset:
         expected_first = 1.0 / 3.0 if weighting == "normalized" else 1.0
         np.testing.assert_array_equal(
-            dataset.variables["field_accumulator"][:],
+            dataset.variables["accumulator"][:],
             np.array([expected_first, 10.0 * expected_first], dtype=np.float64),
         )
         np.testing.assert_array_equal(
-            dataset.variables["remaining_time_us"][:],
-            np.array([_time_us(START + timedelta(minutes=10)), _time_us(START + timedelta(minutes=20))]),
+            dataset.variables["time_operator_bounds_us"][:],
+            np.array([[_time_us(START + timedelta(minutes=10)), _time_us(START + timedelta(minutes=30))]]),
         )
 
     second = _manager(tmp_path, start=START + timedelta(minutes=10))
@@ -774,7 +960,8 @@ def test_restart_continues_accumulator_without_partial_output_or_final_division(
     expected_float64 = np.zeros(2, dtype=np.float64)
     for scale, weight in zip((1.0, 2.0, 3.0), temporal_weights, strict=True):
         expected_float64 += weight * np.array([scale, 10.0 * scale], dtype=np.float64)
-    np.testing.assert_array_equal(_manager_accumulators(third)["continued"], expected_float64)
+    assert third._writer is not None
+    np.testing.assert_array_equal(third._writer._pending_batches[0].samples, expected_float64)
     third.close(boundary_time=START + timedelta(minutes=30))
 
     with netCDF4.Dataset(tmp_path / "out-20140901_0020.nc4") as dataset:
@@ -828,23 +1015,41 @@ def test_restart_schema_preserves_exact_operator_before_first_sample(tmp_path: P
     path = tmp_path / "restart-20140901_001000.nc4"
     with netCDF4.Dataset(path) as dataset:
         assert dataset.format == "Wombat ObsOperator restart"
-        assert dataset.format_version == 2
+        assert dataset.format_version == 3
         assert dataset.restart_time_us == _time_us(START + timedelta(minutes=10))
         assert dataset.transport_timestep_seconds == 600.0
         assert len(dataset.grid_signature) == 64
         assert set(dataset.dimensions) == {
-            "entries", "entry_fields", "remaining_times", "vertical_values", "id_chars", "field_chars",
-            "horizontal_bound", "vertical_bound",
+            "entries", "fields", "accumulators", "time_operators", "horizontal_operators",
+            "vertical_operators", "id_chars", "field_chars", "bound", "horizontal_dimension",
         }
-        assert dataset.variables["field_accumulator"].dtype == np.dtype("float64")
-        assert dataset.variables["remaining_time_us"].dtype == np.dtype("int64")
-        assert dataset.variables["remaining_time_weight"].dtype == np.dtype("float64")
-        assert dataset.variables["field_accumulator"].filters()["zlib"]
+        assert dataset.variables["accumulator"].dtype == np.dtype("float64")
+        assert dataset.variables["time_operator_bounds_us"].dtype == np.dtype("int64")
+        assert dataset.variables["time_operator_weight"].dtype == np.dtype("float64")
+        assert dataset.variables["accumulator"].filters()["zlib"]
         assert _decode_rows(dataset.variables["id"][:]) == ["exact"]
         assert _decode_rows(dataset.variables["field_name"][:]) == ["SpeciesConcVV_B"]
-        np.testing.assert_array_equal(dataset.variables["horizontal_bounds"][:], np.array([[0, 1, 0, 2]]))
-        np.testing.assert_array_equal(dataset.variables["vertical_value"][:], np.array([1.0, 3.0]))
+        np.testing.assert_array_equal(
+            dataset.variables["horizontal_operator_bounds"][:], np.array([[[0, 3], [0, 2]]])
+        )
+        np.testing.assert_array_equal(dataset.variables["vertical_operator_bounds"][:], [[1.0, 1.0], [3.0, 3.0]])
         np.testing.assert_array_equal(dataset.variables["vertical_weight"][:], np.array([0.25, 0.75]))
+
+
+def test_restart_v2_is_explicitly_rejected(tmp_path: Path):
+    entry = _entry_raw(
+        time={"type": "range", "unit": "time_index", "start": 0, "end": 1}
+    )
+    _write_yaml(tmp_path / "obs-20140901.yml", {"entries": [entry]})
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    manager.close(boundary_time=START + timedelta(minutes=10))
+    restart = tmp_path / "restart-20140901_001000.nc4"
+    with netCDF4.Dataset(restart, "r+") as dataset:
+        dataset.format_version = np.int32(2)
+
+    with pytest.raises(ValueError, match="version 3 is required"):
+        _manager(tmp_path, start=START + timedelta(minutes=10), restart_file=restart.name)
 
 
 @pytest.mark.parametrize(
@@ -996,7 +1201,7 @@ def test_restart_maps_fields_by_name_across_tracer_reordering_and_additions(tmp_
         tracer_names=("B", "EXTRA", "A"),
         restart_file="restart-20140901_001000.nc4",
     )
-    np.testing.assert_array_equal(_entry_field_indices(restored._states[0], 0), np.array([2, 0]))
+    np.testing.assert_array_equal(_entry_field_indices(restored._plan, 0), np.array([2, 0]))
 
 
 def test_restart_missing_policy_and_corrupt_offsets(tmp_path: Path):
@@ -1012,8 +1217,8 @@ def test_restart_missing_policy_and_corrupt_offsets(tmp_path: Path):
     manager.close(boundary_time=START + timedelta(minutes=10))
     restart_path = tmp_path / "restart-20140901_001000.nc4"
     with netCDF4.Dataset(restart_path, "r+") as dataset:
-        dataset.variables["field_start"][0] = 1
-    with pytest.raises(ValueError, match="invalid contiguous fields offsets"):
+        dataset.variables["entry_field_start"][0] = 1
+    with pytest.raises(ValueError, match="invalid contiguous field offsets"):
         _manager(
             tmp_path,
             start=START + timedelta(minutes=10),
@@ -1021,7 +1226,7 @@ def test_restart_missing_policy_and_corrupt_offsets(tmp_path: Path):
         )
 
 
-@pytest.mark.parametrize("variable", ["vertical_value", "vertical_weight"])
+@pytest.mark.parametrize("variable", ["vertical_operator_bounds", "vertical_weight"])
 def test_restart_and_fresh_input_share_nonfinite_vertical_validation(
     tmp_path: Path,
     variable: str,
@@ -1140,8 +1345,8 @@ def test_local_daily_input_contains_restartable_cross_day_entries_if_available(t
     )
     assert state.entry_count
     assert all(
-        state.remaining_time_us[_entry_time_slice(state, entry_index)][-1]
-        >= _time_us(START + timedelta(days=1))
+        state.time_operator_bounds_us[_entry_time_slice(state, entry_index)][-1, 1]
+        > _time_us(START + timedelta(days=1))
         for entry_index in range(state.entry_count)
     )
 
@@ -1183,71 +1388,138 @@ def _load(path: Path):
 
 
 def _entry_field_slice(state, entry_index: int) -> slice:
-    start = int(state.prepared.entry_field_start[entry_index])
-    return slice(start, start + int(state.prepared.entry_field_count[entry_index]))
+    start = int(state.entry_field_start[entry_index])
+    return slice(start, start + int(state.entry_field_count[entry_index]))
 
 
 def _entry_field_indices(state, entry_index: int) -> np.ndarray:
-    return state.prepared.field_indices[_entry_field_slice(state, entry_index)]
+    return state.field_tracer[_entry_field_slice(state, entry_index)]
 
 
 def _entry_time_slice(state, entry_index: int) -> slice:
-    start = int(state.time_start[entry_index])
-    return slice(start, start + int(state.time_count[entry_index]))
+    start = int(state.time_operator_start[entry_index])
+    return slice(start, start + int(state.time_operator_count[entry_index]))
 
 
 def _entry_time_indices(state, entry_index: int) -> np.ndarray:
-    times = state.remaining_time_us[_entry_time_slice(state, entry_index)]
-    return (times - _time_us(START)) // (600 * 1_000_000)
+    bounds = state.time_operator_bounds_us[_entry_time_slice(state, entry_index)]
+    values = []
+    for start, end in bounds:
+        values.extend(range((start - _time_us(START)) // (600 * 1_000_000), (end - _time_us(START)) // (600 * 1_000_000)))
+    return np.asarray(values, dtype=np.int64)
 
 
 def _entry_time_weights(state, entry_index: int) -> np.ndarray:
-    return state.remaining_time_weight[_entry_time_slice(state, entry_index)]
+    bounds = state.time_operator_bounds_us[_entry_time_slice(state, entry_index)]
+    weights = state.time_operator_weight[_entry_time_slice(state, entry_index)]
+    result = []
+    for (start, end), weight in zip(bounds, weights, strict=True):
+        result.extend([weight] * ((end - start) // (600 * 1_000_000)))
+    return np.asarray(result, dtype=np.float64)
 
 
 def _manager_accumulators(manager: ObsOperatorManager) -> dict[str, np.ndarray]:
+    state = manager._plan
     return {
-        state.ids[entry_index]: state.field_accumulator[_entry_field_slice(state, entry_index)].copy()
-        for state in manager._states
+        state.ids[entry_index]: state.accumulator[
+            state.field_to_accumulator[_entry_field_slice(state, entry_index)]
+        ].copy()
         for entry_index in range(state.entry_count)
     }
 
 
-def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.ndarray:
-    entries = np.arange(state.entry_count, dtype=np.int64)
-    samples = np.empty((state.entry_count, state.prepared.max_field_count), dtype=np.float64)
-    prepared = state.prepared
+def _completed_batch_for_entry(state, entry_index: int) -> CompletedObsBatch:
+    field_slice = _entry_field_slice(state, entry_index)
+    count = int(state.entry_field_count[entry_index])
+    return CompletedObsBatch(
+        ids=(state.ids[entry_index],),
+        field_names=state.field_names[field_slice],
+        entry_field_start=np.array([0], dtype=np.int64),
+        entry_field_count=np.array([count], dtype=np.int32),
+        samples=state.accumulator[state.field_to_accumulator[field_slice]].copy(),
+    )
+
+
+def _sample_plan_range(
+    plan,
+    snapshot: OutputSnapshot,
+    grid: TransportGrid,
+    start_block: int,
+    end_block: int,
+    scratch: np.ndarray,
+) -> None:
     state_bottom = np.asarray(
         snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
     )
-    obsoperator_sampling._sample_prepared_entries_kernel(
+    obsoperator_sampling._sample_obs_plan_block_range_kernel(
         state_bottom,
         snapshot.state.block_width,
+        start_block,
+        end_block,
+        int(plan.time_operator_bounds_us[0, 0]),
         np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
         np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
         np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64),
+        grid.area_m2,
         grid.hyai_hpa,
         grid.hybi,
-        entries,
-        prepared.entry_field_start,
-        prepared.entry_field_count,
-        prepared.entry_horizontal_start,
-        prepared.entry_horizontal_count,
-        prepared.entry_vertical_type,
-        prepared.entry_vertical_unit,
-        prepared.entry_vertical_weighting,
-        prepared.entry_vertical_lower,
-        prepared.entry_vertical_upper,
-        prepared.entry_exact_start,
-        prepared.entry_exact_count,
-        prepared.field_indices,
-        prepared.horizontal_lat,
-        prepared.horizontal_lon,
-        prepared.horizontal_weight,
-        prepared.exact_value,
-        prepared.exact_weight,
-        samples,
+        0,
+        plan.entry_field_start,
+        plan.entry_field_count,
+        plan.field_tracer,
+        plan.field_to_accumulator,
+        plan.time_operator_start,
+        plan.time_operator_count,
+        plan.time_operator_bounds_us,
+        plan.time_operator_weight,
+        plan.horizontal_operator_start,
+        plan.horizontal_operator_count,
+        plan.horizontal_operator_bounds,
+        plan.horizontal_weight_type,
+        plan.horizontal_weight,
+        plan.horizontal_normalization,
+        plan.vertical_operator_start,
+        plan.vertical_operator_count,
+        plan.vertical_operator_type,
+        plan.vertical_operator_unit,
+        plan.vertical_operator_bounds,
+        plan.vertical_weight_type,
+        plan.vertical_weight,
+        scratch,
+        plan.accumulator,
     )
+
+
+def _sample_state(state, snapshot: OutputSnapshot, grid: TransportGrid) -> np.ndarray:
+    max_fields = int(np.max(state.entry_field_count, initial=0))
+    samples = np.zeros((state.entry_count, max_fields), dtype=np.float64)
+    state_bottom = np.asarray(
+        snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
+    )
+    accumulator = np.zeros_like(state.accumulator)
+    bounds = np.empty_like(state.time_operator_bounds_us)
+    bounds[:, 0] = 0
+    bounds[:, 1] = np.iinfo(np.int64).max
+    weights = np.ones_like(state.time_operator_weight)
+    scratch = np.empty(state_bottom.shape[0] * snapshot.state.block_width)
+    obsoperator_sampling._sample_obs_plan_block_range_kernel(
+            state_bottom, snapshot.state.block_width, 0, state_bottom.shape[0], 0,
+            np.asarray(snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64),
+            np.asarray(snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64),
+            np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64), grid.area_m2,
+            grid.hyai_hpa, grid.hybi, 0, state.entry_field_start, state.entry_field_count,
+            state.field_tracer, state.field_to_accumulator, state.time_operator_start,
+            state.time_operator_count, bounds, weights, state.horizontal_operator_start,
+            state.horizontal_operator_count, state.horizontal_operator_bounds,
+            state.horizontal_weight_type, state.horizontal_weight, state.horizontal_normalization,
+            state.vertical_operator_start,
+            state.vertical_operator_count, state.vertical_operator_type, state.vertical_operator_unit,
+            state.vertical_operator_bounds, state.vertical_weight_type, state.vertical_weight, scratch, accumulator,
+        )
+    for entry_index in range(state.entry_count):
+        field_slice = _entry_field_slice(state, entry_index)
+        count = int(state.entry_field_count[entry_index])
+        samples[entry_index, :count] = accumulator[state.field_to_accumulator[field_slice]]
     return samples
 
 
