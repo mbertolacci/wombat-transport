@@ -235,6 +235,32 @@ def test_array_loader_builds_compact_sorted_operator_tables(tmp_path: Path):
     assert state.time_operator_bounds_us.shape == (2, 2)
 
 
+def test_loader_parses_repeated_operator_specs_once(tmp_path: Path, monkeypatch):
+    parser_names = (
+        "_parse_fields",
+        "_parse_time_operator",
+        "_parse_horizontal_operator",
+        "_parse_vertical_operators",
+    )
+    calls = dict.fromkeys(parser_names, 0)
+    for name in parser_names:
+        original = getattr(obsoperator_input, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            calls[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(obsoperator_input, name, counted)
+
+    path = _write_yaml(
+        tmp_path / "obs.yml",
+        {"entries": [_entry_raw(entry_id=f"entry-{index}") for index in range(100)]},
+    )
+    _load(path)
+
+    assert calls == dict.fromkeys(parser_names, 1)
+
+
 def test_disjoint_and_overlapping_time_components_share_one_accumulator(tmp_path: Path):
     disjoint = _entry_raw(entry_id="disjoint")
     disjoint["time_operator"] = [

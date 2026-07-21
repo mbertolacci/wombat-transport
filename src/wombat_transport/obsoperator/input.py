@@ -72,6 +72,20 @@ def _obs_plan_from_raw_entries(
     simulation_start: datetime,
     transport_dt_s: float,
 ) -> ObsPlan:
+    field_cache: dict[Any, tuple[tuple[str, ...], np.ndarray]] = {}
+    time_cache: dict[Any, tuple[np.ndarray, float]] = {}
+    horizontal_cache: dict[Any, tuple[np.ndarray, int, float, float]] = {}
+    vertical_cache: dict[
+        Any,
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ] = {}
+    resolved_fields: dict[int, tuple[tuple[str, ...], np.ndarray]] = {}
+    resolved_times: dict[int, tuple[np.ndarray, float]] = {}
+    resolved_horizontals: dict[int, tuple[np.ndarray, int, float, float]] = {}
+    resolved_verticals: dict[
+        int,
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ] = {}
     entry_count = len(entries_raw)
     field_total = 0
     time_total = 0
@@ -83,40 +97,55 @@ def _obs_plan_from_raw_entries(
         if "species" in mapping:
             raise ValueError(f"{label}.species is obsolete; use fields")
         field_raw = _required(mapping, "fields", label)
-        requested = [field_raw] if isinstance(field_raw, str) else field_raw
-        if not isinstance(requested, list) or not requested:
-            raise TypeError(f"{label}.fields must be a field name or nonempty sequence")
-        selected: set[int] = set()
-        tracer_by_name = {name: tracer for tracer, name in enumerate(tracer_names)}
-        for value in requested:
-            if not isinstance(value, str):
-                raise TypeError(f"{label}.fields values must be strings")
-            if value in {FIELD_ALL, FIELD_ADVECTED}:
-                selected.update(range(len(tracer_names)))
-            elif value.startswith(FIELD_PREFIX) and value[len(FIELD_PREFIX) :] in tracer_by_name:
-                selected.add(tracer_by_name[value[len(FIELD_PREFIX) :]])
-            else:
-                # Use the full parser in the fill pass for the established error text.
-                _parse_fields(field_raw, tracer_names, label)
-        field_total += len(selected)
-        time_total += len(
-            _operator_sequence(_required(mapping, "time_operator", label), f"{label}.time_operator")
+        field_key = _freeze_operator_spec(field_raw)
+        if field_key not in field_cache:
+            field_cache[field_key] = _parse_fields(field_raw, tracer_names, label)
+        resolved_fields[id(field_raw)] = field_cache[field_key]
+        field_total += resolved_fields[id(field_raw)][1].size
+
+        time_raw = _operator_sequence(
+            _required(mapping, "time_operator", label), f"{label}.time_operator"
         )
-        horizontal_total += len(
-            _operator_sequence(
-                _required(mapping, "horizontal_operator", label),
-                f"{label}.horizontal_operator",
-            )
+        time_total += len(time_raw)
+        for component_index, time_component in enumerate(time_raw):
+            time_key = _freeze_operator_spec(time_component)
+            if time_key not in time_cache:
+                time_cache[time_key] = _parse_time_operator(
+                    time_component,
+                    label=f"{label}.time_operator[{component_index}]",
+                    simulation_start=simulation_start,
+                    transport_dt_s=transport_dt_s,
+                )
+            resolved_times[id(time_component)] = time_cache[time_key]
+
+        horizontal_raw = _operator_sequence(
+            _required(mapping, "horizontal_operator", label),
+            f"{label}.horizontal_operator",
         )
+        horizontal_total += len(horizontal_raw)
+        for component_index, horizontal_component in enumerate(horizontal_raw):
+            horizontal_key = _freeze_operator_spec(horizontal_component)
+            if horizontal_key not in horizontal_cache:
+                horizontal_cache[horizontal_key] = _parse_horizontal_operator(
+                    horizontal_component,
+                    label=f"{label}.horizontal_operator[{component_index}]",
+                    grid=grid,
+                )
+            resolved_horizontals[id(horizontal_component)] = horizontal_cache[horizontal_key]
+
         vertical_raw = _operator_sequence(
             _required(mapping, "vertical_operator", label), f"{label}.vertical_operator"
         )
-        for vertical in vertical_raw:
-            vertical_total += (
-                len(_required(vertical, "values", f"{label}.vertical_operator"))
-                if vertical.get("type") == "exact"
-                else 1
-            )
+        for component_index, vertical_component in enumerate(vertical_raw):
+            vertical_key = _freeze_operator_spec(vertical_component)
+            if vertical_key not in vertical_cache:
+                vertical_cache[vertical_key] = _parse_vertical_operators(
+                    vertical_component,
+                    label=f"{label}.vertical_operator[{component_index}]",
+                    nlev=grid.shape[0],
+                )
+            resolved_verticals[id(vertical_component)] = vertical_cache[vertical_key]
+            vertical_total += resolved_verticals[id(vertical_component)][4].size
 
     arrays = _allocate_numeric(
         entry_count,
@@ -144,7 +173,7 @@ def _obs_plan_from_raw_entries(
             raise ValueError(f"{label}.species is obsolete; use fields")
 
         field_raw = _required(mapping, "fields", label)
-        names, tracers = _parse_fields(field_raw, tracer_names, label)
+        names, tracers = resolved_fields[id(field_raw)]
         field_count = tracers.size
         field_slice = slice(field_offset, field_offset + field_count)
         arrays["entry_field_start"][index] = field_offset
@@ -163,13 +192,8 @@ def _obs_plan_from_raw_entries(
         arrays["time_operator_start"][index] = time_offset
         arrays["time_operator_count"][index] = len(time_raw)
         entry_end_us = np.iinfo(np.int64).min
-        for component_index, time_component in enumerate(time_raw):
-            time_bounds, time_weight = _parse_time_operator(
-                time_component,
-                label=f"{label}.time_operator[{component_index}]",
-                simulation_start=simulation_start,
-                transport_dt_s=transport_dt_s,
-            )
+        for time_component in time_raw:
+            time_bounds, time_weight = resolved_times[id(time_component)]
             arrays["time_operator_bounds_us"][time_offset] = time_bounds
             arrays["time_operator_weight"][time_offset] = time_weight
             entry_end_us = max(entry_end_us, int(time_bounds[1]))
@@ -182,17 +206,13 @@ def _obs_plan_from_raw_entries(
         )
         arrays["horizontal_operator_start"][index] = horizontal_offset
         arrays["horizontal_operator_count"][index] = len(horizontal_raw)
-        for component_index, horizontal_component in enumerate(horizontal_raw):
+        for horizontal_component in horizontal_raw:
             (
                 horizontal_bounds,
                 horizontal_type,
                 horizontal_weight,
                 horizontal_normalization,
-            ) = _parse_horizontal_operator(
-                horizontal_component,
-                label=f"{label}.horizontal_operator[{component_index}]",
-                grid=grid,
-            )
+            ) = resolved_horizontals[id(horizontal_component)]
             arrays["horizontal_operator_bounds"][horizontal_offset] = horizontal_bounds
             arrays["horizontal_weight_type"][horizontal_offset] = horizontal_type
             arrays["horizontal_weight"][horizontal_offset] = horizontal_weight
@@ -204,13 +224,9 @@ def _obs_plan_from_raw_entries(
         )
         arrays["vertical_operator_start"][index] = vertical_offset
         entry_vertical_count = 0
-        for component_index, vertical_component in enumerate(vertical_raw):
+        for vertical_component in vertical_raw:
             vertical_type, vertical_unit, vertical_bounds, vertical_weight_type, vertical_weight = (
-                _parse_vertical_operators(
-                    vertical_component,
-                    label=f"{label}.vertical_operator[{component_index}]",
-                    nlev=grid.shape[0],
-                )
+                resolved_verticals[id(vertical_component)]
             )
             vertical_count = vertical_weight.size
             vertical_slice = slice(vertical_offset, vertical_offset + vertical_count)
@@ -242,6 +258,14 @@ def _obs_plan_from_raw_entries(
 
 # Private compatibility alias for callers outside this package during the transition.
 _load_obsoperator_array_state = _load_obs_plan
+
+
+def _freeze_operator_spec(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple((key, _freeze_operator_spec(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return tuple(_freeze_operator_spec(item) for item in value)
+    return value
 
 
 def _operator_sequence(raw: Any, label: str) -> tuple[dict[str, Any], ...]:
