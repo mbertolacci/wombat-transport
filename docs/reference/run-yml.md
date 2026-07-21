@@ -165,7 +165,7 @@ naming.
 | `restart_file` | null | Required when active |
 | `restart_missing` | `warn` | `warn`, `error`, or `ignore` |
 
-See [ObsOperator](../user-guide/obsoperator.md) for timestamp expansion and
+See [ObsOperator](../user-guide/obsoperator.md) for compact time-window and
 continuation semantics.
 
 ## Diagnostic and comparison settings
