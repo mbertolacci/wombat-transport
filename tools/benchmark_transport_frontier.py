@@ -834,12 +834,18 @@ def _write_winners(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 
 def _winner_label(row: dict[str, Any]) -> str:
     base = f"{row['processes']}p×{row['threads_per_process']}t"
-    return f"{base}/spatial" if row["executor"] == "spatial" else f"{base}/blocks-{row['block_width']}"
+    if row["executor"] == "blocks":
+        return f"{base}/blocks-{row['block_width']}"
+    return f"{base}/{row['executor']}"
 
 
 def _plot_label(row: dict[str, Any]) -> str:
     base = f"{row['processes']}p×{row['threads_per_process']}t"
-    return base if row["executor"] == "spatial" else f"{base} b{row['block_width']}"
+    if row["executor"] == "spatial":
+        return base
+    if row["executor"] == "blocks":
+        return f"{base} b{row['block_width']}"
+    return f"{base} {row['executor']}"
 
 
 def _system_manifest(

@@ -307,6 +307,34 @@ for small tracer counts. Use the synthetic frontier to choose a short list of
 topologies, then confirm the selected deployment with a representative full
 run before committing a large allocation.
 
+### GEOS-Chem comparison frontier
+
+`tools/benchmark_gc_transport_frontier.py` applies the same CPU scopes,
+balanced process sharding, synchronized repetitions, and headline metrics to
+the GEOS-Chem operator harness. GEOS-Chem has no Wombat block executor, so its
+matrix sweeps only `processes * OpenMP threads/process = cores`:
+
+```bash
+tools/gc_harness/build_gc_transport_frontier_harness.sh
+
+.venv/bin/python tools/benchmark_gc_transport_frontier.py run \
+  --run-config validation_runs/cases/realistic_restart_noemis_2x25/wombat/main/run.yml \
+  --executable tools/gc_harness/build/gc_transport_frontier_harness \
+  --fixture-dir oracle_data/base_initial_transport_chain_v3 \
+  --cpus 0,2,4,6,8,10,12,14 \
+  --core-counts 1 2 4 8 \
+  --tracer-counts 16 32 64 96 128 192 256 512 \
+  --output-dir benchmark-results/gc-transport-frontier
+```
+
+The GC worker loads the existing full-chain harness inputs once and keeps the
+operator state resident. Intermediate NetCDF I/O, executable startup, and
+initialization are excluded from measured transport steps. Its CSV, manifest,
+winners table, and SVG use the Wombat frontier schema for direct metric and
+topology comparisons.
+The fixture grid must match the selected run configuration; calibrate 2x2.5
+and 4x5 with separately generated full-chain inputs.
+
 ## Local end-to-end comparison
 
 The one- to four-thread GEOS-Chem timings were measured on 16 July 2026; the
