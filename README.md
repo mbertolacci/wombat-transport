@@ -147,6 +147,9 @@ deviations.
 - [`tools/benchmark_transport_frontier.py`](tools/benchmark_transport_frontier.py)
   calibrates process, thread, executor, and block-width choices on a selected
   CPU set using synthetic transport.
+- [`tools/benchmark_gc_transport_frontier.py`](tools/benchmark_gc_transport_frontier.py)
+  measures the comparable GEOS-Chem harness process/OpenMP frontier using the
+  existing full-chain oracle handoffs.
 - [`performance.md`](performance.md) is the benchmark and profiling notebook.
 - [`oracle_data/README.md`](oracle_data/README.md) describes the local
   large-fixture cache.

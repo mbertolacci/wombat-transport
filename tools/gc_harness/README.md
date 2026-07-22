@@ -287,7 +287,20 @@ tools/gc_harness/build_pjc_pfix_harness.sh --with-tpcore-trace
 tools/gc_harness/build_vdiff_harness.sh
 
 tools/gc_harness/build_convection_harness.sh
+
+tools/gc_harness/build_gc_transport_frontier_harness.sh
 ```
+
+The frontier harness is a persistent, in-memory benchmark worker for the
+complete `PJC -> TPCORE -> VDIFF -> convection` chain. It reuses the
+`base_initial_transport_chain_v3` fixture contract and accepts a runtime tracer
+count, so one executable covers an entire process/OpenMP sweep. Fixture reads,
+GEOS-Chem initialization, and warmup occur outside measured iterations. The
+coordinator is `tools/benchmark_gc_transport_frontier.py`.
+
+PJC is executed inside every timed step and its mass-flux output is passed
+directly to TPCORE. Generated PJC and VDIFF copies are confined to the harness
+build directory; `GCClassic/` is not modified.
 
 The trace build generates an instrumented copy of
 `GCClassic/src/GEOS-Chem/GeosCore/tpcore_fvdas_mod.F90` under

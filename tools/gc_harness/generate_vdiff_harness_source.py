@@ -33,9 +33,10 @@ REPLACEMENTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def generate(source: Path, output: Path) -> None:
+def generate(source: Path, output: Path, *, with_trace: bool = True) -> None:
     text = source.read_text(encoding="utf-8")
-    for old, new in REPLACEMENTS:
+    replacements = REPLACEMENTS if with_trace else REPLACEMENTS[1:2]
+    for old, new in replacements:
         count = text.count(old)
         if count != 1:
             raise SystemExit(f"anchor matched {count} times, expected 1:\n{old}")
@@ -48,8 +49,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--without-trace",
+        action="store_true",
+        help="expose VDIFFDR without copying diagnostic trace arrays after every call",
+    )
     args = parser.parse_args()
-    generate(args.source, args.output)
+    generate(args.source, args.output, with_trace=not args.without_trace)
     print(args.output)
     return 0
 
