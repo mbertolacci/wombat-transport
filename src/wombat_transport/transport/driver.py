@@ -39,7 +39,7 @@ from wombat_transport.transport.pbl import (
     run_vdiffdr_one_step,
 )
 from wombat_transport.transport.pbl._plan import prepare_vdiff_met_plan
-from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
+from wombat_transport.transport.tpcore._plan import prepare_tpcore_met_plan
 from wombat_transport.transport.tpcore._operator import (
     _run_tpcore_borrowed_mass_with_setup,
     _run_tpcore_consuming_mass_with_setup,
@@ -293,7 +293,7 @@ def run_transport_step_with_executor(
     else:
         dry_air_mass = np.asarray(dry_air_mass_kg, dtype=np.float64)
         p1_hpa = _dry_surface_pressure_from_mass_hpa(dry_air_mass, area, hyai[-1])
-    setup = setup_tpcore_terms(
+    tpcore_plan = prepare_tpcore_met_plan(
         p1_hpa=p1_hpa,
         p2_hpa=forcing.dry_surface_pressure_hpa[0],
         u_m_s=forcing.u_m_s[0],
@@ -304,9 +304,10 @@ def run_transport_step_with_executor(
         lat_deg=forcing.lat_deg,
         dt_s=dt_s,
         static_terms=tpcore_static_terms,
+        workspace=executor.workspace.tpcore_plan,
     )
     if validate_tpcore_branches:
-        validate_tpcore_branch_support(setup)
+        validate_tpcore_branch_support(tpcore_plan.setup)
 
     next_delp, next_dry_air_mass = _dry_pressure_and_mass_from_surface_hpa(
         forcing.dry_surface_pressure_hpa,
@@ -321,7 +322,6 @@ def run_transport_step_with_executor(
     virtual_temperature = _virtual_temperature_k(temperature, sphu)
     bxheight = _hydrostatic_box_height_m(pedge, virtual_temperature)
 
-    tpcore_plan = prepare_tpcore_plan(setup=setup, area_m2=area)
     vdiff_plan = prepare_vdiff_met_plan(
         u_top=np.asarray(forcing.u_m_s[0], dtype=np.float64)[::-1],
         v_top=np.asarray(forcing.v_m_s[0], dtype=np.float64)[::-1],

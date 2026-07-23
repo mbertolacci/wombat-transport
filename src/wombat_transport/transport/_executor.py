@@ -18,6 +18,8 @@ from wombat_transport.transport.tpcore import _kernels as tpcore_kernels
 from wombat_transport.transport.tpcore._operator import TpcoreWorkspace
 from wombat_transport.transport.tpcore._operator import make_tpcore_workspace
 from wombat_transport.transport.tpcore._plan import TpcorePlan
+from wombat_transport.transport.tpcore._plan import TpcorePlanWorkspace
+from wombat_transport.transport.tpcore._plan import make_tpcore_plan_workspace
 
 if tpcore_kernels._NUMBA_AVAILABLE:
     from numba import njit, prange
@@ -38,6 +40,7 @@ class TransportWorkspace:
     """Persistent block state plus block-shared and worker-local scratch."""
 
     tpcore: TpcoreWorkspace
+    tpcore_plan: TpcorePlanWorkspace
     vdiff_plan: VdiffPlanWorkspace
     workers: int
     qqu: np.ndarray
@@ -94,6 +97,7 @@ def make_transport_workspace(
     )
     return TransportWorkspace(
         tpcore=tpcore,
+        tpcore_plan=make_tpcore_plan_workspace(nlev, nlat, nlon),
         vdiff_plan=make_vdiff_plan_workspace(nlev, nlat, nlon),
         workers=workers,
         qqu=np.empty((nblock, nlat, nlon, lane), dtype=np.float64),

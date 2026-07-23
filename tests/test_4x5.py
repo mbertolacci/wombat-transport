@@ -23,7 +23,13 @@ from wombat_transport.grid import (
     load_transport_grid,
 )
 from wombat_transport.io import initialize_tracers, load_restart, write_restart_like
-from wombat_transport.transport import load_transport_forcing, merra2_filename, run_transport_one_step
+from wombat_transport.transport import (
+    TransportExecutor,
+    load_transport_forcing,
+    merra2_filename,
+    run_transport_one_step,
+    run_transport_step_with_executor,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -126,3 +132,19 @@ def test_real_4x5_forcing_and_transport_chain(transport_numba_mode):
     result = run_transport_one_step(state, forcing, grid, dt_s=600.0)
     assert result.state.shape == (1, 47, 46, 72, 1)
     assert np.all(np.isfinite(result.state.data))
+    if transport_numba_mode == "numba":
+        blocked = state.reblock(1)
+        executor = TransportExecutor.create(blocked)
+        compiled = run_transport_step_with_executor(
+            blocked,
+            forcing,
+            grid,
+            executor,
+            dt_s=600.0,
+        )
+        np.testing.assert_allclose(
+            compiled.state.to_canonical(),
+            result.state.data,
+            rtol=5.0e-14,
+            atol=2.0e-19,
+        )
