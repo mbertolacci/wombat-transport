@@ -3094,3 +3094,41 @@ finalization kernel to be bitwise equal to the former separate kernels with
 both fill modes. Fixed-width specialization was 2--5% slower and was removed.
 Standalone column-local QCK retained a width-dependent tradeoff, while shared
 cloud-base preparation was mostly neutral-to-slower; neither was retained.
+
+## Experimental multi-step transport batches (2026-07-23)
+
+The `codex/forcing-batches` branch explored keeping a tracer block inside one
+worker for several consecutive transport steps. `TransportForcing` was extended
+experimentally with compact, time-indexed metadata for consecutive steps, and
+the benchmark harness compared three ways of preparing the corresponding
+TPCORE and VDIFF plans on eight physical cores:
+
+- fully materializing every plan before entering the batched block kernel;
+- redundantly preparing both plans inside every block worker; and
+- preparing VDIFF once per step while preparing TPCORE inside each worker.
+
+Worker-local preparation did not help overall. Porting the existing NumPy
+TPCORE/PJC preparation to allocation-free Numba reduced its isolated cost from
+about 16.5 to 5.7 ms per step, but the existing parallel VDIFF preparation took
+about 12.4 ms whereas a serial worker-local copy took about 32 ms. Eight workers
+also repeated large reads and writes concurrently. Fully worker-local batches
+were consequently usually 5--10% slower than ordinary one-step execution.
+
+The hybrid recovered that loss but exposed a modest, configuration-dependent
+trade-off. Batch 6 ranged from neutral to 3.5% slower; batch 12 was generally
+1--3% faster; and batch 18 was 1--4% faster in the representative cases. At
+2x2.5, the hybrid preparation footprint was about 0.70, 0.99, and 1.27 GiB for
+batches 6, 12, and 18 respectively. Fully materialized indexed plans required
+roughly 0.8, 1.6, and 2.4 GiB. These results were numerically equal to ordinary
+one-step launches within accumulated floating-point roundoff (maximum observed
+absolute tracer difference about `2.2e-16`).
+
+The natural way to avoid both redundant preparation and a global preparation
+barrier would be a dependency-aware task queue: prepare step `t+1` while idle
+workers finish transport blocks for step `t`, then release each next-step block
+when both dependencies are satisfied. Numba's current `prange` execution model
+does not directly provide dynamic task submission, futures, or dependency
+barriers. A Python thread-pool around `nogil` kernels or a custom atomic
+scheduler is possible, but is disproportionate to the few-percent opportunity
+measured here. The experimental branch therefore remains a benchmark and
+design record rather than a production multi-step transport implementation.
