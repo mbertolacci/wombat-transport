@@ -3132,3 +3132,37 @@ barriers. A Python thread-pool around `nogil` kernels or a custom atomic
 scheduler is possible, but is disproportionate to the few-percent opportunity
 measured here. The experimental branch therefore remains a benchmark and
 design record rather than a production multi-step transport implementation.
+
+## Compiled TPCORE plan preparation (2026-07-23)
+
+The production compiled executor now fills one persistent TPCORE plan workspace
+with a serial Numba port of the PJC and TPCORE preparation. The readable NumPy
+implementation remains the reference path. Preparation still occurs once
+before transport and its plan is shared by every tracer block; this change does
+not introduce worker-local copies or alter execution policy.
+
+On the pinned eight-P-core 2x2.5 benchmark, median isolated preparation fell
+from 16.98 to 6.10 ms, a 2.78x speedup. Matched, alternated full-chain medians
+using the same warmed process were:
+
+| Tracers | Width | Spatial change | Block change |
+| ---: | ---: | ---: | ---: |
+| 24 | 8 | 9.7% faster | 6.4% faster |
+| 96 | 12 | 4.7% faster | 4.4% faster |
+| 120 | 8 | 0.1% slower | 3.1% faster |
+| 128 | 16 | 2.8% faster | 3.7% faster |
+| 192 | 12 | 5.6% faster | 1.8% faster |
+
+The 120-tracer spatial result is neutral within host noise. Checksums matched;
+direct plan comparisons and two-step transport differed only through reordered
+floating-point arithmetic, with a maximum observed two-step tracer difference
+of `1.82e-17`. Tests cover workspace reuse, both executor policies, and both
+supported horizontal resolutions.
+
+Further parallel preparation was not pursued. At 6.1 ms, eliminating the
+remaining preparation entirely could save at most about 5.7% in the measured
+24-tracer spatial case, 2.5% at 96-tracer blocked execution, and 1.3% at
+192-tracer blocked execution; realistic parallel gains would be smaller and
+least useful at 4x5. The remaining loops also mix memory-bandwidth-heavy passes
+with PJC reductions and recurrences, making selective parallelism a separate
+low-priority experiment rather than part of this change.

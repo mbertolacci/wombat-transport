@@ -125,7 +125,11 @@ from wombat_transport.transport.tpcore._operator import (
     unpack_tracer_blocks,
 )
 from wombat_transport.transport.tpcore.types import TpcoreDeferredState
-from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
+from wombat_transport.transport.tpcore._plan import (
+    make_tpcore_plan_workspace,
+    prepare_tpcore_met_plan,
+    prepare_tpcore_plan,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pjc_snapshot_v1"
 TPCORE_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "tpcore_snapshot_v2"
@@ -1437,6 +1441,95 @@ def test_tpcore_static_terms_reject_different_grid_inputs():
     different_hyai[1] += 1.0e-12
     with pytest.raises(ValueError, match="hyai_hpa"):
         setup_tpcore_terms(**(inputs | {"hyai_hpa": different_hyai}), static_terms=static)
+    if tpcore_numba._NUMBA_AVAILABLE:
+        with pytest.raises(ValueError, match="hyai_hpa"):
+            prepare_tpcore_met_plan(
+                **(inputs | {"hyai_hpa": different_hyai}),
+                static_terms=static,
+            )
+
+
+@pytest.mark.skipif(not tpcore_numba._NUMBA_AVAILABLE, reason="numba is unavailable")
+def test_compiled_tpcore_plan_matches_numpy_reference_and_reuses_storage():
+    with netCDF4.Dataset(TPCORE_FIXTURE_DIR / TPCORE_SNAPSHOT_INPUT_NAME) as dataset:
+        inputs = {
+            "p1_hpa": np.asarray(dataset.variables["p1_hpa"][:], dtype=np.float64),
+            "p2_hpa": np.asarray(dataset.variables["p2_hpa"][:], dtype=np.float64),
+            "u_m_s": np.asarray(dataset.variables["u_m_s"][:], dtype=np.float64),
+            "v_m_s": np.asarray(dataset.variables["v_m_s"][:], dtype=np.float64),
+            "area_m2": np.asarray(dataset.variables["area_m2"][:], dtype=np.float64),
+            "hyai_hpa": np.asarray(dataset.variables["hyai"][:], dtype=np.float64),
+            "hybi": np.asarray(dataset.variables["hybi"][:], dtype=np.float64),
+            "lat_deg": np.asarray(dataset.variables["lat"][:], dtype=np.float64),
+            "dt_s": float(dataset.dt_s),
+        }
+    static = build_tpcore_static_terms(
+        area_m2=inputs["area_m2"],
+        hyai_hpa=inputs["hyai_hpa"],
+        hybi=inputs["hybi"],
+        lat_deg=inputs["lat_deg"],
+    )
+    expected_setup = setup_tpcore_terms(**inputs, static_terms=static)
+    expected = prepare_tpcore_plan(
+        setup=expected_setup,
+        area_m2=inputs["area_m2"],
+    )
+    workspace = make_tpcore_plan_workspace(*inputs["u_m_s"].shape)
+    actual = prepare_tpcore_met_plan(
+        **inputs,
+        static_terms=static,
+        workspace=workspace,
+    )
+
+    tolerances = {
+        "xmass_hpa": (3.0e-12, 5.0e-17),
+        "ymass_hpa": (3.0e-12, 2.0e-14),
+        "surface_pressure_hpa": (3.0e-16, 3.0e-13),
+        "delp1_hpa": (1.0e-15, 3.0e-14),
+        "delpm_hpa": (1.0e-15, 3.0e-14),
+        "delp2_hpa": (3.0e-16, 1.0e-14),
+        "vertical_mass_flux_hpa": (3.0e-13, 1.0e-15),
+        "cx": (3.0e-12, 2.0e-18),
+        "cy": (3.0e-12, 1.0e-15),
+    }
+    for name, (rtol, atol) in tolerances.items():
+        np.testing.assert_allclose(
+            getattr(actual.setup, name),
+            getattr(expected.setup, name),
+            rtol=rtol,
+            atol=atol,
+        )
+    np.testing.assert_array_equal(actual.setup.pu_hpa, expected.setup.pu_hpa)
+    np.testing.assert_array_equal(actual.setup.geofac, expected.setup.geofac)
+    assert actual.setup.geofac_pc == expected.setup.geofac_pc
+    np.testing.assert_allclose(actual.ua, expected.ua, rtol=3.0e-12, atol=2.0e-18)
+    np.testing.assert_allclose(actual.va, expected.va, rtol=3.0e-12, atol=1.0e-15)
+    np.testing.assert_array_equal(actual.jn, expected.jn)
+    np.testing.assert_array_equal(actual.js, expected.js)
+    np.testing.assert_array_equal(actual.area_1d_m2, expected.area_1d_m2)
+
+    delpm_storage = actual.setup.delpm_hpa
+    delpm_before = delpm_storage.copy()
+    changed_inputs = inputs | {"p2_hpa": inputs["p2_hpa"] + 0.125}
+    updated = prepare_tpcore_met_plan(
+        **changed_inputs,
+        static_terms=static,
+        workspace=workspace,
+    )
+    assert updated.setup.delpm_hpa is delpm_storage
+    assert not np.array_equal(updated.setup.delpm_hpa, delpm_before)
+
+    wrong_workspace = make_tpcore_plan_workspace(
+        inputs["u_m_s"].shape[0],
+        inputs["u_m_s"].shape[1],
+        inputs["u_m_s"].shape[2] + 1,
+    )
+    with pytest.raises(ValueError, match="workspace does not match"):
+        prepare_tpcore_met_plan(
+            **inputs,
+            static_terms=static,
+            workspace=wrong_workspace,
+        )
 
 
 def test_tpcore_fixture_can_distinguish_raw_p2_from_pjc_adjusted_pressure_branch(tmp_path):

@@ -850,7 +850,7 @@ def test_transport_executor_matches_single_field(monkeypatch, execution):
     np.testing.assert_allclose(
         actual.state.to_canonical(),
         expected.state.data,
-        rtol=3.0e-16,
+        rtol=5.0e-14,
         atol=2.0e-19,
     )
     np.testing.assert_array_equal(actual.dry_air_mass_kg, expected.dry_air_mass_kg)
@@ -875,7 +875,7 @@ def test_transport_executor_matches_single_field(monkeypatch, execution):
     np.testing.assert_allclose(
         actual_next.state.to_canonical(),
         expected_next.state.data,
-        rtol=3.0e-16,
+        rtol=5.0e-14,
         atol=2.0e-19,
     )
 
