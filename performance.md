@@ -3212,6 +3212,8 @@ The supported 4x5 grid did not reproduce the spatial win. Two ordered pairs at
 | 2, reverse order | blocks, width 8 | 0.038656 | 0.037987 | 1.7% faster |
 
 Mean spatial time also regressed in both 4x5 pairs. The result is therefore a
-real grid-and-policy tradeoff, not an unambiguous production improvement.
-Deferred finalization was not retained, and the task sequence stopped before
-the next experiment as required.
+real grid-and-policy tradeoff rather than a universal improvement. It was
+retained by explicit project decision: 2x2.5 is the more important and more
+expensive production grid, its full-width spatial and useful block cases
+improved, and 4x5 block execution also improved. The accepted cost is the
+measured 4x5 full-width spatial regression; no grid-specific dispatch was added.

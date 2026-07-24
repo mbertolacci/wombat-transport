@@ -49,6 +49,8 @@ if njit is not None:
         start_level: int,
         surface_flux: np.ndarray,
         has_flux: bool,
+        input_mass_pressure_hpa: np.ndarray,
+        input_is_pressure_mass: bool,
         tracer_diffused_workspace: np.ndarray,
         before_mass_workspace: np.ndarray,
         after_mass_workspace: np.ndarray,
@@ -58,7 +60,24 @@ if njit is not None:
         nlev, nlat, nlon, nlane = tracer_in.shape
         negative_count = 0
         ztodtgor = dt_s * _G0_M_PER_S2 / _RD_J_PER_KG_K
+        if input_is_pressure_mass:
+            for lev in range(nlev):
+                for lon in range(nlon):
+                    south_inv = 1.0 / input_mass_pressure_hpa[lev, 0, lon]
+                    north_inv = 1.0 / input_mass_pressure_hpa[lev, nlat - 1, lon]
+                    for lane in range(nlane):
+                        south = tracer_in[lev, 0, lon, lane] * south_inv
+                        north = tracer_in[lev, nlat - 1, lon, lane] * north_inv
+                        if south < 0.0:
+                            south = 1.0e-26
+                        if north < 0.0:
+                            north = 1.0e-26
+                        tracer_in[lev, 1, lon, lane] = south
+                        tracer_in[lev, nlat - 2, lon, lane] = north
         for lat in prange(nlat):
+            input_needs_conversion = (
+                input_is_pressure_mass and lat != 1 and lat != nlat - 2
+            )
             thread = get_thread_id()
             tracer_diffused = tracer_diffused_workspace[thread]
             before_mass = before_mass_workspace[thread]
@@ -70,18 +89,30 @@ if njit is not None:
                     for lane in range(nlane):
                         adjust[lon, lane] = False
                     for lev in range(nlev):
+                        inv_input_mass = 1.0
+                        if input_needs_conversion:
+                            inv_input_mass = 1.0 / input_mass_pressure_hpa[lev, lat, lon]
                         for lane in range(nlane):
-                            qmx[lon, lev, lane] = tracer_in[lev, lat, lon, lane]
+                            value = tracer_in[lev, lat, lon, lane] * inv_input_mass
+                            if input_needs_conversion and value < 0.0:
+                                value = 1.0e-26
+                            qmx[lon, lev, lane] = value
                 for lev in range(start_level, nlev):
                     for lon in range(nlon):
                         scale = ztodtgor * rpdel[lev, lat, lon]
                         term_next = potbar[lev + 1, lat, lon] * kvh[lev + 1, lat, lon]
                         term_now = potbar[lev, lat, lon] * kvh[lev, lat, lon]
+                        inv_input_mass = 1.0
+                        if input_needs_conversion:
+                            inv_input_mass = 1.0 / input_mass_pressure_hpa[lev, lat, lon]
                         for lane in range(nlane):
                             flux_rrho = surface_flux[lat, lon, lane] * rrho[lat, lon]
                             cgq_next = flux_rrho * cgs[lev + 1, lat, lon]
                             cgq_now = flux_rrho * cgs[lev, lat, lon]
-                            value = tracer_in[lev, lat, lon, lane] + scale * (
+                            input_value = tracer_in[lev, lat, lon, lane] * inv_input_mass
+                            if input_needs_conversion and input_value < 0.0:
+                                input_value = 1.0e-26
+                            value = input_value + scale * (
                                 term_next * cgq_next - term_now * cgq_now
                             )
                             qmx[lon, lev, lane] = value
@@ -91,10 +122,22 @@ if njit is not None:
                     for lane in range(nlane):
                         if adjust[lon, lane]:
                             for lev in range(start_level, nlev):
-                                qmx[lon, lev, lane] = tracer_in[lev, lat, lon, lane]
+                                value = tracer_in[lev, lat, lon, lane]
+                                if input_needs_conversion:
+                                    value *= (
+                                        1.0 / input_mass_pressure_hpa[lev, lat, lon]
+                                    )
+                                    if value < 0.0:
+                                        value = 1.0e-26
+                                qmx[lon, lev, lane] = value
             for lon in range(nlon):
+                inv_input_mass = 1.0
+                if input_needs_conversion:
+                    inv_input_mass = 1.0 / input_mass_pressure_hpa[0, lat, lon]
                 for lane in range(nlane):
-                    value = tracer_in[0, lat, lon, lane]
+                    value = tracer_in[0, lat, lon, lane] * inv_input_mass
+                    if input_needs_conversion and value < 0.0:
+                        value = 1.0e-26
                     before_mass[lon, lane] = value * dry_mass[0, lat, lon]
                     source = qmx[lon, 0, lane] if has_flux else value
                     tracer_diffused[lon, 0, lane] = source * termh[0, lat, lon]
@@ -103,8 +146,13 @@ if njit is not None:
                     cch_value = cch[lev, lat, lon]
                     termh_value = termh[lev, lat, lon]
                     mass = dry_mass[lev, lat, lon]
+                    inv_input_mass = 1.0
+                    if input_needs_conversion:
+                        inv_input_mass = 1.0 / input_mass_pressure_hpa[lev, lat, lon]
                     for lane in range(nlane):
-                        value = tracer_in[lev, lat, lon, lane]
+                        value = tracer_in[lev, lat, lon, lane] * inv_input_mass
+                        if input_needs_conversion and value < 0.0:
+                            value = 1.0e-26
                         before_mass[lon, lane] += value * mass
                         source = qmx[lon, lev, lane] if has_flux else value
                         tracer_diffused[lon, lev, lane] = (
@@ -113,8 +161,15 @@ if njit is not None:
             for lon in range(nlon):
                 tmp1d = 1.0 / (1.0 + cch[nlev - 1, lat, lon] * (1.0 - zeh[nlev - 2, lat, lon]))
                 mass = dry_mass[nlev - 1, lat, lon]
+                inv_input_mass = 1.0
+                if input_needs_conversion:
+                    inv_input_mass = (
+                        1.0 / input_mass_pressure_hpa[nlev - 1, lat, lon]
+                    )
                 for lane in range(nlane):
-                    value = tracer_in[nlev - 1, lat, lon, lane]
+                    value = tracer_in[nlev - 1, lat, lon, lane] * inv_input_mass
+                    if input_needs_conversion and value < 0.0:
+                        value = 1.0e-26
                     before_mass[lon, lane] += value * mass
                     source = qmx[lon, nlev - 1, lane] if has_flux else value
                     tracer_diffused[lon, nlev - 1, lane] = (
@@ -307,6 +362,8 @@ def run_vdiff_one_block_compiled(
         plan.start_level,
         surface_flux_kg_m2_s,
         bool(np.any(surface_flux_kg_m2_s != 0.0)),
+        pmid_hpa,
+        False,
         workspace.tracer_diffused,
         workspace.before_mass,
         workspace.after_mass,

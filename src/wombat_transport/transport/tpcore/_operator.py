@@ -158,6 +158,7 @@ if njit is not None:
         dq1: np.ndarray,
         delp2: np.ndarray,
         fill: bool,
+        finalize_output: bool,
     ) -> None:
         nlev, nlat, nlon, ntracer = dq1.shape
         for j in range(nlat):
@@ -193,18 +194,20 @@ if njit is not None:
                                 dup = min(qly, qup)
                                 dq1[nlev - 2, j, i, tracer] = qup - dup
                                 dq1[nlev - 1, j, i, tracer] = 0.0
-                for k in range(nlev):
-                    inv_delp = 1.0 / delp2[k, j, i]
+                if finalize_output:
+                    for k in range(nlev):
+                        inv_delp = 1.0 / delp2[k, j, i]
+                        for tracer in range(ntracer):
+                            value = dq1[k, j, i, tracer] * inv_delp
+                            if value < 0.0:
+                                value = 1.0e-26
+                            dq1[k, j, i, tracer] = value
+        if finalize_output:
+            for k in range(nlev):
+                for i in range(nlon):
                     for tracer in range(ntracer):
-                        value = dq1[k, j, i, tracer] * inv_delp
-                        if value < 0.0:
-                            value = 1.0e-26
-                        dq1[k, j, i, tracer] = value
-        for k in range(nlev):
-            for i in range(nlon):
-                for tracer in range(ntracer):
-                    dq1[k, 1, i, tracer] = dq1[k, 0, i, tracer]
-                    dq1[k, nlat - 2, i, tracer] = dq1[k, nlat - 1, i, tracer]
+                        dq1[k, 1, i, tracer] = dq1[k, 0, i, tracer]
+                        dq1[k, nlat - 2, i, tracer] = dq1[k, nlat - 1, i, tracer]
 
     @njit(nogil=True)
     def _advect_one_block_serial(
@@ -250,6 +253,7 @@ if njit is not None:
         a6_z: np.ndarray,
         dca_z: np.ndarray,
         prev_flux_z: np.ndarray,
+        finalize_output: bool,
     ) -> None:
         for level in range(q.shape[0]):
             _average_const_poles_serial(q[level], delp1[level], area_1d)
@@ -266,7 +270,7 @@ if njit is not None:
                 dcy, al_y, ar_y, a6_y, south_flux_y, north_flux_y,
             )
         _fzppm_serial(delp1, wz, dq1, q, dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z)
-        _qck_finalize_columns_serial(dq1, delp2, fill)
+        _qck_finalize_columns_serial(dq1, delp2, fill, finalize_output)
 
 else:
     _advect_one_block_serial = None

@@ -322,7 +322,7 @@ def _one_block_transport_step_spatial(
         *workspace.x,
         *workspace.y_spatial,
         *workspace.z,
-        True,
+        False,
     )
     negative_count = _apply_vdiff_block_spatial(
         dq1,
@@ -342,6 +342,8 @@ def _one_block_transport_step_spatial(
         vdiff_plan.start_level,
         surface_flux[block],
         has_flux,
+        setup.delp2_hpa,
+        True,
         workspace.tracer_diffused,
         workspace.before_mass,
         workspace.after_mass,
@@ -398,6 +400,7 @@ if njit is not None:
             dcx, fx, al_x, ar_x, a6_x, dc_x, qa_x,
             dcy, al_y, ar_y, a6_y, south_flux, north_flux, south_dao2, north_dao2,
             dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z,
+            False,
         )
         (
             cch, zeh, termh, dry_mass, area_m2, cgs, kvh, potbar,
@@ -407,6 +410,7 @@ if njit is not None:
         negative_count = _apply_vdiff_block_serial(
             dq1, q, cch, zeh, termh, dry_mass, area_m2, cgs, kvh, potbar,
             rpdel, rrho, tmp1, dt_s, start_level, surface_flux, has_flux,
+            delp2, True,
             tracer_diffused, before_mass, after_mass, qmx, adjust,
         )
         (
