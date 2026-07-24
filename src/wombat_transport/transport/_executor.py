@@ -198,6 +198,7 @@ def apply_transport(
         tpcore_plan.setup.xmass_hpa,
         tpcore_plan.setup.ymass_hpa,
         tpcore_plan.setup.vertical_mass_flux_hpa,
+        tpcore_plan.normalized_vertical_courant,
         tpcore_plan.setup.cx,
         tpcore_plan.setup.cy,
         tpcore_plan.setup.geofac,
@@ -307,6 +308,7 @@ def _one_block_transport_step_spatial(
         setup.xmass_hpa,
         setup.ymass_hpa,
         setup.vertical_mass_flux_hpa,
+        tpcore_plan.normalized_vertical_courant,
         setup.cx,
         setup.cy,
         setup.geofac,
@@ -384,7 +386,8 @@ if njit is not None:
         convection_work,
     ):
         (
-            delp1, delp2, pu, xmass, ymass, wz, cx, cy, geofac, geofac_pc,
+            delp1, delp2, pu, xmass, ymass, wz, normalized_vertical_courant,
+            cx, cy, geofac, geofac_pc,
             ua, va, jn, js, area_1d, fill,
         ) = tpcore_plan
         qqu, qqv, south_flux, north_flux, south_dao2, north_dao2 = tpcore_block_work
@@ -394,7 +397,8 @@ if njit is not None:
             dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z,
         ) = tpcore_worker_work
         _advect_one_block_serial(
-            q, dq1, delp1, delp2, pu, xmass, ymass, wz, cx, cy,
+            q, dq1, delp1, delp2, pu, xmass, ymass, wz,
+            normalized_vertical_courant, cx, cy,
             geofac, geofac_pc, ua, va, jn, js, area_1d, fill, qqu, qqv,
             dcx, fx, al_x, ar_x, a6_x, dc_x, qa_x,
             dcy, al_y, ar_y, a6_y, south_flux, north_flux, south_dao2, north_dao2,
@@ -435,6 +439,7 @@ if njit is not None:
         xmass,
         ymass,
         wz,
+        normalized_vertical_courant,
         cx,
         cy,
         geofac,
@@ -507,7 +512,8 @@ if njit is not None:
         negative_counts,
     ):
         tpcore_plan = (
-            delp1, delp2, pu, xmass, ymass, wz, cx, cy, geofac, geofac_pc,
+            delp1, delp2, pu, xmass, ymass, wz, normalized_vertical_courant,
+            cx, cy, geofac, geofac_pc,
             ua, va, jn, js, area_1d, fill,
         )
         tpcore_worker_work = (

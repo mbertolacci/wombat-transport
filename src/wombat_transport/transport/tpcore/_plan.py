@@ -22,6 +22,7 @@ class TpcorePlan:
     """TPCORE setup and derived values shared by every tracer block."""
 
     setup: TpcoreSetup
+    normalized_vertical_courant: np.ndarray
     area_1d_m2: np.ndarray
     ua: np.ndarray
     va: np.ndarray
@@ -41,6 +42,7 @@ class TpcorePlanWorkspace:
     xmass_hpa: np.ndarray
     ymass_hpa: np.ndarray
     vertical_mass_flux_hpa: np.ndarray
+    normalized_vertical_courant: np.ndarray
     cx: np.ndarray
     cy: np.ndarray
     ua: np.ndarray
@@ -74,6 +76,7 @@ def make_tpcore_plan_workspace(
         xmass_hpa=np.empty_like(center),
         ymass_hpa=np.empty_like(center),
         vertical_mass_flux_hpa=np.empty_like(center),
+        normalized_vertical_courant=np.empty_like(center),
         cx=np.empty_like(center),
         cy=np.empty_like(center),
         ua=np.empty_like(center),
@@ -107,6 +110,9 @@ def prepare_tpcore_plan(*, setup: TpcoreSetup, area_m2: np.ndarray) -> TpcorePla
     _kernels._set_jn_js_numba_kernel(setup.cx, jn, js)
     return TpcorePlan(
         setup=setup,
+        normalized_vertical_courant=_kernels._normalized_vertical_courant_numba(
+            setup.delp1_hpa, setup.vertical_mass_flux_hpa
+        ),
         area_1d_m2=np.ascontiguousarray(area_m2[:, 0], dtype=np.float64),
         ua=ua,
         va=va,
@@ -187,6 +193,7 @@ def prepare_tpcore_met_plan(
             workspace.xmass_hpa,
             workspace.ymass_hpa,
             workspace.vertical_mass_flux_hpa,
+            workspace.normalized_vertical_courant,
             workspace.cx,
             workspace.cy,
             workspace.ua,
@@ -221,6 +228,7 @@ def prepare_tpcore_met_plan(
     )
     return TpcorePlan(
         setup=setup,
+        normalized_vertical_courant=workspace.normalized_vertical_courant,
         area_1d_m2=workspace.area_1d_m2,
         ua=workspace.ua,
         va=workspace.va,
@@ -241,6 +249,7 @@ def _validate_plan_workspace(
         workspace.xmass_hpa,
         workspace.ymass_hpa,
         workspace.vertical_mass_flux_hpa,
+        workspace.normalized_vertical_courant,
         workspace.cx,
         workspace.cy,
         workspace.ua,

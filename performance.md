@@ -3636,3 +3636,43 @@ The candidate was reverted at the ambiguity gate. The stored reciprocal
 benefited the one-block spatial policy, but concurrent tracer blocks repeatedly
 streamed the added three-dimensional array; the extra shared cache/memory
 traffic outweighed the divisions removed from the block path.
+
+## Normalized vertical Courant precompute (2026-07-24)
+
+TPCORE plan preparation now stores one signed normalized Courant number per
+vertical interface and column:
+
+```text
+wz / delp1_upwind
+```
+
+The sign compactly selects the same upwind reconstruction side previously
+selected from `wz`; its magnitude replaces the division formerly repeated by
+FZPPM for every tracer block. The value is computed in the existing vertical
+mass-flux preparation loop using the same scalar division, so production
+transport remains exact. Standalone TPCORE retains its original on-demand
+division path and does not allocate the additional full-grid temporary.
+
+Initial pinned four-worker 2x2.5 ABBA timing used 96 tracers, 31 measured
+repetitions and five warm-ups per process:
+
+| Policy | Metric | On demand s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best total | 0.400064 | 0.394048 | 1.5% faster |
+| Spatial, width 96 | mean apply | 0.395078 | 0.391691 | 0.9% faster |
+| Blocks, width 16 | best total | 0.493576 | 0.497328 | 0.8% slower |
+| Blocks, width 16 | mean apply | 0.495552 | 0.492223 | 0.7% faster |
+
+Because the first block result disagreed between its low tail and mean, a
+second block-only ABBA comparison used 61 measured repetitions per process:
+
+| Policy | Metric | On demand s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Blocks, width 16 | best total | 0.496854 | 0.490754 | 1.2% faster |
+| Blocks, width 16 | best apply | 0.484308 | 0.477725 | 1.4% faster |
+| Blocks, width 16 | mean apply | 0.492258 | 0.487373 | 1.0% faster |
+
+All focused TPCORE and compiled-policy tests passed, and every benchmark mode
+reported exact reference arrays. The precompute was retained because the
+longer sampling demonstrated a policy-independent whole-chain gain after plan
+construction was charged.

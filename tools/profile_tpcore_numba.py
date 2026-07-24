@@ -279,7 +279,14 @@ def _run_staged_once(inputs: Any, setup: Any) -> dict[str, float]:
         _add_time(times, "ytp_horizontal_mass_flux", t)
 
     t = time.perf_counter()
-    nb._fzppm_batch_numba_kernel(setup.delp1_hpa, setup.vertical_mass_flux_hpa, dq1, q, *z_workspace)
+    nb._fzppm_batch_numba_kernel(
+        setup.delp1_hpa,
+        setup.vertical_mass_flux_hpa,
+        nb._EMPTY_NORMALIZED_VERTICAL_COURANT,
+        dq1,
+        q,
+        *z_workspace,
+    )
     _add_time(times, "fzppm_vertical", t)
 
     t = time.perf_counter()
@@ -475,7 +482,14 @@ def _run_stage_perf_kernel(stage: str, state: dict[str, Any]) -> float:
         return float(np.mean(state["q_for_y"][0, 0, 0, :]))
 
     if stage == "fzppm_vertical":
-        nb._fzppm_batch_numba_kernel(setup.delp1_hpa, setup.vertical_mass_flux_hpa, dq1, state["q"], *state["z_workspace"])
+        nb._fzppm_batch_numba_kernel(
+            setup.delp1_hpa,
+            setup.vertical_mass_flux_hpa,
+            nb._EMPTY_NORMALIZED_VERTICAL_COURANT,
+            dq1,
+            state["q"],
+            *state["z_workspace"],
+        )
         return float(np.mean(dq1[0, 0, 0, :]))
 
     if stage == "qckxyz_fill_finalize":

@@ -219,6 +219,7 @@ if njit is not None:
         xmass: np.ndarray,
         ymass: np.ndarray,
         wz: np.ndarray,
+        normalized_vertical_courant: np.ndarray,
         cx: np.ndarray,
         cy: np.ndarray,
         geofac: np.ndarray,
@@ -269,7 +270,20 @@ if njit is not None:
                 dq1[level], qqu, qqv, cy[level], ymass[level], geofac, geofac_pc,
                 dcy, al_y, ar_y, a6_y, south_flux_y, north_flux_y,
             )
-        _fzppm_serial(delp1, wz, dq1, q, dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z)
+        _fzppm_serial(
+            delp1,
+            wz,
+            normalized_vertical_courant,
+            dq1,
+            q,
+            dpi_z,
+            dc_z,
+            al_z,
+            ar_z,
+            a6_z,
+            dca_z,
+            prev_flux_z,
+        )
         _qck_finalize_columns_serial(dq1, delp2, fill, finalize_output)
 
 else:

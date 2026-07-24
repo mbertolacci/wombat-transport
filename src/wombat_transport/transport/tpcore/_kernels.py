@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - exercised in environments without numb
 
 _NUMBA_AVAILABLE = njit is not None
 _TPCORE_NUMBA_WORKSPACES = threading.local()
+_EMPTY_NORMALIZED_VERTICAL_COURANT = np.empty((0, 0, 0), dtype=np.float64)
 
 
 class _TpcoreNumbaWorkspace:
@@ -215,6 +216,7 @@ def _advect_tracers_fused_numba(
         setup.xmass_hpa,
         setup.ymass_hpa,
         setup.vertical_mass_flux_hpa,
+        _EMPTY_NORMALIZED_VERTICAL_COURANT,
         setup.cx,
         setup.cy,
         setup.geofac,
@@ -270,10 +272,42 @@ def _fzppm_batch_numba(delp1: np.ndarray, wz: np.ndarray, dq1: np.ndarray, q: np
         raise RuntimeError("numba is not available")
     nthreads = configure_numba_threads(available=_NUMBA_AVAILABLE)
     workspace = _make_fzppm_numba_workspace(nthreads, q.shape[0], q.shape[3])
-    _fzppm_batch_numba_kernel(delp1, wz, dq1, q, *workspace)
+    _fzppm_batch_numba_kernel(
+        delp1, wz, _EMPTY_NORMALIZED_VERTICAL_COURANT, dq1, q, *workspace
+    )
+
+
+def _normalized_vertical_courant_numba(
+    delp1: np.ndarray, wz: np.ndarray
+) -> np.ndarray:
+    if not _NUMBA_AVAILABLE:
+        raise RuntimeError("numba is not available")
+    result = np.empty_like(wz)
+    _normalized_vertical_courant_numba_kernel(delp1, wz, result)
+    return result
 
 
 if njit is not None:
+
+    @njit(cache=True, parallel=True, nogil=True)
+    def _normalized_vertical_courant_numba_kernel(
+        delp1: np.ndarray, wz: np.ndarray, result: np.ndarray
+    ) -> None:
+        nlev, nlat, nlon = wz.shape
+        for lev in prange(nlev - 1):
+            for lat in range(nlat):
+                for lon in range(nlon):
+                    if wz[lev, lat, lon] > 0.0:
+                        result[lev, lat, lon] = (
+                            wz[lev, lat, lon] / delp1[lev, lat, lon]
+                        )
+                    else:
+                        result[lev, lat, lon] = (
+                            wz[lev, lat, lon] / delp1[lev + 1, lat, lon]
+                        )
+        for lat in range(nlat):
+            for lon in range(nlon):
+                result[nlev - 1, lat, lon] = 0.0
 
     @njit(cache=True, parallel=True, nogil=True, fastmath={"contract"})
     def _set_cross_terms_numba_kernel(cx: np.ndarray, cy: np.ndarray, ua: np.ndarray, va: np.ndarray) -> None:
@@ -505,6 +539,7 @@ if njit is not None:
         xmass: np.ndarray,
         ymass: np.ndarray,
         wz: np.ndarray,
+        normalized_vertical_courant: np.ndarray,
         cx: np.ndarray,
         cy: np.ndarray,
         geofac: np.ndarray,
@@ -591,7 +626,20 @@ if njit is not None:
                 north_flux_y,
             )
 
-        _fzppm_batch_numba_kernel(delp1, wz, dq1, q, dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z)
+        _fzppm_batch_numba_kernel(
+            delp1,
+            wz,
+            normalized_vertical_courant,
+            dq1,
+            q,
+            dpi_z,
+            dc_z,
+            al_z,
+            ar_z,
+            a6_z,
+            dca_z,
+            prev_flux_z,
+        )
         if fill:
             _qckxyz_columns_numba_kernel(dq1)
         if finalize_output:
@@ -1212,6 +1260,7 @@ if njit is not None:
     def _fzppm_batch_numba_kernel(
         delp1: np.ndarray,
         wz: np.ndarray,
+        normalized_vertical_courant: np.ndarray,
         dq1: np.ndarray,
         q: np.ndarray,
         dpi_workspace: np.ndarray,
@@ -1226,6 +1275,7 @@ if njit is not None:
         nlat = q.shape[1]
         nlon = q.shape[2]
         ntracer = q.shape[3]
+        has_precomputed_courant = normalized_vertical_courant.size != 0
         r13 = 1.0 / 3.0
         r23 = 2.0 / 3.0
 
@@ -1384,8 +1434,14 @@ if njit is not None:
                             al[k, tracer] = qmax
                         a6[k, tracer] = 3.0 * (qq + qq - (ar[k, tracer] + al[k, tracer]))
 
-                if wz[0, j, i] > 0.0:
-                    cm = wz[0, j, i] / delp1[0, j, i]
+                if has_precomputed_courant:
+                    vertical_courant = normalized_vertical_courant[0, j, i]
+                elif wz[0, j, i] > 0.0:
+                    vertical_courant = wz[0, j, i] / delp1[0, j, i]
+                else:
+                    vertical_courant = wz[0, j, i] / delp1[1, j, i]
+                if vertical_courant > 0.0:
+                    cm = vertical_courant
                     for tracer in range(ntracer):
                         val = ar[0, tracer] + 0.5 * cm * (
                             al[0, tracer] - ar[0, tracer] + a6[0, tracer] * (1.0 - r23 * cm)
@@ -1394,7 +1450,7 @@ if njit is not None:
                         dq1[0, j, i, tracer] -= flux
                         prev_flux[tracer] = flux
                 else:
-                    cp = wz[0, j, i] / delp1[1, j, i]
+                    cp = vertical_courant
                     for tracer in range(ntracer):
                         val = al[1, tracer] + 0.5 * cp * (
                             al[1, tracer] - ar[1, tracer] - a6[1, tracer] * (1.0 + r23 * cp)
@@ -1403,8 +1459,14 @@ if njit is not None:
                         dq1[0, j, i, tracer] -= flux
                         prev_flux[tracer] = flux
                 for k in range(1, nlev - 1):
-                    if wz[k, j, i] > 0.0:
-                        cm = wz[k, j, i] / delp1[k, j, i]
+                    if has_precomputed_courant:
+                        vertical_courant = normalized_vertical_courant[k, j, i]
+                    elif wz[k, j, i] > 0.0:
+                        vertical_courant = wz[k, j, i] / delp1[k, j, i]
+                    else:
+                        vertical_courant = wz[k, j, i] / delp1[k + 1, j, i]
+                    if vertical_courant > 0.0:
+                        cm = vertical_courant
                         for tracer in range(ntracer):
                             val = ar[k, tracer] + 0.5 * cm * (
                                 al[k, tracer] - ar[k, tracer] + a6[k, tracer] * (1.0 - r23 * cm)
@@ -1413,7 +1475,7 @@ if njit is not None:
                             dq1[k, j, i, tracer] += prev_flux[tracer] - flux
                             prev_flux[tracer] = flux
                     else:
-                        cp = wz[k, j, i] / delp1[k + 1, j, i]
+                        cp = vertical_courant
                         for tracer in range(ntracer):
                             val = al[k + 1, tracer] + 0.5 * cp * (
                                 al[k + 1, tracer]
@@ -1428,6 +1490,11 @@ if njit is not None:
 
 
 else:
+
+    def _normalized_vertical_courant_numba_kernel(
+        delp1: np.ndarray, wz: np.ndarray, result: np.ndarray
+    ) -> None:
+        raise RuntimeError("numba is not available")
 
     def _average_const_poles_batch_numba_kernel(q: np.ndarray, delp1: np.ndarray, area_1d: np.ndarray) -> None:
         raise RuntimeError("numba is not available")
@@ -1458,6 +1525,7 @@ else:
         xmass: np.ndarray,
         ymass: np.ndarray,
         wz: np.ndarray,
+        normalized_vertical_courant: np.ndarray,
         cx: np.ndarray,
         cy: np.ndarray,
         geofac: np.ndarray,
@@ -1500,6 +1568,7 @@ else:
     def _fzppm_batch_numba_kernel(
         delp1: np.ndarray,
         wz: np.ndarray,
+        normalized_vertical_courant: np.ndarray,
         dq1: np.ndarray,
         q: np.ndarray,
         dpi_workspace: np.ndarray,
