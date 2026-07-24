@@ -3259,11 +3259,18 @@ Isolated four-worker TPCORE timing was consistently favorable:
 | 4x5 | 24 | 0.034328 | 0.033199 | 3.3% faster |
 | 4x5 | 96 | 0.102319 | 0.098464 | 3.8% faster |
 
-The improvement did not produce a stable full-chain result. Two opposite-order
-2x2.5, 24-tracer, full-width spatial pairs flipped sign: the first candidate
-was 3.4% slower by best apply time, while the reverse pair was 2.8% faster.
-Normalizing each spatial result by its same-process fused control also flipped
-sign. The effect is therefore below stable whole-chain resolution on this host.
+The initial full-chain pairs were dominated by process-order noise, so a
+higher-sample ABBA follow-up used 31 measured repetitions per process at 24
+tracers and 15 at 96 tracers. Full-width spatial results averaged across the
+two baseline and two candidate processes were:
 
-The pole-only contract was not retained, and the remaining fixed passes were
-paused rather than combining an ambiguous change with subsequent experiments.
+| Tracers | Baseline best/mean s | Pole `noalias` best/mean s | Best / mean change |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.118532 / 0.122469 | 0.115721 / 0.121626 | 2.4% / 0.7% faster |
+| 96 | 0.410703 / 0.420016 | 0.421364 / 0.439270 | 2.6% / 4.6% slower |
+
+Ratios against the unaffected serial and block executors retained the
+96-tracer regression. Additional samples therefore resolved the original
+order ambiguity into a tracer-count tradeoff rather than a general production
+win. The pole-only contract was not retained, and the remaining fixed passes
+were paused before combining independent compiler changes.
