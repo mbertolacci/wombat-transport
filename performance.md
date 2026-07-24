@@ -3217,3 +3217,31 @@ retained by explicit project decision: 2x2.5 is the more important and more
 expensive production grid, its full-width spatial and useful block cases
 improved, and 4x5 block execution also improved. The accepted cost is the
 measured 4x5 full-width spatial regression; no grid-specific dispatch was added.
+
+## Worker-local TPCORE cross-term scratch screening (2026-07-24)
+
+The next experiment replaced block-indexed `qqu`, `qqv`, and four Y-boundary
+scratch arrays with worker-indexed storage. Outer block execution selected the
+scratch with Numba's worker ID; serial and spatial policies safely reused slot
+zero because their blocks are visited sequentially. Focused executor and
+frontier tests were bitwise unchanged.
+
+Pinned four-worker 2x2.5 full-chain results were:
+
+| Tracers | Width | Per-block baseline s | Worker-local s | Change |
+| ---: | ---: | ---: | ---: | ---: |
+| 96 | 8 | 0.579606 | 0.576346 | 0.6% faster |
+| 96 | 16 | 0.478117 | 0.479841 | 0.4% slower |
+| 192 | 8 | 1.136652 | 1.157117 | 1.8% slower |
+| 192 | 16 | 0.913479 | 0.945765 | 3.5% slower |
+
+Mean times showed the same high-tracer regression. The deterministic scratch
+reduction ranged from about 6.5 MiB for 96 tracers at width 16 to 32.7 MiB for
+192 tracers at width 8. This did not reduce state storage or the redundant
+standalone workspaces held by each block, so the memory saving was modest
+relative to the complete executor.
+
+The experiment was not retained: its main high-block-count cases traded a
+small working-set reduction for a repeatable wall-time loss. Lazy standalone
+workspace allocation was not attempted after the primary worker-local premise
+failed.
