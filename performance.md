@@ -3177,23 +3177,41 @@ were unchanged. Focused VDIFF and compiled-executor tests passed (15 tests), and
 the full-chain comparison retained its existing exact spatial result and
 one-ULP block difference from the fused reference.
 
-A pinned four-worker 2x2.5 screening used warmed full
-TPCORE-to-VDIFF-to-convection applications, seven measured repetitions, 24 and
-96 tracers, and widths 8 and 16. Best apply times were:
+The initial screening incorrectly compared spatial execution at widths 8 and
+16. Spatial visits blocks serially, so those layouts ran two to twelve spatial
+blocks rather than the intended single full-width block. The screening was
+discarded and repeated with full-width spatial storage while block execution
+was measured separately at widths 8 and 16. Baseline and candidate ran from
+separate source trees with separate Numba caches, pinned to the same four
+cores, in both orders.
 
-| Tracers | Width | Policy | Finalized baseline s | Deferred s | Change |
-| ---: | ---: | --- | ---: | ---: | ---: |
-| 24 | 8 | spatial | 0.150464 | 0.150664 | 0.1% slower |
-| 24 | 8 | blocks | 0.156684 | 0.159858 | 2.0% slower |
-| 24 | 16 | spatial | 0.174870 | 0.159832 | 8.6% faster |
-| 24 | 16 | blocks | 0.170298 | 0.173489 | 1.9% slower |
-| 96 | 8 | spatial | 0.633512 | 0.645287 | 1.9% slower |
-| 96 | 8 | blocks | 0.578949 | 0.578086 | 0.1% faster |
-| 96 | 16 | spatial | 0.525335 | 0.507072 | 3.5% faster |
-| 96 | 16 | blocks | 0.473962 | 0.478541 | 1.0% slower |
+At 2x2.5, the corrected full-width spatial result was consistently favorable:
 
-This is a policy- and width-dependent result rather than an unambiguous
-production improvement. The experiment was therefore not retained after the
-initial screening, and subsequent task-list experiments were paused pending a
-decision on whether to fund a stricter alternated benchmark or leave unified
-TPCORE finalization in place.
+| Tracers | Spatial width | Pair | Finalized baseline s | Deferred s | Change |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 24 | 1 | 0.124585 | 0.115808 | 7.0% faster |
+| 24 | 24 | 2, reverse order | 0.118823 | 0.116689 | 1.8% faster |
+| 96 | 96 | 1 | 0.434312 | 0.404592 | 6.8% faster |
+| 96 | 96 | 2, reverse order | 0.414551 | 0.403546 | 2.7% faster |
+
+The 2x2.5 block path was neutral-to-faster rather than consistently slower.
+Width 16 improved by 0.8--4.4% at 24 tracers and 1.0--4.1% at 96 tracers.
+Width 8 flipped sign within about 1.4% at 24 tracers but improved by about 4.6%
+in both 96-tracer pairs. A dense uniform nonzero source at 96 tracers improved
+full-width spatial best time by 3.2% and width-16 block best time by 0.4%;
+neither policy regressed by mean time.
+
+The supported 4x5 grid did not reproduce the spatial win. Two ordered pairs at
+24 tracers used width 24 for spatial and width 8 for blocks:
+
+| Pair | Policy | Finalized baseline s | Deferred s | Change |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | spatial, width 24 | 0.029792 | 0.031352 | 5.2% slower |
+| 2, reverse order | spatial, width 24 | 0.029293 | 0.031736 | 8.3% slower |
+| 1 | blocks, width 8 | 0.039071 | 0.037313 | 4.5% faster |
+| 2, reverse order | blocks, width 8 | 0.038656 | 0.037987 | 1.7% faster |
+
+Mean spatial time also regressed in both 4x5 pairs. The result is therefore a
+real grid-and-policy tradeoff, not an unambiguous production improvement.
+Deferred finalization was not retained, and the task sequence stopped before
+the next experiment as required.
