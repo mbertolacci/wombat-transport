@@ -3245,3 +3245,25 @@ The experiment was not retained: its main high-block-count cases traded a
 small working-set reduction for a repeatable wall-time loss. Lazy standalone
 workspace allocation was not attempted after the primary worker-local premise
 failed.
+
+## Spatial pole-pass `noalias` screening (2026-07-24)
+
+The first fixed-pass compiler experiment applied the executor-valid no-alias
+contract only to spatial TPCORE pole averaging. Checksums were unchanged.
+Isolated four-worker TPCORE timing was consistently favorable:
+
+| Grid | Tracers | Baseline s | Pole `noalias` s | Change |
+| --- | ---: | ---: | ---: | ---: |
+| 2x2.5 | 24 | 0.133268 | 0.125652 | 5.7% faster |
+| 2x2.5 | 96 | 0.415985 | 0.395384 | 5.0% faster |
+| 4x5 | 24 | 0.034328 | 0.033199 | 3.3% faster |
+| 4x5 | 96 | 0.102319 | 0.098464 | 3.8% faster |
+
+The improvement did not produce a stable full-chain result. Two opposite-order
+2x2.5, 24-tracer, full-width spatial pairs flipped sign: the first candidate
+was 3.4% slower by best apply time, while the reverse pair was 2.8% faster.
+Normalizing each spatial result by its same-process fused control also flipped
+sign. The effect is therefore below stable whole-chain resolution on this host.
+
+The pole-only contract was not retained, and the remaining fixed passes were
+paused rather than combining an ambiguous change with subsequent experiments.
