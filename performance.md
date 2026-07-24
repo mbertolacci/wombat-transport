@@ -3383,3 +3383,29 @@ The serial width-96 control was 0.8% slower in the candidate process, so it
 cannot explain the spatial gain. Candidate full-chain output was exact against
 the benchmark reference; the baseline retained its existing one-ULP serial and
 block difference.
+
+## Production precipitation-reconstruction screening (2026-07-24)
+
+The next production-control experiment compiled out convection precipitation
+reconstruction, which the normal transport driver always disables. The
+temporary screening edit left the direct-reconstruction diagnostic API aside;
+a retained implementation would have used another shared-core wrapper rather
+than duplicating the operator.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 11 measured
+repetitions per process, width 16 for blocks, and width 96 for full-width
+spatial execution. Averages across the two baseline and two candidate
+processes were:
+
+| Policy | Baseline best/mean s | Reconstruction off best/mean s | Raw change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 96 | 0.386954 / 0.409487 | 0.382755 / 0.388673 | 1.1% / 5.1% faster |
+| Blocks, width 16 | 0.487517 / 0.490972 | 0.477714 / 0.484394 | 2.0% / 1.3% faster |
+
+The candidate serial width-96 control was itself 2.6% faster by best time.
+Normalizing against it made spatial about 1.5% slower by best time but 2.6%
+faster by mean time; width-16 blocks were about 0.6--1.3% slower after
+normalization. The small apparent raw gain therefore could not be separated
+from process drift and changed direction by metric. The experiment was not
+retained, and testing stopped at the requested ambiguity gate before `fill` or
+fixed-substep specialization.
