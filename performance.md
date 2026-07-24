@@ -3273,4 +3273,20 @@ Ratios against the unaffected serial and block executors retained the
 96-tracer regression. Additional samples therefore resolved the original
 order ambiguity into a tracer-count tradeoff rather than a general production
 win. The pole-only contract was not retained, and the remaining fixed passes
-were paused before combining independent compiler changes.
+were tested independently rather than combined with it.
+
+Mass initialization was the next isolated contract. Standalone TPCORE best
+times improved by 4.5% and 5.5% at 24 and 96 tracers on 2x2.5, and by 1.0% and
+4.3% on 4x5. The higher-sample 2x2.5 full-chain gate again rejected the
+isolated result: at 96 tracers, two baseline and two candidate processes
+averaged 0.408786 and 0.415190 seconds best respectively, a 1.6% regression.
+Mean time regressed by 3.5%, while the unaffected serial executor was flat.
+Mass-initialization `noalias` was therefore not retained.
+
+Cross-term construction was tested next. Isolated TPCORE again improved by
+roughly 4--6%, but the 96-tracer full-chain ABBA result fell below a stable
+decision threshold. Raw spatial averages improved by 0.6% best and 2.0% mean;
+normalizing each process against unaffected serial and block execution ranged
+from about 0.8% slower to 0.7% faster. The cross-term contract was not retained,
+and DAO2 fixed-pass contracts were not started after this ambiguous production
+result.
