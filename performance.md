@@ -3317,3 +3317,48 @@ normalizing block execution against serial changed direction between best and
 mean results. Removing one conditional increment therefore had no stable,
 policy-independent benefit. The experiment was not retained, and no separate
 production kernel was added.
+
+## Production diagnostics-off specialization screening (2026-07-24)
+
+Generated LLVM confirmed that convection's `diagnostics`,
+`reconstruct_conv_precip_flux`, and `internal_steps` arguments remain runtime
+values in the compiled leaf. The diagnostic condition is tested in two
+innermost tracer loops even though the unified production executor always
+passes `False`.
+
+For screening, those two conditions were compiled out while the rest of the
+kernel was left unchanged. This temporarily weakened the public diagnostic
+path only in the candidate tree; a retained implementation would require
+separate production and diagnostic kernels. Numba's `literally()` mechanism
+was also screened first, but added roughly 40--50 ms of Python-to-spatial-kernel
+dispatch per block and badly distorted the result. The timings below use direct
+compile-time removal, not literal dispatch.
+
+Pinned four-worker 2x2.5 full-chain results were strongly favorable. At 96
+tracers, averages across three baseline and two candidate processes were:
+
+| Policy | Baseline best/mean s | Diagnostics off best/mean s | Change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 96 | 0.407872 / 0.417520 | 0.378472 / 0.388181 | 7.2% / 7.0% faster |
+| Blocks, width 16 | 0.484174 / 0.492281 | 0.478945 / 0.484098 | 1.1% / 1.7% faster |
+
+The serial width-96 control improved by about 2.0%, so the spatial result
+remained about 5.3% faster after control normalization. At 24 tracers, a
+separate ordered pair improved full-width spatial best/mean time by 7.9%/9.9%;
+width-8 blocks were neutral, changing by 0.1% faster best and 0.6% slower mean.
+Candidate output was exact against the benchmark reference in these runs.
+
+The 4x5 block result was not conclusive. Two ordered pairs at 24 tracers
+averaged:
+
+| Policy | Baseline best/mean s | Diagnostics off best/mean s | Raw change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 24 | 0.031676 / 0.033096 | 0.027473 / 0.028371 | 13.3% / 14.3% faster |
+| Blocks, width 8 | 0.037166 / 0.042395 | 0.037441 / 0.043862 | 0.7% / 3.5% slower |
+
+The candidate serial control was itself 2.4--2.5% slower. Normalizing block
+time against serial therefore changed the block result to 1.6% faster by best
+time but 0.9% slower by mean time. This is the requested policy-ambiguity stop:
+the temporary change was reverted and no production-only kernel was retained
+pending a project decision about the clear spatial gain versus the possible
+4x5 block cost.
