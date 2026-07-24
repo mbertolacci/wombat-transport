@@ -3783,3 +3783,29 @@ already guards the expensive source preparation, and its remaining checks
 are loop-invariant and likely hoisted or unswitched by LLVM. The whole-step
 candidate was rejected at the policy-ambiguity gate; dense-source control
 timing was not run.
+
+## Matrix-free DAO2/FZPPM screening (2026-07-25)
+
+A serial-block prototype left the pole-adjusted input `q` unchanged and
+reconstructed the DAO2-corrected value for each FZPPM column in
+`(nlev, lane)` worker scratch. Interior X and Y corrections recomputed their
+required `qqu` and `qqv` neighbourhood values directly from `q`; the two pole
+corrections were recovered during the original level pass using the same
+longitude reduction order. The corrected value retained the exact sequential
+order `((q + dx) + dy)`.
+
+Focused complete-chain tests covered serial, spatial, and block policies,
+padded tracer lanes, zero flux, and nonzero flux. All candidate block results
+were bitwise equal to the existing implementation.
+
+A pinned four-core global 2x2.5 screening used 24 tracers, one warm-up, and two
+measured repetitions. The regression was too large to justify longer timing:
+
+| Block width | Existing best s | Matrix-free best s | Slowdown |
+| --- | ---: | ---: | ---: |
+| 8 | 0.157605 | 0.416519 | 2.64x |
+| 16 | 0.189006 | 0.555829 | 2.94x |
+
+The avoided full-grid DAO2 store/read did not compensate for repeatedly
+reconstructing cross-term neighbourhoods in the column-oriented vertical
+loop. The prototype was reverted and no spatial implementation was attempted.

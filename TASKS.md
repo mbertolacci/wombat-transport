@@ -154,12 +154,20 @@ zero.
 
 ### 12. Prototype matrix-free DAO2/FZPPM
 
+**Rejected after exact serial-block prototype (2026-07-25).**
+
 - Prototype only in the serial block leaf.
 - Form DAO2-corrected column values in worker scratch immediately before
   FZPPM, avoiding the corrected full-grid `q` write/read.
 - Compare width 8 and 16 before considering any spatial implementation.
 
 This is the last experiment: it has the largest semantic and performance risk.
+
+The prototype reconstructed the X and Y DAO2 stencil values on demand for
+each FZPPM column, retaining the original pole reduction order. It was bitwise
+exact but made width-8 and width-16 block execution roughly 2.6 and 2.9 times
+slower respectively. Repeated neighbourhood evaluation cost far more than the
+avoided corrected-grid traffic, so no spatial version was attempted.
 
 ## Not planned
 
