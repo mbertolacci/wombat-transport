@@ -3604,3 +3604,35 @@ reported exact reference arrays, and the VDIFF-only checksum was unchanged.
 The candidate was nevertheless reverted: the saved bottom divisions did not
 offset the extra full-grid coefficient write/read traffic, and no
 policy-independent whole-chain gain was demonstrated.
+
+## Deferred-finalization reciprocal precompute screening (2026-07-24)
+
+A temporary candidate computed `1 / delp2_hpa` alongside `delp2_hpa` during
+TPCORE plan preparation and stored the result in a new plan array. Production
+VDIFF then loaded the stored reciprocal whenever it converted TPCORE's
+pressure-weighted interior values, replacing one division per level and
+column for each tracer block. The reciprocal used the same scalar division as
+the original path, so this was intended as an exact stored-division
+experiment rather than reciprocal-multiply reassociation.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline
+and two candidate processes were:
+
+| Policy | Metric | Recomputed s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best total | 0.398214 | 0.392202 | 1.5% faster |
+| Spatial, width 96 | mean apply | 0.391153 | 0.387569 | 0.9% faster |
+| Blocks, width 16 | best total | 0.493348 | 0.495219 | 0.4% slower |
+| Blocks, width 16 | mean apply | 0.490019 | 0.495032 | 1.0% slower |
+
+Both candidate spatial processes were faster than both baselines by best
+total time, while both candidate block processes were slower than both
+baselines by mean application time. Matching serial controls did not remove
+the policy split. Focused VDIFF and compiled-policy tests passed, and every
+benchmark mode reported exact reference arrays.
+
+The candidate was reverted at the ambiguity gate. The stored reciprocal
+benefited the one-block spatial policy, but concurrent tracer blocks repeatedly
+streamed the added three-dimensional array; the extra shared cache/memory
+traffic outweighed the divisions removed from the block path.
