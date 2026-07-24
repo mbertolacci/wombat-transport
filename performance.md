@@ -3542,3 +3542,31 @@ not retained automatically: its typical zero-flux benefit is below one
 percent, while the more favorable dense-flux path requires accepting a
 several-ULP transport change. The source was reverted pending an explicit
 project decision.
+
+## DAO2-only contraction screening (2026-07-24)
+
+The next TPCORE experiment enabled `fastmath={"contract"}` only for the X and
+Y DAO2 apply helpers, including their serial clones used by block execution.
+XTP, YTP, FZPPM, and complete kernels were unchanged. Fresh-cache LLVM
+inspection confirmed contractable floating-point operations in both helpers.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Baseline s | DAO2 contraction s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.385442 | 0.386059 | 0.2% slower |
+| Spatial, width 96 | mean | 0.396770 | 0.396979 | 0.1% slower |
+| Blocks, width 16 | best | 0.480793 | 0.479533 | 0.3% faster |
+| Blocks, width 16 | mean | 0.488854 | 0.487703 | 0.2% faster |
+
+The corresponding serial controls moved in opposite directions. Normalization
+widened the split to about 1.3% slower spatial and 2.5% faster for blocks.
+Focused TPCORE and complete-executor tests passed, and the benchmark outputs
+were exact against their reference arrays in all measured modes.
+
+The combined X+Y contraction was not retained: the high-sample result is a
+small block-versus-spatial policy tradeoff rather than a general whole-chain
+gain. X-only and Y-only contraction were not screened separately after the
+combined candidate reached the requested ambiguity gate.
