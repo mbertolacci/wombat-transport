@@ -3425,3 +3425,27 @@ The normalization uses the matching width-96 and width-16 serial executors.
 The higher-sample result is consistent across both metrics and policies:
 compiling out precipitation reconstruction is a small regression. The
 rejection is therefore definitive rather than an ambiguity.
+
+## Production `fill=True` specialization screening (2026-07-24)
+
+TPCORE's production driver always enables negative-value filling. A temporary
+candidate compiled that condition as true in both the full-width spatial leaf
+and the serial leaf used for tracer blocks, without changing the fill
+algorithm.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Runtime branch s | Fixed `fill=True` s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.377923 | 0.384275 | 1.7% slower |
+| Spatial, width 96 | mean | 0.391165 | 0.395944 | 1.2% slower |
+| Blocks, width 16 | best | 0.476447 | 0.483643 | 1.5% slower |
+| Blocks, width 16 | mean | 0.484512 | 0.490581 | 1.3% slower |
+
+The candidate serial width-16 control regressed by about 2.5%, which makes
+control-normalized block time appear 1.0--1.3% faster. That does not translate
+to production wall time: both candidate block processes were slower than both
+baseline processes, and spatial execution remained 1.5--3.4% slower after its
+serial control. The specialization was not retained.
