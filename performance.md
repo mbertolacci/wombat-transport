@@ -3570,3 +3570,37 @@ The combined X+Y contraction was not retained: the high-sample result is a
 small block-versus-spatial policy tradeoff rather than a general whole-chain
 gain. X-only and Y-only contraction were not screened separately after the
 combined candidate reached the requested ambiguity gate.
+
+## VDIFF bottom-solve coefficient precompute screening (2026-07-24)
+
+A temporary candidate filled the existing unused bottom-level `termh` plan
+slot with
+`1 / (1 + cch_bottom * (1 - zeh_above))`, then reused that stored value in the
+humidity, full-grid tracer, and tracer-block bottom solves. This preserved the
+division result exactly and avoided adding storage to the plan.
+
+A pinned four-worker 2x2.5 full-chain ABBA comparison used 96 tracers, 31
+measured repetitions and five warm-ups per process. Averages across the two
+baseline and two candidate processes were:
+
+| Policy | Metric | Recomputed s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best total | 0.395450 | 0.394772 | 0.2% faster |
+| Spatial, width 96 | mean apply | 0.400101 | 0.392547 | 1.9% faster |
+| Blocks, width 16 | best total | 0.490932 | 0.491658 | 0.1% slower |
+| Blocks, width 16 | mean apply | 0.488446 | 0.490376 | 0.4% slower |
+
+The spatial process means varied substantially, so the apparent mean gain was
+not supported by its best total time. A direct full-grid VDIFF-only ABBA check
+then used 96 tracers and 51 measured repetitions per process:
+
+| Metric | Recomputed s | Precomputed s | Raw change |
+| --- | ---: | ---: | ---: |
+| Best | 0.108055 | 0.108538 | 0.4% slower |
+| Mean | 0.108799 | 0.109230 | 0.4% slower |
+
+Focused VDIFF and compiled-policy tests passed, the full-chain benchmark
+reported exact reference arrays, and the VDIFF-only checksum was unchanged.
+The candidate was nevertheless reverted: the saved bottom divisions did not
+offset the extra full-grid coefficient write/read traffic, and no
+policy-independent whole-chain gain was demonstrated.
