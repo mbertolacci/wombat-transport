@@ -3473,3 +3473,29 @@ The matching serial controls were essentially equal by best time.
 Control-normalized candidate results remained about 0.8% slower spatial and
 1.2% slower for blocks by best time; normalized means were roughly 0.6% slower
 for both. The specialization was not retained.
+
+## VDIFF fixed-47-level specialization screening (2026-07-24)
+
+The vertical-level specialization was first scoped narrowly to VDIFF's
+production block kernel. A temporary candidate replaced its runtime level
+extent with the supported constant 47, exposing fixed bounds in source for the
+forward solve, backward substitution, and mass loops. TPCORE and convection
+were unchanged.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Runtime levels s | Fixed 47 levels s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.381276 | 0.379503 | 0.5% faster |
+| Spatial, width 96 | mean | 0.392156 | 0.388694 | 0.9% faster |
+| Blocks, width 16 | best | 0.480543 | 0.480890 | neutral |
+| Blocks, width 16 | mean | 0.485440 | 0.489921 | 0.9% slower |
+
+The serial controls moved in opposite directions: after normalization, block
+execution appeared 0.3--1.1% faster while spatial appeared 0.2--0.6% slower.
+Additional sampling therefore did not reveal a policy-independent gain; it
+confirmed a small raw spatial-versus-block tradeoff whose interpretation
+depends on the control metric. The experiment was reverted at the requested
+ambiguity gate.
