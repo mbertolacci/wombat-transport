@@ -1975,7 +1975,6 @@ def test_compiled_transport_policies_match_direct_kernels(monkeypatch, surface_f
         reevapcn.reshape(scalar_shape),
         area.reshape(nlat * nlon),
         False,
-        False,
         2,
         300.0,
         np.empty((1, stride)),

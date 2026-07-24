@@ -356,7 +356,6 @@ def _one_block_transport_step_spatial(
         workspace.convection_diag_empty,
         *scalar_inputs,
         vdiff_plan.area_m2.reshape(nlat * nlon),
-        False,
         reconstruct_conv_precip_flux,
         internal_steps,
         internal_dt_s,
@@ -415,14 +414,13 @@ if njit is not None:
         )
         (
             diag, cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn, area_m2,
-            diagnostics,
             reconstruct_conv_precip_flux, internal_steps, internal_dt_s,
         ) = convection_inputs
         qc, qb_num, delq_work, current_work = convection_work
         nlev, nlat, nlon, lane = q.shape
         _convect_block_serial(
             q.reshape(nlev, nlat * nlon, lane), diag, cmfmc, dtrain, delp_hpa,
-            delp_dry, bmass, dqrcu, reevapcn, area_m2, diagnostics,
+            delp_dry, bmass, dqrcu, reevapcn, area_m2,
             reconstruct_conv_precip_flux,
             internal_steps, internal_dt_s, qc, qb_num, delq_work, current_work,
         )
@@ -524,7 +522,7 @@ if njit is not None:
         vdiff_worker_work = (tracer_diffused, before_mass, after_mass, qmx, adjust)
         convection_inputs = (
             convection_diag_empty, cmfmc, dtrain, delp_hpa, delp_dry, bmass,
-            dqrcu, reevapcn, area_m2.reshape(area_m2.size), False,
+            dqrcu, reevapcn, area_m2.reshape(area_m2.size),
             reconstruct_conv_precip_flux, internal_steps, internal_dt_s,
         )
         convection_work = (

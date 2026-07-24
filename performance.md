@@ -3358,7 +3358,28 @@ averaged:
 
 The candidate serial control was itself 2.4--2.5% slower. Normalizing block
 time against serial therefore changed the block result to 1.6% faster by best
-time but 0.9% slower by mean time. This is the requested policy-ambiguity stop:
-the temporary change was reverted and no production-only kernel was retained
-pending a project decision about the clear spatial gain versus the possible
-4x5 block cost.
+time but 0.9% slower by mean time. This triggered the requested
+policy-ambiguity stop.
+
+The specialization was subsequently retained by explicit project decision.
+The production and diagnostic compiled variants are generated from one inlined
+operator core, so the convection algorithm is not duplicated in Python source.
+Only thin wrappers differ: the production wrapper supplies a compile-time
+`False`, while the diagnostic wrapper supplies `True`. Existing tests directly
+compare production-light and diagnostic tracer output within one ULP, and the
+GEOS-Chem harness continues to use the diagnostic variant.
+
+A final matched 2x2.5 confirmation of the clean shared-core implementation at
+96 tracers measured:
+
+| Policy | Runtime-branch baseline s | Shared-core specialization s | Change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 96, best | 0.416137 | 0.377626 | 9.3% faster |
+| Spatial, width 96, mean | 0.423964 | 0.387335 | 8.6% faster |
+| Blocks, width 16, best | 0.472963 | 0.471027 | 0.4% faster |
+| Blocks, width 16, mean | 0.485778 | 0.480003 | 1.2% faster |
+
+The serial width-96 control was 0.8% slower in the candidate process, so it
+cannot explain the spatial gain. Candidate full-chain output was exact against
+the benchmark reference; the baseline retained its existing one-ULP serial and
+block difference.
