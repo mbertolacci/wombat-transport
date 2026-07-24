@@ -3409,3 +3409,19 @@ normalization. The small apparent raw gain therefore could not be separated
 from process drift and changed direction by metric. The experiment was not
 retained, and testing stopped at the requested ambiguity gate before `fill` or
 fixed-substep specialization.
+
+The process-drift result was subsequently rerun with 31 measured repetitions
+and five warm-ups in each leg of a full ABBA sequence. Averaging the two
+baseline and two candidate processes gave:
+
+| Policy | Metric | Baseline s | Reconstruction off s | Control-normalized change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.379978 | 0.383146 | 1.0% slower |
+| Spatial, width 96 | mean | 0.390458 | 0.390332 | 1.3% slower |
+| Blocks, width 16 | best | 0.482763 | 0.487020 | 1.3% slower |
+| Blocks, width 16 | mean | 0.490504 | 0.493292 | 1.5% slower |
+
+The normalization uses the matching width-96 and width-16 serial executors.
+The higher-sample result is consistent across both metrics and policies:
+compiling out precipitation reconstruction is a small regression. The
+rejection is therefore definitive rather than an ambiguity.
