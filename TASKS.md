@@ -97,6 +97,8 @@ as only the latter intentionally changes rounding.
 
 ### 9. Allow execution policy to differ by operator
 
+**Skipped after design review (2026-07-24).**
+
 - Benchmark complete-operator combinations of spatial and block TPCORE,
   VDIFF, and convection.
 - Charge the global barrier and loss of immediate operator cache locality.
@@ -104,6 +106,13 @@ as only the latter intentionally changes rounding.
 
 Do this after the discrete kernel experiments so the policy comparison uses the
 best retained kernels.
+
+The project is prioritizing very large tracer ensembles. In that limit,
+independent tracer blocks provide enough work to occupy all workers across the
+whole chain, while operator-specific policies would introduce global barriers
+and lose immediate cross-operator cache locality. Mixed policies were therefore
+judged mainly useful near the medium-tracer crossover and were not benchmarked
+or retained.
 
 ### 10. Fuse driver-side forcing preparation
 

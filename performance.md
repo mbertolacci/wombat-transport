@@ -3676,3 +3676,21 @@ All focused TPCORE and compiled-policy tests passed, and every benchmark mode
 reported exact reference arrays. The precompute was retained because the
 longer sampling demonstrated a policy-independent whole-chain gain after plan
 construction was charged.
+
+## Mixed per-operator execution policy skipped (2026-07-24)
+
+The proposed TPCORE/VDIFF/convection policy matrix was stopped at design review
+before benchmarking. Temporary stage-barrier scaffolding was removed without
+being committed.
+
+For a fixed worker count and very large tracer ensemble, tracer-block execution
+provides abundant independent work for every operator. Keeping each block in
+the complete `TPCORE -> VDIFF -> convection` chain also preserves immediate
+cache locality and avoids global barriers between operators. Allowing spatial
+versus block execution to vary by operator is therefore most likely to help
+only around medium tracer counts, where individual operator crossover points
+may differ.
+
+Large ensembles are the priority, so the possible medium-range dispatch gain
+did not justify additional orchestration complexity. No performance claim was
+made because the mixed-policy matrix was not run.
