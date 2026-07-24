@@ -3499,3 +3499,46 @@ Additional sampling therefore did not reveal a policy-independent gain; it
 confirmed a small raw spatial-versus-block tradeoff whose interpretation
 depends on the control metric. The experiment was reverted at the requested
 ambiguity gate.
+
+## VDIFF post-solve mass-scan fusion screening (2026-07-24)
+
+The final scoped experiment accumulated positive after-solve tracer mass as
+levels became final during backward substitution. Negative scratch values were
+left untouched until the ratio/output pass, preserving every recurrence
+operand. This removed the subsequent full level scan, but reversed the
+`after_mass` reduction order from top-to-bottom to bottom-to-top.
+
+Pinned four-worker 2x2.5 full-chain zero-flux timing used 96 tracers, 31
+measured repetitions and five warm-ups in each ABBA process:
+
+| Policy | Metric | Separate scan s | Fused scan s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.389544 | 0.388306 | 0.3% faster |
+| Spatial, width 96 | mean | 0.397447 | 0.396820 | 0.2% faster |
+| Blocks, width 16 | best | 0.479046 | 0.479458 | neutral |
+| Blocks, width 16 | mean | 0.492596 | 0.489564 | 0.6% faster |
+
+A dense uniform `1e-12 kg m-2 s-1` source used 15 measured repetitions in
+each ABBA process:
+
+| Policy | Metric | Separate scan s | Fused scan s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.455000 | 0.447414 | 1.7% faster |
+| Spatial, width 96 | mean | 0.465103 | 0.458275 | 1.5% faster |
+| Blocks, width 16 | best | 0.514885 | 0.508303 | 1.3% faster |
+| Blocks, width 16 | mean | 0.520290 | 0.518709 | 0.3% faster |
+
+The dense-flux gains survived matching serial-control normalization; zero-flux
+controls moved in opposite directions and left sub-percent policy-dependent
+normalized results.
+
+Correctness checks retained negative counts and passed the existing zero-flux,
+nonzero-flux, negative-clipping, and diagnostics-light VDIFF tests. The changed
+reduction order was not exact, however. A direct nonzero-flux complete-chain
+comparison reached a maximum absolute difference of `1.71e-13` at tracer
+values around 14.3, or maximum relative difference `8.09e-16`, and exceeded
+the existing strict `rtol=3e-16` executor-parity assertion. The candidate was
+not retained automatically: its typical zero-flux benefit is below one
+percent, while the more favorable dense-flux path requires accepting a
+several-ULP transport change. The source was reverted pending an explicit
+project decision.
