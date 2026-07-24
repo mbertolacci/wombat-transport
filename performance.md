@@ -3449,3 +3449,27 @@ control-normalized block time appear 1.0--1.3% faster. That does not translate
 to production wall time: both candidate block processes were slower than both
 baseline processes, and spatial execution remained 1.5--3.4% slower after its
 serial control. The specialization was not retained.
+
+## Fixed convection-substep screening (2026-07-24)
+
+The final production-control experiment specialized the common 600-second
+transport interval to two 300-second convection substeps. The temporary
+candidate compiled both the loop bound and diagnostic area denominator as two;
+a retained implementation would have dispatched only when
+`internal_steps == 2`.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Runtime substeps s | Fixed two substeps s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.379794 | 0.382883 | 0.8% slower |
+| Spatial, width 96 | mean | 0.392731 | 0.396665 | 1.0% slower |
+| Blocks, width 16 | best | 0.475777 | 0.481605 | 1.2% slower |
+| Blocks, width 16 | mean | 0.487007 | 0.486825 | neutral |
+
+The matching serial controls were essentially equal by best time.
+Control-normalized candidate results remained about 0.8% slower spatial and
+1.2% slower for blocks by best time; normalized means were roughly 0.6% slower
+for both. The specialization was not retained.
