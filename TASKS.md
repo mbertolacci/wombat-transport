@@ -116,12 +116,20 @@ or retained.
 
 ### 10. Fuse driver-side forcing preparation
 
+**Rejected after policy comparison (2026-07-24).**
+
 - Fill persistent top-order and flattened VDIFF/convection inputs directly.
 - Remove repeated temporary reversals and contiguous repacking without caching
   forcing values between timesteps.
 - Prioritize low-tracer and multi-process cases, where fixed costs matter most.
 
 Expected result: exact, but broader than a single-kernel experiment.
+
+The first discrete candidate replaced six per-step convection allocations and
+repacking operations with persistent flattened buffers. It improved the
+24-tracer spatial policy but regressed width-8 block execution and was reverted
+at the ambiguity gate. The larger VDIFF top-order-buffer change was not
+attempted.
 
 ### 11. Exploit zero and sparse surface flux
 

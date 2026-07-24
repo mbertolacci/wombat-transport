@@ -3694,3 +3694,27 @@ may differ.
 Large ensembles are the priority, so the possible medium-range dispatch gain
 did not justify additional orchestration complexity. No performance claim was
 made because the mixed-policy matrix was not run.
+
+## Persistent convection-input buffer screening (2026-07-24)
+
+The first driver-side forcing-preparation candidate added six persistent
+flattened arrays to the executor workspace. Each step copied reversed
+convection inputs directly into those buffers, packed pressure thickness once
+instead of twice, and filled `bmass` in place. VDIFF top-order inputs were left
+unchanged so the allocation experiment remained discrete.
+
+A pinned four-core 2x2.5 ABBA frontier comparison used 24 tracers, 31 measured
+steps and five warm-ups per process. Averages of the two process medians were:
+
+| Policy | Per-step temporaries s | Persistent buffers s | Raw change |
+| --- | ---: | ---: | ---: |
+| Spatial, one block | 0.141428 | 0.139976 | 1.0% faster |
+| Blocks, width 8 | 0.204193 | 0.209425 | 2.6% slower |
+
+Two-process spatial and block configurations were about 0.3% slower with the
+candidate, while four-process spatial execution was effectively neutral.
+Compiled executor tests passed exactly at both 2x2.5 and 4x5.
+
+The candidate was reverted at the policy-ambiguity gate. The avoided
+allocations are fixed overhead and did not produce a general end-to-end gain;
+the larger persistent VDIFF top-order working set was therefore not attempted.
