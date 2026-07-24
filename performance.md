@@ -3809,3 +3809,36 @@ measured repetitions. The regression was too large to justify longer timing:
 The avoided full-grid DAO2 store/read did not compensate for repeatedly
 reconstructing cross-term neighbourhoods in the column-oriented vertical
 loop. The prototype was reverted and no spatial implementation was attempted.
+
+## Retained-kernel eight-core transport frontier (2026-07-25)
+
+The portable synthetic 2x2.5 transport frontier was rerun after completing the
+optimization screening. The sweep used physical P-core CPU IDs
+`0,2,4,6,8,10,12,14`, an eight-core budget, all balanced process/thread
+factorizations, block widths 8/16/32, two warm-ups, and five measured
+iterations. All 112 configurations completed.
+
+| Tracers | Winning topology | Median s/step | Tracer-steps/s |
+| ---: | --- | ---: | ---: |
+| 1 | 1 process x 8 spatial threads | 0.039911 | 25.1 |
+| 2 | 1 process x 8 spatial threads | 0.042213 | 47.4 |
+| 4 | 1 process x 8 spatial threads | 0.045495 | 87.9 |
+| 8 | 1 process x 8 spatial threads | 0.052105 | 153.5 |
+| 16 | 1 process x 8 spatial threads | 0.065461 | 244.4 |
+| 24 | 1 process x 8 spatial threads | 0.078351 | 306.3 |
+| 32 | 2 processes x 4 spatial threads | 0.103298 | 309.8 |
+| 48 | 1 process x 8 spatial threads | 0.127187 | 377.4 |
+| 64 | 1 process x 8 spatial threads | 0.166274 | 384.9 |
+| 96 | 2 processes x 4 spatial threads | 0.247567 | 387.8 |
+| 128 | 1 process x 8 threads, block width 16 | 0.321369 | 398.3 |
+| 192 | 1 process x 8 threads, block width 8 | 0.476555 | 402.9 |
+| 256 | 1 process x 8 threads, block width 16 | 0.601034 | 425.9 |
+| 512 | 1 process x 8 threads, block width 16 | 1.155131 | 443.2 |
+
+Spatial execution remains optimal through 96 tracers; block execution crosses
+over at 128. Against the previously published eight-P-core example, spatial
+throughput at 96 tracers increased from about 347 to 388 tracer-steps/s
+(roughly 12%), spatial throughput at 512 increased from about 311 to 344
+(roughly 11%), and the blocked 512-tracer frontier increased from about 423 to
+443 (roughly 5%). The raw report is in the ignored local directory
+`benchmark-results/transport-frontier-8core-retained-20260725/`.
