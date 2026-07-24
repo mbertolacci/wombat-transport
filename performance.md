@@ -3290,3 +3290,30 @@ normalizing each process against unaffected serial and block execution ranged
 from about 0.8% slower to 0.7% faster. The cross-term contract was not retained,
 and DAO2 fixed-pass contracts were not started after this ambiguous production
 result.
+
+## VDIFF negative-count screening (2026-07-24)
+
+The first production-control experiment removed the increment of VDIFF's
+diagnostic negative-value count while preserving the clamp itself. The
+production driver does not consume this count, but the public diagnostic
+behavior was left unchanged outside the temporary benchmark patch.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 11 measured
+repetitions per process, width 16 for block execution, and width 96 for the
+production full-width spatial path. Averages across the two baseline and two
+candidate processes were:
+
+| Policy | Metric | Baseline s | No count s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.410356 | 0.404976 | 1.3% faster |
+| Spatial, width 96 | mean | 0.423578 | 0.420357 | 0.8% faster |
+| Blocks, width 16 | best | 0.478846 | 0.481213 | 0.5% slower |
+| Blocks, width 16 | mean | 0.482820 | 0.495258 | 2.6% slower |
+
+The apparent spatial gain did not survive the controls. The corresponding
+serial width-96 best time improved by 2.4%, leaving spatial about 1.1% slower
+after normalization; mean-time normalization was also worse. For width 16,
+normalizing block execution against serial changed direction between best and
+mean results. Removing one conditional increment therefore had no stable,
+policy-independent benefit. The experiment was not retained, and no separate
+production kernel was added.
