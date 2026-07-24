@@ -3166,3 +3166,34 @@ remaining preparation entirely could save at most about 5.7% in the measured
 least useful at 4x5. The remaining loops also mix memory-bandwidth-heavy passes
 with PJC reductions and recurrences, making selective parallelism a separate
 low-priority experiment rather than part of this change.
+
+## Unified-executor deferred-finalization screening (2026-07-24)
+
+The first follow-up experiment restored the former consuming handoff inside the
+unified executor. TPCORE left its interior result as pressure-weighted mass;
+VDIFF reproduced the finalized pole copies and performed division plus negative
+clamping on its existing first reads. Standalone TPCORE and VDIFF semantics
+were unchanged. Focused VDIFF and compiled-executor tests passed (15 tests), and
+the full-chain comparison retained its existing exact spatial result and
+one-ULP block difference from the fused reference.
+
+A pinned four-worker 2x2.5 screening used warmed full
+TPCORE-to-VDIFF-to-convection applications, seven measured repetitions, 24 and
+96 tracers, and widths 8 and 16. Best apply times were:
+
+| Tracers | Width | Policy | Finalized baseline s | Deferred s | Change |
+| ---: | ---: | --- | ---: | ---: | ---: |
+| 24 | 8 | spatial | 0.150464 | 0.150664 | 0.1% slower |
+| 24 | 8 | blocks | 0.156684 | 0.159858 | 2.0% slower |
+| 24 | 16 | spatial | 0.174870 | 0.159832 | 8.6% faster |
+| 24 | 16 | blocks | 0.170298 | 0.173489 | 1.9% slower |
+| 96 | 8 | spatial | 0.633512 | 0.645287 | 1.9% slower |
+| 96 | 8 | blocks | 0.578949 | 0.578086 | 0.1% faster |
+| 96 | 16 | spatial | 0.525335 | 0.507072 | 3.5% faster |
+| 96 | 16 | blocks | 0.473962 | 0.478541 | 1.0% slower |
+
+This is a policy- and width-dependent result rather than an unambiguous
+production improvement. The experiment was therefore not retained after the
+initial screening, and subsequent task-list experiments were paused pending a
+decision on whether to fund a stricter alternated benchmark or leave unified
+TPCORE finalization in place.
