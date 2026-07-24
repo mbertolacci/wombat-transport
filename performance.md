@@ -3718,3 +3718,68 @@ Compiled executor tests passed exactly at both 2x2.5 and 4x5.
 The candidate was reverted at the policy-ambiguity gate. The avoided
 allocations are fixed overhead and did not produce a general end-to-end gain;
 the larger persistent VDIFF top-order working set was therefore not attempted.
+
+## Sparse surface-flux column dispatch screening (2026-07-24)
+
+The residual 24-tracer two-month TransCom workflow provides both realistic
+sparse and exactly zero source regimes. At 2014-09-15 12:10, 10,485 of
+314,496 horizontal tracer elements were nonzero (3.33%), spanning 22 tracers
+and 9,667 of 13,104 geographic columns (73.77%). With width-8 tracer blocks,
+10,160 of 39,312 block-columns were active (25.84%); with all 24 tracers in
+one spatial block, 9,667 of 13,104 block-columns were active (73.77%).
+The source was exactly zero after the bounded September pulses ended.
+
+A temporary exact candidate computed a boolean activity map while packing
+each tracer block. VDIFF retained its existing zero-source arithmetic for
+inactive block-columns and performed the existing nonzero-source preparation
+unchanged for active block-columns. Every benchmark mode was bitwise equal to
+its reference result.
+
+Pinned four-core 2x2.5 comparisons used five warm-ups. The initial
+baseline/candidate pair used 31 measured repetitions; a second pair in the
+opposite order used 61:
+
+| Policy | Pair | Best apply | Mean apply | Best total |
+| --- | --- | ---: | ---: | ---: |
+| Blocks, width 8 | 31 samples | 1.5% faster | 1.8% faster | 1.4% faster |
+| Blocks, width 8 | 61 samples | 0.7% faster | 1.9% faster | 0.5% faster |
+| Spatial, width 24 | 31 samples | 0.1% faster | 1.2% slower | 0.2% slower |
+| Spatial, width 24 | 61 samples | 0.1% faster | 1.2% slower | 0.2% faster |
+
+The block policy benefits from its much sparser block-column activity map.
+The one-block spatial policy has many fewer inactive columns, and its best
+times were neutral while its process means were repeatably slower. The
+candidate was rejected at the policy-ambiguity gate. Finer lane-level
+activity was not attempted because branching inside the tracer loop would
+compromise its regular vectorizable structure.
+
+## Whole-step zero surface-flux dispatch screening (2026-07-24)
+
+A second temporary candidate left VDIFF untouched. When the complete source
+array was zero, the executor reused a tiny persistent zero-flux sentinel
+instead of allocating, zero-filling, packing, and rescanning the full
+block-native flux array. A caller with no emissions could pass `None`, also
+avoiding creation and scanning of the canonical zero array. Nonzero sources
+continued through the original packing path after a canonical-array scan.
+
+Three candidate and two baseline processes were pinned to four cores. Each
+used five warm-ups and 61 measured repetitions at 24 tracers and global
+2x2.5. All benchmark results were bitwise exact. Averages across processes
+were:
+
+| Policy | Metric | Raw change |
+| --- | --- | ---: |
+| Spatial, width 24 | best apply | 0.7% faster |
+| Spatial, width 24 | mean apply | 2.3% faster |
+| Spatial, width 24 | best total | 0.5% faster |
+| Blocks, width 8 | best apply | 1.2% slower |
+| Blocks, width 8 | mean apply | 2.2% slower |
+| Blocks, width 8 | best total | 1.1% slower |
+
+The executor's transport arithmetic was identical between candidates, but
+the policy split persisted across the longer process series. A separate
+zero-flux VDIFF specialization was not attempted: the existing runtime flag
+already guards the expensive source preparation, and its remaining checks
+are loop-invariant and likely hoisted or unswitched by LLVM. The whole-step
+candidate was rejected at the policy-ambiguity gate; dense-source control
+timing was not run.
