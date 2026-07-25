@@ -29,6 +29,7 @@ from wombat_transport.obsoperator.state import (
     FIELD_PREFIX,
     MAX_FIELD_NAME_LENGTH,
     MAX_ID_LENGTH,
+    ObsPlan,
     compact_obs_plan,
     completed_batch,
     merge_obs_plans,
@@ -362,6 +363,43 @@ def test_plan_merge_is_stable_and_compaction_rewrites_offsets(tmp_path: Path):
 
     with pytest.raises(ValueError, match="duplicate active"):
         merge_obs_plans(compacted, compacted)
+
+
+def test_manager_does_not_revalidate_trusted_step_compactions(
+    tmp_path: Path, monkeypatch
+):
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id=f"entry-{index}",
+                    time={"type": "point", "unit": "time_index", "time": index},
+                )
+                for index in range(2)
+            ]
+        },
+    )
+    original_validate = ObsPlan.validate
+    validation_calls = 0
+
+    def counted_validate(plan):
+        nonlocal validation_calls
+        validation_calls += 1
+        original_validate(plan)
+
+    monkeypatch.setattr(ObsPlan, "validate", counted_validate)
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    boundary_validation_calls = validation_calls
+    manager.sample(
+        step_start=START + timedelta(minutes=10),
+        time_index=1,
+        snapshot=_snapshot(),
+    )
+
+    assert boundary_validation_calls == 2
+    assert validation_calls == boundary_validation_calls
 
 
 def test_time_date_ranges_are_half_open_model_periods(tmp_path: Path):

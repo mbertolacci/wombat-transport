@@ -16,6 +16,7 @@ from wombat_transport.obsoperator.input import _load_obs_plan
 from wombat_transport.obsoperator.restart import _read_obsoperator_restart, _write_obsoperator_restart
 from wombat_transport.obsoperator.sampling import select_sampling_kernel
 from wombat_transport.obsoperator.state import (
+    _compact_validated_obs_plan,
     compact_obs_plan,
     completed_batch,
     completed_prefix,
@@ -171,7 +172,7 @@ class ObsOperatorManager:
             if self._writer is None:
                 self._writer = _ObsOperatorNetCDFWriter(self._current_output_path)
             self._writer.write_completed(batch)
-            self._plan = compact_obs_plan(self._plan, boundary_us)
+            self._plan = _compact_validated_obs_plan(self._plan, boundary_us)
         self._position_us = boundary_us
 
     def close(self, *, boundary_time: datetime) -> None:

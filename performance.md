@@ -4063,3 +4063,59 @@ Raw high-count results are under the ignored directories
 `benchmark-results/profiling-baseline-main-20260725/multistep_24h_128_full_*`
 and
 `benchmark-results/profiling-baseline-main-20260725/multistep_24h_512_full_*`.
+
+## ObsOperator trusted-compaction fast path (2026-07-25)
+
+The first high-tracer workflow candidate was retained. The manager now uses a
+private trusted compaction path after writing a completed observation batch.
+This path copies a subset of an already validated plan without immediately
+rescanning every copied field and operator. Full validation remains in the
+untrusted and persistence paths:
+
+- YAML input construction and restart reconstruction validate their plans;
+- daily input merging validates the merged plan;
+- the ordinary `compact_obs_plan` path still validates rebuilt plans; and
+- restart writing validates the final plan before serialization.
+
+A focused manager test counts validation calls and confirms that input loading
+and merging validate while consecutive internal timestep compactions do not.
+The complete ObsOperator test module passed with 71 tests and 2 skips.
+
+Matched 24-hour benchmarks used the same residual-emissions configuration as
+the high-tracer profile: 144 steps, normal HISTORY and ObsOperator output,
+eight pinned P-cores, block execution, and block width 16. The pre-change
+control was commit `715b9b4`. At 128 tracers, the first run from each source
+tree warmed its separate source-location cache and was excluded from the warm
+means. The two subsequent samples were:
+
+| 128 tracers | Total s | ObsOperator s | Transport s |
+| --- | ---: | ---: | ---: |
+| Baseline sample 1 | 70.142 | 11.584 | 47.843 |
+| Baseline sample 2 | 69.953 | 11.595 | 47.678 |
+| Trusted compaction sample 1 | 59.813 | 1.596 | 47.523 |
+| Trusted compaction sample 2 | 59.863 | 1.595 | 47.588 |
+| Baseline warm mean | 70.048 | 11.590 | 47.761 |
+| Trusted compaction warm mean | 59.838 | 1.596 | 47.556 |
+
+This is a 14.6% whole-run improvement and an 86.2% reduction in timed
+ObsOperator work at 128 tracers. The repeated transport values show no
+compensating transport regression.
+
+At 512 tracers, a fresh baseline reproduced the previous main-branch profile.
+Two optimized samples checked the initially noisier transport timer:
+
+| 512 tracers | Total s | ObsOperator s | Transport s | HISTORY record s |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 260.310 | 42.182 | 175.377 | 19.359 |
+| Trusted compaction sample 1 | 224.329 | 4.067 | 177.342 | 19.368 |
+| Trusted compaction sample 2 | 222.070 | 4.053 | 175.162 | 19.343 |
+| Trusted compaction mean | 223.200 | 4.060 | 176.252 | 19.356 |
+
+The 512-tracer mean is 14.3% faster overall and reduces ObsOperator time by
+90.4%. The second transport repeat returned to the baseline value, confirming
+that the first sample's 1.1% movement was process noise; HISTORY was unchanged.
+
+The baseline and optimized 512-tracer output trees were byte-for-byte
+identical, including every ObsOperator result, the daily species concentration
+file, and the ObsOperator restart. Raw generated runs remain ignored under
+`benchmark-results/obs-compaction-validation-20260725/`.

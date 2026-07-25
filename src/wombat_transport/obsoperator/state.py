@@ -309,13 +309,28 @@ def merge_obs_plans(left: ObsPlan, right: ObsPlan) -> ObsPlan:
 
 
 def compact_obs_plan(plan: ObsPlan, boundary_us: int) -> ObsPlan:
+    return _compact_obs_plan(plan, boundary_us, validate_result=True)
+
+
+def _compact_validated_obs_plan(plan: ObsPlan, boundary_us: int) -> ObsPlan:
+    """Compact a plan whose invariants were validated at an earlier boundary."""
+    return _compact_obs_plan(plan, boundary_us, validate_result=False)
+
+
+def _compact_obs_plan(
+    plan: ObsPlan,
+    boundary_us: int,
+    *,
+    validate_result: bool,
+) -> ObsPlan:
     keep = np.flatnonzero(plan.entry_end_us > boundary_us).astype(np.int64)
     if keep.size == plan.entry_count and not np.any(plan.time_operator_bounds_us[:, 0] < boundary_us):
         plan.first_unexpired = 0
         return plan
     source = np.zeros(keep.size, dtype=np.int8)
     compacted = _copy_ordered_plans(plan, empty_obs_plan(), source, keep, boundary_us=boundary_us)
-    compacted.validate()
+    if validate_result:
+        compacted.validate()
     return compacted
 
 
