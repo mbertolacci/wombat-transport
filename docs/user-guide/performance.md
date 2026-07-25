@@ -254,9 +254,9 @@ measured iterations per configuration. It swept every balanced process/thread
 factorization and block widths 8, 16, and 32. It is an example of the decision
 process, not a portable recommendation for other machines.
 
-The spatial frontier reaches about 347 tracer-steps/s at 96 tracers and then
-falls to 311 at 512. The blocked frontier overtakes it around 128 tracers and
-continues to 423 tracer-steps/s at 512. This is consistent with blocked
+The spatial frontier reaches about 388 tracer-steps/s at 96 tracers and then
+falls to 344 at 512. The blocked frontier overtakes it around 128 tracers and
+continues to 443 tracer-steps/s at 512. This is consistent with blocked
 execution improving locality while a larger ensemble amortizes fixed setup
 work. It does not, by itself, prove perfect scaling with core count; that claim
 would require comparing speedup as cores are added.
@@ -285,10 +285,10 @@ count. A one-process winner can be used directly without ensemble sharding.
 If the tracer load per machine is flexible, use both panels to choose a knee.
 Moving right generally improves per-machine throughput because fixed work is
 amortized over more tracers, but it also increases the wall time of every
-step. In the example, 64 tracers deliver 328 tracer-steps/s at 0.195
-seconds/step: about 78% of the measured 512-tracer throughput with only 16% of
-its step latency. At 128 tracers the corresponding figures are 360
-tracer-steps/s and 0.355 seconds/step. Either may be a better operating point
+step. In the example, 64 tracers deliver 385 tracer-steps/s at 0.166
+seconds/step: about 87% of the measured 512-tracer throughput with only 14% of
+its step latency. At 128 tracers the corresponding figures are 398
+tracer-steps/s and 0.321 seconds/step. Either may be a better operating point
 than the maximum-throughput 512-tracer load when turnaround time matters.
 
 For a fixed total tracer ensemble distributed across several identical

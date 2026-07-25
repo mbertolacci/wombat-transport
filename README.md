@@ -124,9 +124,9 @@ panels show the resulting latency/throughput tradeoff.
 
 ![Example transport frontier on eight i7-14700KF P-cores](docs/assets/transport-frontier-i7-14700kf.svg)
 
-In this example, 64 tracers already provide 328 tracer-steps/s at 0.195
+In this example, 64 tracers already provide 385 tracer-steps/s at 0.166
 seconds per step, while loading 512 tracers raises per-machine throughput to
-423 tracer-steps/s but takes 1.211 seconds per step. A user can therefore
+443 tracer-steps/s but takes 1.155 seconds per step. A user can therefore
 choose a knee for lower latency, fill one machine for aggregate throughput, or
 use the curve to choose how many tracers to assign to each machine. See
 [calibrating a new machine](https://mbertolacci.github.io/wombat-transport/user-guide/performance/#calibrating-a-new-machine)
