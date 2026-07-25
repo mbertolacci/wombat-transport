@@ -198,6 +198,7 @@ def apply_transport(
         tpcore_plan.setup.xmass_hpa,
         tpcore_plan.setup.ymass_hpa,
         tpcore_plan.setup.vertical_mass_flux_hpa,
+        tpcore_plan.normalized_vertical_courant,
         tpcore_plan.setup.cx,
         tpcore_plan.setup.cy,
         tpcore_plan.setup.geofac,
@@ -307,6 +308,7 @@ def _one_block_transport_step_spatial(
         setup.xmass_hpa,
         setup.ymass_hpa,
         setup.vertical_mass_flux_hpa,
+        tpcore_plan.normalized_vertical_courant,
         setup.cx,
         setup.cy,
         setup.geofac,
@@ -322,7 +324,7 @@ def _one_block_transport_step_spatial(
         *workspace.x,
         *workspace.y_spatial,
         *workspace.z,
-        True,
+        False,
     )
     negative_count = _apply_vdiff_block_spatial(
         dq1,
@@ -342,6 +344,8 @@ def _one_block_transport_step_spatial(
         vdiff_plan.start_level,
         surface_flux[block],
         has_flux,
+        setup.delp2_hpa,
+        True,
         workspace.tracer_diffused,
         workspace.before_mass,
         workspace.after_mass,
@@ -354,7 +358,6 @@ def _one_block_transport_step_spatial(
         workspace.convection_diag_empty,
         *scalar_inputs,
         vdiff_plan.area_m2.reshape(nlat * nlon),
-        False,
         reconstruct_conv_precip_flux,
         internal_steps,
         internal_dt_s,
@@ -383,7 +386,8 @@ if njit is not None:
         convection_work,
     ):
         (
-            delp1, delp2, pu, xmass, ymass, wz, cx, cy, geofac, geofac_pc,
+            delp1, delp2, pu, xmass, ymass, wz, normalized_vertical_courant,
+            cx, cy, geofac, geofac_pc,
             ua, va, jn, js, area_1d, fill,
         ) = tpcore_plan
         qqu, qqv, south_flux, north_flux, south_dao2, north_dao2 = tpcore_block_work
@@ -393,11 +397,13 @@ if njit is not None:
             dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z,
         ) = tpcore_worker_work
         _advect_one_block_serial(
-            q, dq1, delp1, delp2, pu, xmass, ymass, wz, cx, cy,
+            q, dq1, delp1, delp2, pu, xmass, ymass, wz,
+            normalized_vertical_courant, cx, cy,
             geofac, geofac_pc, ua, va, jn, js, area_1d, fill, qqu, qqv,
             dcx, fx, al_x, ar_x, a6_x, dc_x, qa_x,
             dcy, al_y, ar_y, a6_y, south_flux, north_flux, south_dao2, north_dao2,
             dpi_z, dc_z, al_z, ar_z, a6_z, dca_z, prev_flux_z,
+            False,
         )
         (
             cch, zeh, termh, dry_mass, area_m2, cgs, kvh, potbar,
@@ -407,18 +413,18 @@ if njit is not None:
         negative_count = _apply_vdiff_block_serial(
             dq1, q, cch, zeh, termh, dry_mass, area_m2, cgs, kvh, potbar,
             rpdel, rrho, tmp1, dt_s, start_level, surface_flux, has_flux,
+            delp2, True,
             tracer_diffused, before_mass, after_mass, qmx, adjust,
         )
         (
             diag, cmfmc, dtrain, delp_hpa, delp_dry, bmass, dqrcu, reevapcn, area_m2,
-            diagnostics,
             reconstruct_conv_precip_flux, internal_steps, internal_dt_s,
         ) = convection_inputs
         qc, qb_num, delq_work, current_work = convection_work
         nlev, nlat, nlon, lane = q.shape
         _convect_block_serial(
             q.reshape(nlev, nlat * nlon, lane), diag, cmfmc, dtrain, delp_hpa,
-            delp_dry, bmass, dqrcu, reevapcn, area_m2, diagnostics,
+            delp_dry, bmass, dqrcu, reevapcn, area_m2,
             reconstruct_conv_precip_flux,
             internal_steps, internal_dt_s, qc, qb_num, delq_work, current_work,
         )
@@ -433,6 +439,7 @@ if njit is not None:
         xmass,
         ymass,
         wz,
+        normalized_vertical_courant,
         cx,
         cy,
         geofac,
@@ -505,7 +512,8 @@ if njit is not None:
         negative_counts,
     ):
         tpcore_plan = (
-            delp1, delp2, pu, xmass, ymass, wz, cx, cy, geofac, geofac_pc,
+            delp1, delp2, pu, xmass, ymass, wz, normalized_vertical_courant,
+            cx, cy, geofac, geofac_pc,
             ua, va, jn, js, area_1d, fill,
         )
         tpcore_worker_work = (
@@ -520,7 +528,7 @@ if njit is not None:
         vdiff_worker_work = (tracer_diffused, before_mass, after_mass, qmx, adjust)
         convection_inputs = (
             convection_diag_empty, cmfmc, dtrain, delp_hpa, delp_dry, bmass,
-            dqrcu, reevapcn, area_m2.reshape(area_m2.size), False,
+            dqrcu, reevapcn, area_m2.reshape(area_m2.size),
             reconstruct_conv_precip_flux, internal_steps, internal_dt_s,
         )
         convection_work = (

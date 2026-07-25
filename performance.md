@@ -3166,3 +3166,679 @@ remaining preparation entirely could save at most about 5.7% in the measured
 least useful at 4x5. The remaining loops also mix memory-bandwidth-heavy passes
 with PJC reductions and recurrences, making selective parallelism a separate
 low-priority experiment rather than part of this change.
+
+## Unified-executor deferred-finalization screening (2026-07-24)
+
+The first follow-up experiment restored the former consuming handoff inside the
+unified executor. TPCORE left its interior result as pressure-weighted mass;
+VDIFF reproduced the finalized pole copies and performed division plus negative
+clamping on its existing first reads. Standalone TPCORE and VDIFF semantics
+were unchanged. Focused VDIFF and compiled-executor tests passed (15 tests), and
+the full-chain comparison retained its existing exact spatial result and
+one-ULP block difference from the fused reference.
+
+The initial screening incorrectly compared spatial execution at widths 8 and
+16. Spatial visits blocks serially, so those layouts ran two to twelve spatial
+blocks rather than the intended single full-width block. The screening was
+discarded and repeated with full-width spatial storage while block execution
+was measured separately at widths 8 and 16. Baseline and candidate ran from
+separate source trees with separate Numba caches, pinned to the same four
+cores, in both orders.
+
+At 2x2.5, the corrected full-width spatial result was consistently favorable:
+
+| Tracers | Spatial width | Pair | Finalized baseline s | Deferred s | Change |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 24 | 1 | 0.124585 | 0.115808 | 7.0% faster |
+| 24 | 24 | 2, reverse order | 0.118823 | 0.116689 | 1.8% faster |
+| 96 | 96 | 1 | 0.434312 | 0.404592 | 6.8% faster |
+| 96 | 96 | 2, reverse order | 0.414551 | 0.403546 | 2.7% faster |
+
+The 2x2.5 block path was neutral-to-faster rather than consistently slower.
+Width 16 improved by 0.8--4.4% at 24 tracers and 1.0--4.1% at 96 tracers.
+Width 8 flipped sign within about 1.4% at 24 tracers but improved by about 4.6%
+in both 96-tracer pairs. A dense uniform nonzero source at 96 tracers improved
+full-width spatial best time by 3.2% and width-16 block best time by 0.4%;
+neither policy regressed by mean time.
+
+The supported 4x5 grid did not reproduce the spatial win. Two ordered pairs at
+24 tracers used width 24 for spatial and width 8 for blocks:
+
+| Pair | Policy | Finalized baseline s | Deferred s | Change |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | spatial, width 24 | 0.029792 | 0.031352 | 5.2% slower |
+| 2, reverse order | spatial, width 24 | 0.029293 | 0.031736 | 8.3% slower |
+| 1 | blocks, width 8 | 0.039071 | 0.037313 | 4.5% faster |
+| 2, reverse order | blocks, width 8 | 0.038656 | 0.037987 | 1.7% faster |
+
+Mean spatial time also regressed in both 4x5 pairs. The result is therefore a
+real grid-and-policy tradeoff rather than a universal improvement. It was
+retained by explicit project decision: 2x2.5 is the more important and more
+expensive production grid, its full-width spatial and useful block cases
+improved, and 4x5 block execution also improved. The accepted cost is the
+measured 4x5 full-width spatial regression; no grid-specific dispatch was added.
+
+## Worker-local TPCORE cross-term scratch screening (2026-07-24)
+
+The next experiment replaced block-indexed `qqu`, `qqv`, and four Y-boundary
+scratch arrays with worker-indexed storage. Outer block execution selected the
+scratch with Numba's worker ID; serial and spatial policies safely reused slot
+zero because their blocks are visited sequentially. Focused executor and
+frontier tests were bitwise unchanged.
+
+Pinned four-worker 2x2.5 full-chain results were:
+
+| Tracers | Width | Per-block baseline s | Worker-local s | Change |
+| ---: | ---: | ---: | ---: | ---: |
+| 96 | 8 | 0.579606 | 0.576346 | 0.6% faster |
+| 96 | 16 | 0.478117 | 0.479841 | 0.4% slower |
+| 192 | 8 | 1.136652 | 1.157117 | 1.8% slower |
+| 192 | 16 | 0.913479 | 0.945765 | 3.5% slower |
+
+Mean times showed the same high-tracer regression. The deterministic scratch
+reduction ranged from about 6.5 MiB for 96 tracers at width 16 to 32.7 MiB for
+192 tracers at width 8. This did not reduce state storage or the redundant
+standalone workspaces held by each block, so the memory saving was modest
+relative to the complete executor.
+
+The experiment was not retained: its main high-block-count cases traded a
+small working-set reduction for a repeatable wall-time loss. Lazy standalone
+workspace allocation was not attempted after the primary worker-local premise
+failed.
+
+## Spatial pole-pass `noalias` screening (2026-07-24)
+
+The first fixed-pass compiler experiment applied the executor-valid no-alias
+contract only to spatial TPCORE pole averaging. Checksums were unchanged.
+Isolated four-worker TPCORE timing was consistently favorable:
+
+| Grid | Tracers | Baseline s | Pole `noalias` s | Change |
+| --- | ---: | ---: | ---: | ---: |
+| 2x2.5 | 24 | 0.133268 | 0.125652 | 5.7% faster |
+| 2x2.5 | 96 | 0.415985 | 0.395384 | 5.0% faster |
+| 4x5 | 24 | 0.034328 | 0.033199 | 3.3% faster |
+| 4x5 | 96 | 0.102319 | 0.098464 | 3.8% faster |
+
+The initial full-chain pairs were dominated by process-order noise, so a
+higher-sample ABBA follow-up used 31 measured repetitions per process at 24
+tracers and 15 at 96 tracers. Full-width spatial results averaged across the
+two baseline and two candidate processes were:
+
+| Tracers | Baseline best/mean s | Pole `noalias` best/mean s | Best / mean change |
+| ---: | ---: | ---: | ---: |
+| 24 | 0.118532 / 0.122469 | 0.115721 / 0.121626 | 2.4% / 0.7% faster |
+| 96 | 0.410703 / 0.420016 | 0.421364 / 0.439270 | 2.6% / 4.6% slower |
+
+Ratios against the unaffected serial and block executors retained the
+96-tracer regression. Additional samples therefore resolved the original
+order ambiguity into a tracer-count tradeoff rather than a general production
+win. The pole-only contract was not retained, and the remaining fixed passes
+were tested independently rather than combined with it.
+
+Mass initialization was the next isolated contract. Standalone TPCORE best
+times improved by 4.5% and 5.5% at 24 and 96 tracers on 2x2.5, and by 1.0% and
+4.3% on 4x5. The higher-sample 2x2.5 full-chain gate again rejected the
+isolated result: at 96 tracers, two baseline and two candidate processes
+averaged 0.408786 and 0.415190 seconds best respectively, a 1.6% regression.
+Mean time regressed by 3.5%, while the unaffected serial executor was flat.
+Mass-initialization `noalias` was therefore not retained.
+
+Cross-term construction was tested next. Isolated TPCORE again improved by
+roughly 4--6%, but the 96-tracer full-chain ABBA result fell below a stable
+decision threshold. Raw spatial averages improved by 0.6% best and 2.0% mean;
+normalizing each process against unaffected serial and block execution ranged
+from about 0.8% slower to 0.7% faster. The cross-term contract was not retained,
+and DAO2 fixed-pass contracts were not started after this ambiguous production
+result.
+
+## VDIFF negative-count screening (2026-07-24)
+
+The first production-control experiment removed the increment of VDIFF's
+diagnostic negative-value count while preserving the clamp itself. The
+production driver does not consume this count, but the public diagnostic
+behavior was left unchanged outside the temporary benchmark patch.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 11 measured
+repetitions per process, width 16 for block execution, and width 96 for the
+production full-width spatial path. Averages across the two baseline and two
+candidate processes were:
+
+| Policy | Metric | Baseline s | No count s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.410356 | 0.404976 | 1.3% faster |
+| Spatial, width 96 | mean | 0.423578 | 0.420357 | 0.8% faster |
+| Blocks, width 16 | best | 0.478846 | 0.481213 | 0.5% slower |
+| Blocks, width 16 | mean | 0.482820 | 0.495258 | 2.6% slower |
+
+The apparent spatial gain did not survive the controls. The corresponding
+serial width-96 best time improved by 2.4%, leaving spatial about 1.1% slower
+after normalization; mean-time normalization was also worse. For width 16,
+normalizing block execution against serial changed direction between best and
+mean results. Removing one conditional increment therefore had no stable,
+policy-independent benefit. The experiment was not retained, and no separate
+production kernel was added.
+
+## Production diagnostics-off specialization screening (2026-07-24)
+
+Generated LLVM confirmed that convection's `diagnostics`,
+`reconstruct_conv_precip_flux`, and `internal_steps` arguments remain runtime
+values in the compiled leaf. The diagnostic condition is tested in two
+innermost tracer loops even though the unified production executor always
+passes `False`.
+
+For screening, those two conditions were compiled out while the rest of the
+kernel was left unchanged. This temporarily weakened the public diagnostic
+path only in the candidate tree; a retained implementation would require
+separate production and diagnostic kernels. Numba's `literally()` mechanism
+was also screened first, but added roughly 40--50 ms of Python-to-spatial-kernel
+dispatch per block and badly distorted the result. The timings below use direct
+compile-time removal, not literal dispatch.
+
+Pinned four-worker 2x2.5 full-chain results were strongly favorable. At 96
+tracers, averages across three baseline and two candidate processes were:
+
+| Policy | Baseline best/mean s | Diagnostics off best/mean s | Change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 96 | 0.407872 / 0.417520 | 0.378472 / 0.388181 | 7.2% / 7.0% faster |
+| Blocks, width 16 | 0.484174 / 0.492281 | 0.478945 / 0.484098 | 1.1% / 1.7% faster |
+
+The serial width-96 control improved by about 2.0%, so the spatial result
+remained about 5.3% faster after control normalization. At 24 tracers, a
+separate ordered pair improved full-width spatial best/mean time by 7.9%/9.9%;
+width-8 blocks were neutral, changing by 0.1% faster best and 0.6% slower mean.
+Candidate output was exact against the benchmark reference in these runs.
+
+The 4x5 block result was not conclusive. Two ordered pairs at 24 tracers
+averaged:
+
+| Policy | Baseline best/mean s | Diagnostics off best/mean s | Raw change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 24 | 0.031676 / 0.033096 | 0.027473 / 0.028371 | 13.3% / 14.3% faster |
+| Blocks, width 8 | 0.037166 / 0.042395 | 0.037441 / 0.043862 | 0.7% / 3.5% slower |
+
+The candidate serial control was itself 2.4--2.5% slower. Normalizing block
+time against serial therefore changed the block result to 1.6% faster by best
+time but 0.9% slower by mean time. This triggered the requested
+policy-ambiguity stop.
+
+The specialization was subsequently retained by explicit project decision.
+The production and diagnostic compiled variants are generated from one inlined
+operator core, so the convection algorithm is not duplicated in Python source.
+Only thin wrappers differ: the production wrapper supplies a compile-time
+`False`, while the diagnostic wrapper supplies `True`. Existing tests directly
+compare production-light and diagnostic tracer output within one ULP, and the
+GEOS-Chem harness continues to use the diagnostic variant.
+
+A final matched 2x2.5 confirmation of the clean shared-core implementation at
+96 tracers measured:
+
+| Policy | Runtime-branch baseline s | Shared-core specialization s | Change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 96, best | 0.416137 | 0.377626 | 9.3% faster |
+| Spatial, width 96, mean | 0.423964 | 0.387335 | 8.6% faster |
+| Blocks, width 16, best | 0.472963 | 0.471027 | 0.4% faster |
+| Blocks, width 16, mean | 0.485778 | 0.480003 | 1.2% faster |
+
+The serial width-96 control was 0.8% slower in the candidate process, so it
+cannot explain the spatial gain. Candidate full-chain output was exact against
+the benchmark reference; the baseline retained its existing one-ULP serial and
+block difference.
+
+## Production precipitation-reconstruction screening (2026-07-24)
+
+The next production-control experiment compiled out convection precipitation
+reconstruction, which the normal transport driver always disables. The
+temporary screening edit left the direct-reconstruction diagnostic API aside;
+a retained implementation would have used another shared-core wrapper rather
+than duplicating the operator.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 11 measured
+repetitions per process, width 16 for blocks, and width 96 for full-width
+spatial execution. Averages across the two baseline and two candidate
+processes were:
+
+| Policy | Baseline best/mean s | Reconstruction off best/mean s | Raw change |
+| --- | ---: | ---: | ---: |
+| Spatial, width 96 | 0.386954 / 0.409487 | 0.382755 / 0.388673 | 1.1% / 5.1% faster |
+| Blocks, width 16 | 0.487517 / 0.490972 | 0.477714 / 0.484394 | 2.0% / 1.3% faster |
+
+The candidate serial width-96 control was itself 2.6% faster by best time.
+Normalizing against it made spatial about 1.5% slower by best time but 2.6%
+faster by mean time; width-16 blocks were about 0.6--1.3% slower after
+normalization. The small apparent raw gain therefore could not be separated
+from process drift and changed direction by metric. The experiment was not
+retained, and testing stopped at the requested ambiguity gate before `fill` or
+fixed-substep specialization.
+
+The process-drift result was subsequently rerun with 31 measured repetitions
+and five warm-ups in each leg of a full ABBA sequence. Averaging the two
+baseline and two candidate processes gave:
+
+| Policy | Metric | Baseline s | Reconstruction off s | Control-normalized change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.379978 | 0.383146 | 1.0% slower |
+| Spatial, width 96 | mean | 0.390458 | 0.390332 | 1.3% slower |
+| Blocks, width 16 | best | 0.482763 | 0.487020 | 1.3% slower |
+| Blocks, width 16 | mean | 0.490504 | 0.493292 | 1.5% slower |
+
+The normalization uses the matching width-96 and width-16 serial executors.
+The higher-sample result is consistent across both metrics and policies:
+compiling out precipitation reconstruction is a small regression. The
+rejection is therefore definitive rather than an ambiguity.
+
+## Production `fill=True` specialization screening (2026-07-24)
+
+TPCORE's production driver always enables negative-value filling. A temporary
+candidate compiled that condition as true in both the full-width spatial leaf
+and the serial leaf used for tracer blocks, without changing the fill
+algorithm.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Runtime branch s | Fixed `fill=True` s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.377923 | 0.384275 | 1.7% slower |
+| Spatial, width 96 | mean | 0.391165 | 0.395944 | 1.2% slower |
+| Blocks, width 16 | best | 0.476447 | 0.483643 | 1.5% slower |
+| Blocks, width 16 | mean | 0.484512 | 0.490581 | 1.3% slower |
+
+The candidate serial width-16 control regressed by about 2.5%, which makes
+control-normalized block time appear 1.0--1.3% faster. That does not translate
+to production wall time: both candidate block processes were slower than both
+baseline processes, and spatial execution remained 1.5--3.4% slower after its
+serial control. The specialization was not retained.
+
+## Fixed convection-substep screening (2026-07-24)
+
+The final production-control experiment specialized the common 600-second
+transport interval to two 300-second convection substeps. The temporary
+candidate compiled both the loop bound and diagnostic area denominator as two;
+a retained implementation would have dispatched only when
+`internal_steps == 2`.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Runtime substeps s | Fixed two substeps s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.379794 | 0.382883 | 0.8% slower |
+| Spatial, width 96 | mean | 0.392731 | 0.396665 | 1.0% slower |
+| Blocks, width 16 | best | 0.475777 | 0.481605 | 1.2% slower |
+| Blocks, width 16 | mean | 0.487007 | 0.486825 | neutral |
+
+The matching serial controls were essentially equal by best time.
+Control-normalized candidate results remained about 0.8% slower spatial and
+1.2% slower for blocks by best time; normalized means were roughly 0.6% slower
+for both. The specialization was not retained.
+
+## VDIFF fixed-47-level specialization screening (2026-07-24)
+
+The vertical-level specialization was first scoped narrowly to VDIFF's
+production block kernel. A temporary candidate replaced its runtime level
+extent with the supported constant 47, exposing fixed bounds in source for the
+forward solve, backward substitution, and mass loops. TPCORE and convection
+were unchanged.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Runtime levels s | Fixed 47 levels s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.381276 | 0.379503 | 0.5% faster |
+| Spatial, width 96 | mean | 0.392156 | 0.388694 | 0.9% faster |
+| Blocks, width 16 | best | 0.480543 | 0.480890 | neutral |
+| Blocks, width 16 | mean | 0.485440 | 0.489921 | 0.9% slower |
+
+The serial controls moved in opposite directions: after normalization, block
+execution appeared 0.3--1.1% faster while spatial appeared 0.2--0.6% slower.
+Additional sampling therefore did not reveal a policy-independent gain; it
+confirmed a small raw spatial-versus-block tradeoff whose interpretation
+depends on the control metric. The experiment was reverted at the requested
+ambiguity gate.
+
+## VDIFF post-solve mass-scan fusion screening (2026-07-24)
+
+The final scoped experiment accumulated positive after-solve tracer mass as
+levels became final during backward substitution. Negative scratch values were
+left untouched until the ratio/output pass, preserving every recurrence
+operand. This removed the subsequent full level scan, but reversed the
+`after_mass` reduction order from top-to-bottom to bottom-to-top.
+
+Pinned four-worker 2x2.5 full-chain zero-flux timing used 96 tracers, 31
+measured repetitions and five warm-ups in each ABBA process:
+
+| Policy | Metric | Separate scan s | Fused scan s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.389544 | 0.388306 | 0.3% faster |
+| Spatial, width 96 | mean | 0.397447 | 0.396820 | 0.2% faster |
+| Blocks, width 16 | best | 0.479046 | 0.479458 | neutral |
+| Blocks, width 16 | mean | 0.492596 | 0.489564 | 0.6% faster |
+
+A dense uniform `1e-12 kg m-2 s-1` source used 15 measured repetitions in
+each ABBA process:
+
+| Policy | Metric | Separate scan s | Fused scan s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.455000 | 0.447414 | 1.7% faster |
+| Spatial, width 96 | mean | 0.465103 | 0.458275 | 1.5% faster |
+| Blocks, width 16 | best | 0.514885 | 0.508303 | 1.3% faster |
+| Blocks, width 16 | mean | 0.520290 | 0.518709 | 0.3% faster |
+
+The dense-flux gains survived matching serial-control normalization; zero-flux
+controls moved in opposite directions and left sub-percent policy-dependent
+normalized results.
+
+Correctness checks retained negative counts and passed the existing zero-flux,
+nonzero-flux, negative-clipping, and diagnostics-light VDIFF tests. The changed
+reduction order was not exact, however. A direct nonzero-flux complete-chain
+comparison reached a maximum absolute difference of `1.71e-13` at tracer
+values around 14.3, or maximum relative difference `8.09e-16`, and exceeded
+the existing strict `rtol=3e-16` executor-parity assertion. The candidate was
+not retained automatically: its typical zero-flux benefit is below one
+percent, while the more favorable dense-flux path requires accepting a
+several-ULP transport change. The source was reverted pending an explicit
+project decision.
+
+## DAO2-only contraction screening (2026-07-24)
+
+The next TPCORE experiment enabled `fastmath={"contract"}` only for the X and
+Y DAO2 apply helpers, including their serial clones used by block execution.
+XTP, YTP, FZPPM, and complete kernels were unchanged. Fresh-cache LLVM
+inspection confirmed contractable floating-point operations in both helpers.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline and
+two candidate processes were:
+
+| Policy | Metric | Baseline s | DAO2 contraction s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best | 0.385442 | 0.386059 | 0.2% slower |
+| Spatial, width 96 | mean | 0.396770 | 0.396979 | 0.1% slower |
+| Blocks, width 16 | best | 0.480793 | 0.479533 | 0.3% faster |
+| Blocks, width 16 | mean | 0.488854 | 0.487703 | 0.2% faster |
+
+The corresponding serial controls moved in opposite directions. Normalization
+widened the split to about 1.3% slower spatial and 2.5% faster for blocks.
+Focused TPCORE and complete-executor tests passed, and the benchmark outputs
+were exact against their reference arrays in all measured modes.
+
+The combined X+Y contraction was not retained: the high-sample result is a
+small block-versus-spatial policy tradeoff rather than a general whole-chain
+gain. X-only and Y-only contraction were not screened separately after the
+combined candidate reached the requested ambiguity gate.
+
+## VDIFF bottom-solve coefficient precompute screening (2026-07-24)
+
+A temporary candidate filled the existing unused bottom-level `termh` plan
+slot with
+`1 / (1 + cch_bottom * (1 - zeh_above))`, then reused that stored value in the
+humidity, full-grid tracer, and tracer-block bottom solves. This preserved the
+division result exactly and avoided adding storage to the plan.
+
+A pinned four-worker 2x2.5 full-chain ABBA comparison used 96 tracers, 31
+measured repetitions and five warm-ups per process. Averages across the two
+baseline and two candidate processes were:
+
+| Policy | Metric | Recomputed s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best total | 0.395450 | 0.394772 | 0.2% faster |
+| Spatial, width 96 | mean apply | 0.400101 | 0.392547 | 1.9% faster |
+| Blocks, width 16 | best total | 0.490932 | 0.491658 | 0.1% slower |
+| Blocks, width 16 | mean apply | 0.488446 | 0.490376 | 0.4% slower |
+
+The spatial process means varied substantially, so the apparent mean gain was
+not supported by its best total time. A direct full-grid VDIFF-only ABBA check
+then used 96 tracers and 51 measured repetitions per process:
+
+| Metric | Recomputed s | Precomputed s | Raw change |
+| --- | ---: | ---: | ---: |
+| Best | 0.108055 | 0.108538 | 0.4% slower |
+| Mean | 0.108799 | 0.109230 | 0.4% slower |
+
+Focused VDIFF and compiled-policy tests passed, the full-chain benchmark
+reported exact reference arrays, and the VDIFF-only checksum was unchanged.
+The candidate was nevertheless reverted: the saved bottom divisions did not
+offset the extra full-grid coefficient write/read traffic, and no
+policy-independent whole-chain gain was demonstrated.
+
+## Deferred-finalization reciprocal precompute screening (2026-07-24)
+
+A temporary candidate computed `1 / delp2_hpa` alongside `delp2_hpa` during
+TPCORE plan preparation and stored the result in a new plan array. Production
+VDIFF then loaded the stored reciprocal whenever it converted TPCORE's
+pressure-weighted interior values, replacing one division per level and
+column for each tracer block. The reciprocal used the same scalar division as
+the original path, so this was intended as an exact stored-division
+experiment rather than reciprocal-multiply reassociation.
+
+A pinned four-worker 2x2.5 ABBA comparison used 96 tracers, 31 measured
+repetitions and five warm-ups per process. Averages across the two baseline
+and two candidate processes were:
+
+| Policy | Metric | Recomputed s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best total | 0.398214 | 0.392202 | 1.5% faster |
+| Spatial, width 96 | mean apply | 0.391153 | 0.387569 | 0.9% faster |
+| Blocks, width 16 | best total | 0.493348 | 0.495219 | 0.4% slower |
+| Blocks, width 16 | mean apply | 0.490019 | 0.495032 | 1.0% slower |
+
+Both candidate spatial processes were faster than both baselines by best
+total time, while both candidate block processes were slower than both
+baselines by mean application time. Matching serial controls did not remove
+the policy split. Focused VDIFF and compiled-policy tests passed, and every
+benchmark mode reported exact reference arrays.
+
+The candidate was reverted at the ambiguity gate. The stored reciprocal
+benefited the one-block spatial policy, but concurrent tracer blocks repeatedly
+streamed the added three-dimensional array; the extra shared cache/memory
+traffic outweighed the divisions removed from the block path.
+
+## Normalized vertical Courant precompute (2026-07-24)
+
+TPCORE plan preparation now stores one signed normalized Courant number per
+vertical interface and column:
+
+```text
+wz / delp1_upwind
+```
+
+The sign compactly selects the same upwind reconstruction side previously
+selected from `wz`; its magnitude replaces the division formerly repeated by
+FZPPM for every tracer block. The value is computed in the existing vertical
+mass-flux preparation loop using the same scalar division, so production
+transport remains exact. Standalone TPCORE retains its original on-demand
+division path and does not allocate the additional full-grid temporary.
+
+Initial pinned four-worker 2x2.5 ABBA timing used 96 tracers, 31 measured
+repetitions and five warm-ups per process:
+
+| Policy | Metric | On demand s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Spatial, width 96 | best total | 0.400064 | 0.394048 | 1.5% faster |
+| Spatial, width 96 | mean apply | 0.395078 | 0.391691 | 0.9% faster |
+| Blocks, width 16 | best total | 0.493576 | 0.497328 | 0.8% slower |
+| Blocks, width 16 | mean apply | 0.495552 | 0.492223 | 0.7% faster |
+
+Because the first block result disagreed between its low tail and mean, a
+second block-only ABBA comparison used 61 measured repetitions per process:
+
+| Policy | Metric | On demand s | Precomputed s | Raw change |
+| --- | --- | ---: | ---: | ---: |
+| Blocks, width 16 | best total | 0.496854 | 0.490754 | 1.2% faster |
+| Blocks, width 16 | best apply | 0.484308 | 0.477725 | 1.4% faster |
+| Blocks, width 16 | mean apply | 0.492258 | 0.487373 | 1.0% faster |
+
+All focused TPCORE and compiled-policy tests passed, and every benchmark mode
+reported exact reference arrays. The precompute was retained because the
+longer sampling demonstrated a policy-independent whole-chain gain after plan
+construction was charged.
+
+## Mixed per-operator execution policy skipped (2026-07-24)
+
+The proposed TPCORE/VDIFF/convection policy matrix was stopped at design review
+before benchmarking. Temporary stage-barrier scaffolding was removed without
+being committed.
+
+For a fixed worker count and very large tracer ensemble, tracer-block execution
+provides abundant independent work for every operator. Keeping each block in
+the complete `TPCORE -> VDIFF -> convection` chain also preserves immediate
+cache locality and avoids global barriers between operators. Allowing spatial
+versus block execution to vary by operator is therefore most likely to help
+only around medium tracer counts, where individual operator crossover points
+may differ.
+
+Large ensembles are the priority, so the possible medium-range dispatch gain
+did not justify additional orchestration complexity. No performance claim was
+made because the mixed-policy matrix was not run.
+
+## Persistent convection-input buffer screening (2026-07-24)
+
+The first driver-side forcing-preparation candidate added six persistent
+flattened arrays to the executor workspace. Each step copied reversed
+convection inputs directly into those buffers, packed pressure thickness once
+instead of twice, and filled `bmass` in place. VDIFF top-order inputs were left
+unchanged so the allocation experiment remained discrete.
+
+A pinned four-core 2x2.5 ABBA frontier comparison used 24 tracers, 31 measured
+steps and five warm-ups per process. Averages of the two process medians were:
+
+| Policy | Per-step temporaries s | Persistent buffers s | Raw change |
+| --- | ---: | ---: | ---: |
+| Spatial, one block | 0.141428 | 0.139976 | 1.0% faster |
+| Blocks, width 8 | 0.204193 | 0.209425 | 2.6% slower |
+
+Two-process spatial and block configurations were about 0.3% slower with the
+candidate, while four-process spatial execution was effectively neutral.
+Compiled executor tests passed exactly at both 2x2.5 and 4x5.
+
+The candidate was reverted at the policy-ambiguity gate. The avoided
+allocations are fixed overhead and did not produce a general end-to-end gain;
+the larger persistent VDIFF top-order working set was therefore not attempted.
+
+## Sparse surface-flux column dispatch screening (2026-07-24)
+
+The residual 24-tracer two-month TransCom workflow provides both realistic
+sparse and exactly zero source regimes. At 2014-09-15 12:10, 10,485 of
+314,496 horizontal tracer elements were nonzero (3.33%), spanning 22 tracers
+and 9,667 of 13,104 geographic columns (73.77%). With width-8 tracer blocks,
+10,160 of 39,312 block-columns were active (25.84%); with all 24 tracers in
+one spatial block, 9,667 of 13,104 block-columns were active (73.77%).
+The source was exactly zero after the bounded September pulses ended.
+
+A temporary exact candidate computed a boolean activity map while packing
+each tracer block. VDIFF retained its existing zero-source arithmetic for
+inactive block-columns and performed the existing nonzero-source preparation
+unchanged for active block-columns. Every benchmark mode was bitwise equal to
+its reference result.
+
+Pinned four-core 2x2.5 comparisons used five warm-ups. The initial
+baseline/candidate pair used 31 measured repetitions; a second pair in the
+opposite order used 61:
+
+| Policy | Pair | Best apply | Mean apply | Best total |
+| --- | --- | ---: | ---: | ---: |
+| Blocks, width 8 | 31 samples | 1.5% faster | 1.8% faster | 1.4% faster |
+| Blocks, width 8 | 61 samples | 0.7% faster | 1.9% faster | 0.5% faster |
+| Spatial, width 24 | 31 samples | 0.1% faster | 1.2% slower | 0.2% slower |
+| Spatial, width 24 | 61 samples | 0.1% faster | 1.2% slower | 0.2% faster |
+
+The block policy benefits from its much sparser block-column activity map.
+The one-block spatial policy has many fewer inactive columns, and its best
+times were neutral while its process means were repeatably slower. The
+candidate was rejected at the policy-ambiguity gate. Finer lane-level
+activity was not attempted because branching inside the tracer loop would
+compromise its regular vectorizable structure.
+
+## Whole-step zero surface-flux dispatch screening (2026-07-24)
+
+A second temporary candidate left VDIFF untouched. When the complete source
+array was zero, the executor reused a tiny persistent zero-flux sentinel
+instead of allocating, zero-filling, packing, and rescanning the full
+block-native flux array. A caller with no emissions could pass `None`, also
+avoiding creation and scanning of the canonical zero array. Nonzero sources
+continued through the original packing path after a canonical-array scan.
+
+Three candidate and two baseline processes were pinned to four cores. Each
+used five warm-ups and 61 measured repetitions at 24 tracers and global
+2x2.5. All benchmark results were bitwise exact. Averages across processes
+were:
+
+| Policy | Metric | Raw change |
+| --- | --- | ---: |
+| Spatial, width 24 | best apply | 0.7% faster |
+| Spatial, width 24 | mean apply | 2.3% faster |
+| Spatial, width 24 | best total | 0.5% faster |
+| Blocks, width 8 | best apply | 1.2% slower |
+| Blocks, width 8 | mean apply | 2.2% slower |
+| Blocks, width 8 | best total | 1.1% slower |
+
+The executor's transport arithmetic was identical between candidates, but
+the policy split persisted across the longer process series. A separate
+zero-flux VDIFF specialization was not attempted: the existing runtime flag
+already guards the expensive source preparation, and its remaining checks
+are loop-invariant and likely hoisted or unswitched by LLVM. The whole-step
+candidate was rejected at the policy-ambiguity gate; dense-source control
+timing was not run.
+
+## Matrix-free DAO2/FZPPM screening (2026-07-25)
+
+A serial-block prototype left the pole-adjusted input `q` unchanged and
+reconstructed the DAO2-corrected value for each FZPPM column in
+`(nlev, lane)` worker scratch. Interior X and Y corrections recomputed their
+required `qqu` and `qqv` neighbourhood values directly from `q`; the two pole
+corrections were recovered during the original level pass using the same
+longitude reduction order. The corrected value retained the exact sequential
+order `((q + dx) + dy)`.
+
+Focused complete-chain tests covered serial, spatial, and block policies,
+padded tracer lanes, zero flux, and nonzero flux. All candidate block results
+were bitwise equal to the existing implementation.
+
+A pinned four-core global 2x2.5 screening used 24 tracers, one warm-up, and two
+measured repetitions. The regression was too large to justify longer timing:
+
+| Block width | Existing best s | Matrix-free best s | Slowdown |
+| --- | ---: | ---: | ---: |
+| 8 | 0.157605 | 0.416519 | 2.64x |
+| 16 | 0.189006 | 0.555829 | 2.94x |
+
+The avoided full-grid DAO2 store/read did not compensate for repeatedly
+reconstructing cross-term neighbourhoods in the column-oriented vertical
+loop. The prototype was reverted and no spatial implementation was attempted.
+
+## Retained-kernel eight-core transport frontier (2026-07-25)
+
+The portable synthetic 2x2.5 transport frontier was rerun after completing the
+optimization screening. The sweep used physical P-core CPU IDs
+`0,2,4,6,8,10,12,14`, an eight-core budget, all balanced process/thread
+factorizations, block widths 8/16/32, two warm-ups, and five measured
+iterations. All 112 configurations completed.
+
+| Tracers | Winning topology | Median s/step | Tracer-steps/s |
+| ---: | --- | ---: | ---: |
+| 1 | 1 process x 8 spatial threads | 0.039911 | 25.1 |
+| 2 | 1 process x 8 spatial threads | 0.042213 | 47.4 |
+| 4 | 1 process x 8 spatial threads | 0.045495 | 87.9 |
+| 8 | 1 process x 8 spatial threads | 0.052105 | 153.5 |
+| 16 | 1 process x 8 spatial threads | 0.065461 | 244.4 |
+| 24 | 1 process x 8 spatial threads | 0.078351 | 306.3 |
+| 32 | 2 processes x 4 spatial threads | 0.103298 | 309.8 |
+| 48 | 1 process x 8 spatial threads | 0.127187 | 377.4 |
+| 64 | 1 process x 8 spatial threads | 0.166274 | 384.9 |
+| 96 | 2 processes x 4 spatial threads | 0.247567 | 387.8 |
+| 128 | 1 process x 8 threads, block width 16 | 0.321369 | 398.3 |
+| 192 | 1 process x 8 threads, block width 8 | 0.476555 | 402.9 |
+| 256 | 1 process x 8 threads, block width 16 | 0.601034 | 425.9 |
+| 512 | 1 process x 8 threads, block width 16 | 1.155131 | 443.2 |
+
+Spatial execution remains optimal through 96 tracers; block execution crosses
+over at 128. Against the previously published eight-P-core example, spatial
+throughput at 96 tracers increased from about 347 to 388 tracer-steps/s
+(roughly 12%), spatial throughput at 512 increased from about 311 to 344
+(roughly 11%), and the blocked 512-tracer frontier increased from about 423 to
+443 (roughly 5%). The raw report is in the ignored local directory
+`benchmark-results/transport-frontier-8core-retained-20260725/`.

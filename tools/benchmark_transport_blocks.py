@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import replace
+from datetime import datetime
 import os
 import sys
 import time
@@ -25,6 +27,10 @@ from wombat_transport.transport.tpcore._operator import (
     load_tpcore_workspace,
 )
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_plan
+from wombat_transport.grid import load_transport_grid
+from wombat_transport.run_config import load_run_config
+from wombat_transport.runner import _load_emissions_operator
+from wombat_transport.species import load_species_database
 
 
 FIELDS = (
@@ -32,6 +38,14 @@ FIELDS = (
     "mode",
     "lane_width",
     "workers",
+    "flux_pattern",
+    "active_tracers",
+    "active_columns",
+    "column_fraction",
+    "active_blocks",
+    "block_fraction",
+    "active_block_columns",
+    "block_column_fraction",
     "best_apply_s",
     "mean_apply_s",
     "plan_s",
@@ -55,6 +69,21 @@ def main(argv: list[str] | None = None) -> int:
             dt_s=args.dt_s,
             surface_flux_kg_m2_s=args.surface_flux_kg_m2_s,
         )
+        flux_pattern = (
+            "dense-uniform" if args.surface_flux_kg_m2_s != 0.0 else "zero"
+        )
+        if args.residual_flux_config is not None:
+            residual_flux = _load_residual_surface_flux(
+                args.residual_flux_config,
+                args.residual_flux_time,
+            )
+            if residual_flux.shape[-1] != ntracer:
+                raise ValueError(
+                    f"residual flux has {residual_flux.shape[-1]} tracers, "
+                    f"but benchmark requested {ntracer}"
+                )
+            vdiff = replace(vdiff, surface_flux_kg_m2_s=residual_flux)
+            flux_pattern = f"residual-{args.residual_flux_time.isoformat()}"
         convection = _build_synthetic_convection_inputs(args.run_config, ntracer, dt_s=args.dt_s)
         setup = setup_tpcore_terms(
             p1_hpa=tpcore.p1_hpa,
@@ -115,7 +144,21 @@ def main(argv: list[str] | None = None) -> int:
 
         fused_times, reference = _time(fused_chain, args.warmup, args.repeat)
         fused_best = min(fused_times)
-        rows.append(_row(ntracer, "fused", 0, args.workers, fused_times, 0.0, fused_best, reference, reference))
+        rows.append(
+            _row(
+                ntracer,
+                "fused",
+                0,
+                args.workers,
+                flux_pattern,
+                vdiff.surface_flux_kg_m2_s,
+                fused_times,
+                0.0,
+                fused_best,
+                reference,
+                reference,
+            )
+        )
 
         for lane_width in args.lanes:
             transport_workspace = make_transport_workspace(
@@ -194,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
                             f"{execution}-executor",
                             lane_width,
                             args.workers,
+                            flux_pattern,
+                            vdiff.surface_flux_kg_m2_s,
                             transport_times,
                             plan_s,
                             fused_best,
@@ -249,14 +294,29 @@ def _unpack_q(workspace) -> np.ndarray:
     return output
 
 
-def _row(ntracer, mode, lane, workers, times, plan_s, fused_best, actual, reference):
+def _row(
+    ntracer,
+    mode,
+    lane,
+    workers,
+    flux_pattern,
+    surface_flux,
+    times,
+    plan_s,
+    fused_best,
+    actual,
+    reference,
+):
     best = min(times)
     total = best + plan_s
+    flux_metrics = _flux_metrics(surface_flux, lane if lane else ntracer)
     return {
         "tracer_count": ntracer,
         "mode": mode,
         "lane_width": lane,
         "workers": workers,
+        "flux_pattern": flux_pattern,
+        **flux_metrics,
         "best_apply_s": f"{best:.9f}",
         "mean_apply_s": f"{np.mean(times):.9f}",
         "plan_s": f"{plan_s:.9f}",
@@ -265,6 +325,42 @@ def _row(ntracer, mode, lane, workers, times, plan_s, fused_best, actual, refere
         "array_equal": str(bool(np.array_equal(actual, reference))).lower(),
         "max_abs_error": f"{np.max(np.abs(actual - reference)):.16g}",
     }
+
+
+def _flux_metrics(surface_flux: np.ndarray, lane_width: int) -> dict[str, str | int]:
+    nonzero = surface_flux != 0.0
+    nlat, nlon, ntracer = nonzero.shape
+    active_tracers = int(np.count_nonzero(np.any(nonzero, axis=(0, 1))))
+    active_columns = int(np.count_nonzero(np.any(nonzero, axis=2)))
+    blocks = [
+        nonzero[:, :, start : start + lane_width]
+        for start in range(0, ntracer, lane_width)
+    ]
+    active_blocks = sum(bool(np.any(block)) for block in blocks)
+    active_block_columns = sum(
+        int(np.count_nonzero(np.any(block, axis=2))) for block in blocks
+    )
+    return {
+        "active_tracers": active_tracers,
+        "active_columns": active_columns,
+        "column_fraction": f"{active_columns / float(nlat * nlon):.9f}",
+        "active_blocks": active_blocks,
+        "block_fraction": f"{active_blocks / float(len(blocks)):.9f}",
+        "active_block_columns": active_block_columns,
+        "block_column_fraction": (
+            f"{active_block_columns / float(len(blocks) * nlat * nlon):.9f}"
+        ),
+    }
+
+
+def _load_residual_surface_flux(
+    run_config_path: Path, valid_time: datetime
+) -> np.ndarray:
+    config = load_run_config(run_config_path)
+    species = load_species_database(config.species_database)
+    grid = load_transport_grid(config.grid_template)
+    operator = _load_emissions_operator(config, species, grid)
+    return operator.evaluate_surface_flux(valid_time).data
 
 
 def _parse_args(argv):
@@ -277,9 +373,24 @@ def _parse_args(argv):
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--dt-s", type=float, default=600.0)
     parser.add_argument("--surface-flux-kg-m2-s", type=float, default=0.0)
+    parser.add_argument("--residual-flux-config", type=Path)
+    parser.add_argument(
+        "--residual-flux-time",
+        type=datetime.fromisoformat,
+        default=datetime(2014, 9, 15, 12, 10),
+    )
     parser.add_argument("--include-convection", action="store_true")
     parser.add_argument("--output", type=Path)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if (
+        args.residual_flux_config is not None
+        and args.surface_flux_kg_m2_s != 0.0
+    ):
+        parser.error(
+            "--residual-flux-config and nonzero --surface-flux-kg-m2-s "
+            "are mutually exclusive"
+        )
+    return args
 
 
 if __name__ == "__main__":

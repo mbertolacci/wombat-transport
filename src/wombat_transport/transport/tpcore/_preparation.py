@@ -40,6 +40,7 @@ def _prepare_tpcore_arrays_python(
         xmass,
         ymass,
         wz,
+        normalized_vertical_courant,
         cx,
         cy,
         ua,
@@ -197,13 +198,26 @@ def _prepare_tpcore_arrays_python(
     for j in range(nlat):
         for i in range(nlon):
             wz[0, j, i] = work3[0, j, i] - dbk_top[0] * work2[j, i]
+            if wz[0, j, i] > 0.0:
+                normalized_vertical_courant[0, j, i] = wz[0, j, i] / delp1[0, j, i]
+            else:
+                normalized_vertical_courant[0, j, i] = wz[0, j, i] / delp1[1, j, i]
             for lev in range(1, nlev - 1):
                 wz[lev, j, i] = (
                     wz[lev - 1, j, i]
                     + work3[lev, j, i]
                     - dbk_top[lev] * work2[j, i]
                 )
+                if wz[lev, j, i] > 0.0:
+                    normalized_vertical_courant[lev, j, i] = (
+                        wz[lev, j, i] / delp1[lev, j, i]
+                    )
+                else:
+                    normalized_vertical_courant[lev, j, i] = (
+                        wz[lev, j, i] / delp1[lev + 1, j, i]
+                    )
             wz[nlev - 1, j, i] = 0.0
+            normalized_vertical_courant[nlev - 1, j, i] = 0.0
 
     for lev in range(nlev):
         for j in range(nlat):

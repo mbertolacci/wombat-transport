@@ -91,7 +91,12 @@ def _convect_fullgrid_top_numba(
     ntracer = q_all.shape[2]
     nthreads = configure_numba_threads(available=_NUMBA_AVAILABLE)
     workspace = _get_convection_kernel_workspace(nthreads, ntracer)
-    _convect_fullgrid_top_numba_kernel(
+    kernel = (
+        _convect_fullgrid_top_numba_diagnostic_kernel
+        if diagnostics
+        else _convect_fullgrid_top_numba_kernel
+    )
+    kernel(
         q_all,
         diag_all,
         cmfmc_all,
@@ -102,7 +107,6 @@ def _convect_fullgrid_top_numba(
         dqrcu_met_all,
         reevapcn_met_all,
         area_all,
-        diagnostics,
         reconstruct_conv_precip_flux,
         internal_steps,
         internal_dt_s,
@@ -116,13 +120,11 @@ def _convect_fullgrid_top_numba(
 if njit is not None:
 
     @njit(
-        cache=True,
-        parallel=True,
-        nogil=True,
         fastmath={"contract"},
-        pipeline_class=NoAliasCompiler,
+        inline="always",
+        nogil=True,
     )
-    def _convect_fullgrid_top_numba_kernel(
+    def _convect_fullgrid_top_numba_core(
         q_all: np.ndarray,
         diag_all: np.ndarray,
         cmfmc_all: np.ndarray,
@@ -282,6 +284,68 @@ if njit is not None:
                                     delq = -current
                                 q_all[level, col, tracer] = current + delq
 
+    # Keep one operator body while making the production diagnostic contract a
+    # compile-time constant for the innermost tracer loops.
+    def _make_convect_fullgrid_top_numba_kernel(diagnostics_enabled: bool):
+        def kernel(
+            q_all: np.ndarray,
+            diag_all: np.ndarray,
+            cmfmc_all: np.ndarray,
+            dtrain_all: np.ndarray,
+            delp_hpa_all: np.ndarray,
+            delp_dry_all: np.ndarray,
+            bmass_all: np.ndarray,
+            dqrcu_met_all: np.ndarray,
+            reevapcn_met_all: np.ndarray,
+            area_all: np.ndarray,
+            reconstruct_conv_precip_flux: bool,
+            internal_steps: int,
+            internal_dt_s: float,
+            qc_workspace: np.ndarray,
+            qb_num_workspace: np.ndarray,
+            delq_work_workspace: np.ndarray,
+            current_work_workspace: np.ndarray,
+        ) -> None:
+            _convect_fullgrid_top_numba_core(
+                q_all,
+                diag_all,
+                cmfmc_all,
+                dtrain_all,
+                delp_hpa_all,
+                delp_dry_all,
+                bmass_all,
+                dqrcu_met_all,
+                reevapcn_met_all,
+                area_all,
+                diagnostics_enabled,
+                reconstruct_conv_precip_flux,
+                internal_steps,
+                internal_dt_s,
+                qc_workspace,
+                qb_num_workspace,
+                delq_work_workspace,
+                current_work_workspace,
+            )
+
+        return kernel
+
+    _convect_fullgrid_top_numba_production_impl = (
+        _make_convect_fullgrid_top_numba_kernel(False)
+    )
+    _convect_fullgrid_top_numba_kernel = njit(
+        cache=True,
+        parallel=True,
+        nogil=True,
+        fastmath={"contract"},
+        pipeline_class=NoAliasCompiler,
+    )(_convect_fullgrid_top_numba_production_impl)
+    _convect_fullgrid_top_numba_diagnostic_kernel = njit(
+        parallel=True,
+        nogil=True,
+        fastmath={"contract"},
+        pipeline_class=NoAliasCompiler,
+    )(_make_convect_fullgrid_top_numba_kernel(True))
+
 else:
 
     def _convect_fullgrid_top_numba_kernel(
@@ -295,7 +359,6 @@ else:
         dqrcu_met_all: np.ndarray,
         reevapcn_met_all: np.ndarray,
         area_all: np.ndarray,
-        diagnostics: bool,
         reconstruct_conv_precip_flux: bool,
         internal_steps: int,
         internal_dt_s: float,
@@ -305,6 +368,10 @@ else:
         current_work_workspace: np.ndarray,
     ) -> None:
         raise RuntimeError("numba is not available")
+
+    _convect_fullgrid_top_numba_diagnostic_kernel = (
+        _convect_fullgrid_top_numba_kernel
+    )
 
 def _column_mass_transport_numba(tracer: np.ndarray, bmass_kg_m2: np.ndarray, area_m2: np.ndarray) -> np.ndarray:
     if not _NUMBA_AVAILABLE:
@@ -391,7 +458,7 @@ if njit is not None:
         fastmath={"contract"},
         pipeline_class=NoAliasCompiler,
     )(
-        _convect_fullgrid_top_numba_kernel.py_func
+        _convect_fullgrid_top_numba_production_impl
     )
     _convect_block_spatial = _convect_fullgrid_top_numba_kernel
 else:

@@ -1507,8 +1507,20 @@ def test_compiled_tpcore_plan_matches_numpy_reference_and_reuses_storage():
     np.testing.assert_array_equal(actual.jn, expected.jn)
     np.testing.assert_array_equal(actual.js, expected.js)
     np.testing.assert_array_equal(actual.area_1d_m2, expected.area_1d_m2)
+    recomputed_courant = tpcore_numba._normalized_vertical_courant_numba(
+        actual.setup.delp1_hpa,
+        actual.setup.vertical_mass_flux_hpa,
+    )
+    np.testing.assert_array_equal(actual.normalized_vertical_courant, recomputed_courant)
+    np.testing.assert_allclose(
+        actual.normalized_vertical_courant,
+        expected.normalized_vertical_courant,
+        rtol=3.0e-13,
+        atol=1.0e-18,
+    )
 
     delpm_storage = actual.setup.delpm_hpa
+    courant_storage = actual.normalized_vertical_courant
     delpm_before = delpm_storage.copy()
     changed_inputs = inputs | {"p2_hpa": inputs["p2_hpa"] + 0.125}
     updated = prepare_tpcore_met_plan(
@@ -1517,6 +1529,7 @@ def test_compiled_tpcore_plan_matches_numpy_reference_and_reuses_storage():
         workspace=workspace,
     )
     assert updated.setup.delpm_hpa is delpm_storage
+    assert updated.normalized_vertical_courant is courant_storage
     assert not np.array_equal(updated.setup.delpm_hpa, delpm_before)
 
     wrong_workspace = make_tpcore_plan_workspace(
@@ -1842,7 +1855,7 @@ def test_tpcore_serial_qck_finalization_matches_separate_kernels(fill):
     if fill and tpcore_numba._qckxyz_needs_fill_numba_kernel(expected):
         tpcore_numba._qckxyz_batch_numba_kernel(expected)
     tpcore_numba._finalize_tpcore_output_numba_kernel(expected, delp2)
-    tpcore_operator._qck_finalize_columns_serial(actual, delp2, fill)
+    tpcore_operator._qck_finalize_columns_serial(actual, delp2, fill, True)
 
     np.testing.assert_array_equal(actual, expected)
 
@@ -1953,6 +1966,8 @@ def test_compiled_transport_policies_match_direct_kernels(monkeypatch, surface_f
         vdiff_plan.start_level,
         surface_flux,
         bool(surface_flux_value),
+        setup.delp2_hpa,
+        False,
         np.empty((1, nlon, nlev, ntracer)),
         np.empty((1, nlon, ntracer)),
         np.empty((1, nlon, ntracer)),
@@ -1972,7 +1987,6 @@ def test_compiled_transport_policies_match_direct_kernels(monkeypatch, surface_f
         dqrcu.reshape(scalar_shape),
         reevapcn.reshape(scalar_shape),
         area.reshape(nlat * nlon),
-        False,
         False,
         2,
         300.0,
