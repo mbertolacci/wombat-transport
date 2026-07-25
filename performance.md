@@ -3842,3 +3842,125 @@ throughput at 96 tracers increased from about 347 to 388 tracer-steps/s
 (roughly 11%), and the blocked 512-tracer frontier increased from about 423 to
 443 (roughly 5%). The raw report is in the ignored local directory
 `benchmark-results/transport-frontier-8core-retained-20260725/`.
+
+## Post-merge profiling baseline (2026-07-25)
+
+The retained transport implementation on `main` at `40429bf` was profiled
+before beginning another optimization round. Portable timings used global
+2x2.5 synthetic inputs, one Numba thread pinned to P-core logical CPU 8, three
+warm-ups, and nine measured repetitions. The already-current eight-P-core
+frontier above remains the end-to-end throughput reference.
+
+### Operator scaling and stage attribution
+
+| Operator | 1 tracer best s | 24 tracers best s | 96 tracers best s |
+| --- | ---: | ---: | ---: |
+| TPCORE | 0.066952 | 0.201958 | 0.726998 |
+| VDIFF, zero surface flux | 0.028679 | 0.046029 | 0.107693 |
+| VDIFF, uniform nonzero flux | 0.031051 | 0.056960 | 0.150253 |
+| Convection | 0.008904 | 0.025614 | 0.075744 |
+| Complete driver | 0.114657 | 0.294805 | 0.910370 |
+
+At 96 tracers, the complete-driver best-stage times were 0.627480 s TPCORE,
+0.192754 s VDIFF, and 0.056480 s convection. TPCORE therefore accounts for
+about 69% of this single-thread synthetic transport step, VDIFF 21%,
+convection 6%, and setup/other overhead 4%. The zero-flux VDIFF path is already
+effective: it is about 28% faster than uniform nonzero flux at 96 tracers.
+
+`cProfile` attributed 0.699 s of a 0.728 s 96-tracer TPCORE pass to the fused
+Numba call. Python setup and validation are consequently not the main TPCORE
+target. A separately staged implementation divided TPCORE time as follows:
+
+| TPCORE stage | Share |
+| --- | ---: |
+| Y horizontal mass flux | 21.5% |
+| FZPPM vertical transport | 19.6% |
+| X horizontal mass flux | 18.8% |
+| Pole averaging and mass initialization | 9.2% |
+| Input copy/workspace/cross-term setup | 7.5% |
+| Cross-term calculation | 7.4% |
+| Fill/finalize | 6.9% |
+| Y DAO2 | 5.0% |
+| X DAO2 | 4.0% |
+
+The three directional transport stages remain about 60% of TPCORE, but no
+single one dominates. Stage-level `perf stat` showed those three stages at
+roughly 2.3-2.5 IPC and 54-56% backend bound. The fixed full-grid passes were
+more strongly backend bound: input copy/workspace setup 92%, pole/init 88%,
+and fill/finalize 77%. These counters support investigating memory traffic in
+the fixed passes, but not replacing the directional algorithms on the strength
+of a generic memory-bound diagnosis.
+
+### Current VTune characterization
+
+VTune 2026.3 `uarch-exploration` traces used a warmed debug/profiling Numba
+cache and the same pinned P-core. Each operator ran long enough that
+compilation and startup were outside the measured loop.
+
+| Operator | Retiring | Frontend | Bad speculation | Backend | Memory | Core |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPCORE | 53.9% | 16.3% | 1.4% | 28.3% | 20.4% | 8.0% |
+| VDIFF | 30.3% | 4.2% | 0.5% | 65.0% | 46.1% | 18.9% |
+| Convection | 33.0% | 5.7% | 1.5% | 59.9% | 43.9% | 15.9% |
+
+TPCORE remains mixed rather than primarily memory bound. VDIFF remains the
+clearest memory/store-bound operator: DRAM bound was 12.6% of clockticks,
+memory-bandwidth activity 57.5%, store bound 15.8%, and store latency 39.7%.
+Convection is now predominantly a memory/bandwidth problem: DRAM bound was
+23.9% and memory-bandwidth activity 70.3%. Its FP-divider share is only 2.4%,
+confirming that the previously retained reciprocal hoists removed the old
+44.2% divider bottleneck.
+
+The normal non-debug benchmark should be used for speed claims. In particular,
+TPCORE debug/profiling code generation made its VTune benchmark roughly twice
+as slow as the portable baseline; the VTune run is used only for
+microarchitectural attribution.
+
+### Production-path cProfile
+
+The real multi-step profiler was repaired for the current observation-plan
+API: the removed `_evaluate_entries` hook was dropped and the writer hook now
+targets `write_completed`. A six-hour residual-emissions run then executed 36
+transport steps on the eight physical P-cores, with output and the observation
+operator disabled so the transport/forcing path was isolated.
+
+| Tracers | Total s | Transport | Met forcing | Emissions reads | Other |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.413 | 64.6% | 29.4% | 4.8% | 1.2% |
+| 24 | 4.280 | 69.9% | 16.6% | 9.2% | 4.3% |
+
+For 24 tracers, the compiled one-block spatial kernel itself was 2.032 s
+(47.5% of total). TPCORE plan preparation was 0.337 s (7.9%), VDIFF plan
+preparation 0.194 s (4.5%), met forcing 0.711 s (16.6%), and configured
+emissions-array reads 0.395 s (9.2%). This makes forcing, emissions I/O, and
+per-step plan preparation visible secondary targets in a real workflow; pure
+operator microbenchmarks intentionally omit them.
+
+### Block-width check and profiler limitations
+
+An additional one-process/eight-thread block sweep used nine repetitions at
+24, 96, and 192 tracers. Spatial execution remained clearly preferable at 24.
+At 96 the lowest total among the tested widths was 0.232 s for block width 16,
+close to the spatial variants; the broader frontier still selects a
+two-process spatial topology at that count. At 192, block width 8 won at
+0.420 s total, agreeing with the full frontier.
+
+Profila 0.3.4 was rerun in an isolated Python 3.11/Numba 0.66 environment with
+fresh caches for TPCORE, VDIFF, and convection. It reported 94.0%, 96.4%, and
+98.5% of samples respectively as non-Numba. The resulting source attribution
+is not usable and no line-level conclusion is drawn from it. `perf` staged
+timing and VTune provide the reliable native-code attribution for this
+baseline.
+
+The deliberately experimental multi-step block-batching benchmark was also
+invoked, but its captured kernel-argument index table has drifted from the
+production executor and now stops on an assertion before timing. That
+experiment was previously rejected and is not part of the production path, so
+it was recorded as stale rather than repaired as part of this baseline.
+`benchmark_documented_runs.py` was not invoked because it requires a separately
+materialized end-to-end benchmark root; the current synthetic frontier and
+real residual-emissions run cover the local performance questions here.
+
+Raw CSVs, cProfile data, `perf` data, Profila transcripts, and VTune result
+directories are in the ignored local directory
+`benchmark-results/profiling-baseline-main-20260725/`.

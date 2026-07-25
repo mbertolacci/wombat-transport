@@ -467,14 +467,9 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
             obsoperator_manager_mod.ObsOperatorManager._initialize_for_date,
         ),
         (
-            obsoperator_manager_mod.ObsOperatorManager,
-            "_evaluate_entries",
-            obsoperator_manager_mod.ObsOperatorManager._evaluate_entries,
-        ),
-        (
             obsoperator_writer_mod._ObsOperatorNetCDFWriter,
-            "write_array_entries",
-            obsoperator_writer_mod._ObsOperatorNetCDFWriter.write_array_entries,
+            "write_completed",
+            obsoperator_writer_mod._ObsOperatorNetCDFWriter.write_completed,
         ),
     ]
     stage_names = {
@@ -497,8 +492,7 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         "append_average": "output_append_species_conc",
         "sample": "obsoperator_sample",
         "_initialize_for_date": "obsoperator_load_input",
-        "_evaluate_entries": "obsoperator_evaluate",
-        "write_array_entries": "obsoperator_write_output",
+        "write_completed": "obsoperator_write_output",
     }
     try:
         for obj, name, original in originals:
