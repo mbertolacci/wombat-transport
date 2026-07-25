@@ -29,6 +29,7 @@ from wombat_transport.obsoperator.state import (
     FIELD_PREFIX,
     MAX_FIELD_NAME_LENGTH,
     MAX_ID_LENGTH,
+    ObsPlan,
     compact_obs_plan,
     completed_batch,
     merge_obs_plans,
@@ -362,6 +363,53 @@ def test_plan_merge_is_stable_and_compaction_rewrites_offsets(tmp_path: Path):
 
     with pytest.raises(ValueError, match="duplicate active"):
         merge_obs_plans(compacted, compacted)
+
+
+def test_manager_advances_completion_cursor_without_revalidating(
+    tmp_path: Path, monkeypatch
+):
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id=f"entry-{index}",
+                    time={"type": "point", "unit": "time_index", "time": index},
+                )
+                for index in range(2)
+            ]
+        },
+    )
+    original_validate = ObsPlan.validate
+    validation_calls = 0
+
+    def counted_validate(plan):
+        nonlocal validation_calls
+        validation_calls += 1
+        original_validate(plan)
+
+    monkeypatch.setattr(ObsPlan, "validate", counted_validate)
+    manager = _manager(tmp_path)
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    boundary_validation_calls = validation_calls
+    assert manager._plan.entry_count == 2
+    assert manager._plan.first_unexpired == 1
+    manager.sample(
+        step_start=START + timedelta(minutes=10),
+        time_index=1,
+        snapshot=_snapshot(),
+    )
+
+    assert boundary_validation_calls == 2
+    assert validation_calls == boundary_validation_calls
+    assert manager._plan.entry_count == 2
+    assert manager._plan.first_unexpired == 2
+    manager.close(boundary_time=START + timedelta(minutes=20))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0000.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["entry-0"]
+    with netCDF4.Dataset(tmp_path / "out-20140901_0010.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["entry-1"]
 
 
 def test_time_date_ranges_are_half_open_model_periods(tmp_path: Path):
@@ -837,6 +885,50 @@ def test_manager_rotates_cross_day_entries_to_new_output(tmp_path: Path):
     with netCDF4.Dataset(tmp_path / "out-20140902_0000.nc4") as dataset:
         assert _decode_rows(dataset.variables["id"][:]) == ["cross-day", "second-day"]
         np.testing.assert_allclose(dataset.variables["sample"][:], np.array([2.0, 3.0], dtype=np.float32))
+
+
+def test_manager_compacts_completion_cursor_before_daily_merge(tmp_path: Path):
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id="completed-first-day",
+                    time={"type": "point", "unit": "time_index", "time": 0},
+                ),
+                _entry_raw(
+                    entry_id="carried",
+                    time={"type": "range", "unit": "time_index", "start": 0, "end": 1},
+                ),
+            ]
+        },
+    )
+    _write_yaml(
+        tmp_path / "obs-20140902.yml",
+        {
+            "entries": [
+                _entry_raw(
+                    entry_id="second-day",
+                    time={"type": "point", "unit": "time_index", "time": 1},
+                )
+            ]
+        },
+    )
+    manager = _manager(tmp_path, dt_s=86400.0)
+
+    manager.sample(step_start=START, time_index=0, snapshot=_snapshot())
+    assert manager._plan.first_unexpired == 1
+    manager.sample(
+        step_start=START + timedelta(days=1),
+        time_index=1,
+        snapshot=_snapshot(scale=3.0),
+    )
+    manager.close(boundary_time=START + timedelta(days=2))
+
+    with netCDF4.Dataset(tmp_path / "out-20140901_0000.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["completed-first-day"]
+    with netCDF4.Dataset(tmp_path / "out-20140902_0000.nc4") as dataset:
+        assert _decode_rows(dataset.variables["id"][:]) == ["carried", "second-day"]
 
 
 def test_manager_rotates_output_when_daily_input_path_is_unchanged(tmp_path: Path):
