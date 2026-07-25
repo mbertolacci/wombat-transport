@@ -3964,3 +3964,102 @@ real residual-emissions run cover the local performance questions here.
 Raw CSVs, cProfile data, `perf` data, Profila transcripts, and VTune result
 directories are in the ignored local directory
 `benchmark-results/profiling-baseline-main-20260725/`.
+
+## High-tracer full-workflow profiles (2026-07-25)
+
+The initial six-hour 24-tracer cProfile was not used to prioritize work for
+the large-ensemble target. A revised matrix profiled 128 tracers at the
+spatial/block crossover and 512 tracers in the large block-parallel regime.
+Both used one process, eight pinned P-cores, block width 16, 24 simulated
+hours, 144 transport steps, normal daily HISTORY output, and the real daily
+ObsOperator input plan.
+
+Each count was run twice. The first run used only the coarse stage timers; its
+wall fractions are the performance baseline. The second enabled cProfile to
+attribute Python work. This distinction matters because cProfile increased
+total wall time by 8.4% at 128 tracers and 5.7% at 512, mostly by slowing
+Python-heavy ObsOperator and emissions code while compiled transport time was
+nearly unchanged.
+
+The unprofiled results were:
+
+| Tracers | Total s | s/step | Peak RSS GiB | Output MB |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 68.759 | 0.4775 | 3.56 | 11.28 |
+| 512 | 261.298 | 1.8146 | 10.94 | 34.40 |
+
+| Stage | 128 tracers | 512 tracers |
+| --- | ---: | ---: |
+| Transport | 67.5% | 67.3% |
+| ObsOperator | 16.9% | 16.1% |
+| HISTORY accumulation and output | 8.1% | 8.6% |
+| Emissions | 2.3% | 3.4% |
+| Meteorology forcing | 2.3% | 0.6% |
+| Other | 2.9% | 3.9% |
+
+The near-constant fractions show that transport is not the only work scaling
+with tracer count. The 512-tracer cProfile pass identified the main
+tracer-dependent costs:
+
+- the compiled transport apply was 171.1 s; TPCORE plan preparation was only
+  1.33 s and VDIFF plan preparation 0.80 s;
+- HISTORY accumulation was 19.10 s, while final average/write/close work was
+  about 3.2 s;
+- `ObsPlan.validate()` was 51.04 s across 140 calls, almost all reached through
+  139 internal plan compactions; `_copy_ordered_plans` itself was only 1.84 s;
+- emissions evaluation was 8.87 s, including repeated configured-path/key work
+  and full horizontal assembly for every tracer.
+
+The same cProfile quantities at 128 tracers were 43.4 s compiled transport,
+4.79 s HISTORY accumulation, and 12.99 s `ObsPlan.validate()`. Their almost
+exact fourfold scaling confirms that they are genuine large-ensemble costs,
+not cold-start artifacts.
+
+These profiles change the opportunity ranking:
+
+1. Internal ObsOperator compaction should not fully revalidate an already
+   validated plan after almost every timestep. Validation at untrusted input,
+   merge, and restart boundaries can preserve error detection while avoiding
+   repeated full-plan scans. This is the clearest workflow-level candidate.
+2. For block execution, accumulate active HISTORY sums at the end of each
+   completed tracer block inside the existing transport launch. This preserves
+   per-step addition order and may reuse hot state while removing the separate
+   full-state parallel pass.
+3. Automatic executor and balanced block-width selection remains the simplest
+   operational transport gain. The large profiles explicitly used blocks with
+   width 16; the current runner defaults to spatial, or width 8 when blocks are
+   selected.
+4. Emissions configuration can be compiled into pre-resolved paths/cache keys
+   and grouped work, but its whole-run ceiling is only a few percent.
+
+Meteorology chunking and VDIFF plan fusion are no longer priorities for the
+large target. At 512 tracers meteorology was 0.6% of unprofiled wall time, and
+both transport plan builders together were below 1%.
+
+### Why Profila did not provide usable line attribution
+
+The Profila failure was not a Numba version mismatch: both the project and
+isolated Profila environments used Numba 0.66.0 with llvmlite 0.48.0. Fresh
+Numba caches were also used, so stale cached code was not the cause.
+
+Profila relies on GDB samples plus Numba debug line tables to associate native
+instruction addresses with Python source. The production kernels are compiled
+with `parallel=True`. Even with `NUMBA_NUM_THREADS=1`, Numba lowers `prange`
+regions into generated `__numba_parfor_gufunc_*` workers. Compilation emitted
+`NumbaDebugInfoWarning` messages saying source could not be found for those
+generated workers and line information could be inaccurate. Profila therefore
+classified 94.0-98.5% of samples as non-Numba rather than assigning them to
+source lines.
+
+That label is a mapping failure, not evidence that execution fell back to
+Python. cProfile places essentially all operator time inside the compiled
+dispatcher call, while `perf` and VTune measure the corresponding JIT/native
+work. A future line-level attempt would need isolated `parallel=False` serial
+leaf specializations with reliable debug metadata. Such a profile would no
+longer be the complete production parallel path, so stage timing plus
+`perf`/VTune remains the more reliable attribution method here.
+
+Raw high-count results are under the ignored directories
+`benchmark-results/profiling-baseline-main-20260725/multistep_24h_128_full_*`
+and
+`benchmark-results/profiling-baseline-main-20260725/multistep_24h_512_full_*`.
