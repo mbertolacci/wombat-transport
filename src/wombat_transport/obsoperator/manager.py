@@ -16,9 +16,8 @@ from wombat_transport.obsoperator.input import _load_obs_plan
 from wombat_transport.obsoperator.restart import _read_obsoperator_restart, _write_obsoperator_restart
 from wombat_transport.obsoperator.sampling import select_sampling_kernel
 from wombat_transport.obsoperator.state import (
-    _compact_validated_obs_plan,
+    _completed_batch_range,
     compact_obs_plan,
-    completed_batch,
     completed_prefix,
     empty_obs_plan,
     merge_obs_plans,
@@ -98,7 +97,7 @@ class ObsOperatorManager:
                 "ObsOperator sampling must advance contiguously from the current model position"
             )
         self._initialize_for_date(step_start)
-        if self._plan.entry_count:
+        if self._plan.first_unexpired < self._plan.entry_count:
             state_bottom = np.asarray(
                 snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
             )
@@ -152,7 +151,7 @@ class ObsOperatorManager:
                 plan.accumulator,
             )
             if self._config.verbose:
-                for entry_index in range(plan.entry_count):
+                for entry_index in range(plan.first_unexpired, plan.entry_count):
                     time_slice = _ragged_slice(
                         plan.time_operator_start, plan.time_operator_count, entry_index
                     )
@@ -166,13 +165,17 @@ class ObsOperatorManager:
 
         boundary_us = step_time_us + self._transport_dt_us
         complete = completed_prefix(self._plan, boundary_us)
-        if complete:
-            batch = completed_batch(self._plan, complete)
+        if complete > self._plan.first_unexpired:
+            batch = _completed_batch_range(
+                self._plan,
+                self._plan.first_unexpired,
+                complete,
+            )
             assert self._current_output_path is not None
             if self._writer is None:
                 self._writer = _ObsOperatorNetCDFWriter(self._current_output_path)
             self._writer.write_completed(batch)
-            self._plan = _compact_validated_obs_plan(self._plan, boundary_us)
+            self._plan.first_unexpired = complete
         self._position_us = boundary_us
 
     def close(self, *, boundary_time: datetime) -> None:

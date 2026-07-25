@@ -4119,3 +4119,59 @@ The baseline and optimized 512-tracer output trees were byte-for-byte
 identical, including every ObsOperator result, the daily species concentration
 file, and the ObsOperator restart. Raw generated runs remain ignored under
 `benchmark-results/obs-compaction-validation-20260725/`.
+
+## ObsOperator logical completion cursor (2026-07-25)
+
+The remaining per-timestep physical plan compaction was replaced with a logical
+completion cursor and retained. After a completed batch is successfully passed
+to the writer, `first_unexpired` advances to the first active entry. Sampling
+already accepted this cursor, so completed entries are skipped without
+allocating and copying a replacement plan. If every entry has completed, the
+manager also avoids dispatching the empty sampling kernel.
+
+Physical compaction and full validation still occur when daily input is merged
+and when a restart is written. Completed batches now gather an explicit
+half-open entry range, which prevents earlier completed entries from being
+written again. Focused tests cover consecutive completions and a cross-day
+case containing a completed first-day entry, a carried entry, and a newly
+loaded second-day entry.
+
+Matched 24-hour benchmarks again used 144 steps, normal HISTORY and
+ObsOperator output, eight pinned P-cores, block execution, and block width 16.
+The control was the preceding trusted-validation commit `c02f5c9`. The first
+128-tracer run from each detached source location warmed its cache and was
+excluded. Warm results were:
+
+| 128 tracers | Total s | ObsOperator s | ObsOperator exclusive s | Transport s |
+| --- | ---: | ---: | ---: | ---: |
+| Physical compaction 1 | 60.244 | 1.598 | 0.780 | 47.912 |
+| Physical compaction 2 | 59.628 | 1.598 | 0.779 | 47.315 |
+| Completion cursor 1 | 59.474 | 0.896 | 0.080 | 47.901 |
+| Completion cursor 2 | 59.707 | 0.903 | 0.079 | 48.126 |
+| Completion cursor 3 | 59.417 | 0.900 | 0.079 | 47.779 |
+| Physical-compaction mean | 59.936 | 1.598 | 0.780 | 47.613 |
+| Completion-cursor mean | 59.533 | 0.900 | 0.079 | 47.935 |
+
+The cursor removes 0.70 s of stable ObsOperator work at 128 tracers. Total wall
+time improved by 0.40 s, or 0.7%, despite the cursor samples averaging 0.32 s
+slower in the unchanged transport stage.
+
+Two complete 512-tracer pairs gave:
+
+| 512 tracers | Total s | ObsOperator s | ObsOperator exclusive s | Transport s | HISTORY record s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Physical compaction 1 | 222.849 | 4.023 | 2.104 | 176.013 | 19.356 |
+| Physical compaction 2 | 223.150 | 3.880 | 1.972 | 176.146 | 19.357 |
+| Completion cursor 1 | 218.969 | 2.146 | 0.244 | 174.642 | 19.350 |
+| Completion cursor 2 | 220.939 | 2.140 | 0.243 | 176.583 | 19.334 |
+| Physical-compaction mean | 223.000 | 3.952 | 2.038 | 176.079 | 19.357 |
+| Completion-cursor mean | 219.954 | 2.143 | 0.244 | 175.613 | 19.342 |
+
+At 512 tracers the ObsOperator saving is 1.81 s and the whole run improves by
+3.05 s, or 1.4%. The second pair remained 2.21 s faster even though its cursor
+transport sample was 0.44 s slower, so the result does not depend on favorable
+transport drift.
+
+The 128- and 512-tracer output and restart directory trees were byte-for-byte
+identical to their physical-compaction controls. Raw generated runs remain
+ignored under `benchmark-results/obs-logical-completion-20260725/`.
