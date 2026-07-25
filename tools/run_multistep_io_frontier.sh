@@ -95,27 +95,24 @@ case_count=0
 for ((repetition = 1; repetition <= repeats; repetition++)); do
   if (( repetition % 2 == 1 )); then
     tracer_totals=("${configured_tracer_totals[@]}")
-    writers=(sync threaded)
   else
     tracer_totals=()
     for ((index = ${#configured_tracer_totals[@]} - 1; index >= 0; index--)); do
       tracer_totals+=("${configured_tracer_totals[index]}")
     done
-    writers=(threaded sync)
   fi
   for total_tracers in "${tracer_totals[@]}"; do
     tracers_per_process=$((total_tracers / processes))
-    for writer in "${writers[@]}"; do
-      case_name="r${repetition}_m${total_tracers}_p${processes}_t${threads}_b${tracers_per_process}_${writer}"
-      printf '%s\n' \
-        "${repetition},${total_tracers},${processes},${threads},${tracers_per_process},${writer},${start_time},${end_time},${case_name}" \
-        >>"${manifest}"
-      case_count=$((case_count + 1))
-    done
+    writer="sync"
+    case_name="r${repetition}_m${total_tracers}_p${processes}_t${threads}_b${tracers_per_process}"
+    printf '%s\n' \
+      "${repetition},${total_tracers},${processes},${threads},${tracers_per_process},${writer},${start_time},${end_time},${case_name}" \
+      >>"${manifest}"
+    case_count=$((case_count + 1))
   done
 done
 
-expected_cases=$((repeats * ${#configured_tracer_totals[@]} * 2))
+expected_cases=$((repeats * ${#configured_tracer_totals[@]}))
 echo "Prepared ${case_count} cases in ${manifest}"
 echo "Each rank runs real met, emissions, and ObsOperator for ${start_time} through ${end_time}, with daily SpeciesConc output."
 if (( case_count != expected_cases )); then
@@ -184,7 +181,6 @@ while IFS=, read -r repetition total_tracers rank_count rank_threads tracers_per
         --end "${case_end}" \
         --warmup-steps "${warmup_steps}" \
         --outputs \
-        --output-writer "${writer}" \
         --obsoperator-input-dir "${obsoperator_dir}" \
         >"${rank_log}" 2>&1 &
     pids+=("$!")

@@ -116,6 +116,9 @@ def test_transport_failure_closes_output_and_obsoperator_managers(monkeypatch, t
     events: list[object] = []
 
     class FakeOutputManager:
+        def prepare_step(self, timestamp, state):
+            return None
+
         def close(self):
             events.append("output")
 

@@ -132,7 +132,7 @@ See [inputs](../user-guide/inputs.md) for source fields and regridding.
 
 | Field | Default | Accepted values |
 |---|---|---|
-| `writer` | `sync` | `sync`, `threaded` |
+| `writer` | `sync` | `sync` (optional compatibility setting) |
 | `expid` | `OutputDir/GEOSChem` | Filename prefix used with collection `template` |
 | `dtype` | `float32` | `float32`, `float64` |
 | `compression.enabled` | `true` | boolean |

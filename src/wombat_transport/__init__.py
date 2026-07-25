@@ -61,6 +61,7 @@ from wombat_transport.run_config import (
     simulation_start,
     transport_timestep_s,
 )
+from wombat_transport.snapshot import CompletedStepSnapshot
 from wombat_transport.runner import (
     EmissionsStep,
     TracerSimulationResult,
@@ -101,6 +102,7 @@ __all__ = [
     "EmissionsStep",
     "HistoryInterval",
     "HistoryOutputManager",
+    "CompletedStepSnapshot",
     "ObsOperatorConfig",
     "ObsOperatorManager",
     "OutputChunkingConfig",

@@ -43,7 +43,7 @@ def test_basic_documented_run_config_matches_the_public_example():
     writer = parse_output_writer(config.outputs)
     storage = parse_output_storage(config.outputs)
     collections = parse_output_collections(config.outputs)
-    assert writer.mode == "sync"
+    assert writer == "sync"
     assert storage.dtype == "float32"
     assert storage.compression.enabled
     assert len(collections) == 1
