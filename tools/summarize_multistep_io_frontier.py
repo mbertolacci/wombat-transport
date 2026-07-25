@@ -183,7 +183,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Summarize sync/threaded production-like multistep I/O benchmarks.")
+    parser = argparse.ArgumentParser(
+        description="Summarize production-like multistep I/O benchmarks."
+    )
     parser.add_argument("results_dir", type=Path)
     parser.add_argument("--runs-output", type=Path)
     parser.add_argument("--modes-output", type=Path)

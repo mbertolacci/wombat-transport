@@ -82,13 +82,11 @@ nine. A null chunk entry lets netCDF choose; otherwise each rank-specific
 array must contain that number of positive dimensions. Chunk sizes should be
 adjusted for 4x5 dimensions.
 
-## Synchronous and threaded writing
+## Synchronous writing
 
-`outputs.writer` may be `sync` or `threaded` and defaults to `sync`. Threaded
-mode moves completed time-average NetCDF work behind the simulation thread;
-restart collections remain durable before shutdown returns. Threaded output
-can increase memory use and is not guaranteed to improve wall time when
-transport dominates or storage is already fast.
+HISTORY accumulation and NetCDF writing are synchronous. The optional
+`outputs.writer: sync` setting is accepted for compatibility; `threaded` is
+rejected. NetCDF calls remain sequential.
 
 ObsOperator has its own output and restart files. It does not use the HISTORY
 writer setting; see [ObsOperator](obsoperator.md).

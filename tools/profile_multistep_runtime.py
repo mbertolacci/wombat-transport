@@ -4,6 +4,7 @@ import argparse
 import cProfile
 import csv
 import json
+import os
 import pstats
 import resource
 import shutil
@@ -60,6 +61,7 @@ class ProfileResult:
     emissions_steps: int
     total_emitted_mass_kg: float
     peak_rss_mib: float
+    cpu_affinity: tuple[int, ...]
     output_bytes: int = 0
     timers: dict[str, CallTimer] = field(default_factory=dict)
 
@@ -128,7 +130,12 @@ def main(argv: list[str] | None = None) -> int:
             end=args.end,
             outputs_enabled=False,
         )
-        _run_profiled(warmup_run_dir / "run.yml", tracer_count=1, max_steps=args.warmup_steps, cprofile_path=None)
+        _run_profiled(
+            warmup_run_dir / "run.yml",
+            tracer_count=1,
+            max_steps=args.warmup_steps,
+            cprofile_path=None,
+        )
         shutil.rmtree(warmup_run_dir, ignore_errors=True)
 
     results: list[ProfileResult] = []
@@ -147,12 +154,16 @@ def main(argv: list[str] | None = None) -> int:
             output_compression_level=args.output_compression_level,
             output_shuffle=args.output_shuffle,
             output_rank4_chunking=tuple(args.output_rank4_chunking) if args.output_rank4_chunking else None,
-            output_writer=args.output_writer,
             obsoperator_enabled=not args.disable_obsoperator,
             obsoperator_input_dir=args.obsoperator_input_dir,
         )
         cprofile_path = output_dir / f"cprofile_{count:03d}.prof" if args.cprofile else None
-        result = _run_profiled(run_dir / "run.yml", tracer_count=count, max_steps=None, cprofile_path=cprofile_path)
+        result = _run_profiled(
+            run_dir / "run.yml",
+            tracer_count=count,
+            max_steps=None,
+            cprofile_path=cprofile_path,
+        )
         result.output_bytes = _tree_size_bytes(run_dir / "OutputDir") + _tree_size_bytes(run_dir / "Restarts")
         results.append(result)
 
@@ -207,12 +218,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Override rank-4 output chunks, e.g. 1 47 91 144.",
     )
     parser.add_argument(
-        "--output-writer",
-        choices=("sync", "threaded"),
-        default=None,
-        help="Override outputs.writer.",
-    )
-    parser.add_argument(
         "--disable-obsoperator",
         action="store_true",
         help="Remove outputs.obsoperator from generated profiling runs.",
@@ -252,7 +257,6 @@ def _prepare_run_dir(
     output_compression_level: int | None = None,
     output_shuffle: str | None = None,
     output_rank4_chunking: tuple[int, int, int, int] | None = None,
-    output_writer: str | None = None,
     obsoperator_enabled: bool = True,
     obsoperator_input_dir: Path | None = None,
 ) -> Path:
@@ -306,8 +310,6 @@ def _prepare_run_dir(
             obsoperator["input_file"] = str(obsoperator_input_dir.resolve() / input_name)
             outputs["obsoperator"] = obsoperator
         run_config["outputs"] = outputs
-        if output_writer:
-            outputs["writer"] = output_writer
         if output_compression or output_compression_level is not None or output_shuffle:
             compression = dict(outputs.get("compression", {}))
             if output_compression:
@@ -410,6 +412,7 @@ def _run_profiled(
             emissions_steps=result.emissions_steps,
             total_emitted_mass_kg=result.total_emitted_mass,
             peak_rss_mib=_peak_rss_mib(),
+            cpu_affinity=_cpu_affinity(),
             timers=profiler.timers,
         )
 
@@ -430,6 +433,11 @@ def _run_profiled(
 def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
     originals: list[tuple[object, str, Callable]] = [
         (runner_mod, "_load_simulation_forcing", runner_mod._load_simulation_forcing),
+        (
+            runner_mod,
+            "accumulate_history_sums",
+            runner_mod.accumulate_history_sums,
+        ),
         (emissions_mod.EmissionsOperator, "evaluate", emissions_mod.EmissionsOperator.evaluate),
         (emissions_mod.EmissionsOperator, "evaluate_surface_flux", emissions_mod.EmissionsOperator.evaluate_surface_flux),
         (emissions_mod.EmissionsOperator, "_read_configured_array", emissions_mod.EmissionsOperator._read_configured_array),
@@ -444,6 +452,16 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         (driver_mod, "run_tpcore_one_step_with_setup", driver_mod.run_tpcore_one_step_with_setup),
         (driver_mod, "run_vdiffdr_one_step", driver_mod.run_vdiffdr_one_step),
         (driver_mod, "run_cloud_convection_one_step", driver_mod.run_cloud_convection_one_step),
+        (
+            output_mod.HistoryOutputManager,
+            "prepare_step",
+            output_mod.HistoryOutputManager.prepare_step,
+        ),
+        (
+            output_mod.HistoryOutputManager,
+            "complete_step",
+            output_mod.HistoryOutputManager.complete_step,
+        ),
         (output_mod.HistoryOutputManager, "record_step", output_mod.HistoryOutputManager.record_step),
         (output_mod.HistoryOutputManager, "close", output_mod.HistoryOutputManager.close),
         (output_mod, "write_species_conc_collection", output_mod.write_species_conc_collection),
@@ -474,6 +492,7 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
     ]
     stage_names = {
         "_load_simulation_forcing": "met_forcing",
+        "accumulate_history_sums": "output_accumulate",
         "evaluate": "emissions_evaluate",
         "evaluate_surface_flux": "emissions_evaluate",
         "_read_configured_array": "emissions_read_array",
@@ -484,6 +503,8 @@ def _patched_runtime(profiler: RuntimeProfiler) -> Iterator[None]:
         "run_tpcore_one_step_with_setup": "transport_tpcore",
         "run_vdiffdr_one_step": "transport_vdiff",
         "run_cloud_convection_one_step": "transport_convection",
+        "prepare_step": "output_prepare_step",
+        "complete_step": "output_complete_step",
         "record_step": "output_record_step",
         "close": "output_close",
         "write_species_conc_collection": "output_write_species_conc",
@@ -549,6 +570,7 @@ def _write_summary_json(path: Path, results: list[ProfileResult]) -> None:
                 "emissions_steps": result.emissions_steps,
                 "total_emitted_mass_kg": result.total_emitted_mass_kg,
                 "peak_rss_mib": result.peak_rss_mib,
+                "cpu_affinity": list(result.cpu_affinity),
                 "output_bytes": result.output_bytes,
                 "timers": {name: asdict(timer) | {"exclusive_s": timer.exclusive_s} for name, timer in result.timers.items()},
             }
@@ -558,6 +580,12 @@ def _write_summary_json(path: Path, results: list[ProfileResult]) -> None:
 
 def _peak_rss_mib() -> float:
     return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+
+
+def _cpu_affinity() -> tuple[int, ...]:
+    if hasattr(os, "sched_getaffinity"):
+        return tuple(sorted(os.sched_getaffinity(0)))
+    return ()
 
 
 def _tree_size_bytes(root: Path) -> int:

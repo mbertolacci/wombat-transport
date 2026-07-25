@@ -10,7 +10,10 @@ import pytest
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport import history_accumulation
-from wombat_transport.history_accumulation import accumulate_history_sum
+from wombat_transport.history_accumulation import (
+    accumulate_history_sum,
+    accumulate_history_sums,
+)
 from wombat_transport.io import FIXED_GRID, load_restart, load_species_conc
 from wombat_transport.output import (
     HistoryOutputManager,
@@ -136,15 +139,11 @@ def test_output_storage_defaults_and_validates():
 
 
 def test_output_writer_defaults_and_validates():
-    assert parse_output_writer({}).mode == "sync"
-    assert parse_output_writer({"writer": "threaded"}).mode == "threaded"
+    assert parse_output_writer({}) == "sync"
+    assert parse_output_writer({"writer": "sync"}) == "sync"
 
-    try:
-        parse_output_writer({"writer": "process"})
-    except ValueError as exc:
-        assert "outputs.writer" in str(exc)
-    else:
-        raise AssertionError("accepted invalid output writer mode")
+    with pytest.raises(ValueError, match="threaded.*not supported"):
+        parse_output_writer({"writer": "threaded"})
 
 
 def test_history_accumulation_native_and_numba_are_bitwise_equal(monkeypatch):
@@ -162,6 +161,27 @@ def test_history_accumulation_native_and_numba_are_bitwise_equal(monkeypatch):
     monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
     for value in values:
         accumulate_history_sum(accelerated, value)
+
+    np.testing.assert_array_equal(accelerated, native)
+
+
+def test_stacked_history_accumulation_native_and_numba_are_bitwise_equal(
+    monkeypatch,
+):
+    if not history_accumulation._NUMBA_AVAILABLE:
+        pytest.skip("numba is unavailable")
+    rng = np.random.default_rng(20140902)
+    values = [rng.standard_normal((2, 3, 4, 5)) for _ in range(6)]
+    native = rng.standard_normal((3, 2, 3, 4, 5))
+    accelerated = native.copy()
+
+    monkeypatch.setenv("WOMBAT_NUMBA", "0")
+    for value in values:
+        accumulate_history_sums(native, value)
+    monkeypatch.setenv("WOMBAT_NUMBA", "1")
+    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
+    for value in values:
+        accumulate_history_sums(accelerated, value)
 
     np.testing.assert_array_equal(accelerated, native)
 
@@ -372,6 +392,54 @@ def test_output_manager_uses_post_step_arithmetic_averages(tmp_path):
     np.testing.assert_allclose(loaded.data[0, :, :, :, 0], _field(("A",), values=(2.0,)).data[0, :, :, :, 0])
 
 
+def test_output_manager_prepares_multiple_transport_accumulators(tmp_path):
+    collections = tuple(
+        OutputCollectionConfig(
+            name=name,
+            filename=None,
+            template="%y4%m2%d2_%h2%n2z.nc4",
+            frequency=parse_history_interval("00000000 003000"),
+            duration=parse_history_interval("00000001 000000"),
+            mode="time-averaged",
+            fields=("SpeciesConcVV_?ADV?",),
+        )
+        for name in ("SpeciesConcA", "SpeciesConcB")
+    )
+    manager = HistoryOutputManager(
+        root=tmp_path,
+        template_path=BASE_RESTART,
+        expid="OutputDir/GEOSChem",
+        collections=collections,
+        start=datetime(2014, 9, 1),
+    )
+    forcing = _forcing()
+    delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
+
+    for minute, value in ((10, 1.0), (20, 3.0)):
+        state = _field(("A",), values=(value,))
+        timestamp = datetime(2014, 9, 1, 0, minute)
+        sums = manager.prepare_step(timestamp, state)
+        assert sums is not None
+        assert sums.shape == (2, *state.block_data.shape[1:])
+        accumulate_history_sums(sums, state.block_data[0])
+        manager.complete_step(
+            OutputSnapshot(timestamp, state, delp, forcing),  # type: ignore[arg-type]
+        )
+    manager.close()
+
+    expected = _field(("A",), values=(2.0,)).data[0, :, :, :, 0]
+    for collection in collections:
+        output = (
+            tmp_path
+            / "OutputDir"
+            / f"GEOSChem.{collection.name}.20140901_0000z.nc4"
+        )
+        np.testing.assert_allclose(
+            load_species_conc(output).data[0, :, :, :, 0],
+            expected,
+        )
+
+
 def test_output_manager_streams_species_conc_across_daily_files(tmp_path):
     manager = HistoryOutputManager(
         root=tmp_path,
@@ -411,85 +479,67 @@ def test_output_manager_streams_species_conc_across_daily_files(tmp_path):
     np.testing.assert_allclose(load_species_conc(second).data[0, :, :, :, 0], _field(("A",), values=(2.0,)).data[0, :, :, :, 0])
 
 
-@pytest.mark.parametrize("history_numba", ("0", "1"))
-def test_threaded_output_manager_matches_sync_species_conc(tmp_path, monkeypatch, history_numba):
-    if history_numba == "1" and not history_accumulation._NUMBA_AVAILABLE:
-        pytest.skip("numba is unavailable")
-    monkeypatch.setenv("WOMBAT_NUMBA", history_numba)
-    monkeypatch.setenv("WOMBAT_NUMBA_THREADS", "2")
+def test_output_manager_keeps_collection_windows_independent(tmp_path):
     forcing = _forcing()
     delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
-    collection = OutputCollectionConfig(
-        name="SpeciesConcHourly",
-        filename=None,
-        template="%y4%m2%d2_%h2%n2z.nc4",
-        frequency=parse_history_interval("00000000 010000"),
-        duration=parse_history_interval("00000001 000000"),
-        mode="time-averaged",
-        fields=("SpeciesConcVV_?ADV?",),
+    collections = (
+        OutputCollectionConfig(
+            name="SpeciesConcTwentyMinute",
+            filename=None,
+            template="%y4%m2%d2_%h2%n2z.nc4",
+            frequency=parse_history_interval("00000000 002000"),
+            duration=parse_history_interval("00000001 000000"),
+            mode="time-averaged",
+            fields=("SpeciesConcVV_?ADV?",),
+        ),
+        OutputCollectionConfig(
+            name="SpeciesConcHourly",
+            filename=None,
+            template="%y4%m2%d2_%h2%n2z.nc4",
+            frequency=parse_history_interval("00000000 010000"),
+            duration=parse_history_interval("00000001 000000"),
+            mode="time-averaged",
+            fields=("SpeciesConcVV_?ADV?",),
+        ),
     )
-
-    for writer_mode in ("sync", "threaded"):
-        manager = HistoryOutputManager(
-            root=tmp_path / writer_mode,
-            template_path=BASE_RESTART,
-            expid="OutputDir/GEOSChem",
-            collections=(collection,),
-            start=datetime(2014, 9, 1),
-            writer=parse_output_writer({"writer": writer_mode}),
-        )
-        manager.record_step(
-            OutputSnapshot(datetime(2014, 9, 1, 0, 10), _field(("A",), values=(1.0,)), delp, forcing)  # type: ignore[arg-type]
-        )
-        manager.record_step(
-            OutputSnapshot(datetime(2014, 9, 1, 0, 20), _field(("A",), values=(3.0,)), delp, forcing)  # type: ignore[arg-type]
-        )
-        manager.record_step(
-            OutputSnapshot(datetime(2014, 9, 1, 1, 10), _field(("A",), values=(5.0,)), delp, forcing)  # type: ignore[arg-type]
-        )
-        manager.close()
-
-    sync = load_species_conc(
-        tmp_path / "sync" / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
-    )
-    threaded = load_species_conc(
-        tmp_path / "threaded" / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
-    )
-    np.testing.assert_array_equal(threaded.data, sync.data)
-    assert threaded.names == sync.names
-
-
-def test_threaded_output_manager_reraises_writer_errors(tmp_path):
     manager = HistoryOutputManager(
         root=tmp_path,
-        template_path=tmp_path / "missing_template.nc4",
+        template_path=BASE_RESTART,
         expid="OutputDir/GEOSChem",
-        collections=(
-            OutputCollectionConfig(
-                name="SpeciesConcHourly",
-                filename=None,
-                template="%y4%m2%d2_%h2%n2z.nc4",
-                frequency=parse_history_interval("00000000 010000"),
-                duration=parse_history_interval("00000001 000000"),
-                mode="time-averaged",
-                fields=("SpeciesConcVV_?ADV?",),
-            ),
-        ),
+        collections=collections,
         start=datetime(2014, 9, 1),
-        writer=parse_output_writer({"writer": "threaded"}),
     )
-    forcing = _forcing()
-    delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
-    manager.record_step(
-        OutputSnapshot(datetime(2014, 9, 1, 0, 10), _field(("A",), values=(1.0,)), delp, forcing)  # type: ignore[arg-type]
-    )
+    for minute, value in ((10, 1.0), (20, 3.0), (30, 5.0)):
+        manager.record_step(
+            OutputSnapshot(
+                datetime(2014, 9, 1, 0, minute),
+                _field(("A",), values=(value,)),
+                delp,
+                forcing,
+            )  # type: ignore[arg-type]
+        )
+    manager.close()
 
-    try:
-        manager.close()
-    except FileNotFoundError:
-        pass
-    else:
-        raise AssertionError("threaded output writer error was not reraised")
+    twenty = load_species_conc(
+        tmp_path
+        / "OutputDir"
+        / "GEOSChem.SpeciesConcTwentyMinute.20140901_0000z.nc4"
+    )
+    hourly = load_species_conc(
+        tmp_path / "OutputDir" / "GEOSChem.SpeciesConcHourly.20140901_0000z.nc4"
+    )
+    np.testing.assert_allclose(
+        twenty.data[0, :, :, :, 0],
+        _field(("A",), values=(2.0,)).data[0, :, :, :, 0],
+    )
+    np.testing.assert_allclose(
+        twenty.data[1, :, :, :, 0],
+        _field(("A",), values=(5.0,)).data[0, :, :, :, 0],
+    )
+    np.testing.assert_allclose(
+        hourly.data[0, :, :, :, 0],
+        _field(("A",), values=(3.0,)).data[0, :, :, :, 0],
+    )
 
 
 def _forcing() -> SimpleNamespace:

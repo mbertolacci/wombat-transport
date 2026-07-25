@@ -4176,45 +4176,67 @@ The 128- and 512-tracer output and restart directory trees were byte-for-byte
 identical to their physical-compaction controls. Raw generated runs remain
 ignored under `benchmark-results/obs-logical-completion-20260725/`.
 
-## Experimental column-hot HISTORY accumulation (2026-07-25)
+## Synchronous HISTORY simplification (2026-07-25)
 
-An isolated prototype tested whether time-averaged HISTORY accumulation can
-benefit despite the existing accumulator already using a separate parallel
-Numba `prange` pass. The experimental convection specialization performs the
-same scalar `history_sum += final_state` operation for each column immediately
-after that column's final convection internal step. The normal production
-convection dispatcher remains selected unless the benchmark explicitly calls
-the experimental specialization.
+The column-hot HISTORY prototype was rejected. Isolated experiments showed
+that adding the final state inside convection could help the spatial policy,
+but the production-target block policy was neutral to about 3% slower. With
+two time-average collections, fusing only one collection was substantially
+slower than updating both collections in one shared pass because it traversed
+the state twice. The spatial-only saving was not worth retaining a second
+transport/convection path.
 
-`tools/benchmark_history_convection_fusion.py` compares:
+The final implementation therefore leaves the complete transport package
+unchanged from `main`. After transport, one parallel HISTORY pass updates a
+manager-owned accumulator stack shaped
+`(collection, block, lev, lat, lon, lane)`. The one-collection case calls the
+existing accumulator kernel directly. The multi-collection kernel loads each
+state value once and updates every collection before advancing.
 
-1. the production block-parallel convection specialization followed by
-   `accumulate_history_sum`; and
-2. the otherwise identical block-parallel convection specialization with the
-   addition at the end of each completed column.
+The HISTORY manager is now entirely synchronous:
 
-Both paths use the production block layout, width 16, eight pinned P-cores, two
-convection internal steps, and the global 2x2.5 synthetic convection input.
-State and accumulator resets are outside the timed region. After warm-up, the
-eight measured repetitions alternate which path runs first:
+- average collections own schedules and files, not buffers;
+- restart collections keep independent instantaneous schedules;
+- the manager prepares window boundaries from the completed snapshot,
+  accumulates that state, then completes output and restart work;
+- threaded sinks, futures, double-buffer pools, and writer-mode objects were
+  removed;
+- `outputs.writer: sync` remains an optional compatibility setting, while
+  `threaded` is rejected clearly;
+- HISTORY and ObsOperator share a neutral completed-step snapshot, so an
+  ObsOperator-only run no longer creates an empty HISTORY manager; and
+- the public batch SpeciesConc helper now uses the same streaming writer as
+  managed output rather than maintaining a second NetCDF implementation.
 
-| Tracers | Separate best s | Separate mean s | Column-hot best s | Column-hot mean s | Mean speedup |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 | 0.057750 | 0.057906 | 0.048251 | 0.048701 | 1.189x |
-| 512 | 0.232926 | 0.236106 | 0.193178 | 0.196741 | 1.200x |
+NetCDF calls remain sequential. A fixed 16-tracer staging candidate did not
+reduce the 512-tracer daily write time and required a roughly 75 MiB temporary
+buffer, so it was removed. Time-average output uses one reusable
+`(lev, lat, lon)` division buffer; restart output writes tracer views directly.
 
-The SHA-256 digests of both the post-convection state and HISTORY accumulator
-were identical at both tracer counts. The mean isolated saving is 9.2 ms per
-step at 128 tracers and 39.4 ms per step at 512 tracers. Across the 144-step
-profile window those values project to about 1.3 s and 5.7 s respectively,
-although only an end-to-end implementation can establish the real workflow
-gain.
+### Correctness and performance checks
 
-This result is promising but is not yet wired into production. A production
-experiment must prepare the active time-average accumulator before transport,
-pass it only to an output-enabled executor specialization, and let the output
-manager advance the sample count without running its separate accumulation.
-The existing path should remain the fallback for non-executor runs, spatial
-execution, and configurations with multiple simultaneous time-average
-accumulators. Full HISTORY files must remain byte-for-byte identical, and
-output-disabled transport must not regress.
+The retained implementation passed focused output, runner, ObsOperator, and
+transport tests with exact accumulator comparisons. A 24-hour residual
+workflow used 144 transport steps, block width 16, eight physical P-cores
+(`0,2,4,6,8,10,12,14`), normal HISTORY output, and the real ObsOperator plan.
+The generated output and restart trees were byte-for-byte identical to the
+recent logical-completion controls at both tracer counts.
+
+| Tracers | Control total s | Synchronous manager total s | Control transport s | New transport s | Control accumulation s | New accumulation s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 59.533 | 59.863 | 47.935 | 48.105 | 4.844 | 4.806 |
+| 512 | 219.954 | 220.942 | 175.613 | 176.206 | 19.342 | 19.245 |
+
+The 128 control is the completion-cursor mean. The 512 control is the mean of
+two completion-cursor samples; the closest matched control had 220.939 s total
+and 176.583 s transport. The new 512 total differs from that sample by
+0.003 s. Accumulation is 0.097 s faster than the control mean, while transport
+is 0.377 s faster than the closest control and 0.593 s slower than the control
+mean. These are ordinary process-level variations. No performance claim is
+made beyond neutrality.
+
+An affinity audit found that one discarded manual profile and a later
+already-rejected fusion microbenchmark had used logical CPUs `0-7`, which are
+SMT siblings on four physical P-cores. They are excluded from the results
+above. The retained frontier manifests and the matched runs above use the
+explicit eight-physical-core list.

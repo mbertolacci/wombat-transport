@@ -18,9 +18,10 @@ from wombat_transport.constants import AIRMW_G_PER_MOL
 from wombat_transport.emissions import EmissionsOperator, SurfaceEmissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
+from wombat_transport.history_accumulation import accumulate_history_sums
 from wombat_transport.io import initialize_tracers
 from wombat_transport.obsoperator import ObsOperatorManager
-from wombat_transport.output import HistoryOutputManager, OutputSnapshot
+from wombat_transport.output import HistoryOutputManager
 from wombat_transport.run_config import (
     RunConfig,
     emissions_timestep_s,
@@ -32,6 +33,7 @@ from wombat_transport.run_config import (
     transport_timestep_s,
 )
 from wombat_transport.species import load_species_database
+from wombat_transport.snapshot import CompletedStepSnapshot
 from wombat_transport.transport import (
     build_tpcore_static_terms,
     dry_air_mass_from_pressure,
@@ -198,6 +200,7 @@ def _run_tracer_simulation(
             logger.debug("refreshed_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
 
         logger.debug("running_transport step=%d", transport_steps + 1)
+        step_end = current + timedelta(seconds=transport_dt_s)
         transport_kwargs = dict(
             dt_s=transport_dt_s,
             active_emissions=active_emissions,
@@ -224,14 +227,13 @@ def _run_tracer_simulation(
         state = transport_result.state
         dry_air_mass = transport_result.dry_air_mass_kg
         final_delp_dry_hpa = transport_result.delp_dry_hpa
-        step_end = current + timedelta(seconds=transport_dt_s)
-        snapshot: OutputSnapshot | None = None
+        snapshot: CompletedStepSnapshot | None = None
         if output_manager is not None or obsoperator_manager is not None:
             snapshot_forcing = replace(
                 forcing,
                 specific_humidity_kg_kg=transport_result.specific_humidity_kg_kg,
             )
-            snapshot = OutputSnapshot(
+            snapshot = CompletedStepSnapshot(
                 timestamp=step_end,
                 state=state,
                 delp_dry_hpa=transport_result.delp_dry_hpa,
@@ -247,7 +249,10 @@ def _run_tracer_simulation(
         logger.debug("completed_transport step=%d", transport_steps)
         if output_manager is not None and snapshot is not None:
             logger.debug("recording_outputs step=%d timestamp=%s", transport_steps, step_end.isoformat())
-            output_manager.record_step(snapshot)
+            output_sums = output_manager.prepare_step(step_end, state)
+            if output_sums is not None:
+                accumulate_history_sums(output_sums, state.block_data[0])
+            output_manager.complete_step(snapshot)
         current = step_end
 
     logger.info(

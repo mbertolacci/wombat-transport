@@ -126,7 +126,6 @@ if njit is not None:
     )
     def _convect_fullgrid_top_numba_core(
         q_all: np.ndarray,
-        history_sum_all: np.ndarray,
         diag_all: np.ndarray,
         cmfmc_all: np.ndarray,
         dtrain_all: np.ndarray,
@@ -137,7 +136,6 @@ if njit is not None:
         reevapcn_met_all: np.ndarray,
         area_all: np.ndarray,
         diagnostics: bool,
-        accumulate_history: bool,
         reconstruct_conv_precip_flux: bool,
         internal_steps: int,
         internal_dt_s: float,
@@ -286,11 +284,6 @@ if njit is not None:
                                     delq = -current
                                 q_all[level, col, tracer] = current + delq
 
-            if accumulate_history:
-                for level in range(nlev):
-                    for tracer in range(ntracer):
-                        history_sum_all[level, col, tracer] += q_all[level, col, tracer]
-
     # Keep one operator body while making the production diagnostic contract a
     # compile-time constant for the innermost tracer loops.
     def _make_convect_fullgrid_top_numba_kernel(diagnostics_enabled: bool):
@@ -315,7 +308,6 @@ if njit is not None:
         ) -> None:
             _convect_fullgrid_top_numba_core(
                 q_all,
-                q_all,
                 diag_all,
                 cmfmc_all,
                 dtrain_all,
@@ -326,53 +318,6 @@ if njit is not None:
                 reevapcn_met_all,
                 area_all,
                 diagnostics_enabled,
-                False,
-                reconstruct_conv_precip_flux,
-                internal_steps,
-                internal_dt_s,
-                qc_workspace,
-                qb_num_workspace,
-                delq_work_workspace,
-                current_work_workspace,
-            )
-
-        return kernel
-
-    def _make_convect_fullgrid_top_numba_history_kernel():
-        def kernel(
-            q_all: np.ndarray,
-            history_sum_all: np.ndarray,
-            diag_all: np.ndarray,
-            cmfmc_all: np.ndarray,
-            dtrain_all: np.ndarray,
-            delp_hpa_all: np.ndarray,
-            delp_dry_all: np.ndarray,
-            bmass_all: np.ndarray,
-            dqrcu_met_all: np.ndarray,
-            reevapcn_met_all: np.ndarray,
-            area_all: np.ndarray,
-            reconstruct_conv_precip_flux: bool,
-            internal_steps: int,
-            internal_dt_s: float,
-            qc_workspace: np.ndarray,
-            qb_num_workspace: np.ndarray,
-            delq_work_workspace: np.ndarray,
-            current_work_workspace: np.ndarray,
-        ) -> None:
-            _convect_fullgrid_top_numba_core(
-                q_all,
-                history_sum_all,
-                diag_all,
-                cmfmc_all,
-                dtrain_all,
-                delp_hpa_all,
-                delp_dry_all,
-                bmass_all,
-                dqrcu_met_all,
-                reevapcn_met_all,
-                area_all,
-                False,
-                True,
                 reconstruct_conv_precip_flux,
                 internal_steps,
                 internal_dt_s,
@@ -386,9 +331,6 @@ if njit is not None:
 
     _convect_fullgrid_top_numba_production_impl = (
         _make_convect_fullgrid_top_numba_kernel(False)
-    )
-    _convect_fullgrid_top_numba_history_impl = (
-        _make_convect_fullgrid_top_numba_history_kernel()
     )
     _convect_fullgrid_top_numba_kernel = njit(
         cache=True,
@@ -518,17 +460,9 @@ if njit is not None:
     )(
         _convect_fullgrid_top_numba_production_impl
     )
-    _convect_block_serial_history = njit(
-        nogil=True,
-        fastmath={"contract"},
-        pipeline_class=NoAliasCompiler,
-    )(
-        _convect_fullgrid_top_numba_history_impl
-    )
     _convect_block_spatial = _convect_fullgrid_top_numba_kernel
 else:
     _convect_block_serial = None
-    _convect_block_serial_history = None
     _convect_block_spatial = None
 
 

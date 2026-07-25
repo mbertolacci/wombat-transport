@@ -27,7 +27,7 @@ from wombat_transport.obsoperator.utils import (
     _seconds_to_microseconds,
 )
 from wombat_transport.obsoperator.writer import _ObsOperatorNetCDFWriter
-from wombat_transport.output import OutputSnapshot
+from wombat_transport.snapshot import CompletedStepSnapshot
 from wombat_transport.run_config import RunConfig, simulation_start
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,13 @@ class ObsOperatorManager:
             grid=grid,
         )
 
-    def sample(self, *, step_start: datetime, time_index: int, snapshot: OutputSnapshot) -> None:
+    def sample(
+        self,
+        *,
+        step_start: datetime,
+        time_index: int,
+        snapshot: CompletedStepSnapshot,
+    ) -> None:
         self._ensure_open()
         step_time_us = _datetime_to_microseconds(step_start)
         if step_time_us != self._position_us:
