@@ -179,6 +179,11 @@ deviations.
 - [`tools/benchmark_gc_transport_frontier.py`](tools/benchmark_gc_transport_frontier.py)
   measures the comparable GEOS-Chem harness process/OpenMP frontier using the
   existing full-chain oracle handoffs.
+- [`tools/cuda_transport_step_harness.py`](tools/cuda_transport_step_harness.py)
+  validates and benchmarks resident CUDA operator handoffs.
+- [`tools/profile_cuda_run.py`](tools/profile_cuda_run.py) profiles an ordinary
+  CUDA run with nested host/CUDA-event regions, transfer bytes, memory-pool
+  accounting, compiled-kernel attributes, and optional NVTX ranges.
 - [`performance.md`](performance.md) is the benchmark and profiling notebook.
 - [`oracle_data/README.md`](oracle_data/README.md) describes the local
   large-fixture cache.

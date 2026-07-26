@@ -724,6 +724,82 @@ Do not use microkernel speed alone as the success criterion. The relevant
 result is end-to-end tracer-steps per second with normal forcing and requested
 diagnostics.
 
+### Profiling support
+
+`tools/profile_cuda_run.py` is the maintained ordinary-run profiler. It accepts
+any run configuration plus dtype, step count, block width, device, and warm-up
+controls. Its JSON report contains:
+
+- synchronized complete-run wall and CUDA-event spans;
+- nested runner, operator, and named raw-kernel CUDA-event regions;
+- host orchestration timings;
+- H2D and D2H call counts and bytes;
+- CuPy device-pool total bytes as a peak-allocation proxy after clearing the
+  warm-up pool;
+- compiled raw-kernel attributes such as registers and local-memory bytes;
+- device, compute capability, CUDA, CuPy, and CPU-affinity metadata.
+
+Nested device regions overlap their parent regions and must not be summed.
+Use `--nvtx` to add `cupyx.profiler.time_range` annotations from the profiling
+process for an Nsight Systems capture without putting profiling branches into
+the production runner.
+
+```bash
+taskset -c 0,2,4,6,8,10,12,14 \
+  python tools/profile_cuda_run.py RUN.yml \
+  --dtype float64 --steps 18 --block-width 32 \
+  --output /tmp/wombat-cuda-profile.json
+
+nsys profile --trace=cuda,nvtx,osrt --output=/tmp/wombat-cuda \
+  python tools/profile_cuda_run.py RUN.yml \
+  --dtype float64 --steps 18 --block-width 32 --nvtx
+```
+
+`tools/cuda_transport_step_harness.py` remains the repeatable prepared-chain
+microbenchmark and handoff-parity tool. `tools/benchmark_cuda_vdiff.py` provides
+the corresponding isolated VDIFF measurement.
+
+Both `nsys` and `ncu` launchers are installed in the development environment.
+An NVTX capture succeeds and produces a `.qdstrm` file, but the local Nsight
+Systems importer binary and its dependencies are missing, so it cannot produce
+or inspect an `.nsys-rep` locally. The raw capture can be imported with a
+complete compatible Nsight Systems installation elsewhere. The installed
+NVIDIA driver also denies non-admin hardware-performance-counter access, so
+Nsight Compute cannot yet provide dynamic occupancy, cache,
+memory-throughput, divergence, or stall counters. Static compiled-kernel
+attributes remain available through CuPy and are included in the JSON report.
+
+The first maintained 128-tracer profiles reproduced the disposable profiler's
+event timings:
+
+| dtype | wall s | device-pool total bytes | horizontal ms | vertical/finalize ms |
+|---|---:|---:|---:|---:|
+| float64 | 4.363 | 2,869,593,088 | 1,295.8 | 664.5 |
+| float32 | 3.256 | 1,636,246,528 | 855.4 | 151.0 |
+
+The pool is cleared after warm-up; `total_bytes` is therefore a useful
+allocation high-water proxy for the timed run. `used_bytes` is zero after the
+runner releases its CUDA executor.
+
+Compiled TPCORE attributes are:
+
+| kernel | dtype | registers/thread | local bytes/thread | static shared bytes |
+|---|---|---:|---:|---:|
+| horizontal | float64 | 48 | 4,608 | 0 |
+| horizontal | float32 | 40 | 2,304 | 0 |
+| vertical/finalize | float64 | 72 | 1,504 | 0 |
+| vertical/finalize | float32 | 48 | 752 | 0 |
+
+The horizontal local allocation is exactly four longitude scratch arrays.
+This defines the first alternate decomposition cleanly: assign one warp to a
+level/tracer task, allocate its four 144-element arrays once in shared memory,
+and distribute longitude-independent loops across lanes. Keep longitude
+recurrences and pole reductions on one lane initially so their strict
+operation order is unchanged. Four or eight warps per block require 18 or
+36 KiB of shared memory in float64, within the reported 48 KiB dynamic-shared
+limit. Develop this as a side-by-side kernel selected only by the profiling
+harness until every intermediate handoff passes.
+
 ## Performance optimization notes
 
 ### First focused pass, 2026-07-26
