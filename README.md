@@ -182,8 +182,8 @@ deviations.
 - [`tools/cuda_transport_step_harness.py`](tools/cuda_transport_step_harness.py)
   validates and benchmarks resident CUDA operator handoffs.
 - [`tools/profile_cuda_run.py`](tools/profile_cuda_run.py) profiles an ordinary
-  CUDA run with nested host/CUDA-event regions, transfer bytes, memory-pool
-  accounting, compiled-kernel attributes, and optional NVTX ranges.
+  CUDA run with nested transport, HISTORY, ObsOperator, transfer, output-I/O,
+  memory-pool, compiled-kernel, and optional NVTX measurements.
 - [`performance.md`](performance.md) is the benchmark and profiling notebook.
 - [`oracle_data/README.md`](oracle_data/README.md) describes the local
   large-fixture cache.

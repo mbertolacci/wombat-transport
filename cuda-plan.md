@@ -737,6 +737,8 @@ controls. Its JSON report contains:
 - CuPy device-pool total bytes as a peak-allocation proxy after clearing the
   warm-up pool;
 - compiled raw-kernel attributes such as registers and local-memory bytes;
+- per-transfer byte counts, host time, and the enclosing profiled operation;
+- redirected output artifact names and sizes;
 - device, compute capability, CUDA, CuPy, and CPU-affinity metadata.
 
 Nested device regions overlap their parent regions and must not be summed.
@@ -748,6 +750,12 @@ the production runner.
 taskset -c 0,2,4,6,8,10,12,14 \
   python tools/profile_cuda_run.py RUN.yml \
   --dtype float64 --steps 18 --block-width 32 \
+  --output /tmp/wombat-cuda-profile.json
+
+taskset -c 0,2,4,6,8,10,12,14 \
+  python tools/profile_cuda_run.py RUN.yml \
+  --dtype float64 --steps 18 --block-width 32 \
+  --run-dir /tmp/wombat-cuda-run \
   --output /tmp/wombat-cuda-profile.json
 
 nsys profile --trace=cuda,nvtx,osrt --output=/tmp/wombat-cuda \
@@ -768,6 +776,12 @@ NVIDIA driver also denies non-admin hardware-performance-counter access, so
 Nsight Compute cannot yet provide dynamic occupancy, cache,
 memory-throughput, divergence, or stall counters. Static compiled-kernel
 attributes remain available through CuPy and are included in the JSON report.
+
+Profiling writes never use the source run directory. Input paths retain their
+source-relative meaning, while HISTORY, ObsOperator output/restart, run
+metadata, and `output_dir` are redirected to an isolated root. Without
+`--run-dir`, that root is temporary and its artifact inventory is captured in
+the JSON report before cleanup.
 
 The first maintained 128-tracer profiles reproduced the disposable profiler's
 event timings:
@@ -882,6 +896,7 @@ not shared storage semantics and not CUDA defaults.
 | Persistent pinned host staging plus a nonblocking copy stream | Rejected for now. Recorded refresh events fell from apparent multi-second host waits to about 7 ms, but complete wall time did not improve: the original host timer was largely waiting for already queued GPU work. The extra pinned allocation and stream/event coordination therefore bought no measured throughput. |
 | Horizontal launch sizes 16, 64, or 128 | Rejected for the current kernel and device. Thirty-two threads was fastest. |
 | Vertical launch sizes 64 or 256 | Rejected for the current kernel and device. The differences were small; 128 remained marginally best. |
+| Native-float32 plan preparation | Deferred as a distinct numerical experiment. Strict float32 currently computes plans in float64 and casts the finalized arrays. All TPCORE plus VDIFF/convection preparation is only 58.3 ms over the complete 3.239-second run, and casting itself is 4.7 ms. Even making plan preparation free would save at most 1.8%; actual savings would be smaller. A native-float32 mode is therefore primarily a drift and memory-policy question, not an obvious performance fix. It should be opt-in and compared over increasing step counts before adoption. |
 
 ### Scratch-lifetime pass, 2026-07-26
 
@@ -931,7 +946,78 @@ An attempted vertical scratch reuse was rejected by the operator parity test.
 The pressure-difference array appears dead after reconstruction but is read
 again by the later monotonic limiter, so it cannot alias the right-edge array.
 The experiment was removed before benchmarking or commit.
-| Native-float32 plan preparation | Deferred as a distinct numerical experiment. Strict float32 currently computes plans in float64 and casts the finalized arrays. All TPCORE plus VDIFF/convection preparation is only 58.3 ms over the complete 3.239-second run, and casting itself is 4.7 ms. Even making plan preparation free would save at most 1.8%; actual savings would be smaller. A native-float32 mode is therefore primarily a drift and memory-policy question, not an obvious performance fix. It should be opt-in and compared over increasing step counts before adoption. |
+
+### Full-run HISTORY and ObsOperator profile, 2026-07-26
+
+The full-run profile uses the same 2x2.5, eighteen-step window at 24 and 128
+tracers. Each case has one resident float64 HISTORY accumulator sampled every
+step, one uncompressed float32 three-hour SpeciesConc output, and one
+ObsOperator entry containing every tracer and point-sampled every step. The
+entry and HISTORY interval both complete at the three-hour boundary. One
+warm-up step is outside the measurement.
+
+The core-transport column sums only the four raw application kernels.
+Preparation, transfers, initialization, I/O, and nested parent regions are
+excluded.
+
+| tracers | dtype | wall s | core transport ms | HISTORY accumulation ms | Obs kernel ms | device pool bytes |
+|---:|---|---:|---:|---:|---:|---:|
+| 24 | float64 | 2.690 | 1,374.3 | 13.0 | 0.142 | 1,125,305,856 |
+| 24 | float32 | 2.147 | 853.2 | 10.8 | 0.146 | 842,995,200 |
+| 128 | float64 | 5.080 | 2,084.5 | 53.9 | 0.154 | 3,500,381,184 |
+| 128 | float32 | 3.935 | 1,050.5 | 45.1 | 0.153 | 2,267,034,624 |
+
+HISTORY accumulation is not a substantial execution cost. It is intentionally
+float64 for both state precisions, however, so its memory cost is one complete
+float64 tracer state. Relative to the transport-only 128-tracer profiles, the
+device pool grows by approximately 631 MB in both modes.
+
+At the 128-tracer boundary:
+
+| operation | float64 state | float32 state |
+|---|---:|---:|
+| HISTORY D2H bytes | 630,669,312 | 630,669,312 |
+| HISTORY D2H host time | 87.1 ms | 87.0 ms |
+| complete HISTORY append | 574.9 ms | 572.1 ms |
+| NetCDF field loop within append | 469.1 ms | 466.6 ms |
+| float32 HISTORY file bytes | 316,025,480 | 316,025,480 |
+| final-state/met D2H bytes | 635,596,416 | 320,261,760 |
+
+The complete append contains the nested transfer and NetCDF regions and must
+not be added to them. The output path is the largest non-transport boundary
+cost. It currently transfers float64 sums and divides/casts on the CPU even
+when the configured output is float32.
+
+ObsOperator tracer scaling is negligible for this point workload. All eighteen
+kernel launches total about 0.15 ms at both tracer counts because the selected
+fields fit in one 128-thread block. Across completion and close, the
+128-tracer run copies only 2,056 bytes back to the host. Its much larger host
+`sync_to_host` duration is time waiting for previously queued transport, not
+ObsOperator copy work. Completion immediately precedes HISTORY here, so it
+moves the synchronization boundary rather than adding equivalent work. A
+workload with entries completing more frequently than HISTORY output may
+behave differently and should be profiled separately.
+
+Eight resident emissions refreshes transfer 107,347,968 bytes and take only
+about 5.3 ms (float64) or 2.9 ms (float32) as device events, while their
+synchronous host calls wait 1.85 seconds or 0.92 seconds behind queued
+transport. This is not a new optimization target: the earlier pinned,
+nonblocking copy-stream experiment removed the apparent wait but did not
+improve complete wall time. The full profile confirms that the blocked host
+timer must not be treated as removable work.
+
+The next target should therefore be HISTORY boundary staging. Retain strict
+float64 accumulation, finalize and cast the completed average to the configured
+output dtype on the GPU, transfer only the output-width buffer, and measure
+parity and wall time. For float32 output this halves the 128-tracer HISTORY
+transfer. If the approximately 466 ms NetCDF loop remains dominant, evaluate a
+double-buffered/background writer so disk output can overlap the next transport
+interval. This is a more direct full-run opportunity than further ObsOperator
+kernel work.
+
+After the HISTORY experiment, return to the side-by-side warp-owned horizontal
+TPCORE kernel. ObsOperator kernel optimization is not justified by these
+profiles.
 
 ### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
 

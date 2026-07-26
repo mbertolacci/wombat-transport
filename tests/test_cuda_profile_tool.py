@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from wombat_transport.run_config import RunConfig
+
 
 TOOL = Path(__file__).parents[1] / "tools" / "profile_cuda_run.py"
 
@@ -37,6 +39,8 @@ def test_cuda_profile_cli_parses_reproducibility_controls():
             "--nvtx",
             "--output",
             "profile.json",
+            "--run-dir",
+            "profile-run",
         ]
     )
 
@@ -48,6 +52,7 @@ def test_cuda_profile_cli_parses_reproducibility_controls():
     assert args.device == 1
     assert args.nvtx
     assert args.output == Path("profile.json")
+    assert args.run_dir == Path("profile-run")
 
 
 def test_cuda_profile_cli_rejects_nonpositive_steps():
@@ -55,3 +60,51 @@ def test_cuda_profile_cli_rejects_nonpositive_steps():
 
     with pytest.raises(SystemExit):
         tool._parse_args(["run.yml", "--steps", "0"])
+
+
+def test_cuda_profile_redirects_outputs_but_preserves_inputs(tmp_path):
+    tool = _load_tool()
+    source = tmp_path / "source"
+    source.mkdir()
+    config = RunConfig(
+        name="profile",
+        root=source,
+        source_run_dir=source,
+        species_database=source / "species.yml",
+        initial_restart=source / "restart.nc4",
+        grid_template=source / "restart.nc4",
+        output_dir=source / "OutputDir",
+        diagnostics={},
+        comparison={},
+        simulation={},
+        meteorology={},
+        emissions="emissions.yml",
+        outputs={
+            "expid": "Original/GEOSChem",
+            "obsoperator": {
+                "activate": True,
+                "input_file": "Obs/obsoperator-YYYYMMDD.yml",
+                "output_file": "Original/Obs.YYYYMMDD.nc4",
+                "restart_file": "Original/Restart.YYYYMMDD.nc4",
+            },
+        },
+        logging={},
+        validation={},
+    )
+
+    redirected = tool._redirect_config(
+        config,
+        tmp_path / "profile-output",
+        name_suffix="timed",
+    )
+
+    assert redirected.root == (tmp_path / "profile-output").resolve()
+    assert redirected.outputs["expid"].startswith(str(redirected.root))
+    obsoperator = redirected.outputs["obsoperator"]
+    assert obsoperator["input_file"] == str(
+        (source / "Obs/obsoperator-YYYYMMDD.yml").resolve()
+    )
+    assert obsoperator["output_file"].startswith(str(redirected.root))
+    assert obsoperator["restart_file"].startswith(str(redirected.root))
+    assert redirected.emissions == str((source / "emissions.yml").resolve())
+    assert config.outputs["expid"] == "Original/GEOSChem"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import replace
 import gc
 import json
@@ -15,12 +16,21 @@ from time import perf_counter
 from typing import Any
 
 import wombat_transport.runner as runner_module
+import wombat_transport.cuda.history as cuda_history_module
 from wombat_transport.cuda.executor import CudaRunExecutor
 from wombat_transport.cuda.forcing import CudaForcingChunks
 from wombat_transport.cuda.preparation import CudaPlanPreparation
 from wombat_transport.cuda.runtime import CudaRuntime
 from wombat_transport.emissions import EmissionsOperator
-from wombat_transport.run_config import load_run_config
+from wombat_transport.obsoperator.manager import ObsOperatorManager
+from wombat_transport.obsoperator.sampling_cuda import CudaObsSampler
+from wombat_transport.obsoperator.writer import _ObsOperatorNetCDFWriter
+from wombat_transport.output import (
+    HistoryOutputManager,
+    _AverageCollection,
+    _StreamingSpeciesConcFile,
+)
+from wombat_transport.run_config import RunConfig, load_run_config
 from wombat_transport.transport.convection._cuda import (
     CudaConvectionExecutor,
 )
@@ -39,6 +49,8 @@ class RunProfiler:
         self.host_seconds: defaultdict[str, float] = defaultdict(float)
         self.host_counts: defaultdict[str, int] = defaultdict(int)
         self.transfer_bytes: defaultdict[str, int] = defaultdict(int)
+        self.transfer_records: list[dict[str, Any]] = []
+        self.host_stack: list[str] = []
         self.device_events: defaultdict[str, list[tuple[Any, Any]]] = (
             defaultdict(list)
         )
@@ -59,12 +71,14 @@ class RunProfiler:
         *,
         device: bool = False,
         byte_arg: int | None = None,
+        transfer_kind: str | None = None,
     ) -> None:
         original = getattr(cls, name)
 
         def wrapped(instance: Any, *args: Any, **kwargs: Any) -> Any:
             if not self.capturing:
                 return original(instance, *args, **kwargs)
+            parent = self.host_stack[-1] if self.host_stack else None
             start_wall = perf_counter()
             start_event = None
             end_event = None
@@ -72,33 +86,70 @@ class RunProfiler:
                 start_event = self.cupy.cuda.Event()
                 end_event = self.cupy.cuda.Event()
                 start_event.record()
-            with self.range(label):
-                result = original(instance, *args, **kwargs)
+            self.host_stack.append(label)
+            try:
+                with self.range(label):
+                    result = original(instance, *args, **kwargs)
+            finally:
+                self.host_stack.pop()
+            elapsed_ms = (perf_counter() - start_wall) * 1000.0
             if end_event is not None:
                 end_event.record()
                 self.device_events[label].append((start_event, end_event))
-            self.host_seconds[label] += perf_counter() - start_wall
+            self.host_seconds[label] += elapsed_ms / 1000.0
             self.host_counts[label] += 1
             if byte_arg is not None and len(args) > byte_arg:
-                self.transfer_bytes[label] += int(args[byte_arg].nbytes)
+                byte_count = int(args[byte_arg].nbytes)
+                self.transfer_bytes[label] += byte_count
+                self.transfer_records.append(
+                    {
+                        "kind": transfer_kind,
+                        "bytes": byte_count,
+                        "host_ms": elapsed_ms,
+                        "parent": parent,
+                    }
+                )
             return result
 
         setattr(cls, name, wrapped)
 
     def timed_runner_function(self, name: str, label: str) -> None:
-        original = getattr(runner_module, name)
+        self.timed_function(runner_module, name, label)
+
+    def timed_function(
+        self,
+        owner: Any,
+        name: str,
+        label: str,
+        *,
+        device: bool = False,
+    ) -> None:
+        original = getattr(owner, name)
 
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             if not self.capturing:
                 return original(*args, **kwargs)
             start = perf_counter()
-            with self.range(label):
-                result = original(*args, **kwargs)
+            start_event = None
+            end_event = None
+            if device:
+                start_event = self.cupy.cuda.Event()
+                end_event = self.cupy.cuda.Event()
+                start_event.record()
+            self.host_stack.append(label)
+            try:
+                with self.range(label):
+                    result = original(*args, **kwargs)
+            finally:
+                self.host_stack.pop()
+            if end_event is not None:
+                end_event.record()
+                self.device_events[label].append((start_event, end_event))
             self.host_seconds[label] += perf_counter() - start
             self.host_counts[label] += 1
             return result
 
-        setattr(runner_module, name, wrapped)
+        setattr(owner, name, wrapped)
 
     def instrument_kernel_attributes(
         self,
@@ -169,6 +220,7 @@ class RunProfiler:
             "host": host,
             "device": device,
             "kernel_attributes": self.kernel_attributes,
+            "transfers": self.transfer_records,
         }
 
 
@@ -181,24 +233,35 @@ def main(argv: list[str] | None = None) -> int:
     cupy = runtime.array_module
     profiler = RunProfiler(cupy, nvtx=args.nvtx)
     _install_instrumentation(profiler)
-    config = load_run_config(args.config)
+    source_config = load_run_config(args.config)
+    temporary_root = None
+    if args.run_dir is None:
+        temporary_root = TemporaryDirectory(prefix="wombat-cuda-profile-run-")
+        profile_root = Path(temporary_root.name)
+    else:
+        profile_root = args.run_dir.resolve()
+        profile_root.mkdir(parents=True, exist_ok=True)
 
     if args.warmup_steps:
-        with TemporaryDirectory(prefix="wombat-cuda-profile-warmup-") as work:
-            warm_config = replace(
-                config,
-                name=f"{config.name}_profile_warmup",
-                output_dir=Path(work),
-            )
-            warm = runner_module.run_tracer_simulation(
-                warm_config,
-                max_steps=args.warmup_steps,
-            )
+        warm_config = _redirect_config(
+            source_config,
+            profile_root / "warmup",
+            name_suffix="profile_warmup",
+        )
+        warm = runner_module.run_tracer_simulation(
+            warm_config,
+            max_steps=args.warmup_steps,
+        )
         del warm
         gc.collect()
         cupy.get_default_memory_pool().free_all_blocks()
         cupy.get_default_pinned_memory_pool().free_all_blocks()
 
+    config = _redirect_config(
+        source_config,
+        profile_root / "timed",
+        name_suffix="profile_timed",
+    )
     profiler.capturing = True
     whole_start = cupy.cuda.Event()
     whole_end = cupy.cuda.Event()
@@ -216,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
 
     memory_pool = cupy.get_default_memory_pool()
     pinned_pool = cupy.get_default_pinned_memory_pool()
+    artifacts = _artifact_summary(config.root)
     report = {
         "metadata": {
             "config": str(args.config.resolve()),
@@ -223,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
             "block_width": args.block_width,
             "steps": args.steps,
             "warmup_steps": args.warmup_steps,
+            "profile_run_root": str(config.root),
+            "profile_run_root_temporary": args.run_dir is None,
             "device_id": args.device,
             "device": runtime.device_info.name,
             "compute_capability": runtime.device_info.compute_capability,
@@ -251,8 +317,11 @@ def main(argv: list[str] | None = None) -> int:
             "device_pool_used_bytes": int(memory_pool.used_bytes()),
             "device_pool_total_bytes": int(memory_pool.total_bytes()),
             "pinned_pool_free_blocks": int(pinned_pool.n_free_blocks()),
+            "output_artifact_count": artifacts["count"],
+            "output_artifact_bytes": artifacts["bytes"],
         },
         "regions": profiler.report_regions(),
+        "output_artifacts": artifacts["files"],
     }
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output is None:
@@ -261,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(f"{text}\n", encoding="utf-8")
         print(args.output)
+    if temporary_root is not None:
+        temporary_root.cleanup()
     return 0
 
 
@@ -277,18 +348,42 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             "evaluate_surface_flux",
             "host.emissions",
         ),
+        (HistoryOutputManager, "prepare_step", "history.prepare"),
+        (HistoryOutputManager, "complete_step", "history.complete"),
+        (HistoryOutputManager, "close", "history.close"),
+        (_AverageCollection, "_append_average", "history.append_average"),
+        (
+            _StreamingSpeciesConcFile,
+            "append_average",
+            "history.netcdf_append",
+        ),
+        (
+            _StreamingSpeciesConcFile,
+            "_write_average",
+            "history.netcdf_write_fields",
+        ),
+        (ObsOperatorManager, "sample", "obsoperator.manager_sample"),
+        (ObsOperatorManager, "_initialize_for_date", "obsoperator.plan_update"),
+        (ObsOperatorManager, "close", "obsoperator.close"),
+        (
+            _ObsOperatorNetCDFWriter,
+            "write_completed",
+            "obsoperator.stage_completed",
+        ),
+        (_ObsOperatorNetCDFWriter, "flush", "obsoperator.netcdf_flush"),
     ):
         profiler.timed_method(cls, name, label)
 
-    for cls, name, label, byte_arg in (
-        (CudaRuntime, "to_device", "cuda.h2d_allocate", 0),
-        (CudaRuntime, "copy_to_device", "cuda.h2d_refresh", 1),
-        (CudaRuntime, "to_host", "cuda.d2h", 0),
-        (CudaForcingChunks, "select", "cuda.forcing_select", None),
+    for cls, name, label, byte_arg, transfer_kind in (
+        (CudaRuntime, "to_device", "cuda.h2d_allocate", 0, "h2d_allocate"),
+        (CudaRuntime, "copy_to_device", "cuda.h2d_refresh", 1, "h2d_refresh"),
+        (CudaRuntime, "to_host", "cuda.d2h", 0, "d2h"),
+        (CudaForcingChunks, "select", "cuda.forcing_select", None, None),
         (
             CudaPlanPreparation,
             "prepare_tpcore_step",
             "cuda.prepare_tpcore",
+            None,
             None,
         ),
         (
@@ -296,11 +391,13 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             "prepare_vdiff_and_convection",
             "cuda.prepare_vdiff_convection",
             None,
+            None,
         ),
         (
             CudaTpcoreExecutor,
             "apply_blocks",
             "cuda.transport_tpcore",
+            None,
             None,
         ),
         (
@@ -308,11 +405,27 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             "apply_blocks",
             "cuda.transport_vdiff",
             None,
+            None,
         ),
         (
             CudaConvectionExecutor,
             "apply_blocks",
             "cuda.transport_convection",
+            None,
+            None,
+        ),
+        (
+            CudaObsSampler,
+            "sample",
+            "cuda.obsoperator_sample",
+            None,
+            None,
+        ),
+        (
+            CudaObsSampler,
+            "sync_to_host",
+            "cuda.obsoperator_sync",
+            None,
             None,
         ),
     ):
@@ -322,6 +435,7 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             label,
             device=True,
             byte_arg=byte_arg,
+            transfer_kind=transfer_kind,
         )
 
     profiler.instrument_kernel_attributes(
@@ -371,6 +485,16 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             )
         ),
     )
+    profiler.instrument_kernel_attributes(
+        CudaObsSampler,
+        (("_kernel", "kernel.obsoperator"),),
+    )
+    profiler.timed_function(
+        cuda_history_module,
+        "accumulate_history_sums",
+        "cuda.history_accumulate",
+        device=True,
+    )
 
     for name, label in (
         ("initialize_tracers", "host.initialize_tracers"),
@@ -397,6 +521,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--device", type=_nonnegative_int, default=0)
     parser.add_argument("--nvtx", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        help=(
+            "Keep redirected HISTORY, ObsOperator, restart, and metadata "
+            "artifacts under this directory; otherwise use a temporary root."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -420,6 +552,64 @@ def _json_scalar(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return str(value)
+
+
+def _redirect_config(
+    config: RunConfig,
+    root: Path,
+    *,
+    name_suffix: str,
+) -> RunConfig:
+    """Redirect all profiler-owned writes while preserving input locations."""
+
+    root = root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    outputs = deepcopy(config.outputs)
+    if outputs:
+        outputs["expid"] = str(root / "history" / "GEOSChem")
+        obsoperator = outputs.get("obsoperator")
+        if isinstance(obsoperator, dict):
+            input_file = obsoperator.get("input_file")
+            if input_file is not None:
+                input_path = Path(str(input_file))
+                if not input_path.is_absolute():
+                    input_path = config.root / input_path
+                obsoperator["input_file"] = str(input_path.resolve())
+            for key in ("output_file", "restart_file"):
+                value = obsoperator.get(key)
+                if value is not None:
+                    obsoperator[key] = str(
+                        root / "obsoperator" / Path(str(value)).name
+                    )
+    emissions = config.emissions
+    if isinstance(emissions, str):
+        emissions_path = Path(emissions)
+        if not emissions_path.is_absolute():
+            emissions = str((config.root / emissions_path).resolve())
+    return replace(
+        config,
+        name=f"{config.name}_{name_suffix}",
+        root=root,
+        source_run_dir=root,
+        output_dir=root / "OutputDir",
+        emissions=emissions,
+        outputs=outputs,
+    )
+
+
+def _artifact_summary(root: Path) -> dict[str, Any]:
+    files = []
+    total_bytes = 0
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        size = path.stat().st_size
+        total_bytes += size
+        files.append(
+            {
+                "path": str(path.relative_to(root)),
+                "bytes": size,
+            }
+        )
+    return {"count": len(files), "bytes": total_bytes, "files": files}
 
 
 if __name__ == "__main__":
