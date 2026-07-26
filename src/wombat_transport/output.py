@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -97,6 +97,7 @@ class HistoryOutputManager:
                 collection=collection,
                 start=start,
                 accumulator_index=index,
+                materialize=self._materialize_array,
             )
             for index, collection in enumerate(
                 collection
@@ -111,13 +112,17 @@ class HistoryOutputManager:
                 expid=expid,
                 collection=collection,
                 start=start,
+                materialize_state=self._materialize_state,
             )
             for collection in collections
             if collection.mode == "instantaneous"
         ]
-        self._sums: np.ndarray | None = None
+        self._sums: Any | None = None
         self._prepared_timestamp: datetime | None = None
         self._last_state: TracerField | None = None
+        self._zeros = lambda shape: np.zeros(shape, dtype=np.float64)
+        self._array_materializer = lambda values: values
+        self._state_materializer = lambda state: state
 
     @classmethod
     def from_run_config(
@@ -153,11 +158,29 @@ class HistoryOutputManager:
             accumulate_history_sums(sums, snapshot.state.block_data[0])
         self.complete_step(snapshot)
 
+    def use_cuda(self, runtime: Any) -> None:
+        """Keep HISTORY sums resident and materialize only writer boundaries."""
+
+        if self._sums is not None:
+            raise ValueError("cannot change HISTORY storage after accumulation starts")
+        self._zeros = lambda shape: runtime.zeros(shape, dtype=np.float64)
+        self._array_materializer = runtime.to_host
+
+        def materialize_state(state: TracerField) -> TracerField:
+            return TracerField(
+                names=state.names,
+                data=runtime.to_host(state.block_data),
+                units=state.units,
+                coords=state.coords,
+            )
+
+        self._state_materializer = materialize_state
+
     def prepare_step(
         self,
         timestamp: datetime,
         state: TracerField,
-    ) -> np.ndarray | None:
+    ) -> Any | None:
         if self._prepared_timestamp is not None:
             raise ValueError("an output transport step is already prepared")
         self._ensure_accumulators(state)
@@ -205,13 +228,19 @@ class HistoryOutputManager:
             return
         expected = (len(self._averages), *state.block_data.shape[1:])
         if self._sums is None:
-            self._sums = np.zeros(expected, dtype=np.float64)
+            self._sums = self._zeros(expected)
             return
         if self._sums.shape != expected:
             raise ValueError(
                 f"HISTORY tracer storage changed from {self._sums.shape[1:]} "
                 f"to {expected[1:]}"
             )
+
+    def _materialize_array(self, values: Any) -> np.ndarray:
+        return self._array_materializer(values)
+
+    def _materialize_state(self, state: TracerField) -> TracerField:
+        return self._state_materializer(state)
 
 
 class _AverageCollection:
@@ -224,6 +253,7 @@ class _AverageCollection:
         collection: OutputCollectionConfig,
         start: datetime,
         accumulator_index: int,
+        materialize: Any,
     ) -> None:
         self._root = root
         self._template_path = template_path
@@ -231,6 +261,7 @@ class _AverageCollection:
         self._collection = collection
         self._start = start
         self.accumulator_index = accumulator_index
+        self._materialize = materialize
         self._window_start: datetime | None = None
         self._window_end: datetime | None = None
         self._group_start: datetime | None = None
@@ -348,7 +379,7 @@ class _AverageCollection:
             )
         self._file.append_average(
             self._window_start,
-            summed,
+            self._materialize(summed),
             self._count,
             metadata,
         )
@@ -519,19 +550,25 @@ class _InstantaneousRestartWriter:
         expid: str,
         collection: OutputCollectionConfig,
         start: datetime,
+        materialize_state: Any,
     ) -> None:
         self._root = root
         self._template_path = template_path
         self._expid = expid
         self._collection = collection
         self._next_output = collection.frequency.add_to(start)
+        self._materialize_state = materialize_state
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
         while snapshot.timestamp >= self._next_output:
             path = _collection_path(self._root, self._expid, self._collection, self._next_output)
+            host_snapshot = replace(
+                snapshot,
+                state=self._materialize_state(snapshot.state),
+            )
             write_restart_collection(
                 path,
-                snapshot,
+                host_snapshot,
                 self._template_path,
                 fields=self._collection.fields,
                 title=f"GEOS-Chem diagnostic collection: {self._collection.name}",

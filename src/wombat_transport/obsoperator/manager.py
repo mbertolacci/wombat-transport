@@ -65,6 +65,7 @@ class ObsOperatorManager:
         self._sample_scratch = np.empty(0, dtype=np.float64)
         self._sampling_kernel = select_sampling_kernel()
         self._writer: _ObsOperatorNetCDFWriter | None = None
+        self._cuda_sampler = None
         self._closed = False
         self._load_restart()
 
@@ -104,59 +105,17 @@ class ObsOperatorManager:
             )
         self._initialize_for_date(step_start)
         if self._plan.first_unexpired < self._plan.entry_count:
-            state_bottom = np.asarray(
-                snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
-            )
-            wet_surface_pressure = np.asarray(
-                snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64
-            )
-            specific_humidity = np.asarray(
-                snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64
-            )
-            temperature = np.asarray(snapshot.forcing.temperature_k[0], dtype=np.float64)
-            width = snapshot.state.block_width
             plan = self._plan
-            required_scratch = state_bottom.shape[0] * width
-            if self._sample_scratch.size < required_scratch:
-                self._sample_scratch = np.empty(required_scratch, dtype=np.float64)
-            self._sampling_kernel(
-                state_bottom,
-                width,
-                0,
-                state_bottom.shape[0],
-                step_time_us,
-                wet_surface_pressure,
-                specific_humidity,
-                temperature,
-                self._grid.area_m2,
-                self._grid.hyai_hpa,
-                self._grid.hybi,
-                plan.first_unexpired,
-                plan.entry_field_start,
-                plan.entry_field_count,
-                plan.field_tracer,
-                plan.field_to_accumulator,
-                plan.time_operator_start,
-                plan.time_operator_count,
-                plan.time_operator_bounds_us,
-                plan.time_operator_weight,
-                plan.horizontal_operator_start,
-                plan.horizontal_operator_count,
-                plan.horizontal_operator_bounds,
-                plan.horizontal_weight_type,
-                plan.horizontal_weight,
-                plan.horizontal_normalization,
-                plan.vertical_operator_start,
-                plan.vertical_operator_count,
-                plan.vertical_operator_type,
-                plan.vertical_operator_unit,
-                plan.vertical_operator_bounds,
-                plan.vertical_weight_type,
-                plan.vertical_weight,
-                self._sample_scratch,
-                plan.accumulator,
-            )
+            if self._cuda_sampler is None:
+                self._sample_cpu(plan, step_time_us, snapshot)
+            else:
+                self._cuda_sampler.sample(
+                    plan,
+                    step_time_us=step_time_us,
+                    snapshot=snapshot,
+                )
             if self._config.verbose:
+                self._sync_cuda_accumulator()
                 for entry_index in range(plan.first_unexpired, plan.entry_count):
                     time_slice = _ragged_slice(
                         plan.time_operator_start, plan.time_operator_count, entry_index
@@ -172,6 +131,7 @@ class ObsOperatorManager:
         boundary_us = step_time_us + self._transport_dt_us
         complete = completed_prefix(self._plan, boundary_us)
         if complete > self._plan.first_unexpired:
+            self._sync_cuda_accumulator()
             batch = _completed_batch_range(
                 self._plan,
                 self._plan.first_unexpired,
@@ -183,6 +143,19 @@ class ObsOperatorManager:
             self._writer.write_completed(batch)
             self._plan.first_unexpired = complete
         self._position_us = boundary_us
+
+    def use_cuda(self, runtime, *, dtype) -> None:
+        """Sample resident tracer state while retaining host plan management."""
+
+        if self._cuda_sampler is not None:
+            raise ValueError("ObsOperator CUDA sampling is already configured")
+        from wombat_transport.obsoperator.sampling_cuda import CudaObsSampler
+
+        self._cuda_sampler = CudaObsSampler(
+            runtime,
+            dtype=dtype,
+            grid=self._grid,
+        )
 
     def close(self, *, boundary_time: datetime) -> None:
         if self._closed:
@@ -196,6 +169,7 @@ class ObsOperatorManager:
                 "ObsOperator plan has an invalid model position at restart boundary "
                 f"{boundary_time.isoformat()}"
             )
+        self._sync_cuda_accumulator()
         self._plan = compact_obs_plan(self._plan, boundary_us)
         restart_path = _resolve_template_path(self._root, self._config.restart_file, boundary_time)
         _write_obsoperator_restart(
@@ -222,6 +196,7 @@ class ObsOperatorManager:
             raise ValueError(
                 "ObsOperator plan cannot skip model timesteps while changing daily input"
             )
+        self._sync_cuda_accumulator()
         candidate_plan = compact_obs_plan(self._plan, current_time_us)
         if input_path.is_file():
             incoming = _load_obs_plan(
@@ -243,6 +218,8 @@ class ObsOperatorManager:
         else:
             logger.info("obsoperator_input_missing path=%s", input_path)
         self._plan = candidate_plan
+        if self._cuda_sampler is not None:
+            self._cuda_sampler.invalidate()
         self._previous_input_path = input_path
 
     def _ensure_open(self) -> None:
@@ -266,6 +243,71 @@ class ObsOperatorManager:
             grid=self._grid,
         )
         logger.info("obsoperator_restart_loaded path=%s entries=%d", restart_path, self._plan.entry_count)
+
+    def _sample_cpu(
+        self,
+        plan,
+        step_time_us: int,
+        snapshot: CompletedStepSnapshot,
+    ) -> None:
+        state_bottom = np.asarray(
+            snapshot.state.block_data[0, :, ::-1, :, :, :], dtype=np.float64
+        )
+        wet_surface_pressure = np.asarray(
+            snapshot.forcing.wet_surface_pressure_hpa[0], dtype=np.float64
+        )
+        specific_humidity = np.asarray(
+            snapshot.forcing.specific_humidity_kg_kg[0], dtype=np.float64
+        )
+        temperature = np.asarray(
+            snapshot.forcing.temperature_k[0],
+            dtype=np.float64,
+        )
+        width = snapshot.state.block_width
+        required_scratch = state_bottom.shape[0] * width
+        if self._sample_scratch.size < required_scratch:
+            self._sample_scratch = np.empty(required_scratch, dtype=np.float64)
+        self._sampling_kernel(
+            state_bottom,
+            width,
+            0,
+            state_bottom.shape[0],
+            step_time_us,
+            wet_surface_pressure,
+            specific_humidity,
+            temperature,
+            self._grid.area_m2,
+            self._grid.hyai_hpa,
+            self._grid.hybi,
+            plan.first_unexpired,
+            plan.entry_field_start,
+            plan.entry_field_count,
+            plan.field_tracer,
+            plan.field_to_accumulator,
+            plan.time_operator_start,
+            plan.time_operator_count,
+            plan.time_operator_bounds_us,
+            plan.time_operator_weight,
+            plan.horizontal_operator_start,
+            plan.horizontal_operator_count,
+            plan.horizontal_operator_bounds,
+            plan.horizontal_weight_type,
+            plan.horizontal_weight,
+            plan.horizontal_normalization,
+            plan.vertical_operator_start,
+            plan.vertical_operator_count,
+            plan.vertical_operator_type,
+            plan.vertical_operator_unit,
+            plan.vertical_operator_bounds,
+            plan.vertical_weight_type,
+            plan.vertical_weight,
+            self._sample_scratch,
+            plan.accumulator,
+        )
+
+    def _sync_cuda_accumulator(self) -> None:
+        if self._cuda_sampler is not None:
+            self._cuda_sampler.sync_to_host(self._plan)
 
 
 def _ragged_slice(starts: np.ndarray, counts: np.ndarray, index: int) -> slice:

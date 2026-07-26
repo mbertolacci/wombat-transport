@@ -1,0 +1,274 @@
+"""CUDA application of a prepared TPCORE transport plan."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from wombat_transport.cuda.modules import load_raw_module
+from wombat_transport.cuda.runtime import CudaRuntime
+from wombat_transport.transport.tpcore._plan import TpcorePlan
+
+
+@dataclass(frozen=True)
+class CudaTpcorePlan:
+    delp1: Any
+    delp2: Any
+    pu: Any
+    xmass: Any
+    ymass: Any
+    vertical_mass_flux: Any
+    normalized_vertical_courant: Any
+    cx: Any
+    cy: Any
+    geofac: Any
+    geofac_pc: float
+    ua: Any
+    va: Any
+    jn: Any
+    js: Any
+    area_1d: Any
+
+
+@dataclass(frozen=True)
+class CudaTpcoreResult:
+    tracer_blocks: Any
+    q_after_horizontal: Any | None
+    dq_after_horizontal: Any | None
+    dq_after_vertical: Any | None
+
+
+class CudaTpcoreExecutor:
+    """Own the strict, staged CUDA TPCORE implementation."""
+
+    def __init__(self, runtime: CudaRuntime, *, dtype: np.dtype[Any] | type[Any]) -> None:
+        resolved_dtype = np.dtype(dtype)
+        if resolved_dtype == np.dtype(np.float32):
+            cuda_type = "float"
+        elif resolved_dtype == np.dtype(np.float64):
+            cuda_type = "double"
+        else:
+            raise ValueError("CUDA TPCORE supports only float32 and float64")
+        expressions = tuple(
+            f"{name}<{cuda_type}>"
+            for name in (
+                "tpcore_horizontal",
+                "tpcore_vertical",
+                "tpcore_finalize",
+            )
+        )
+        module = load_raw_module("tpcore.cu", name_expressions=expressions)
+        self._runtime = runtime
+        self._cupy = runtime.array_module
+        self._dtype = resolved_dtype
+        self._horizontal = module.get_function(expressions[0])
+        self._vertical = module.get_function(expressions[1])
+        self._finalize = module.get_function(expressions[2])
+        self._qqu: Any | None = None
+        self._qqv: Any | None = None
+
+    @property
+    def dtype(self) -> np.dtype[Any]:
+        return self._dtype
+
+    def upload_plan(self, plan: TpcorePlan) -> CudaTpcorePlan:
+        """Upload one tracer-independent TPCORE plan."""
+
+        setup = plan.setup
+        return CudaTpcorePlan(
+            delp1=self._runtime.to_device(setup.delp1_hpa, dtype=self._dtype),
+            delp2=self._runtime.to_device(setup.delp2_hpa, dtype=self._dtype),
+            pu=self._runtime.to_device(setup.pu_hpa, dtype=self._dtype),
+            xmass=self._runtime.to_device(setup.xmass_hpa, dtype=self._dtype),
+            ymass=self._runtime.to_device(setup.ymass_hpa, dtype=self._dtype),
+            vertical_mass_flux=self._runtime.to_device(
+                setup.vertical_mass_flux_hpa,
+                dtype=self._dtype,
+            ),
+            normalized_vertical_courant=self._runtime.to_device(
+                plan.normalized_vertical_courant,
+                dtype=self._dtype,
+            ),
+            cx=self._runtime.to_device(setup.cx, dtype=self._dtype),
+            cy=self._runtime.to_device(setup.cy, dtype=self._dtype),
+            geofac=self._runtime.to_device(setup.geofac, dtype=self._dtype),
+            geofac_pc=float(setup.geofac_pc),
+            ua=self._runtime.to_device(plan.ua, dtype=self._dtype),
+            va=self._runtime.to_device(plan.va, dtype=self._dtype),
+            jn=self._runtime.to_device(plan.jn, dtype=np.int64),
+            js=self._runtime.to_device(plan.js, dtype=np.int64),
+            area_1d=self._runtime.to_device(plan.area_1d_m2, dtype=self._dtype),
+        )
+
+    def apply_blocks(
+        self,
+        tracer_blocks: Any,
+        plan: CudaTpcorePlan,
+        *,
+        tracer_count: int,
+        fill: bool = True,
+        finalize_output: bool = True,
+        output: Any | None = None,
+        capture_handoffs: bool = False,
+    ) -> CudaTpcoreResult:
+        """Consume resident concentration and produce mass or concentration."""
+
+        nblock, nlev, nlat, nlon, lane_width = self._validate(
+            tracer_blocks,
+            plan,
+            tracer_count,
+        )
+        _ = nblock
+        output = self._resolve_output(tracer_blocks, output)
+        output.fill(0)
+        if self._qqu is None or self._qqu.shape != tracer_blocks.shape:
+            self._qqu = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
+            self._qqv = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
+
+        scalar_type = self._dtype.type
+        horizontal_work = nlev * tracer_count
+        horizontal_threads = 32
+        self._horizontal(
+            ((horizontal_work + horizontal_threads - 1) // horizontal_threads,),
+            (horizontal_threads,),
+            (
+                tracer_blocks,
+                output,
+                self._qqu,
+                self._qqv,
+                plan.delp1,
+                plan.pu,
+                plan.xmass,
+                plan.ymass,
+                plan.cx,
+                plan.cy,
+                plan.geofac,
+                scalar_type(plan.geofac_pc),
+                plan.ua,
+                plan.va,
+                plan.jn,
+                plan.js,
+                plan.area_1d,
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+        )
+        q_after_horizontal = tracer_blocks.copy() if capture_handoffs else None
+        dq_after_horizontal = output.copy() if capture_handoffs else None
+
+        column_work = nlat * nlon * tracer_count
+        column_threads = 128
+        column_blocks = (column_work + column_threads - 1) // column_threads
+        self._vertical(
+            (column_blocks,),
+            (column_threads,),
+            (
+                tracer_blocks,
+                output,
+                plan.delp1,
+                plan.vertical_mass_flux,
+                plan.normalized_vertical_courant,
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+        )
+        dq_after_vertical = output.copy() if capture_handoffs else None
+        self._finalize(
+            (column_blocks,),
+            (column_threads,),
+            (
+                output,
+                plan.delp2,
+                np.int32(fill),
+                np.int32(finalize_output),
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+        )
+        return CudaTpcoreResult(
+            tracer_blocks=output,
+            q_after_horizontal=q_after_horizontal,
+            dq_after_horizontal=dq_after_horizontal,
+            dq_after_vertical=dq_after_vertical,
+        )
+
+    def _validate(
+        self,
+        tracer: Any,
+        plan: CudaTpcorePlan,
+        tracer_count: int,
+    ) -> tuple[int, int, int, int, int]:
+        if not self._runtime.is_device_array(tracer):
+            raise TypeError("CUDA TPCORE tracer storage must be a CuPy array")
+        if tracer.ndim != 5:
+            raise ValueError("CUDA TPCORE tracer block storage must be 5-D")
+        if tracer.dtype != self._dtype or not tracer.flags.c_contiguous:
+            raise ValueError("CUDA TPCORE tracer storage has the wrong dtype or layout")
+        nblock, nlev, nlat, nlon, lane_width = tracer.shape
+        if nlev != 47 or nlat not in {46, 91} or nlon not in {72, 144}:
+            if nlev > 47 or nlat > 91 or nlon > 144:
+                raise ValueError("CUDA TPCORE grid exceeds compiled workspace bounds")
+        if tracer_count <= (nblock - 1) * lane_width or tracer_count > nblock * lane_width:
+            raise ValueError("CUDA TPCORE tracer count does not match block storage")
+        center_shape = (nlev, nlat, nlon)
+        for name in (
+            "delp1",
+            "delp2",
+            "pu",
+            "xmass",
+            "ymass",
+            "vertical_mass_flux",
+            "normalized_vertical_courant",
+            "cx",
+            "cy",
+            "ua",
+            "va",
+        ):
+            self._validate_array(getattr(plan, name), center_shape, name)
+        self._validate_array(plan.geofac, (nlat,), "geofac")
+        self._validate_array(plan.area_1d, (nlat,), "area_1d")
+        self._validate_array(plan.jn, (nlev,), "jn", dtype=np.dtype(np.int64))
+        self._validate_array(plan.js, (nlev,), "js", dtype=np.dtype(np.int64))
+        return nblock, nlev, nlat, nlon, lane_width
+
+    def _validate_array(
+        self,
+        values: Any,
+        shape: tuple[int, ...],
+        label: str,
+        *,
+        dtype: np.dtype[Any] | None = None,
+    ) -> None:
+        expected_dtype = self._dtype if dtype is None else dtype
+        if not self._runtime.is_device_array(values):
+            raise TypeError(f"CUDA TPCORE {label} must be a CuPy array")
+        if values.shape != shape or values.dtype != expected_dtype:
+            raise ValueError(
+                f"CUDA TPCORE {label} must have shape {shape} and dtype {expected_dtype}"
+            )
+        if not values.flags.c_contiguous:
+            raise ValueError(f"CUDA TPCORE {label} must be C-contiguous")
+
+    def _resolve_output(self, tracer: Any, output: Any | None) -> Any:
+        if output is None:
+            return self._runtime.empty(tracer.shape, dtype=self._dtype)
+        if not self._runtime.is_device_array(output):
+            raise TypeError("CUDA TPCORE output must be a CuPy array")
+        if output.shape != tracer.shape or output.dtype != self._dtype:
+            raise ValueError("CUDA TPCORE output must match tracer storage")
+        if not output.flags.c_contiguous:
+            raise ValueError("CUDA TPCORE output must be C-contiguous")
+        if self._cupy.shares_memory(output, tracer):
+            raise ValueError("CUDA TPCORE output must not overlap tracer input")
+        return output

@@ -40,13 +40,17 @@ from wombat_transport.transport import (
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
     TransportExecutor,
+    prepare_transport_step,
     run_transport_one_step,
     run_transport_step_with_executor,
 )
 from wombat_transport.transport.numba_control import (
+    configure_numba_threads,
     numba_available_and_enabled,
     warn_if_numba_disabled,
 )
+from wombat_transport.transport.pbl._plan import make_vdiff_plan_workspace
+from wombat_transport.transport.tpcore._plan import make_tpcore_plan_workspace
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
@@ -90,7 +94,8 @@ def _run_tracer_simulation(
 ) -> TracerSimulationResult:
     warn_if_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
-    _write_run_metadata(config)
+    execution_backend = _execution_backend()
+    _write_run_metadata(config, execution_backend=execution_backend)
     species = load_species_database(config.species_database)
     logger.debug("loaded_species count=%d", len(species))
     initial_state = initialize_tracers(
@@ -100,13 +105,22 @@ def _run_tracer_simulation(
     )
     parallel_strategy = _transport_executor()
     numba_transport = numba_available_and_enabled()
+    if execution_backend == "cuda" and not numba_transport:
+        raise ValueError(
+            "WOMBAT_BACKEND=cuda requires WOMBAT_NUMBA to be enabled for "
+            "CPU transport-plan preparation"
+        )
     if parallel_strategy == "blocks" and not numba_transport:
         raise ValueError(
             "WOMBAT_TRANSPORT_EXECUTOR=blocks requires WOMBAT_NUMBA to be enabled"
         )
-    block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
+    block_width = (
+        _cuda_block_width(initial_state.tracer_count)
+        if execution_backend == "cuda"
+        else _transport_block_width(parallel_strategy, initial_state.tracer_count)
+    )
     state = initial_state.reblock(block_width)
-    use_unified_numba = numba_transport
+    use_unified_numba = numba_transport and execution_backend == "cpu"
     transport_executor = (
         TransportExecutor.create(state)
         if use_unified_numba
@@ -121,6 +135,22 @@ def _run_tracer_simulation(
         parallel_strategy,
     )
     grid = load_transport_grid(config.grid_template)
+    cuda_workers = (
+        configure_numba_threads(available=True)
+        if execution_backend == "cuda"
+        else 1
+    )
+    cuda_tpcore_workspace = (
+        make_tpcore_plan_workspace(*grid.shape)
+        if execution_backend == "cuda"
+        else None
+    )
+    cuda_vdiff_workspace = (
+        make_vdiff_plan_workspace(*grid.shape)
+        if execution_backend == "cuda"
+        else None
+    )
+    cuda_executor = None
     tpcore_static_terms = build_tpcore_static_terms(
         area_m2=grid.area_m2,
         hyai_hpa=grid.hyai_hpa,
@@ -211,7 +241,39 @@ def _run_tracer_simulation(
                 elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s))
             ),
         )
-        if transport_executor is None:
+        if execution_backend == "cuda":
+            prepared = prepare_transport_step(
+                state,
+                forcing,
+                grid,
+                workers=cuda_workers,
+                tpcore_workspace=cuda_tpcore_workspace,
+                vdiff_workspace=cuda_vdiff_workspace,
+                **transport_kwargs,
+            )
+            if cuda_executor is None:
+                from wombat_transport.cuda.executor import CudaRunExecutor
+
+                cuda_executor = CudaRunExecutor(
+                    state,
+                    dtype=_cuda_dtype(),
+                    device_id=_cuda_device(),
+                )
+                logger.info(
+                    "cuda_initialized device=%s dtype=%s block_width=%d",
+                    cuda_executor.runtime.device_info.name,
+                    cuda_executor.dtype.name,
+                    state.block_width,
+                )
+                if output_manager is not None:
+                    output_manager.use_cuda(cuda_executor.runtime)
+                if obsoperator_manager is not None:
+                    obsoperator_manager.use_cuda(
+                        cuda_executor.runtime,
+                        dtype=cuda_executor.dtype,
+                    )
+            transport_result = cuda_executor.apply(prepared)
+        elif transport_executor is None:
             transport_result = run_transport_one_step(
                 state, forcing, grid, consume_input=True, **transport_kwargs
             )
@@ -251,7 +313,17 @@ def _run_tracer_simulation(
             logger.debug("recording_outputs step=%d timestamp=%s", transport_steps, step_end.isoformat())
             output_sums = output_manager.prepare_step(step_end, state)
             if output_sums is not None:
-                accumulate_history_sums(output_sums, state.block_data[0])
+                if execution_backend == "cuda":
+                    from wombat_transport.cuda.history import (
+                        accumulate_history_sums as accumulate_cuda_history_sums,
+                    )
+
+                    accumulate_cuda_history_sums(
+                        output_sums,
+                        state.block_data[0],
+                    )
+                else:
+                    accumulate_history_sums(output_sums, state.block_data[0])
             output_manager.complete_step(snapshot)
         current = step_end
 
@@ -261,8 +333,24 @@ def _run_tracer_simulation(
         emissions_steps,
         float(np.sum(emitted_mass_by_tracer)),
     )
+    final_state = (
+        cuda_executor.to_host_state()
+        if cuda_executor is not None
+        else state
+    )
+    if cuda_executor is not None:
+        transfers = cuda_executor.runtime.transfer_stats
+        logger.info(
+            "cuda_transfers_before_close h2d_count=%d h2d_bytes=%d d2h_count=%d "
+            "d2h_bytes=%d synchronizations=%d",
+            transfers.host_to_device_count,
+            transfers.host_to_device_bytes,
+            transfers.device_to_host_count,
+            transfers.device_to_host_bytes,
+            transfers.explicit_synchronizations,
+        )
     return TracerSimulationResult(
-        state=state,
+        state=final_state,
         emissions_processed=tuple(emissions_processed),
         emitted_mass_by_tracer=emitted_mass_by_tracer,
         transport_steps=transport_steps,
@@ -286,7 +374,23 @@ def _close_obsoperator_manager(
     manager.close(boundary_time=boundary_time())
 
 
-def _write_run_metadata(config: RunConfig) -> None:
+def _write_run_metadata(
+    config: RunConfig,
+    *,
+    execution_backend: str,
+) -> None:
+    execution: dict[str, Any] = {
+        "backend": execution_backend,
+        "transport_executor": _transport_executor(),
+    }
+    if execution_backend == "cuda":
+        execution.update(
+            {
+                "device_id": _cuda_device(),
+                "dtype": _cuda_dtype().name,
+                "numerical_mode": "strict",
+            }
+        )
     metadata = {
         "schema_version": 1,
         "kind": "wombat-run",
@@ -294,6 +398,7 @@ def _write_run_metadata(config: RunConfig) -> None:
         "run_directory": str(config.root),
         "written_at_utc": datetime.now(timezone.utc).isoformat(),
         "git": _git_provenance(config.root),
+        "execution": execution,
     }
     path = config.root / RUN_METADATA_NAME
     try:
@@ -369,6 +474,38 @@ def _transport_executor() -> str:
     if value not in {"spatial", "blocks"}:
         raise ValueError("WOMBAT_TRANSPORT_EXECUTOR must be 'spatial' or 'blocks'")
     return value
+
+
+def _execution_backend() -> str:
+    value = os.environ.get("WOMBAT_BACKEND", "cpu").strip().lower()
+    if value not in {"cpu", "cuda"}:
+        raise ValueError("WOMBAT_BACKEND must be 'cpu' or 'cuda'")
+    return value
+
+
+def _cuda_dtype() -> np.dtype:
+    value = os.environ.get("WOMBAT_CUDA_DTYPE", "float64").strip().lower()
+    if value not in {"float32", "float64"}:
+        raise ValueError("WOMBAT_CUDA_DTYPE must be 'float32' or 'float64'")
+    return np.dtype(value)
+
+
+def _cuda_device() -> int:
+    value = os.environ.get("WOMBAT_CUDA_DEVICE", "0").strip()
+    try:
+        device = int(value)
+    except ValueError as exc:
+        raise ValueError("WOMBAT_CUDA_DEVICE must be a nonnegative integer") from exc
+    if device < 0:
+        raise ValueError("WOMBAT_CUDA_DEVICE must be a nonnegative integer")
+    return device
+
+
+def _cuda_block_width(tracer_count: int) -> int:
+    configured = os.environ.get("WOMBAT_TRANSPORT_BLOCK_WIDTH")
+    if configured is None or not configured.strip():
+        return min(8, tracer_count)
+    return _transport_block_width("blocks", tracer_count)
 
 
 def _transport_block_width(executor: str, tracer_count: int) -> int:

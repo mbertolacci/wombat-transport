@@ -9,12 +9,18 @@ description = "Parity-first GEOS-Chem Classic transport for high-throughput CO2-
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy",
+    "numpy>=1.26,<2.4",
     "netCDF4",
     "py-yaml12>=0.1.0",
 ]
 
 [project.optional-dependencies]
+cpu = [
+    "numba==0.66.*",
+]
+cuda = [
+    "cupy-cuda12x==13.6.*",
+]
 dev = [
     "pytest",
     "ruff==0.15.22",
@@ -27,9 +33,15 @@ docs = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"wombat_transport.cuda.sources" = ["*.cu", "*.cuh"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "cuda: requires an available NVIDIA CUDA device",
+]
 
 [tool.ruff]
 target-version = "py310"

@@ -50,11 +50,39 @@ python -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-Numba is strongly recommended for useful transport performance:
+The CPU extra installs the supported Numba version and is strongly recommended
+for useful transport performance:
 
 ```bash
-.venv/bin/python -m pip install numba
+.venv/bin/python -m pip install -e '.[cpu]'
 ```
+
+For CUDA-kernel development on CUDA 12, install both acceleration extras:
+
+```bash
+.venv/bin/python -m pip install -e '.[cpu,cuda]'
+```
+
+The CUDA extra provides CuPy for device ownership and raw CUDA C++ kernels. A
+CUDA 12 toolkit and a compatible NVIDIA driver are required. Both the CPU and
+CUDA development environments support NumPy 1.26 and NumPy 2.x through 2.3.
+
+An experimental end-to-end CUDA runner is selectable with environment
+variables:
+
+```bash
+WOMBAT_BACKEND=cuda \
+WOMBAT_CUDA_DTYPE=float64 \
+WOMBAT_NUMBA_THREADS=8 \
+.venv/bin/python -m wombat_transport.run run.yml
+```
+
+`WOMBAT_CUDA_DTYPE` accepts `float32` or `float64`, and
+`WOMBAT_CUDA_DEVICE` selects the device index. The CUDA path still uses Numba
+on the CPU to prepare tracer-independent transport plans, so install both
+extras. Tracer state, HISTORY sums, and ObsOperator sampling remain on the GPU;
+NetCDF inputs and writes remain host-side. This path is a correctness-first
+prototype and currently uploads the prepared plans every transport step.
 
 Real runs also require MERRA-2 meteorology and a compatible restart/grid
 template. See the [external-data guide](https://mbertolacci.github.io/wombat-transport/getting-started/external-data/).
@@ -163,7 +191,7 @@ Run the test suite with:
 Install the development tools and run the static-analysis baseline with:
 
 ```bash
-.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pip install -e '.[dev,cpu]'
 .venv/bin/ruff check
 .venv/bin/vulture --config pyproject.toml
 ```
