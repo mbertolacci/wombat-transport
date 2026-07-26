@@ -65,17 +65,14 @@ class CudaObsSampler:
         blocks = snapshot.state.block_data[0]
         nblock, nlev, nlat, nlon, width = blocks.shape
         _ = nblock
-        wet_ps = self._runtime.to_device(
-            snapshot.forcing.wet_surface_pressure_hpa[0],
-            dtype=np.float64,
+        wet_ps = self._device_meteorology(
+            snapshot.forcing.wet_surface_pressure_hpa
         )
-        sphu = self._runtime.to_device(
-            snapshot.forcing.specific_humidity_kg_kg[0],
-            dtype=np.float64,
+        sphu = self._device_meteorology(
+            snapshot.forcing.specific_humidity_kg_kg
         )
-        temperature = self._runtime.to_device(
-            snapshot.forcing.temperature_k[0],
-            dtype=np.float64,
+        temperature = self._device_meteorology(
+            snapshot.forcing.temperature_k
         )
         field_count = int(plan.field_tracer.size)
         threads = 128
@@ -131,6 +128,16 @@ class CudaObsSampler:
 
     def invalidate(self) -> None:
         self._plan = None
+
+    def _device_meteorology(self, values: Any) -> Any:
+        step_values = values[0]
+        if self._runtime.is_device_array(step_values):
+            if step_values.dtype != np.dtype(np.float64):
+                raise ValueError(
+                    "resident CUDA ObsOperator meteorology must be float64"
+                )
+            return step_values
+        return self._runtime.to_device(step_values, dtype=np.float64)
 
     def _ensure_plan(self, plan: ObsPlan) -> _DevicePlan:
         if self._plan is not None and self._plan.identity == id(plan):

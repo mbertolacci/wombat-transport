@@ -133,6 +133,26 @@ class CudaRuntime:
         self._device_to_host_bytes += host.nbytes
         return host
 
+    def copy_to_device(
+        self,
+        destination: object,
+        values: np.ndarray,
+    ) -> None:
+        """Replace a persistent device buffer from identically shaped host data."""
+
+        if not self.is_device_array(destination):
+            raise TypeError("copy_to_device destination must be a CuPy array")
+        host = np.asarray(values, dtype=destination.dtype, order="C")
+        if host.shape != destination.shape:
+            raise ValueError(
+                f"device destination {destination.shape} does not match "
+                f"host source {host.shape}"
+            )
+        with self._device:
+            destination.set(host)
+        self._host_to_device_count += 1
+        self._host_to_device_bytes += host.nbytes
+
     def empty(
         self,
         shape: tuple[int, ...],

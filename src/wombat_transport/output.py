@@ -112,7 +112,7 @@ class HistoryOutputManager:
                 expid=expid,
                 collection=collection,
                 start=start,
-                materialize_state=self._materialize_state,
+                materialize_snapshot=self._materialize_snapshot,
             )
             for collection in collections
             if collection.mode == "instantaneous"
@@ -123,6 +123,7 @@ class HistoryOutputManager:
         self._zeros = lambda shape: np.zeros(shape, dtype=np.float64)
         self._array_materializer = lambda values: values
         self._state_materializer = lambda state: state
+        self._snapshot_materializer = lambda snapshot: snapshot
 
     @classmethod
     def from_run_config(
@@ -175,6 +176,32 @@ class HistoryOutputManager:
             )
 
         self._state_materializer = materialize_state
+
+        def materialize_array(values: Any) -> Any:
+            return runtime.to_host(values) if runtime.is_device_array(values) else values
+
+        def materialize_snapshot(snapshot: OutputSnapshot) -> OutputSnapshot:
+            forcing = snapshot.forcing
+            return replace(
+                snapshot,
+                state=materialize_state(snapshot.state),
+                delp_dry_hpa=materialize_array(snapshot.delp_dry_hpa),
+                forcing=replace(
+                    forcing,
+                    wet_surface_pressure_hpa=materialize_array(
+                        forcing.wet_surface_pressure_hpa
+                    ),
+                    dry_surface_pressure_hpa=materialize_array(
+                        forcing.dry_surface_pressure_hpa
+                    ),
+                    specific_humidity_kg_kg=materialize_array(
+                        forcing.specific_humidity_kg_kg
+                    ),
+                    temperature_k=materialize_array(forcing.temperature_k),
+                ),
+            )
+
+        self._snapshot_materializer = materialize_snapshot
 
     def prepare_step(
         self,
@@ -241,6 +268,12 @@ class HistoryOutputManager:
 
     def _materialize_state(self, state: TracerField) -> TracerField:
         return self._state_materializer(state)
+
+    def _materialize_snapshot(
+        self,
+        snapshot: OutputSnapshot,
+    ) -> OutputSnapshot:
+        return self._snapshot_materializer(snapshot)
 
 
 class _AverageCollection:
@@ -550,22 +583,19 @@ class _InstantaneousRestartWriter:
         expid: str,
         collection: OutputCollectionConfig,
         start: datetime,
-        materialize_state: Any,
+        materialize_snapshot: Any,
     ) -> None:
         self._root = root
         self._template_path = template_path
         self._expid = expid
         self._collection = collection
         self._next_output = collection.frequency.add_to(start)
-        self._materialize_state = materialize_state
+        self._materialize_snapshot = materialize_snapshot
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
         while snapshot.timestamp >= self._next_output:
             path = _collection_path(self._root, self._expid, self._collection, self._next_output)
-            host_snapshot = replace(
-                snapshot,
-                state=self._materialize_state(snapshot.state),
-            )
+            host_snapshot = self._materialize_snapshot(snapshot)
             write_restart_collection(
                 path,
                 host_snapshot,

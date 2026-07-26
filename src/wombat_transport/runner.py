@@ -40,17 +40,13 @@ from wombat_transport.transport import (
     dry_pressure_thickness_from_surface_hpa,
     TransportForcingProvider,
     TransportExecutor,
-    prepare_transport_step,
     run_transport_one_step,
     run_transport_step_with_executor,
 )
 from wombat_transport.transport.numba_control import (
-    configure_numba_threads,
     numba_available_and_enabled,
     warn_if_numba_disabled,
 )
-from wombat_transport.transport.pbl._plan import make_vdiff_plan_workspace
-from wombat_transport.transport.tpcore._plan import make_tpcore_plan_workspace
 
 logger = logging.getLogger(__name__)
 RUN_METADATA_NAME = "wombat_run_metadata.json"
@@ -92,9 +88,10 @@ def _run_tracer_simulation(
     max_steps: int | None,
     resources: ExitStack,
 ) -> TracerSimulationResult:
-    warn_if_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
     execution_backend = _execution_backend()
+    if execution_backend == "cpu":
+        warn_if_numba_disabled(logger)
     _write_run_metadata(config, execution_backend=execution_backend)
     species = load_species_database(config.species_database)
     logger.debug("loaded_species count=%d", len(species))
@@ -105,12 +102,11 @@ def _run_tracer_simulation(
     )
     parallel_strategy = _transport_executor()
     numba_transport = numba_available_and_enabled()
-    if execution_backend == "cuda" and not numba_transport:
-        raise ValueError(
-            "WOMBAT_BACKEND=cuda requires WOMBAT_NUMBA to be enabled for "
-            "CPU transport-plan preparation"
-        )
-    if parallel_strategy == "blocks" and not numba_transport:
+    if (
+        execution_backend == "cpu"
+        and parallel_strategy == "blocks"
+        and not numba_transport
+    ):
         raise ValueError(
             "WOMBAT_TRANSPORT_EXECUTOR=blocks requires WOMBAT_NUMBA to be enabled"
         )
@@ -135,21 +131,6 @@ def _run_tracer_simulation(
         parallel_strategy,
     )
     grid = load_transport_grid(config.grid_template)
-    cuda_workers = (
-        configure_numba_threads(available=True)
-        if execution_backend == "cuda"
-        else 1
-    )
-    cuda_tpcore_workspace = (
-        make_tpcore_plan_workspace(*grid.shape)
-        if execution_backend == "cuda"
-        else None
-    )
-    cuda_vdiff_workspace = (
-        make_vdiff_plan_workspace(*grid.shape)
-        if execution_backend == "cuda"
-        else None
-    )
     cuda_executor = None
     tpcore_static_terms = build_tpcore_static_terms(
         area_m2=grid.area_m2,
@@ -197,6 +178,33 @@ def _run_tracer_simulation(
         transport_dt_s=transport_dt_s,
     )
     dry_air_mass = _initial_dry_air_mass(config, first_forcing, grid)
+    if execution_backend == "cuda":
+        from wombat_transport.cuda.executor import CudaRunExecutor
+
+        cuda_executor = CudaRunExecutor(
+            state,
+            dtype=_cuda_dtype(),
+            device_id=_cuda_device(),
+            grid=grid,
+            tpcore_static_terms=tpcore_static_terms,
+            initial_dry_surface_pressure_hpa=(
+                first_forcing.dry_surface_pressure_start_hpa
+            ),
+        )
+        state = cuda_executor.state
+        logger.info(
+            "cuda_initialized device=%s dtype=%s block_width=%d",
+            cuda_executor.runtime.device_info.name,
+            cuda_executor.dtype.name,
+            state.block_width,
+        )
+        if output_manager is not None:
+            output_manager.use_cuda(cuda_executor.runtime)
+        if obsoperator_manager is not None:
+            obsoperator_manager.use_cuda(
+                cuda_executor.runtime,
+                dtype=cuda_executor.dtype,
+            )
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
     emissions_processed: list[EmissionsStep] = []
     final_delp_dry_hpa = None
@@ -211,10 +219,19 @@ def _run_tracer_simulation(
 
         logger.info("transport_timestep step=%d time=%s", transport_steps + 1, current.isoformat())
         logger.debug("loading_forcing step=%d time=%s", transport_steps + 1, current.isoformat())
-        forcing = _load_simulation_forcing(
-            forcing_provider,
-            current,
-            transport_dt_s=transport_dt_s,
+        forcing = (
+            None
+            if execution_backend == "cuda"
+            else _load_simulation_forcing(
+                forcing_provider,
+                current,
+                transport_dt_s=transport_dt_s,
+            )
+        )
+        forcing_selection = (
+            forcing_provider.chunks_for_step(current, dt_s=transport_dt_s)
+            if execution_backend == "cuda"
+            else None
         )
         elapsed_s = int(round((current - start).total_seconds()))
         if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
@@ -242,42 +259,21 @@ def _run_tracer_simulation(
             ),
         )
         if execution_backend == "cuda":
-            prepared = prepare_transport_step(
-                state,
-                forcing,
-                grid,
-                workers=cuda_workers,
-                tpcore_workspace=cuda_tpcore_workspace,
-                vdiff_workspace=cuda_vdiff_workspace,
-                **transport_kwargs,
+            assert cuda_executor is not None
+            assert forcing_selection is not None
+            transport_result = cuda_executor.apply_resident(
+                forcing_selection,
+                dt_s=transport_dt_s,
+                active_emissions=active_emissions,
+                surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
             )
-            if cuda_executor is None:
-                from wombat_transport.cuda.executor import CudaRunExecutor
-
-                cuda_executor = CudaRunExecutor(
-                    state,
-                    dtype=_cuda_dtype(),
-                    device_id=_cuda_device(),
-                )
-                logger.info(
-                    "cuda_initialized device=%s dtype=%s block_width=%d",
-                    cuda_executor.runtime.device_info.name,
-                    cuda_executor.dtype.name,
-                    state.block_width,
-                )
-                if output_manager is not None:
-                    output_manager.use_cuda(cuda_executor.runtime)
-                if obsoperator_manager is not None:
-                    obsoperator_manager.use_cuda(
-                        cuda_executor.runtime,
-                        dtype=cuda_executor.dtype,
-                    )
-            transport_result = cuda_executor.apply(prepared)
         elif transport_executor is None:
+            assert forcing is not None
             transport_result = run_transport_one_step(
                 state, forcing, grid, consume_input=True, **transport_kwargs
             )
         else:
+            assert forcing is not None
             transport_result = run_transport_step_with_executor(
                 state,
                 forcing,
@@ -291,9 +287,15 @@ def _run_tracer_simulation(
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         snapshot: CompletedStepSnapshot | None = None
         if output_manager is not None or obsoperator_manager is not None:
-            snapshot_forcing = replace(
-                forcing,
-                specific_humidity_kg_kg=transport_result.specific_humidity_kg_kg,
+            snapshot_forcing = (
+                cuda_executor.snapshot_forcing(first_forcing)
+                if execution_backend == "cuda"
+                else replace(
+                    forcing,
+                    specific_humidity_kg_kg=(
+                        transport_result.specific_humidity_kg_kg
+                    ),
+                )
             )
             snapshot = CompletedStepSnapshot(
                 timestamp=step_end,
@@ -339,6 +341,12 @@ def _run_tracer_simulation(
         else state
     )
     if cuda_executor is not None:
+        if final_delp_dry_hpa is not None and cuda_executor.runtime.is_device_array(
+            final_delp_dry_hpa
+        ):
+            final_delp_dry_hpa = cuda_executor.runtime.to_host(
+                final_delp_dry_hpa
+            )
         transfers = cuda_executor.runtime.transfer_stats
         logger.info(
             "cuda_transfers_before_close h2d_count=%d h2d_bytes=%d d2h_count=%d "

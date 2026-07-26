@@ -14,7 +14,7 @@ __global__ void apply_vdiff(
     const T* rrho,
     const T* tmp1,
     T dt_s,
-    int start_level,
+    const int* start_level_value,
     const T* surface_flux,
     int has_flux,
     T* qmx,
@@ -42,6 +42,7 @@ __global__ void apply_vdiff(
     const int flux_index =
         (block * nlat * nlon + horizontal) * nlane + lane;
     const int horizontal_size = nlat * nlon;
+    const int start_level = start_level_value[0];
     const T ztodtgor = dt_s * static_cast<T>(9.80665) /
         static_cast<T>(287.0);
 

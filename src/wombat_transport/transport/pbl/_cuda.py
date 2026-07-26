@@ -26,7 +26,7 @@ class CudaVdiffPlan:
     dry_mass: Any
     area_m2: Any
     dt_s: float
-    start_level: int
+    start_level: Any
     specific_humidity_after: Any
 
 
@@ -80,7 +80,9 @@ class CudaVdiffExecutor:
             dry_mass=self._runtime.to_device(plan.dry_mass, dtype=self._dtype),
             area_m2=self._runtime.to_device(plan.area_m2, dtype=self._dtype),
             dt_s=float(plan.dt_s),
-            start_level=int(plan.start_level),
+            start_level=self._runtime.to_device(
+                np.array([int(plan.start_level)], dtype=np.int32)
+            ),
             specific_humidity_after=self._runtime.to_device(
                 plan.specific_humidity_after,
                 dtype=self._dtype,
@@ -212,7 +214,7 @@ class CudaVdiffExecutor:
                 plan.rrho,
                 plan.tmp1,
                 scalar_type(plan.dt_s),
-                np.int32(plan.start_level),
+                plan.start_level,
                 surface_flux,
                 np.int32(bool(has_flux)),
                 self._qmx,
@@ -273,6 +275,14 @@ class CudaVdiffExecutor:
                 )
             if values.dtype != self._dtype:
                 raise TypeError(f"CUDA VDIFF {name} dtype must be {self._dtype}")
+        self._validate_device_array(plan.start_level, "start_level")
+        if (
+            plan.start_level.shape != (1,)
+            or plan.start_level.dtype != np.dtype(np.int32)
+        ):
+            raise TypeError(
+                "CUDA VDIFF start_level must have shape (1,) and dtype int32"
+            )
         if tracer.dtype != self._dtype:
             raise TypeError(f"CUDA VDIFF tracer dtype must be {self._dtype}")
         if surface_flux.shape != (nlat, nlon, nlane):

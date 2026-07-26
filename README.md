@@ -57,10 +57,11 @@ for useful transport performance:
 .venv/bin/python -m pip install -e '.[cpu]'
 ```
 
-For CUDA-kernel development on CUDA 12, install both acceleration extras:
+For CUDA-kernel development on CUDA 12, install the CUDA extra (add `cpu` as
+well when developing or benchmarking the Numba reference):
 
 ```bash
-.venv/bin/python -m pip install -e '.[cpu,cuda]'
+.venv/bin/python -m pip install -e '.[cuda]'
 ```
 
 The CUDA extra provides CuPy for device ownership and raw CUDA C++ kernels. A
@@ -73,16 +74,16 @@ variables:
 ```bash
 WOMBAT_BACKEND=cuda \
 WOMBAT_CUDA_DTYPE=float64 \
-WOMBAT_NUMBA_THREADS=8 \
 .venv/bin/python -m wombat_transport.run run.yml
 ```
 
 `WOMBAT_CUDA_DTYPE` accepts `float32` or `float64`, and
-`WOMBAT_CUDA_DEVICE` selects the device index. The CUDA path still uses Numba
-on the CPU to prepare tracer-independent transport plans, so install both
-extras. Tracer state, HISTORY sums, and ObsOperator sampling remain on the GPU;
-NetCDF inputs and writes remain host-side. This path is a correctness-first
-prototype and currently uploads the prepared plans every transport step.
+`WOMBAT_CUDA_DEVICE` selects the device index. The CUDA path does not require
+Numba: it uploads each forcing chunk once, interpolates the current timestep
+and prepares the transport operators on the GPU. Tracer state, static transport
+terms, reusable plan storage, HISTORY sums, and ObsOperator sampling remain on
+the GPU. NetCDF inputs, scheduling, emissions evaluation, and writes remain
+host-side.
 
 Real runs also require MERRA-2 meteorology and a compatible restart/grid
 template. See the [external-data guide](https://mbertolacci.github.io/wombat-transport/getting-started/external-data/).

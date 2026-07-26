@@ -494,9 +494,13 @@ downloads.
 - [x] Add an experimental CPU/CUDA execution selection at runner
   initialization.
 - [x] Construct the CUDA executor, state, diagnostics, and workspaces once.
-- [ ] Retain uploaded static transport terms and reuse device plan buffers;
-  the current baseline uploads complete prepared plans each step.
-- [x] Stage forcing and refreshed emissions explicitly.
+- [x] Retain uploaded static transport terms and reuse device plan buffers.
+- [x] Upload A1, A3, and I3 forcing by source chunk and select timestep views
+  without assembling interpolated host forcing.
+- [x] Interpolate pressure, humidity, and temperature on the GPU.
+- [x] Prepare TPCORE, VDIFF, and convection plans into persistent device
+  buffers.
+- [x] Upload refreshed emissions only when their scheduled field changes.
 - [x] Reject unsupported mixed CPU/CUDA execution rather than silently falling
   back.
 - [x] Ensure snapshots do not implicitly copy device state.
@@ -511,14 +515,23 @@ environment variable is sufficient for the early prototype; add a durable
 Exit criterion: a configured CUDA run completes through the ordinary runner
 without duplicating the simulation loop.
 
-## Current checkpoint: ordinary runner with resident diagnostics
+## Current checkpoint: resident forcing and device preparation
 
 The normal simulation loop now selects the experimental CUDA path once through
-`WOMBAT_BACKEND=cuda`. The runner still reads meteorology and emissions and
-prepares tracer-independent TPCORE, VDIFF, and convection plans on the CPU.
-`CudaRunExecutor` uploads the initial tracer blocks once and keeps the
-`TracerField` on the device across timesteps and operator handoffs. It is
-materialized only for the returned final state or a real restart boundary.
+`WOMBAT_BACKEND=cuda`. NetCDF reads remain on the host, but the forcing
+provider now exposes its natural A1, A3, and I3 source chunks and timestep
+offsets. Each new chunk is copied once into reusable float64 device buffers.
+Pressure and field interpolation, TPCORE preparation, VDIFF/PBL preparation,
+and convection orientation then run on the GPU. Static grid terms, plan
+storage, tracer blocks, and the current dry surface pressure remain resident.
+The CUDA runner no longer depends on Numba.
+
+TPCORE preparation is split into parallel mass-flux, divergence, pressure,
+vertical-flux, and cross-term stages. Reductions that define strict numerical
+semantics retain the CPU loop order. VDIFF preparation assigns one CUDA thread
+per horizontal column and retains the original vertical operation order.
+Float32 transport still prepares meteorology in float64 and casts finalized
+plans, matching the previous CPU-plan-then-cast policy.
 
 The same completed-step snapshot is passed to both diagnostics:
 
@@ -528,7 +541,7 @@ The same completed-step snapshot is passed to both diagnostics:
   the device. Plan parsing and daily merge remain on the host, and only
   completed compact observations cross back for NetCDF writing.
 
-The first realistic 2x2.5 baseline used 24 tracers, active residual emissions,
+The first realistic 2x2.5 CPU-prepared baseline used 24 tracers, active residual emissions,
 18 ten-minute transport steps, one three-hour HISTORY window, one ObsOperator
 entry expanded across all tracers, and final restart materialization. CPU plan
 preparation and the CPU baseline were pinned to CPUs
@@ -545,21 +558,36 @@ Float64 therefore provides an excellent implementation-parity baseline, while
 float32 already exposes measurable but bounded short-run drift that must be
 tracked over longer windows.
 
-This first end-to-end implementation is intentionally not presented as a GPU
-speedup. A two-step instrumentation run copied 400,883,544 bytes host-to-device,
-including the 118,250,688-byte initial 24-tracer float64 state. The remaining
-traffic is dominated by uploading complete CPU-prepared transport plans—about
-140 MiB per step at this stage. The runner performed no explicit
-synchronizations. Removing repeated static-plan transfers, reusing device plan
-buffers, and then deciding whether dynamic plan preparation belongs on CUDA is
-the next performance task. This measured bottleneck is preferable to
-prematurely moving NetCDF, configuration, or unrelated orchestration onto the
-device.
+The resident-forcing implementation was then measured on the same realistic
+18-step case. Timings include process startup, forcing reads, and final restart
+materialization:
 
-The initial actual-GPU validation comprises 25 CUDA tests. It covers both state
+| execution | wall s | H2D bytes | final max abs vs CPU float64 |
+|---|---:|---:|---:|
+| resident CUDA float64 | 6.00 | 319,848,352 | 2.992e-17 |
+| resident CUDA float32 | 5.45 | 249,348,104 | 2.972e-8 |
+
+The float32 endpoint RMSE remains `1.318e-9`. The H2D totals include the initial
+tracer state, static terms, the first forcing chunks, and nine scheduled
+emissions refreshes. They no longer grow by roughly 140 MiB for every transport
+step. A float64 run with a three-hour HISTORY collection, instantaneous restart
+meteorology, and ObsOperator sampling took 6.56 seconds. Against the pinned
+eight-P-core CPU reference, maximum differences were `4.743e-17` for HISTORY,
+`2.954e-17` for restart tracers, and `1.158e-12 hPa` for `Met_DELPDRY`; the
+other written meteorology fields matched exactly.
+
+This is still not presented as an end-to-end GPU speedup. The immediate
+performance targets are VDIFF preparation's column-local storage pressure,
+overlap/double-buffering when forcing chunks change, and profiling repeated
+A3-dependent work that may be reusable across the 18 steps in a meteorology
+window.
+
+The actual-GPU validation comprises 29 CUDA tests. It covers both state
 dtypes, all three transport operators and their handoffs, padded tracer blocks,
 mixed float32-state/float64-HISTORY accumulation, and ObsOperator point, box,
-pressure, altitude, area, and normalized weighting modes.
+pressure, altitude, area, and normalized weighting modes. Resident preparation
+is compared directly with the CPU strict plans in both transport dtypes,
+including the unstable near-surface PBL branch.
 
 ### Phase 8: end-to-end parity and drift
 
