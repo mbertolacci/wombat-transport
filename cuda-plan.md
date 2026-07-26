@@ -727,8 +727,10 @@ diagnostics.
 ### Profiling support
 
 `tools/profile_cuda_run.py` is the maintained ordinary-run profiler. It accepts
-any run configuration plus dtype, step count, block width, device, and warm-up
-controls. Its JSON report contains:
+any run configuration plus dtype, step count, block width, device, warm-up,
+and optional simulation-end controls. The end override permits longer profiles
+without maintaining a separate benchmark configuration. Its JSON report
+contains:
 
 - synchronized complete-run wall and CUDA-event spans;
 - nested runner, operator, and named raw-kernel CUDA-event regions;
@@ -744,7 +746,9 @@ controls. Its JSON report contains:
 Nested device regions overlap their parent regions and must not be summed.
 Use `--nvtx` to add `cupyx.profiler.time_range` annotations from the profiling
 process for an Nsight Systems capture without putting profiling branches into
-the production runner.
+the production runner. Use `--summary-only` for authoritative end-to-end wall
+and device-span measurements without per-region event overhead, and use the
+fully instrumented run for the stage breakdown.
 
 ```bash
 taskset -c 0,2,4,6,8,10,12,14 \
@@ -1298,6 +1302,64 @@ will probably require a different parallel decomposition or tiling of its
 serial longitude/latitude recurrences. That changes the kernel's shape and
 reduction behavior, so it belongs in a separate parity-instrumented experiment
 rather than this no-compromise cleanup pass.
+
+### Two-day ordinary-run profile
+
+On 2026-07-26 the canonical 24-tracer 2x2.5 emissions case was extended in
+place to 48 model hours with the profiler's `--simulation-end` override. The
+workload comprised 288 ten-minute transport steps, 144 emissions evaluations,
+16 three-hour HISTORY averages, two daily restarts, and two days of
+ObsOperator inputs. Processes were pinned to CPU cores
+`0,2,4,6,8,10,12,14` on the RTX 4070 Ti SUPER.
+
+Three summary-only repetitions, after a one-step JIT warm-up, measured:
+
+| dtype | wall repetitions s | median s | tracer-steps/s |
+|---|---|---:|---:|
+| float64 | 14.718, 14.524, 14.542 | 14.542 | 475.3 |
+| float32 | 12.900, 12.780, 12.832 | 12.832 | 538.6 |
+
+The matching fully instrumented profiles give this non-additive breakdown.
+CUDA parent regions in the first group are useful device-queue totals; host
+regions in the second group can overlap CUDA execution and must not be summed
+with them as a wall-time partition.
+
+| CUDA parent region | float64 ms | float32 ms |
+|---|---:|---:|
+| TPCORE | 5,579 | 2,546 |
+| VDIFF | 485 | 187 |
+| convection | 314 | 93 |
+| forcing selection and plan preparation | 944 | 999 |
+| HISTORY accumulation and materialization | 392 | 323 |
+| ObsOperator sampling and D2H completion | 128 | 128 |
+
+| host boundary region | float64 ms | float32 ms |
+|---|---:|---:|
+| initial forcing load | 615 | 610 |
+| forcing chunk selection/load, 289 calls | 2,434 | 2,424 |
+| emissions evaluation, 144 calls | 888 | 878 |
+| ObsOperator plan update/check, 288 calls | 987 | 995 |
+| ObsOperator NetCDF flush, 281 calls | 296 | 290 |
+| HISTORY NetCDF field writes, 16 calls | 988 | 992 |
+
+Within float64 TPCORE, the zonal, meridional, and vertical kernels took 1,864,
+1,299, and 2,063 ms. Their float32 times were 1,074, 712, and 589 ms. Float32
+therefore accelerates the transport arithmetic substantially, especially the
+vertical kernel, but total wall time is only 12% lower because CPU input,
+emissions, diagnostic planning, and NetCDF costs are almost dtype-independent.
+
+Float32 output was finite but much less compressible: the instrumented run
+wrote 235 MB versus 51 MB for float64 transport, even though the configured
+output dtype was float32 in both cases. Comparing the float32-transport outputs
+with the float64-transport outputs after two days gave a maximum restart
+difference of `4.57e-8` mole fraction (`0.0457 ppm`) and RMS `3.04e-9`.
+This is a dtype comparison, not a new GEOS-Chem parity claim.
+
+The first production-sized float32 ObsOperator attempt also exposed an unsafe
+assumption: post-VDIFF humidity is a reversed-level resident CUDA view with a
+negative stride. The kernel previously treated it as contiguous. It now
+accepts the actual humidity and temperature level strides, retaining the
+zero-copy handoff, and a reversed-device-view regression covers both dtypes.
 
 ### Phase 10: consolidate or retreat
 

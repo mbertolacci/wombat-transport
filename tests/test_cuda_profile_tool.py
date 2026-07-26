@@ -32,11 +32,14 @@ def test_cuda_profile_cli_parses_reproducibility_controls():
             "24",
             "--warmup-steps",
             "2",
+            "--simulation-end",
+            "2014-09-03 00:00",
             "--block-width",
             "16",
             "--device",
             "1",
             "--nvtx",
+            "--summary-only",
             "--output",
             "profile.json",
             "--run-dir",
@@ -48,9 +51,11 @@ def test_cuda_profile_cli_parses_reproducibility_controls():
     assert args.dtype == "float32"
     assert args.steps == 24
     assert args.warmup_steps == 2
+    assert args.simulation_end == "2014-09-03 00:00"
     assert args.block_width == 16
     assert args.device == 1
     assert args.nvtx
+    assert args.summary_only
     assert args.output == Path("profile.json")
     assert args.run_dir == Path("profile-run")
 

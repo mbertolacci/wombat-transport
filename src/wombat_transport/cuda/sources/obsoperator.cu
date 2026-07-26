@@ -4,6 +4,8 @@ __global__ void sample_obsoperator(
     const double* wet_ps,
     const double* sphu,
     const double* temperature,
+    long long sphu_level_stride,
+    long long temperature_level_stride,
     const double* area,
     const double* hyai,
     const double* hybi,
@@ -107,12 +109,15 @@ __global__ void sample_obsoperator(
                         } else {
                             double height = 0.0;
                             for (int candidate = 0; candidate < nlev; ++candidate) {
-                                const int center = candidate * nlat * nlon + horizontal;
-                                const double q = sphu[center];
+                                const long long humidity_center =
+                                    candidate * sphu_level_stride + horizontal;
+                                const long long temperature_center =
+                                    candidate * temperature_level_stride + horizontal;
+                                const double q = sphu[humidity_center];
                                 const double avgw =
                                     28.9644 * q / (18.016 * (1.0 - q));
                                 const double xh2o = avgw / (1.0 + avgw);
-                                const double tv = temperature[center] /
+                                const double tv = temperature[temperature_center] /
                                     (1.0 - xh2o * (1.0 - 18.016 / 28.9644));
                                 const double edge_lower =
                                     hyai[candidate] + hybi[candidate] * ps;
@@ -161,12 +166,15 @@ __global__ void sample_obsoperator(
                     } else {
                         double height = 0.0;
                         for (int candidate = 0; candidate < nlev; ++candidate) {
-                            const int center = candidate * nlat * nlon + horizontal;
-                            const double q = sphu[center];
+                            const long long humidity_center =
+                                candidate * sphu_level_stride + horizontal;
+                            const long long temperature_center =
+                                candidate * temperature_level_stride + horizontal;
+                            const double q = sphu[humidity_center];
                             const double avgw =
                                 28.9644 * q / (18.016 * (1.0 - q));
                             const double xh2o = avgw / (1.0 + avgw);
-                            const double tv = temperature[center] /
+                            const double tv = temperature[temperature_center] /
                                 (1.0 - xh2o * (1.0 - 18.016 / 28.9644));
                             const double edge_lower =
                                 hyai[candidate] + hybi[candidate] * ps;

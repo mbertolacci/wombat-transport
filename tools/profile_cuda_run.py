@@ -233,8 +233,13 @@ def main(argv: list[str] | None = None) -> int:
     runtime = CudaRuntime(args.device)
     cupy = runtime.array_module
     profiler = RunProfiler(cupy, nvtx=args.nvtx)
-    _install_instrumentation(profiler)
+    if not args.summary_only:
+        _install_instrumentation(profiler)
     source_config = load_run_config(args.config)
+    if args.simulation_end is not None:
+        simulation = deepcopy(source_config.simulation)
+        simulation["end"] = args.simulation_end
+        source_config = replace(source_config, simulation=simulation)
     temporary_root = None
     if args.run_dir is None:
         temporary_root = TemporaryDirectory(prefix="wombat-cuda-profile-run-")
@@ -288,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             "block_width": args.block_width,
             "steps": args.steps,
             "warmup_steps": args.warmup_steps,
+            "simulation_end": args.simulation_end,
             "profile_run_root": str(config.root),
             "profile_run_root_temporary": args.run_dir is None,
             "device_id": args.device,
@@ -301,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
                 cupy.cuda.runtime.runtimeGetVersion()
             ),
             "nvtx": args.nvtx,
+            "summary_only": args.summary_only,
             "process_cpu_affinity": (
                 sorted(os.sched_getaffinity(0))
                 if hasattr(os, "sched_getaffinity")
@@ -546,9 +553,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--dtype", choices=("float64", "float32"), default="float64")
     parser.add_argument("--steps", type=_positive_int, default=18)
     parser.add_argument("--warmup-steps", type=_nonnegative_int, default=1)
+    parser.add_argument(
+        "--simulation-end",
+        help="Override simulation.end from the run configuration.",
+    )
     parser.add_argument("--block-width", type=_positive_int, default=32)
     parser.add_argument("--device", type=_nonnegative_int, default=0)
     parser.add_argument("--nvtx", action="store_true")
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Measure synchronized wall/device span without region instrumentation.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--run-dir",

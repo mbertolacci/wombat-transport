@@ -84,6 +84,8 @@ class CudaObsSampler:
                 wet_ps,
                 sphu,
                 temperature,
+                np.int64(sphu.strides[0] // sphu.itemsize),
+                np.int64(temperature.strides[0] // temperature.itemsize),
                 self._area,
                 self._hyai,
                 self._hybi,

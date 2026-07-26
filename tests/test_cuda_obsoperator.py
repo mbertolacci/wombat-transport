@@ -236,9 +236,23 @@ def test_cuda_obsoperator_weighted_modes_match_cpu(dtype):
                 bottom[level, lat, lon, 1] = 10 * (level + 1) + lat + lon
     forcing = SimpleNamespace(
         wet_surface_pressure_hpa=np.full((1, nlat, nlon), 1000.0),
-        specific_humidity_kg_kg=np.full((1, nlev, nlat, nlon), 0.001),
+        specific_humidity_kg_kg=np.linspace(
+            0.0005,
+            0.002,
+            nlev,
+        )[None, :, None, None]
+        * np.ones((1, 1, nlat, nlon)),
         temperature_k=np.full((1, nlev, nlat, nlon), 280.0),
     )
+    humidity_storage = runtime.to_device(
+        forcing.specific_humidity_kg_kg[:, ::-1],
+    )
+    snapshot_forcing = SimpleNamespace(
+        wet_surface_pressure_hpa=forcing.wet_surface_pressure_hpa,
+        specific_humidity_kg_kg=humidity_storage[:, ::-1],
+        temperature_k=forcing.temperature_k,
+    )
+    assert snapshot_forcing.specific_humidity_kg_kg.strides[1] < 0
     snapshot = CompletedStepSnapshot(
         timestamp=start,
         state=TracerField(
@@ -248,7 +262,7 @@ def test_cuda_obsoperator_weighted_modes_match_cpu(dtype):
             coords={},
         ),
         delp_dry_hpa=np.ones((1, nlev, nlat, nlon)),
-        forcing=forcing,  # type: ignore[arg-type]
+        forcing=snapshot_forcing,  # type: ignore[arg-type]
     )
     expected = np.zeros_like(plan.accumulator)
     step_time_us = int(plan.time_operator_bounds_us[0, 0])
