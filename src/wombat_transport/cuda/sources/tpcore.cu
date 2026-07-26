@@ -730,8 +730,11 @@ __global__ void tpcore_vertical(
     const T* q,
     T* dq,
     const T* delp1,
+    const T* delp2,
     const T* wz,
     const T* normalized_vertical_courant,
+    int fill,
+    int finalize_output,
     int tracer_count,
     int nlev,
     int nlat,
@@ -757,7 +760,10 @@ __global__ void tpcore_vertical(
     T dc[WOMBAT_MAX_LEV];
     T al[WOMBAT_MAX_LEV];
     T ar[WOMBAT_MAX_LEV];
-    T a6[WOMBAT_MAX_LEV];
+    T a6_top;
+    T a6_second;
+    T a6_penultimate;
+    T a6_bottom;
     T dca_top;
     T dca_bottom;
 
@@ -876,25 +882,30 @@ __global__ void tpcore_vertical(
             active_tracer, k, lat, lon,
             nlev, nlat, nlon, lane_width
         )];
-        a6[k] = static_cast<T>(3) * (
+        T a6_value = static_cast<T>(3) * (
             qa + qa - (al[k] + ar[k])
         );
         const T dca = endpoint == 0 ? dca_top : dca_bottom;
         if (dca == static_cast<T>(0)) {
-            a6[k] = static_cast<T>(0);
+            a6_value = static_cast<T>(0);
             al[k] = qa;
             ar[k] = qa;
         } else {
             const T da1 = ar[k] - al[k];
             const T da2 = da1 * da1;
-            const T a6da = a6[k] * da1;
+            const T a6da = a6_value * da1;
             if (a6da < -da2) {
-                a6[k] = static_cast<T>(3) * (al[k] - qa);
-                ar[k] = al[k] - a6[k];
+                a6_value = static_cast<T>(3) * (al[k] - qa);
+                ar[k] = al[k] - a6_value;
             } else if (a6da > da2) {
-                a6[k] = static_cast<T>(3) * (ar[k] - qa);
-                al[k] = ar[k] - a6[k];
+                a6_value = static_cast<T>(3) * (ar[k] - qa);
+                al[k] = ar[k] - a6_value;
             }
+        }
+        if (endpoint == 0) {
+            a6_top = a6_value;
+        } else {
+            a6_bottom = a6_value;
         }
     }
     for (int endpoint = 0; endpoint < 2; ++endpoint) {
@@ -903,24 +914,29 @@ __global__ void tpcore_vertical(
             active_tracer, k, lat, lon,
             nlev, nlat, nlon, lane_width
         )];
-        a6[k] = static_cast<T>(3) * (
+        T a6_value = static_cast<T>(3) * (
             qa + qa - (al[k] + ar[k])
         );
         if (dc[k] == static_cast<T>(0)) {
-            a6[k] = static_cast<T>(0);
+            a6_value = static_cast<T>(0);
             al[k] = qa;
             ar[k] = qa;
         } else {
             const T da1 = ar[k] - al[k];
             const T da2 = da1 * da1;
-            const T a6da = a6[k] * da1;
+            const T a6da = a6_value * da1;
             if (a6da < -da2) {
-                a6[k] = static_cast<T>(3) * (al[k] - qa);
-                ar[k] = al[k] - a6[k];
+                a6_value = static_cast<T>(3) * (al[k] - qa);
+                ar[k] = al[k] - a6_value;
             } else if (a6da > da2) {
-                a6[k] = static_cast<T>(3) * (ar[k] - qa);
-                al[k] = ar[k] - a6[k];
+                a6_value = static_cast<T>(3) * (ar[k] - qa);
+                al[k] = ar[k] - a6_value;
             }
+        }
+        if (endpoint == 0) {
+            a6_second = a6_value;
+        } else {
+            a6_penultimate = a6_value;
         }
     }
     for (int k = 1; k < nlev - 1; ++k) {
@@ -943,9 +959,6 @@ __global__ void tpcore_vertical(
         qmin = wmin3(qq, qmp, lac);
         qmax = wmax3(qq, qmp, lac);
         al[k] = wmax(qmin, wmin(qmax, al[k]));
-        a6[k] = static_cast<T>(3) * (
-            qq + qq - (ar[k] + al[k])
-        );
     }
 
     T courant = normalized_vertical_courant[col];
@@ -953,13 +966,13 @@ __global__ void tpcore_vertical(
     if (courant > static_cast<T>(0)) {
         const T value = ar[0] + static_cast<T>(0.5) * courant * (
             al[0] - ar[0] +
-            a6[0] * (static_cast<T>(1) - r23 * courant)
+            a6_top * (static_cast<T>(1) - r23 * courant)
         );
         previous_flux = wz[col] * value;
     } else {
         const T value = al[1] + static_cast<T>(0.5) * courant * (
             al[1] - ar[1] -
-            a6[1] * (static_cast<T>(1) + r23 * courant)
+            a6_second * (static_cast<T>(1) + r23 * courant)
         );
         previous_flux = wz[col] * value;
     }
@@ -971,14 +984,43 @@ __global__ void tpcore_vertical(
         courant = normalized_vertical_courant[k * ncol + col];
         T value;
         if (courant > static_cast<T>(0)) {
+            T a6_value;
+            if (k == 1) {
+                a6_value = a6_second;
+            } else if (k == nlev - 2) {
+                a6_value = a6_penultimate;
+            } else {
+                const T qa = q[tracer_index<T>(
+                    active_tracer, k, lat, lon,
+                    nlev, nlat, nlon, lane_width
+                )];
+                a6_value = static_cast<T>(3) * (
+                    qa + qa - (ar[k] + al[k])
+                );
+            }
             value = ar[k] + static_cast<T>(0.5) * courant * (
                 al[k] - ar[k] +
-                a6[k] * (static_cast<T>(1) - r23 * courant)
+                a6_value * (static_cast<T>(1) - r23 * courant)
             );
         } else {
+            const int next_k = k + 1;
+            T a6_value;
+            if (next_k == nlev - 1) {
+                a6_value = a6_bottom;
+            } else if (next_k == nlev - 2) {
+                a6_value = a6_penultimate;
+            } else {
+                const T qa = q[tracer_index<T>(
+                    active_tracer, next_k, lat, lon,
+                    nlev, nlat, nlon, lane_width
+                )];
+                a6_value = static_cast<T>(3) * (
+                    qa + qa - (ar[next_k] + al[next_k])
+                );
+            }
             value = al[k + 1] + static_cast<T>(0.5) * courant * (
                 al[k + 1] - ar[k + 1] -
-                a6[k + 1] * (
+                a6_value * (
                     static_cast<T>(1) + r23 * courant
                 )
             );
@@ -994,30 +1036,6 @@ __global__ void tpcore_vertical(
         active_tracer, nlev - 1, lat, lon,
         nlev, nlat, nlon, lane_width
     )] += previous_flux;
-}
-
-template <typename T>
-__global__ void tpcore_finalize(
-    T* dq,
-    const T* delp2,
-    int fill,
-    int finalize_output,
-    int tracer_count,
-    int nlev,
-    int nlat,
-    int nlon,
-    int lane_width
-) {
-    const int work = blockDim.x * blockIdx.x + threadIdx.x;
-    const int ncol = nlat * nlon;
-    const int work_size = ncol * tracer_count;
-    if (work >= work_size) {
-        return;
-    }
-    const int active_tracer = work % tracer_count;
-    const int col = work / tracer_count;
-    const int lat = col / nlon;
-    const int lon = col % nlon;
 
     if (fill && lat >= 2 && lat <= nlat - 3) {
         int index = tracer_index<T>(
@@ -1072,29 +1090,28 @@ __global__ void tpcore_finalize(
         }
     }
 
-    if (!finalize_output || lat == 1 || lat == nlat - 2) {
-        return;
-    }
-    for (int k = 0; k < nlev; ++k) {
-        const int index = tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        );
-        T value = dq[index] / delp2[k * ncol + col];
-        if (value < static_cast<T>(0)) {
-            value = static_cast<T>(1.0e-26);
-        }
-        dq[index] = value;
-        if (lat == 0) {
-            dq[tracer_index<T>(
-                active_tracer, k, 1, lon,
+    if (finalize_output) {
+        for (int k = 0; k < nlev; ++k) {
+            const int index = tracer_index<T>(
+                active_tracer, k, lat, lon,
                 nlev, nlat, nlon, lane_width
-            )] = value;
-        } else if (lat == nlat - 1) {
-            dq[tracer_index<T>(
-                active_tracer, k, nlat - 2, lon,
-                nlev, nlat, nlon, lane_width
-            )] = value;
+            );
+            T value = dq[index] / delp2[k * ncol + col];
+            if (value < static_cast<T>(0)) {
+                value = static_cast<T>(1.0e-26);
+            }
+            dq[index] = value;
+            if (lat == 0) {
+                dq[tracer_index<T>(
+                    active_tracer, k, 1, lon,
+                    nlev, nlat, nlon, lane_width
+                )] = value;
+            } else if (lat == nlat - 1) {
+                dq[tracer_index<T>(
+                    active_tracer, k, nlat - 2, lon,
+                    nlev, nlat, nlon, lane_width
+                )] = value;
+            }
         }
     }
 }

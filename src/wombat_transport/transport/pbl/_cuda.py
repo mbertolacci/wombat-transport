@@ -96,6 +96,7 @@ class CudaVdiffExecutor:
         *,
         has_flux: bool,
         output: Any | None = None,
+        workspace: Any | None = None,
     ) -> CudaVdiffResult:
         """Apply a prepared VDIFF plan without transferring resident arrays."""
 
@@ -104,9 +105,7 @@ class CudaVdiffExecutor:
         if nlev < 2:
             raise ValueError("CUDA VDIFF requires at least two vertical levels")
         output = self._resolve_output(tracer_conc, output)
-
-        if self._qmx is None or self._qmx.shape != tracer_conc.shape:
-            self._qmx = self._runtime.empty(tracer_conc.shape, dtype=self._dtype)
+        qmx = self._resolve_workspace(tracer_conc, workspace)
         self._negative_count.fill(0)
         self._launch(
             tracer_conc,
@@ -116,6 +115,7 @@ class CudaVdiffExecutor:
             has_flux=has_flux,
             shape=(1, nlev, nlat, nlon, nlane),
             tracer_count=nlane,
+            qmx=qmx,
         )
         return CudaVdiffResult(
             tracer_conc=output,
@@ -132,6 +132,7 @@ class CudaVdiffExecutor:
         has_flux: bool,
         tracer_count: int | None = None,
         output: Any | None = None,
+        workspace: Any | None = None,
     ) -> CudaVdiffResult:
         """Apply VDIFF directly to ``(block, lev, lat, lon, lane)`` storage."""
 
@@ -158,9 +159,7 @@ class CudaVdiffExecutor:
         if not tracer_blocks.flags.c_contiguous:
             raise ValueError("CUDA VDIFF tracer blocks must be C-contiguous")
         output = self._resolve_output(tracer_blocks, output)
-
-        if self._qmx is None or self._qmx.shape != tracer_blocks.shape:
-            self._qmx = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
+        qmx = self._resolve_workspace(tracer_blocks, workspace)
         self._negative_count.fill(0)
         if active_tracers != capacity:
             output.fill(0)
@@ -172,6 +171,7 @@ class CudaVdiffExecutor:
             has_flux=has_flux,
             shape=(nblock, nlev, nlat, nlon, nlane),
             tracer_count=active_tracers,
+            qmx=qmx,
         )
         return CudaVdiffResult(
             tracer_conc=output,
@@ -189,6 +189,7 @@ class CudaVdiffExecutor:
         has_flux: bool,
         shape: tuple[int, int, int, int, int],
         tracer_count: int,
+        qmx: Any,
     ) -> None:
         _nblock, nlev, nlat, nlon, nlane = shape
         work_size = nlat * nlon * tracer_count
@@ -216,7 +217,7 @@ class CudaVdiffExecutor:
                 plan.start_level,
                 surface_flux,
                 np.int32(bool(has_flux)),
-                self._qmx,
+                qmx,
                 self._negative_count,
                 np.int32(tracer_count),
                 np.int32(nlev),
@@ -225,6 +226,23 @@ class CudaVdiffExecutor:
                 np.int32(nlane),
             ),
         )
+
+    def _resolve_workspace(self, tracer: Any, workspace: Any | None) -> Any:
+        if workspace is None:
+            if self._qmx is None or self._qmx.shape != tracer.shape:
+                self._qmx = self._runtime.empty(
+                    tracer.shape,
+                    dtype=self._dtype,
+                )
+            return self._qmx
+        self._validate_device_array(workspace, "workspace")
+        if workspace.shape != tracer.shape or workspace.dtype != self._dtype:
+            raise ValueError("CUDA VDIFF workspace must match tracer storage")
+        if not workspace.flags.c_contiguous:
+            raise ValueError("CUDA VDIFF workspace must be C-contiguous")
+        if self._runtime.shares_memory(workspace, tracer):
+            raise ValueError("CUDA VDIFF workspace must not overlap tracer input")
+        return workspace
 
     def _resolve_output(self, tracer: Any, output: Any | None) -> Any:
         if output is None:

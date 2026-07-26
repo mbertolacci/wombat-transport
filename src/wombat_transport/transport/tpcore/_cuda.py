@@ -56,7 +56,6 @@ class CudaTpcoreExecutor:
             for name in (
                 "tpcore_horizontal",
                 "tpcore_vertical",
-                "tpcore_finalize",
             )
         )
         module = load_raw_module("tpcore.cu", name_expressions=expressions)
@@ -64,13 +63,20 @@ class CudaTpcoreExecutor:
         self._dtype = resolved_dtype
         self._horizontal = module.get_function(expressions[0])
         self._vertical = module.get_function(expressions[1])
-        self._finalize = module.get_function(expressions[2])
         self._qqu: Any | None = None
         self._qqv: Any | None = None
 
     @property
     def dtype(self) -> np.dtype[Any]:
         return self._dtype
+
+    @property
+    def expired_horizontal_workspace(self) -> Any:
+        """Return scratch whose lifetime ends after a completed TPCORE call."""
+
+        if self._qqu is None:
+            raise RuntimeError("CUDA TPCORE workspace is not initialized")
+        return self._qqu
 
     def upload_plan(self, plan: TpcorePlan) -> CudaTpcorePlan:
         """Upload one tracer-independent TPCORE plan."""
@@ -170,22 +176,9 @@ class CudaTpcoreExecutor:
                 tracer_blocks,
                 output,
                 plan.delp1,
+                plan.delp2,
                 plan.vertical_mass_flux,
                 plan.normalized_vertical_courant,
-                np.int32(tracer_count),
-                np.int32(nlev),
-                np.int32(nlat),
-                np.int32(nlon),
-                np.int32(lane_width),
-            ),
-        )
-        dq_after_vertical = output.copy() if capture_handoffs else None
-        self._finalize(
-            (column_blocks,),
-            (column_threads,),
-            (
-                output,
-                plan.delp2,
                 np.int32(fill),
                 np.int32(finalize_output),
                 np.int32(tracer_count),
@@ -195,6 +188,7 @@ class CudaTpcoreExecutor:
                 np.int32(lane_width),
             ),
         )
+        dq_after_vertical = output.copy() if capture_handoffs else None
         return CudaTpcoreResult(
             tracer_blocks=output,
             q_after_horizontal=q_after_horizontal,

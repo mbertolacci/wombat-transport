@@ -44,7 +44,6 @@ class CudaTransportStepExecutor:
         self.vdiff = CudaVdiffExecutor(runtime, dtype=self._dtype)
         self.convection = CudaConvectionExecutor(runtime, dtype=self._dtype)
         self._tpcore_output: Any | None = None
-        self._vdiff_output: Any | None = None
 
     @property
     def dtype(self) -> np.dtype[Any]:
@@ -65,10 +64,6 @@ class CudaTransportStepExecutor:
                 tracer_blocks.shape,
                 dtype=self._dtype,
             )
-            self._vdiff_output = self._runtime.empty(
-                tracer_blocks.shape,
-                dtype=self._dtype,
-            )
 
         tpcore_result = self.tpcore.apply_blocks(
             tracer_blocks,
@@ -82,7 +77,8 @@ class CudaTransportStepExecutor:
             plans.surface_flux_blocks,
             has_flux=plans.has_surface_flux,
             tracer_count=tracer_count,
-            output=self._vdiff_output,
+            output=tracer_blocks,
+            workspace=self.tpcore.expired_horizontal_workspace,
         )
         vdiff_handoff = (
             vdiff_result.tracer_conc.copy()

@@ -144,6 +144,8 @@ def test_cuda_transport_step_composes_resident_operators(monkeypatch):
 
     assert runtime.transfer_stats.host_to_device_count == 0
     assert runtime.transfer_stats.device_to_host_count == 0
+    assert runtime.shares_memory(result.tracer_blocks, tracer_blocks)
+    assert result.tpcore_tracer_blocks is not None
     actual_tpcore = _from_blocks(
         runtime.to_host(result.tpcore_tracer_blocks),
         tracer_count,

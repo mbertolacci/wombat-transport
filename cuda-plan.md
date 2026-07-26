@@ -715,7 +715,8 @@ hardware, tolerances, and observed drift.
 - [x] Test pinned asynchronous forcing transfers and reject them because they
   did not improve end-to-end wall time.
 - [ ] Consider CUDA graphs only after launch overhead is shown to matter.
-- [ ] Consider selective fusion only after parity tests can isolate the change.
+- [x] Fuse vertical TPCORE fill/finalization after handoff tests isolated the
+  change.
 - [x] Compare float32 and float64 throughput and memory use at 128 tracers.
 - [x] Compare 128-tracer GPU throughput with an eight-P-core CPU baseline.
 
@@ -804,6 +805,59 @@ not shared storage semantics and not CUDA defaults.
 | Horizontal launch sizes 16, 64, or 128 | Rejected for the current kernel and device. Thirty-two threads was fastest. |
 | Vertical launch sizes 64 or 256 | Rejected for the current kernel and device. The differences were small; 128 remained marginally best. |
 | Native-float32 plan preparation | Deferred as a distinct numerical experiment. Strict float32 currently computes plans in float64 and casts the finalized arrays. All TPCORE plus VDIFF/convection preparation is only 58.3 ms over the complete 3.239-second run, and casting itself is 4.7 ms. Even making plan preparation free would save at most 1.8%; actual savings would be smaller. A native-float32 mode is therefore primarily a drift and memory-policy question, not an obvious performance fix. It should be opt-in and compared over increasing step counts before adoption. |
+
+### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
+
+The next pass tested the CPU executor's deferred pressure-mass handoff directly.
+It was numerically sound but not faster on this GPU. Removing TPCORE's
+concentration division saved about 40 ms over 18 steps, while repeating that
+division inside the more complex VDIFF kernel added about 48 ms. The complete
+float64 run rose to 4.46 seconds. Fusing the remaining fill work into VDIFF was
+slightly slower again at 4.49 seconds. The mass-aware VDIFF experiment was
+therefore removed rather than retained as an unused alternate path.
+
+The production path instead keeps the concentration handoff and makes two
+orthogonal changes:
+
+1. The vertical TPCORE kernel now performs QCK fill, pressure division,
+   negative-floor handling, and polar-row copies immediately after its vertical
+   flux work. This removes the separate full-state finalization launch without
+   changing the TPCORE/VDIFF data contract.
+2. VDIFF writes its result into the expired input-state buffer and borrows an
+   expired TPCORE horizontal workspace for `qmx`. The dedicated VDIFF output
+   and `qmx` allocations are no longer needed in the composed executor.
+
+At 128 tracers, this removes two complete tracer-state allocations:
+`1,261,338,624` bytes (1.17 GiB) in float64 or `630,669,312` bytes
+(601 MiB) in float32. Standalone VDIFF still owns a normal private workspace;
+borrowing is explicit only at the composed executor seam.
+
+Vertical local storage was also reduced by replacing the 47-element `a6` array
+with four endpoint scalars and exact on-demand recomputation for interior
+levels. Recomputing the separate `dpi` array from tracer values was tested but
+rejected: extra state reads increased the float64 vertical region by about
+18 ms.
+
+Final 18-step event timings are:
+
+| region | float64 ms | float32 ms |
+|---|---:|---:|
+| TPCORE horizontal | 1,296.0 | 861.1 |
+| TPCORE vertical, fill, and finalization | 663.7 | 150.9 |
+| complete TPCORE application | 1,960.2 | 1,012.5 |
+| VDIFF application | 64.1 | 27.8 |
+| complete run | 4,363.6 | 3,237.9 |
+
+The old separate vertical plus finalization regions totalled about 687.6 ms in
+float64 and 181.6 ms in float32. The fused region is therefore 3.5% faster in
+float64 and 17% faster in float32. End-to-end improvement is deliberately
+modest because the pass primarily removes peak device memory rather than the
+dominant horizontal computation.
+
+The final pinned endpoint benchmark measured 4.358 seconds for CUDA float64 and
+3.214 seconds for CUDA float32. Maximum drift against the tuned CPU float64
+reference remains exactly `2.992e-17` and `2.972e-8`, respectively; RMSE remains
+`1.735e-18` and `1.318e-9`.
 
 The hot region that remains is horizontal TPCORE. Further substantial gains
 will probably require a different parallel decomposition or tiling of its
