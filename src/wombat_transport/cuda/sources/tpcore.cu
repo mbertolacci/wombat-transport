@@ -102,7 +102,6 @@ __global__ void tpcore_horizontal(
     T w0[WOMBAT_MAX_LON];
     T w1[WOMBAT_MAX_LON];
     T w2[WOMBAT_MAX_LON];
-    T w3[WOMBAT_MAX_LON];
 
     T south_denom = static_cast<T>(0);
     T north_denom = static_cast<T>(0);
@@ -432,101 +431,94 @@ __global__ void tpcore_horizontal(
             }
         }
 
-        if (j > js_level && j < jn_level) {
-            if (j == j1p || j == j2p) {
-                for (int i = 0; i < nlon; ++i) {
+        const bool local_courant = j > js_level && j < jn_level;
+        const bool edge_row = j == j1p || j == j2p;
+        const bool near_edge_row = j <= j1p + jvan || j >= j2p - jvan;
+        if (local_courant && !edge_row && !near_edge_row) {
+            for (int i = 0; i < nlon; ++i) {
+                const int im1 = wmod(i - 1, nlon);
+                w1[i] = static_cast<T>(0.5) * (
+                    qqv[tracer_index<T>(
+                        active_tracer, level, j, im1,
+                        nlev, nlat, nlon, lane_width
+                    )] + qqv[tracer_index<T>(
+                        active_tracer, level, j, i,
+                        nlev, nlat, nlon, lane_width
+                    )]
+                ) + (w0[im1] - w0[i]) * r13;
+                w2[im1] = w1[i];
+            }
+            for (int i = 0; i < nlon; ++i) {
+                const T q_value = qqv[tracer_index<T>(
+                    active_tracer, level, j, i,
+                    nlev, nlat, nlon, lane_width
+                )];
+                T a6 = static_cast<T>(3) * (
+                    q_value + q_value - (w1[i] + w2[i])
+                );
+                if (w0[i] == static_cast<T>(0)) {
+                    a6 = static_cast<T>(0);
+                    w1[i] = q_value;
+                    w2[i] = q_value;
+                } else {
+                    const T da1 = w2[i] - w1[i];
+                    const T da2 = da1 * da1;
+                    const T a6da = a6 * da1;
+                    if (a6da < -da2) {
+                        a6 = static_cast<T>(3) * (w1[i] - q_value);
+                        w2[i] = w1[i] - a6;
+                    } else if (a6da > da2) {
+                        a6 = static_cast<T>(3) * (w2[i] - q_value);
+                        w1[i] = w2[i] - a6;
+                    }
+                }
+                w0[i] = a6;
+            }
+        }
+        T first_flux = static_cast<T>(0);
+        T previous_flux = static_cast<T>(0);
+        for (int i = 0; i < nlon; ++i) {
+            const T c = cx[scalar_offset + j * nlon + i];
+            T flux;
+            if (local_courant) {
+                if (edge_row) {
                     const int iu = wmod(
-                        static_cast<int>(
-                            static_cast<T>(i + 1) -
-                            cx[scalar_offset + j * nlon + i]
-                        ) - 1,
+                        static_cast<int>(static_cast<T>(i + 1) - c) - 1,
                         nlon
                     );
-                    w1[i] = qqv[tracer_index<T>(
+                    flux = qqv[tracer_index<T>(
                         active_tracer, level, j, iu,
                         nlev, nlat, nlon, lane_width
                     )];
-                }
-            } else if (j <= j1p + jvan || j >= j2p - jvan) {
-                for (int i = 0; i < nlon; ++i) {
-                    const T c = cx[scalar_offset + j * nlon + i];
+                } else if (near_edge_row) {
                     const int iu = wmod(
                         static_cast<int>(static_cast<T>(i + 1) - c) - 1,
                         nlon
                     );
                     const T sign_value = c >= static_cast<T>(0)
                         ? static_cast<T>(1) : static_cast<T>(-1);
-                    w1[i] = qqv[tracer_index<T>(
+                    flux = qqv[tracer_index<T>(
                         active_tracer, level, j, iu,
                         nlev, nlat, nlon, lane_width
                     )] + w0[iu] * (sign_value - c);
-                }
-            } else {
-                for (int i = 0; i < nlon; ++i) {
+                } else if (c > static_cast<T>(0)) {
                     const int im1 = wmod(i - 1, nlon);
-                    w2[i] = static_cast<T>(0.5) * (
-                        qqv[tracer_index<T>(
-                            active_tracer, level, j, im1,
-                            nlev, nlat, nlon, lane_width
-                        )] + qqv[tracer_index<T>(
-                            active_tracer, level, j, i,
-                            nlev, nlat, nlon, lane_width
-                        )]
-                    ) + (w0[im1] - w0[i]) * r13;
-                    w3[im1] = w2[i];
-                }
-                for (int i = 0; i < nlon; ++i) {
-                    const T q_value = qqv[tracer_index<T>(
-                        active_tracer, level, j, i,
-                        nlev, nlat, nlon, lane_width
-                    )];
-                    T a6 = static_cast<T>(3) * (
-                        q_value + q_value - (w2[i] + w3[i])
+                    flux = w2[im1] + static_cast<T>(0.5) * c * (
+                        w1[im1] - w2[im1] +
+                        w0[im1] * (
+                            static_cast<T>(1) - r23 * c
+                        )
                     );
-                    if (w0[i] == static_cast<T>(0)) {
-                        a6 = static_cast<T>(0);
-                        w2[i] = q_value;
-                        w3[i] = q_value;
-                    } else {
-                        const T da1 = w3[i] - w2[i];
-                        const T da2 = da1 * da1;
-                        const T a6da = a6 * da1;
-                        if (a6da < -da2) {
-                            a6 = static_cast<T>(3) * (w2[i] - q_value);
-                            w3[i] = w2[i] - a6;
-                        } else if (a6da > da2) {
-                            a6 = static_cast<T>(3) * (w3[i] - q_value);
-                            w2[i] = w3[i] - a6;
-                        }
-                    }
-                    w0[i] = a6;
+                } else {
+                    flux = w1[i] - static_cast<T>(0.5) * c * (
+                        w2[i] - w1[i] +
+                        w0[i] * (
+                            static_cast<T>(1) + r23 * c
+                        )
+                    );
                 }
-                for (int i = 0; i < nlon; ++i) {
-                    const T c = cx[scalar_offset + j * nlon + i];
-                    if (c > static_cast<T>(0)) {
-                        const int im1 = wmod(i - 1, nlon);
-                        w1[i] = w3[im1] + static_cast<T>(0.5) * c * (
-                            w2[im1] - w3[im1] +
-                            w0[im1] * (
-                                static_cast<T>(1) - r23 * c
-                            )
-                        );
-                    } else {
-                        w1[i] = w2[i] - static_cast<T>(0.5) * c * (
-                            w3[i] - w2[i] +
-                            w0[i] * (
-                                static_cast<T>(1) + r23 * c
-                            )
-                        );
-                    }
-                }
-            }
-            for (int i = 0; i < nlon; ++i) {
-                w1[i] *= xmass[scalar_offset + j * nlon + i];
-            }
-        } else {
-            for (int i = 0; i < nlon; ++i) {
-                const T c = cx[scalar_offset + j * nlon + i];
+                flux *= xmass[scalar_offset + j * nlon + i];
+            } else {
                 const int ic = static_cast<int>(c);
                 const int isav = i - ic;
                 const int iu = wmod(
@@ -537,7 +529,7 @@ __global__ void tpcore_horizontal(
                 const T sign_value = rc >= static_cast<T>(0)
                     ? static_cast<T>(1) : static_cast<T>(-1);
                 T value;
-                if (j == j1p || j == j2p) {
+                if (edge_row) {
                     value = rc * qqv[tracer_index<T>(
                         active_tracer, level, j, iu,
                         nlev, nlat, nlon, lane_width
@@ -565,19 +557,22 @@ __global__ void tpcore_horizontal(
                         )];
                     }
                 }
-                w1[i] = pu[scalar_offset + j * nlon + i] * value;
+                flux = pu[scalar_offset + j * nlon + i] * value;
             }
-        }
-        for (int i = 0; i < nlon - 1; ++i) {
-            dq[tracer_index<T>(
-                active_tracer, level, j, i,
-                nlev, nlat, nlon, lane_width
-            )] += w1[i] - w1[i + 1];
+            if (i == 0) {
+                first_flux = flux;
+            } else {
+                dq[tracer_index<T>(
+                    active_tracer, level, j, i - 1,
+                    nlev, nlat, nlon, lane_width
+                )] += previous_flux - flux;
+            }
+            previous_flux = flux;
         }
         dq[tracer_index<T>(
             active_tracer, level, j, nlon - 1,
             nlev, nlat, nlon, lane_width
-        )] += w1[nlon - 1] - w1[0];
+        )] += previous_flux - first_flux;
     }
 
     for (int i = 0; i < nlon; ++i) {
@@ -631,23 +626,24 @@ __global__ void tpcore_horizontal(
                 active_tracer, level, j, i,
                 nlev, nlat, nlon, lane_width
             )];
-            w3[j] = static_cast<T>(3) * (
+            const T slope = w0[j];
+            w0[j] = static_cast<T>(3) * (
                 qj + qj - (w1[j] + w2[j])
             );
-            if (w0[j] == static_cast<T>(0)) {
-                w3[j] = static_cast<T>(0);
+            if (slope == static_cast<T>(0)) {
+                w0[j] = static_cast<T>(0);
                 w1[j] = qj;
                 w2[j] = qj;
             } else {
                 const T da1 = w2[j] - w1[j];
                 const T da2 = da1 * da1;
-                const T a6da = w3[j] * da1;
+                const T a6da = w0[j] * da1;
                 if (a6da < -da2) {
-                    w3[j] = static_cast<T>(3) * (w1[j] - qj);
-                    w2[j] = w1[j] - w3[j];
+                    w0[j] = static_cast<T>(3) * (w1[j] - qj);
+                    w2[j] = w1[j] - w0[j];
                 } else if (a6da > da2) {
-                    w3[j] = static_cast<T>(3) * (w2[j] - qj);
-                    w1[j] = w2[j] - w3[j];
+                    w0[j] = static_cast<T>(3) * (w2[j] - qj);
+                    w1[j] = w2[j] - w0[j];
                 }
             }
         }
@@ -658,12 +654,12 @@ __global__ void tpcore_horizontal(
             if (c > static_cast<T>(0)) {
                 flux = w2[jm1] + static_cast<T>(0.5) * c * (
                     w1[jm1] - w2[jm1] +
-                    w3[jm1] * (static_cast<T>(1) - r23 * c)
+                    w0[jm1] * (static_cast<T>(1) - r23 * c)
                 );
             } else {
                 flux = w1[j] - static_cast<T>(0.5) * c * (
                     w2[j] - w1[j] +
-                    w3[j] * (static_cast<T>(1) + r23 * c)
+                    w0[j] * (static_cast<T>(1) + r23 * c)
                 );
             }
             qqv[tracer_index<T>(

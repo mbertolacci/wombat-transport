@@ -790,15 +790,17 @@ Compiled TPCORE attributes are:
 | vertical/finalize | float64 | 72 | 1,504 | 0 |
 | vertical/finalize | float32 | 48 | 752 | 0 |
 
-The horizontal local allocation is exactly four longitude scratch arrays.
-This defines the first alternate decomposition cleanly: assign one warp to a
-level/tracer task, allocate its four 144-element arrays once in shared memory,
-and distribute longitude-independent loops across lanes. Keep longitude
-recurrences and pole reductions on one lane initially so their strict
-operation order is unchanged. Four or eight warps per block require 18 or
-36 KiB of shared memory in float64, within the reported 48 KiB dynamic-shared
-limit. Develop this as a side-by-side kernel selected only by the profiling
-harness until every intermediate handoff passes.
+The initial horizontal local allocation was exactly four longitude scratch
+arrays. The scratch-lifetime pass below reduced that to three without changing
+the transport result. This still defines the first alternate decomposition
+cleanly: assign one warp to a level/tracer task, allocate its three 144-element
+arrays once in shared memory, and distribute longitude-independent loops
+across lanes. Keep longitude recurrences and pole reductions on one lane
+initially so their strict operation order is unchanged. Four or eight warps
+per block require 13.5 or 27 KiB of shared memory in float64, within the
+reported 48 KiB dynamic-shared limit. Develop this as a side-by-side kernel
+selected only by the profiling harness until every intermediate handoff
+passes.
 
 ## Performance optimization notes
 
@@ -880,6 +882,55 @@ not shared storage semantics and not CUDA defaults.
 | Persistent pinned host staging plus a nonblocking copy stream | Rejected for now. Recorded refresh events fell from apparent multi-second host waits to about 7 ms, but complete wall time did not improve: the original host timer was largely waiting for already queued GPU work. The extra pinned allocation and stream/event coordination therefore bought no measured throughput. |
 | Horizontal launch sizes 16, 64, or 128 | Rejected for the current kernel and device. Thirty-two threads was fastest. |
 | Vertical launch sizes 64 or 256 | Rejected for the current kernel and device. The differences were small; 128 remained marginally best. |
+
+### Scratch-lifetime pass, 2026-07-26
+
+The horizontal kernel originally kept four 144-element private arrays live for
+each level/tracer task. Two lifetime changes reduce that to three:
+
+- horizontal flux differences are applied as each successive flux is computed,
+  retaining only the first and previous scalar flux rather than a full flux
+  array;
+- the meridional slope array is reused for the PPM curvature after all slopes
+  have been consumed.
+
+The expressions used to construct each flux and the subtraction applied to
+each destination cell retain their original ordering. The 18-step 128-tracer
+run produced exactly the same measured endpoint drift as before:
+
+| dtype | max abs vs CPU float64 | RMSE |
+|---|---:|---:|
+| float64 | 2.9923979961e-17 | 1.7349636207e-18 |
+| float32 | 2.9715031337e-8 | 1.3176232434e-9 |
+
+Compiled storage and repeated maintained-profile timings changed as follows:
+
+| dtype | local bytes/thread before | after | horizontal before ms | after ms | change |
+|---|---:|---:|---:|---:|---:|
+| float64 | 4,608 | 3,456 | 1,294.8 | 1,267.2–1,267.9 | -2.1% |
+| float32 | 2,304 | 1,728 | 855.4 | 845.0–845.8 | -1.1% |
+
+The corresponding complete-run observations were 4.33–4.35 seconds for
+float64 and 3.20–3.22 seconds for float32, compared with the maintained
+4.36- and 3.26-second pre-change samples. Complete-run improvement is small
+enough to remain somewhat sensitive to host and I/O noise; the repeated raw
+kernel events are the more useful signal.
+
+This result indicates that spilled private-array traffic contributes to the
+horizontal cost but is not its dominant limit. In particular, halving scalar
+width from float64 to float32 still yields only about 1.5x horizontal speed,
+so serialized arithmetic, control flow, indexing, and common memory traffic
+remain important.
+
+Launch retuning after the storage reduction kept 32 threads as the best local
+choice. At 128 tracers, 16 threads increased horizontal time to 1,538 ms
+(float64) and 883 ms (float32); 64 threads measured 1,316 ms and 853 ms.
+No launch-selection abstraction was added.
+
+An attempted vertical scratch reuse was rejected by the operator parity test.
+The pressure-difference array appears dead after reconstruction but is read
+again by the later monotonic limiter, so it cannot alias the right-edge array.
+The experiment was removed before benchmarking or commit.
 | Native-float32 plan preparation | Deferred as a distinct numerical experiment. Strict float32 currently computes plans in float64 and casts the finalized arrays. All TPCORE plus VDIFF/convection preparation is only 58.3 ms over the complete 3.239-second run, and casting itself is 4.7 ms. Even making plan preparation free would save at most 1.8%; actual savings would be smaller. A native-float32 mode is therefore primarily a drift and memory-policy question, not an obvious performance fix. It should be opt-in and compared over increasing step counts before adoption. |
 
 ### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
