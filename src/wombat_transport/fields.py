@@ -189,9 +189,21 @@ class TracerField:
             (ntime, nblock, nlev, nlat, nlon, block_width),
             dtype=self._data.dtype,
         )
-        for tracer in range(self.tracer_count):
-            block, lane = divmod(tracer, block_width)
-            storage[:, block, :, :, :, lane] = self.tracer(tracer)
+        start = 0
+        while start < self.tracer_count:
+            source_block, source_lane = divmod(start, self.block_width)
+            target_block, target_lane = divmod(start, block_width)
+            count = min(
+                self.block_width - source_lane,
+                block_width - target_lane,
+                self.tracer_count - start,
+            )
+            storage[
+                :, target_block, :, :, :, target_lane : target_lane + count
+            ] = self._data[
+                :, source_block, :, :, :, source_lane : source_lane + count
+            ]
+            start += count
         return TracerField(
             names=self.names,
             data=storage,

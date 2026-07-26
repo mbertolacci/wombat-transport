@@ -610,6 +610,76 @@ The sequential comparison process peaked at about 3.71 GiB RSS while retaining
 the CPU reference for both drift comparisons; that is not a per-backend memory
 measurement.
 
+#### 128-tracer event profile
+
+The following subsection records the profile before the first focused
+optimization pass. It is retained as the measurement baseline and is
+superseded by the optimization notes below.
+
+Nested CUDA events and host timers were added around the ordinary 18-step run.
+This is the same synchronized timing mechanism used by
+`cupyx.profiler.benchmark`, applied at the runner, operator, and raw-kernel
+boundaries. Instrumentation changed wall time by less than one percent.
+
+The following operator-level regions are non-overlapping except that the final
+row includes everything:
+
+| region | float64 ms | float32 ms | float64 / float32 |
+|---|---:|---:|---:|
+| TPCORE preparation | 181.6 | 184.6 | 0.98x |
+| VDIFF/convection preparation | 473.6 | 476.0 | 0.99x |
+| TPCORE application | 2,767.0 | 1,924.3 | 1.44x |
+| VDIFF application | 684.7 | 643.4 | 1.06x |
+| convection application | 92.8 | 33.1 | 2.81x |
+| final device-to-host state copy | 87.6 | 44.1 | 1.99x |
+| other host, setup, and transfer work | 2,580.5 | 2,578.8 | 1.00x |
+| complete run | 6,867.8 | 5,884.3 | 1.17x |
+
+Run-to-run variation accounts for the small difference from the benchmark
+above. The profile makes the limited overall float32 gain unsurprising: about
+2.58 seconds is dtype-independent, and another 0.66 seconds is preparation
+that deliberately computes float64 plans for strict CPU parity before casting
+the state-dependent values. Of the roughly 0.98 second saving, 0.84 seconds
+comes from TPCORE alone.
+
+Raw-kernel event timings explain why TPCORE itself is only 1.44x faster:
+
+| kernel or preparation step | float64 ms | float32 ms | float64 / float32 |
+|---|---:|---:|---:|
+| TPCORE horizontal | 1,503.3 | 1,082.8 | 1.39x |
+| TPCORE vertical | 622.4 | 244.0 | 2.55x |
+| TPCORE finalize | 65.0 | 29.3 | 2.21x |
+| VDIFF raw kernel | 168.0 | 126.6 | 1.33x |
+| convection raw kernel | 92.8 | 33.0 | 2.81x |
+| VDIFF start-pressure preparation | 453.5 | 454.1 | 1.00x |
+| remaining VDIFF preparation kernel | 18.4 | 18.4 | 1.00x |
+
+Operator times include fills, launches, allocations, and synchronization gaps
+that are not inside the named raw kernels. These contribute about 0.57 seconds
+to TPCORE and 0.52 seconds to VDIFF in both dtypes, so the VDIFF raw kernel's
+1.33x gain becomes only 1.06x at the operator boundary.
+
+The horizontal TPCORE mapping assigns one CUDA thread to a level/tracer pair
+and performs long serial loops over the horizontal grid. Each thread also has
+seven 144-element scratch arrays: about 8 KiB in float64 and 4 KiB in float32.
+That structure is dominated by serial dependencies, indexing, control flow,
+and likely local-memory traffic rather than floating-point peak throughput.
+VDIFF similarly assigns a column/tracer to one thread and serializes its
+47-level tridiagonal recurrence. Performance-counter confirmation is not
+currently available because the installed driver denies non-admin access to
+the NVIDIA hardware counters.
+
+The clearest first profile-driven improvements are:
+
+1. replace the single-thread, roughly 25 ms-per-step VDIFF start-pressure
+   calculation with a parallel reduction;
+2. attribute and remove the fixed fills or synchronization gaps around TPCORE
+   and VDIFF;
+3. remap or tile horizontal TPCORE so that more of each grid calculation is
+   parallel and per-thread scratch storage is smaller;
+4. retain `cupyx.profiler.time_range` annotations in a disposable profiling
+   harness for an Nsight Systems timeline when report import is available.
+
 The actual-GPU validation comprises 29 CUDA tests. It covers both state
 dtypes, all three transport operators and their handoffs, padded tracer blocks,
 mixed float32-state/float64-HISTORY accumulation, and ObsOperator point, box,
@@ -636,20 +706,110 @@ hardware, tolerances, and observed drift.
 
 ### Phase 9: performance work
 
-- [ ] Separate initialization/JIT time, input time, transfer time, kernel time,
-  diagnostics, and output time.
+- [x] Separate initialization/JIT time, input time, transfer time, and kernel
+  time for the 128-tracer transport case.
+- [ ] Profile diagnostics and output in a representative enabled run.
 - [ ] Benchmark warm and cold kernel caches.
-- [ ] Tune block width and launch geometry by operator and tracer load.
-- [ ] Add pinned and double-buffered forcing transfers only if transfer timing
-  justifies them.
+- [x] Tune block width and launch geometry for the 128-tracer development
+  case; retain separate CPU and CUDA policy.
+- [x] Test pinned asynchronous forcing transfers and reject them because they
+  did not improve end-to-end wall time.
 - [ ] Consider CUDA graphs only after launch overhead is shown to matter.
 - [ ] Consider selective fusion only after parity tests can isolate the change.
-- [ ] Compare float32 and float64 throughput and memory use.
-- [ ] Compare GPU throughput with the established CPU tracer frontier.
+- [x] Compare float32 and float64 throughput and memory use at 128 tracers.
+- [x] Compare 128-tracer GPU throughput with an eight-P-core CPU baseline.
 
 Do not use microkernel speed alone as the success criterion. The relevant
 result is end-to-end tracer-steps per second with normal forcing and requested
 diagnostics.
+
+## Performance optimization notes
+
+### First focused pass, 2026-07-26
+
+The first pass targeted work already visible in the event and Python profiles.
+It did not change transport scheduling, introduce a fast-math mode, move file
+I/O to the GPU, or alter the strict float64-plan policy.
+
+The benchmark is the same 128-tracer, 18-step, 2x2.5 resident-run fixture used
+above. The process is pinned to one hardware thread on each of the eight
+P-cores. The CPU uses the locally established 16-lane balanced block strategy;
+CUDA uses 32-lane blocks. Each backend receives a one-step warm-up. Timings
+include initialization, forcing reads, nine real emissions evaluations,
+transport, and final host materialization, but exclude HISTORY, ObsOperator,
+and NetCDF output.
+
+| execution | before s | after s | speedup vs tuned CPU after | max abs vs CPU float64 | RMSE |
+|---|---:|---:|---:|---:|---:|
+| CPU float64, 8 P-cores, width 16 | 8.701* | 8.050 | reference | reference | reference |
+| CUDA float64, width 32 | 6.853 | 4.377 | 1.84x | 2.992e-17 | 1.735e-18 |
+| CUDA float32, width 32 | 5.845 | 3.239 | 2.49x | 2.972e-8 | 1.318e-9 |
+
+`*` The earlier CPU measurement used width eight, so the before/after CPU
+figures are not an implementation speedup. The width-16 result is the correct
+local CPU comparison.
+
+CUDA float64 wall time fell by 36% and CUDA float32 by 45%. Float64 remains an
+implementation-parity baseline at this horizon. Float32 has the same measured
+endpoint drift as before the optimization pass.
+
+The final event breakdown is:
+
+| region | float64 ms | float32 ms | float64 / float32 |
+|---|---:|---:|---:|
+| TPCORE preparation | 25.8 | 28.8 | 0.90x |
+| VDIFF/convection preparation | 27.7 | 29.5 | 0.94x |
+| TPCORE application | 1,965.5 | 1,039.6 | 1.89x |
+| VDIFF application | 63.3 | 27.5 | 2.30x |
+| convection application | 92.1 | 23.7 | 3.88x |
+| final device-to-host state copy | 88.4 | 48.1 | 1.84x |
+| complete run | 4,374.7 | 3,252.7 | 1.35x |
+
+The end-to-end float32 ratio is lower than the transport ratio because tracer
+initialization, forcing and emissions I/O, source-field selection, strict
+float64 plan arithmetic, and other host work do not become twice as fast when
+the resident tracer dtype changes.
+
+#### Retained changes
+
+| change | evidence and result |
+|---|---|
+| Replace `cupy.shares_memory` in the hot output check with a constant-time contiguous device-range check | Python profiling attributed 3.34 seconds across 38 warm and timed calls to CuPy's general overlap implementation, which sorts array addresses. The operator contract already requires contiguous arrays. |
+| Reduce wet surface pressure once for the VDIFF start level | The old serial kernel repeatedly summed the same 13,104 surface cells for all 47 levels. Algebraically deriving the layer means from one ordered surface-pressure sum reduced 18-step time from about 454 ms to 7.6 ms. Strict start-level comparisons pass. |
+| Stage TPCORE pressure-plan work into parallel term, copy, row, and correction kernels | The two numerically sensitive global sums retain their original left-to-right addition order. Independent cells and latitude rows run in parallel. TPCORE preparation fell from 181.6 ms to 25.8 ms. |
+| Compute `jn` and `js` while producing horizontal Courant values | Initialized per-level bounds plus atomic min/max remove a second full scan without changing the selected indices. |
+| Use 32-lane CUDA tracer blocks by default | Width 32 gave the best 128-tracer device time and maps one tracer block to one warp. Widths 16, 64, and 128 were close but slower. `WOMBAT_TRANSPORT_BLOCK_WIDTH` remains an override. |
+| Pack and reblock by contiguous tracer slices | Replacing one assignment per tracer with one per block removed roughly half a second of 128-tracer initialization work. |
+| Skip the TPCORE output clear for full blocks | Exactly 128 tracers in width-32 storage have no padded lanes, so every output value is overwritten by the kernels. Padded final blocks still clear before launch. |
+| Reduce horizontal TPCORE per-thread longitude scratch from seven arrays to four | Reusing expired scratch values and accumulating pole sums directly reduced local-memory traffic. The 18-step horizontal kernel region fell to 1,278 ms in float64 and 858 ms in float32. |
+| Reuse expired vertical TPCORE scratch | Removing one 47-element local array gave a small timing change but lowers per-thread local storage without changing the arithmetic sequence. |
+| Elide VDIFF source preparation for zero-flux tracer-columns | Only 24 of the 128 tracers have active emissions. Exact zero-flux columns now bypass the `qmx` preparation and source-adjustment path. Float64 VDIFF application fell from about 115 ms after the earlier fixes to 63 ms; float32 is 28 ms. |
+
+These optimizations are independent of the development GPU's weak float64
+throughput. They remove unnecessary work or memory traffic and should remain
+useful on a bandwidth-limited device and on a device with strong float64
+capacity. The exact best block width and launch geometry must still be tuned
+per architecture and tracer count.
+
+CPU execution policy is deliberately separate. The development CPU performs
+well with balanced 16-lane tracer blocks, and its spatial-to-block crossover
+was measured near 128 tracers. Those are machine-specific CPU scheduling facts,
+not shared storage semantics and not CUDA defaults.
+
+#### Rejected or deferred experiments
+
+| experiment | decision |
+|---|---|
+| Persistent pinned host staging plus a nonblocking copy stream | Rejected for now. Recorded refresh events fell from apparent multi-second host waits to about 7 ms, but complete wall time did not improve: the original host timer was largely waiting for already queued GPU work. The extra pinned allocation and stream/event coordination therefore bought no measured throughput. |
+| Horizontal launch sizes 16, 64, or 128 | Rejected for the current kernel and device. Thirty-two threads was fastest. |
+| Vertical launch sizes 64 or 256 | Rejected for the current kernel and device. The differences were small; 128 remained marginally best. |
+| Native-float32 plan preparation | Deferred as a distinct numerical experiment. Strict float32 currently computes plans in float64 and casts the finalized arrays. All TPCORE plus VDIFF/convection preparation is only 58.3 ms over the complete 3.239-second run, and casting itself is 4.7 ms. Even making plan preparation free would save at most 1.8%; actual savings would be smaller. A native-float32 mode is therefore primarily a drift and memory-policy question, not an obvious performance fix. It should be opt-in and compared over increasing step counts before adoption. |
+
+The hot region that remains is horizontal TPCORE. Further substantial gains
+will probably require a different parallel decomposition or tiling of its
+serial longitude/latitude recurrences. That changes the kernel's shape and
+reduction behavior, so it belongs in a separate parity-instrumented experiment
+rather than this no-compromise cleanup pass.
 
 ### Phase 10: consolidate or retreat
 

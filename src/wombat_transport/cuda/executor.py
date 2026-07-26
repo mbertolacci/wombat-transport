@@ -265,11 +265,13 @@ class CudaRunExecutor:
 
 def _to_horizontal_blocks(values: np.ndarray, width: int) -> np.ndarray:
     nlat, nlon, ntracer = values.shape
+    nblock = (ntracer + width - 1) // width
     result = np.zeros(
-        ((ntracer + width - 1) // width, nlat, nlon, width),
+        (nblock, nlat, nlon, width),
         dtype=values.dtype,
     )
-    for tracer in range(ntracer):
-        block, lane = divmod(tracer, width)
-        result[block, ..., lane] = values[..., tracer]
+    for block in range(nblock):
+        start = block * width
+        stop = min(start + width, ntracer)
+        result[block, ..., : stop - start] = values[..., start:stop]
     return result

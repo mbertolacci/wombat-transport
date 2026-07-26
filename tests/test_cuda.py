@@ -62,6 +62,22 @@ def test_cuda_runtime_accounts_for_explicit_transfers():
 
 
 @pytest.mark.cuda
+def test_cuda_runtime_detects_device_memory_overlap_without_array_work():
+    runtime = _cuda_runtime_or_skip()
+    storage = runtime.empty((64,), dtype=np.float64)
+
+    assert runtime.shares_memory(storage, storage)
+    assert runtime.shares_memory(storage[8:32], storage[24:40])
+    assert not runtime.shares_memory(storage[:16], storage[16:])
+    assert not runtime.shares_memory(
+        storage,
+        runtime.empty((64,), dtype=np.float64),
+    )
+    with pytest.raises(ValueError, match="C-contiguous"):
+        runtime.shares_memory(storage.reshape(8, 8)[:, 0], storage)
+
+
+@pytest.mark.cuda
 @pytest.mark.parametrize("dtype", (np.float32, np.float64))
 def test_cuda_history_accumulates_resident_tracer_blocks(dtype):
     runtime = _cuda_runtime_or_skip()

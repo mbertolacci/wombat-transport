@@ -63,6 +63,16 @@ def test_multiblock_canonical_conversion_joins_active_lanes():
     np.testing.assert_array_equal(canonical, original.data)
 
 
+def test_reblock_maps_contiguous_runs_between_different_block_boundaries():
+    original = _tracer_field(23)
+
+    reblocked = original.reblock(8).reblock(7)
+
+    assert reblocked.block_data.shape == (2, 4, 3, 4, 5, 7)
+    assert np.count_nonzero(reblocked.block_data[:, -1, :, :, :, 2:]) == 0
+    np.testing.assert_array_equal(reblocked.to_canonical(), original.data)
+
+
 def test_multiblock_field_requires_explicit_canonical_conversion():
     field = _tracer_field(9).reblock(8)
 

@@ -103,9 +103,6 @@ __global__ void tpcore_horizontal(
     T w1[WOMBAT_MAX_LON];
     T w2[WOMBAT_MAX_LON];
     T w3[WOMBAT_MAX_LON];
-    T w4[WOMBAT_MAX_LON];
-    T w5[WOMBAT_MAX_LON];
-    T w6[WOMBAT_MAX_LON];
 
     T south_denom = static_cast<T>(0);
     T north_denom = static_cast<T>(0);
@@ -312,6 +309,8 @@ __global__ void tpcore_horizontal(
             ) + q_j - qqu[index];
         }
     }
+    T sumsp = static_cast<T>(0);
+    T sumnp = static_cast<T>(0);
     for (int i = 0; i < nlon; ++i) {
         int j = 1;
         T va_value = va[scalar_offset + j * nlon + i];
@@ -475,32 +474,32 @@ __global__ void tpcore_horizontal(
                         )]
                     ) + (w0[im1] - w0[i]) * r13;
                     w3[im1] = w2[i];
-                    w5[i] = w0[i];
-                    w6[i] = qqv[tracer_index<T>(
+                }
+                for (int i = 0; i < nlon; ++i) {
+                    const T q_value = qqv[tracer_index<T>(
                         active_tracer, level, j, i,
                         nlev, nlat, nlon, lane_width
                     )];
-                }
-                for (int i = 0; i < nlon; ++i) {
-                    w4[i] = static_cast<T>(3) * (
-                        w6[i] + w6[i] - (w2[i] + w3[i])
+                    T a6 = static_cast<T>(3) * (
+                        q_value + q_value - (w2[i] + w3[i])
                     );
-                    if (w5[i] == static_cast<T>(0)) {
-                        w4[i] = static_cast<T>(0);
-                        w2[i] = w6[i];
-                        w3[i] = w6[i];
+                    if (w0[i] == static_cast<T>(0)) {
+                        a6 = static_cast<T>(0);
+                        w2[i] = q_value;
+                        w3[i] = q_value;
                     } else {
                         const T da1 = w3[i] - w2[i];
                         const T da2 = da1 * da1;
-                        const T a6da = w4[i] * da1;
+                        const T a6da = a6 * da1;
                         if (a6da < -da2) {
-                            w4[i] = static_cast<T>(3) * (w2[i] - w6[i]);
-                            w3[i] = w2[i] - w4[i];
+                            a6 = static_cast<T>(3) * (w2[i] - q_value);
+                            w3[i] = w2[i] - a6;
                         } else if (a6da > da2) {
-                            w4[i] = static_cast<T>(3) * (w3[i] - w6[i]);
-                            w2[i] = w3[i] - w4[i];
+                            a6 = static_cast<T>(3) * (w3[i] - q_value);
+                            w2[i] = w3[i] - a6;
                         }
                     }
+                    w0[i] = a6;
                 }
                 for (int i = 0; i < nlon; ++i) {
                     const T c = cx[scalar_offset + j * nlon + i];
@@ -508,14 +507,14 @@ __global__ void tpcore_horizontal(
                         const int im1 = wmod(i - 1, nlon);
                         w1[i] = w3[im1] + static_cast<T>(0.5) * c * (
                             w2[im1] - w3[im1] +
-                            w4[im1] * (
+                            w0[im1] * (
                                 static_cast<T>(1) - r23 * c
                             )
                         );
                     } else {
                         w1[i] = w2[i] - static_cast<T>(0.5) * c * (
                             w3[i] - w2[i] +
-                            w4[i] * (
+                            w0[i] * (
                                 static_cast<T>(1) + r23 * c
                             )
                         );
@@ -689,20 +688,14 @@ __global__ void tpcore_horizontal(
             )] += (qqv[index] - qqv[next_index]) * geofac[j];
             index = next_index;
         }
-        w4[i] = qqv[tracer_index<T>(
+        sumsp += qqv[tracer_index<T>(
             active_tracer, level, j1p, i,
             nlev, nlat, nlon, lane_width
         )];
-        w5[i] = qqv[tracer_index<T>(
+        sumnp += qqv[tracer_index<T>(
             active_tracer, level, j2p + 1, i,
             nlev, nlat, nlon, lane_width
         )];
-    }
-    T sumsp = static_cast<T>(0);
-    T sumnp = static_cast<T>(0);
-    for (int i = 0; i < nlon; ++i) {
-        sumsp += w4[i];
-        sumnp += w5[i];
     }
     const T dq_sp = dq[tracer_index<T>(
         active_tracer, level, 0, 0,
@@ -765,7 +758,8 @@ __global__ void tpcore_vertical(
     T al[WOMBAT_MAX_LEV];
     T ar[WOMBAT_MAX_LEV];
     T a6[WOMBAT_MAX_LEV];
-    T dca[WOMBAT_MAX_LEV];
+    T dca_top;
+    T dca_bottom;
 
     for (int k = 0; k < nlev - 1; ++k) {
         dpi[k] = q[tracer_index<T>(
@@ -826,9 +820,9 @@ __global__ void tpcore_vertical(
     )];
     if (q_top * al[0] <= static_cast<T>(0)) {
         al[0] = static_cast<T>(0);
-        dca[0] = static_cast<T>(0);
+        dca_top = static_cast<T>(0);
     } else {
-        dca[0] = q_top - al[0];
+        dca_top = q_top - al[0];
     }
 
     const T dlp_last = delp1[(nlev - 1) * ncol + col];
@@ -847,7 +841,7 @@ __global__ void tpcore_vertical(
     if (q_bottom * ar[nlev - 1] <= static_cast<T>(0)) {
         ar[nlev - 1] = static_cast<T>(0);
     }
-    dca[nlev - 1] = ar[nlev - 1] - q_bottom;
+    dca_bottom = ar[nlev - 1] - q_bottom;
 
     for (int k = 2; k < nlev - 1; ++k) {
         const T dlp_km2 = delp1[(k - 2) * ncol + col];
@@ -885,7 +879,8 @@ __global__ void tpcore_vertical(
         a6[k] = static_cast<T>(3) * (
             qa + qa - (al[k] + ar[k])
         );
-        if (dca[k] == static_cast<T>(0)) {
+        const T dca = endpoint == 0 ? dca_top : dca_bottom;
+        if (dca == static_cast<T>(0)) {
             a6[k] = static_cast<T>(0);
             al[k] = qa;
             ar[k] = qa;
@@ -929,7 +924,7 @@ __global__ void tpcore_vertical(
         }
     }
     for (int k = 1; k < nlev - 1; ++k) {
-        dca[k] = dpi[k] - dpi[k - 1];
+        dc[k] = dpi[k] - dpi[k - 1];
     }
     for (int k = 2; k < nlev - 2; ++k) {
         const T qq = q[tracer_index<T>(
@@ -937,13 +932,13 @@ __global__ void tpcore_vertical(
             nlev, nlat, nlon, lane_width
         )];
         T qmp = qq + static_cast<T>(2) * dpi[k - 1];
-        T lac = qq + static_cast<T>(1.5) * dca[k - 1] +
+        T lac = qq + static_cast<T>(1.5) * dc[k - 1] +
             static_cast<T>(0.5) * dpi[k - 1];
         T qmin = wmin3(qq, qmp, lac);
         T qmax = wmax3(qq, qmp, lac);
         ar[k] = wmax(qmin, wmin(qmax, ar[k]));
         qmp = qq - static_cast<T>(2) * dpi[k];
-        lac = qq + static_cast<T>(1.5) * dca[k + 1] -
+        lac = qq + static_cast<T>(1.5) * dc[k + 1] -
             static_cast<T>(0.5) * dpi[k];
         qmin = wmin3(qq, qmp, lac);
         qmax = wmax3(qq, qmp, lac);

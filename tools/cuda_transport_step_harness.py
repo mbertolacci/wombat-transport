@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
             name: np.ascontiguousarray(values[..., :1] * factors)
             for name, values in host["references"].items()
         }
-        width = args.block_width or min(8, tracer_count)
+        width = args.block_width or min(32, tracer_count)
         initial_blocks = _to_blocks(initial, width)
         flux_blocks = _to_blocks_horizontal(surface_flux, width)
 
@@ -184,7 +184,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--block-width",
         type=_positive_int,
-        help="Defaults to min(8, tracer count)",
+        help="Defaults to min(32, tracer count)",
     )
     parser.add_argument("--warmup", type=_nonnegative_int, default=2)
     parser.add_argument("--repeat", type=_positive_int, default=20)

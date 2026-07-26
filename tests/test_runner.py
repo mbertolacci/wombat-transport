@@ -22,6 +22,7 @@ from wombat_transport.run_config import load_run_config, logging_level, meteorol
 from wombat_transport.runner import (
     RUN_METADATA_NAME,
     _is_time_for_emissions,
+    _cuda_block_width,
     _load_emissions_operator,
     _load_simulation_forcing,
     _transport_block_width,
@@ -169,11 +170,14 @@ def test_transport_executor_and_block_width_environment(monkeypatch):
     assert _transport_executor() == "spatial"
     assert _transport_block_width("spatial", 24) == 24
     assert _transport_block_width("blocks", 24) == 8
+    assert _cuda_block_width(24) == 24
+    assert _cuda_block_width(128) == 32
 
     monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "blocks")
     monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "16")
     assert _transport_executor() == "blocks"
     assert _transport_block_width("blocks", 24) == 16
+    assert _cuda_block_width(24) == 16
 
     monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "threads")
     with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_EXECUTOR"):

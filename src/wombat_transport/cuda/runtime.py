@@ -105,6 +105,22 @@ class CudaRuntime:
     def is_device_array(self, values: object) -> bool:
         return isinstance(values, self._cupy.ndarray)
 
+    def shares_memory(self, left: object, right: object) -> bool:
+        """Test overlap between contiguous device ranges without GPU work."""
+
+        if not self.is_device_array(left) or not self.is_device_array(right):
+            raise TypeError("shares_memory expects two CuPy arrays")
+        if not left.flags.c_contiguous or not right.flags.c_contiguous:
+            raise ValueError("shares_memory expects C-contiguous CuPy arrays")
+        if left.nbytes == 0 or right.nbytes == 0:
+            return False
+        left_start = int(left.data.ptr)
+        right_start = int(right.data.ptr)
+        return (
+            left_start < right_start + int(right.nbytes)
+            and right_start < left_start + int(left.nbytes)
+        )
+
     def to_device(
         self,
         values: np.ndarray,

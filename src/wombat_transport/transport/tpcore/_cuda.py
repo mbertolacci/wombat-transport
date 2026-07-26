@@ -61,7 +61,6 @@ class CudaTpcoreExecutor:
         )
         module = load_raw_module("tpcore.cu", name_expressions=expressions)
         self._runtime = runtime
-        self._cupy = runtime.array_module
         self._dtype = resolved_dtype
         self._horizontal = module.get_function(expressions[0])
         self._vertical = module.get_function(expressions[1])
@@ -120,9 +119,9 @@ class CudaTpcoreExecutor:
             plan,
             tracer_count,
         )
-        _ = nblock
         output = self._resolve_output(tracer_blocks, output)
-        output.fill(0)
+        if tracer_count != nblock * lane_width:
+            output.fill(0)
         if self._qqu is None or self._qqu.shape != tracer_blocks.shape:
             self._qqu = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
             self._qqv = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
@@ -269,6 +268,6 @@ class CudaTpcoreExecutor:
             raise ValueError("CUDA TPCORE output must match tracer storage")
         if not output.flags.c_contiguous:
             raise ValueError("CUDA TPCORE output must be C-contiguous")
-        if self._cupy.shares_memory(output, tracer):
+        if self._runtime.shares_memory(output, tracer):
             raise ValueError("CUDA TPCORE output must not overlap tracer input")
         return output

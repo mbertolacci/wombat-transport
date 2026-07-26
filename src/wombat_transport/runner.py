@@ -512,7 +512,7 @@ def _cuda_device() -> int:
 def _cuda_block_width(tracer_count: int) -> int:
     configured = os.environ.get("WOMBAT_TRANSPORT_BLOCK_WIDTH")
     if configured is None or not configured.strip():
-        return min(8, tracer_count)
+        return min(32, tracer_count)
     return _transport_block_width("blocks", tracer_count)
 
 

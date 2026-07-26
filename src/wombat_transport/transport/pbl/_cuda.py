@@ -54,7 +54,6 @@ class CudaVdiffExecutor:
             name_expressions=(expression,),
         )
         self._runtime = runtime
-        self._cupy = runtime.array_module
         self._dtype = resolved_dtype
         self._kernel = module.get_function(expression)
         self._qmx: Any | None = None
@@ -235,7 +234,7 @@ class CudaVdiffExecutor:
             raise ValueError("CUDA VDIFF output must match tracer shape and dtype")
         if not output.flags.c_contiguous:
             raise ValueError("CUDA VDIFF output must be C-contiguous")
-        if self._cupy.shares_memory(output, tracer):
+        if self._runtime.shares_memory(output, tracer):
             raise ValueError("CUDA VDIFF output must not overlap tracer input")
         return output
 

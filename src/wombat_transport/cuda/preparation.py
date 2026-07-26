@@ -68,18 +68,23 @@ class CudaPlanPreparation:
             "average_surface_endpoint_poles",
             "interpolate_step_meteorology",
             "prepare_tpcore_double",
-            "tpcore_prepare_pressure_fix",
+            "tpcore_prepare_pressure_delta_terms",
+            "tpcore_sum_pressure_delta",
+            "tpcore_apply_pressure_fix",
+            "tpcore_average_pressure_poles",
             "tpcore_prepare_mass_flux",
             "tpcore_divergence_interior",
             "tpcore_divergence_poles",
             "tpcore_sum_vertical",
-            "tpcore_prepare_pressure_correction",
+            "tpcore_prepare_pressure_rows",
+            "tpcore_prepare_meridional_correction",
+            "tpcore_prepare_zonal_correction",
             "tpcore_apply_pressure_correction",
-            "tpcore_restore_pressure",
+            "tpcore_copy_pressure",
             "tpcore_prepare_pressure_terms",
             "tpcore_prepare_vertical_flux",
             "tpcore_prepare_cross_terms",
-            "tpcore_prepare_jn_js",
+            "tpcore_initialize_jn_js",
             f"cast_plan_array<{'float' if self._dtype == np.dtype(np.float32) else 'double'}>",
             "compute_vdiff_start_level",
             "prepare_vdiff_double",
@@ -93,22 +98,29 @@ class CudaPlanPreparation:
         self._average_surface_poles = module.get_function(expressions[1])
         self._interpolate_meteorology = module.get_function(expressions[2])
         self._prepare_tpcore_serial = module.get_function(expressions[3])
-        self._tpcore_pressure_fix = module.get_function(expressions[4])
-        self._tpcore_mass_flux = module.get_function(expressions[5])
-        self._tpcore_divergence_interior = module.get_function(expressions[6])
-        self._tpcore_divergence_poles = module.get_function(expressions[7])
-        self._tpcore_sum_vertical = module.get_function(expressions[8])
-        self._tpcore_pressure_correction = module.get_function(expressions[9])
-        self._tpcore_apply_correction = module.get_function(expressions[10])
-        self._tpcore_restore_pressure = module.get_function(expressions[11])
-        self._tpcore_pressure_terms = module.get_function(expressions[12])
-        self._tpcore_vertical_flux = module.get_function(expressions[13])
-        self._tpcore_cross_terms = module.get_function(expressions[14])
-        self._tpcore_jn_js = module.get_function(expressions[15])
-        self._cast_plan = module.get_function(expressions[16])
-        self._compute_vdiff_start = module.get_function(expressions[17])
-        self._prepare_vdiff = module.get_function(expressions[18])
-        self._prepare_convection = module.get_function(expressions[19])
+        self._tpcore_pressure_delta_terms = module.get_function(expressions[4])
+        self._tpcore_pressure_delta_sum = module.get_function(expressions[5])
+        self._tpcore_apply_pressure_fix = module.get_function(expressions[6])
+        self._tpcore_average_pressure = module.get_function(expressions[7])
+        self._tpcore_mass_flux = module.get_function(expressions[8])
+        self._tpcore_divergence_interior = module.get_function(expressions[9])
+        self._tpcore_divergence_poles = module.get_function(expressions[10])
+        self._tpcore_sum_vertical = module.get_function(expressions[11])
+        self._tpcore_pressure_rows = module.get_function(expressions[12])
+        self._tpcore_meridional_correction = module.get_function(
+            expressions[13]
+        )
+        self._tpcore_zonal_correction = module.get_function(expressions[14])
+        self._tpcore_apply_correction = module.get_function(expressions[15])
+        self._tpcore_copy_pressure = module.get_function(expressions[16])
+        self._tpcore_pressure_terms = module.get_function(expressions[17])
+        self._tpcore_vertical_flux = module.get_function(expressions[18])
+        self._tpcore_cross_terms = module.get_function(expressions[19])
+        self._tpcore_initialize_jn_js = module.get_function(expressions[20])
+        self._cast_plan = module.get_function(expressions[21])
+        self._compute_vdiff_start = module.get_function(expressions[22])
+        self._prepare_vdiff = module.get_function(expressions[23])
+        self._prepare_convection = module.get_function(expressions[24])
 
         self._area = runtime.to_device(grid.area_m2, dtype=np.float64)
         self._hyai = runtime.to_device(grid.hyai_hpa, dtype=np.float64)
@@ -172,7 +184,7 @@ class CudaPlanPreparation:
             "xfix": runtime.empty(horizontal_shape, dtype=np.float64),
             "mmfd": runtime.empty((self._nlat,), dtype=np.float64),
             "mmf": runtime.empty((self._nlat,), dtype=np.float64),
-            "fxintegral": runtime.empty((self._nlon + 1,), dtype=np.float64),
+            "pressure_delta": runtime.empty((1,), dtype=np.float64),
         }
         self._jn = runtime.empty((self._nlev,), dtype=np.int64)
         self._js = runtime.empty((self._nlev,), dtype=np.int64)
@@ -373,15 +385,48 @@ class CudaPlanPreparation:
         )
         d = self._tpcore_double
         s = self._tpcore_scratch
-        self._tpcore_pressure_fix(
-            (1,),
-            (1,),
+        self._tpcore_pressure_delta_terms(
+            ((horizontal_size + threads - 1) // threads,),
+            (threads,),
             (
                 self._current_dry_surface,
                 self._met["dry_end"],
+                s["work2"],
                 self._rel_area,
+                s["xfix"],
+                np.int32(0),
+                np.int32(horizontal_size),
+            ),
+        )
+        self._tpcore_pressure_delta_sum(
+            (1,),
+            (1,),
+            (
+                s["xfix"],
+                s["pressure_delta"],
+                np.int32(horizontal_size),
+            ),
+        )
+        self._tpcore_apply_pressure_fix(
+            ((horizontal_size + threads - 1) // threads,),
+            (threads,),
+            (
+                self._current_dry_surface,
+                self._met["dry_end"],
+                s["pressure_delta"],
                 s["p1"],
                 s["p2"],
+                np.int32(self._nlat),
+                np.int32(self._nlon),
+            ),
+        )
+        self._tpcore_average_pressure(
+            (1,),
+            (1,),
+            (
+                s["p1"],
+                s["p2"],
+                self._rel_area,
                 np.int32(self._nlat),
                 np.int32(self._nlon),
             ),
@@ -430,20 +475,64 @@ class CudaPlanPreparation:
                 np.int32(horizontal_size),
             ),
         )
-        self._tpcore_pressure_correction(
-            (1,),
-            (1,),
+        self._tpcore_pressure_delta_terms(
+            (horizontal_blocks,),
+            (threads,),
             (
                 s["p1"],
                 s["p2"],
                 s["work2"],
                 self._rel_area,
-                self._geofac_double,
-                np.float64(self._geofac_pc),
+                s["xfix"],
+                np.int32(1),
+                np.int32(horizontal_size),
+            ),
+        )
+        self._tpcore_pressure_delta_sum(
+            (1,),
+            (1,),
+            (
+                s["xfix"],
+                s["pressure_delta"],
+                np.int32(horizontal_size),
+            ),
+        )
+        self._tpcore_pressure_rows(
+            (level_blocks,),
+            (threads,),
+            (
+                s["p1"],
+                s["p2"],
+                s["work2"],
+                s["pressure_delta"],
                 s["xfix"],
                 s["mmfd"],
                 s["mmf"],
-                s["fxintegral"],
+                np.int32(self._nlat),
+                np.int32(self._nlon),
+            ),
+        )
+        self._tpcore_meridional_correction(
+            (1,),
+            (1,),
+            (
+                s["mmfd"],
+                self._geofac_double,
+                np.float64(self._geofac_pc),
+                s["mmf"],
+                np.int32(self._nlat),
+            ),
+        )
+        self._tpcore_zonal_correction(
+            (level_blocks,),
+            (threads,),
+            (
+                s["p1"],
+                s["p2"],
+                s["work2"],
+                s["pressure_delta"],
+                s["mmfd"],
+                s["xfix"],
                 np.int32(self._nlat),
                 np.int32(self._nlon),
             ),
@@ -462,17 +551,37 @@ class CudaPlanPreparation:
                 np.int32(self._nlon),
             ),
         )
-        self._tpcore_restore_pressure(
-            (1,),
-            (1,),
+        self._tpcore_copy_pressure(
+            (horizontal_blocks,),
+            (threads,),
             (
                 self._current_dry_surface,
                 self._met["dry_end"],
-                self._rel_area,
                 s["p1"],
                 s["p2"],
                 np.int32(self._nlat),
                 np.int32(self._nlon),
+            ),
+        )
+        self._tpcore_average_pressure(
+            (1,),
+            (1,),
+            (
+                s["p1"],
+                s["p2"],
+                self._rel_area,
+                np.int32(self._nlat),
+                np.int32(self._nlon),
+            ),
+        )
+        self._tpcore_initialize_jn_js(
+            (level_blocks,),
+            (threads,),
+            (
+                self._jn,
+                self._js,
+                np.int32(self._nlev),
+                np.int32(self._nlat),
             ),
         )
         self._tpcore_pressure_terms(
@@ -492,6 +601,8 @@ class CudaPlanPreparation:
                 d["pu"],
                 d["cx"],
                 d["cy"],
+                self._jn,
+                self._js,
                 np.int32(self._nlev),
                 np.int32(self._nlat),
                 np.int32(self._nlon),
@@ -528,18 +639,6 @@ class CudaPlanPreparation:
                 d["cy"],
                 d["ua"],
                 d["va"],
-                np.int32(self._nlev),
-                np.int32(self._nlat),
-                np.int32(self._nlon),
-            ),
-        )
-        self._tpcore_jn_js(
-            (level_blocks,),
-            (threads,),
-            (
-                d["cx"],
-                self._jn,
-                self._js,
                 np.int32(self._nlev),
                 np.int32(self._nlat),
                 np.int32(self._nlon),

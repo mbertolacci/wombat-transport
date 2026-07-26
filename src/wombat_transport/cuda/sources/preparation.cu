@@ -533,27 +533,68 @@ extern "C" __global__ void prepare_tpcore_double(
     }
 }
 
-extern "C" __global__ void tpcore_prepare_pressure_fix(
+extern "C" __global__ void tpcore_prepare_pressure_delta_terms(
+    const double* p1,
+    const double* p2,
+    const double* work2,
+    const double* rel_area,
+    double* terms,
+    int subtract_work2,
+    int horizontal_size
+) {
+    const int horizontal = blockDim.x * blockIdx.x + threadIdx.x;
+    if (horizontal >= horizontal_size) {
+        return;
+    }
+    double value = p2[horizontal] - p1[horizontal];
+    if (subtract_work2) {
+        value -= work2[horizontal];
+    }
+    terms[horizontal] = value * rel_area[horizontal];
+}
+
+extern "C" __global__ void tpcore_sum_pressure_delta(
+    const double* terms,
+    double* pressure_delta,
+    int horizontal_size
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) {
+        return;
+    }
+    double total = 0.0;
+    for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
+        total += terms[horizontal];
+    }
+    pressure_delta[0] = total;
+}
+
+extern "C" __global__ void tpcore_apply_pressure_fix(
     const double* p1_input,
     const double* p2_input,
-    const double* rel_area,
+    const double* pressure_delta,
     double* p1,
     double* p2,
     int nlat,
     int nlon
 ) {
-    if (blockIdx.x != 0 || threadIdx.x != 0) {
+    const int horizontal = blockDim.x * blockIdx.x + threadIdx.x;
+    const int horizontal_size = nlat * nlon;
+    if (horizontal >= horizontal_size) {
         return;
     }
-    const int horizontal_size = nlat * nlon;
-    double dgpress = 0.0;
-    for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
-        p1[horizontal] = p1_input[horizontal];
-        p2[horizontal] = p2_input[horizontal];
-        dgpress += (p2[horizontal] - p1[horizontal]) * rel_area[horizontal];
-    }
-    for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
-        p2[horizontal] -= dgpress;
+    p1[horizontal] = p1_input[horizontal];
+    p2[horizontal] = p2_input[horizontal] - pressure_delta[0];
+}
+
+extern "C" __global__ void tpcore_average_pressure_poles(
+    double* p1,
+    double* p2,
+    const double* rel_area,
+    int nlat,
+    int nlon
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) {
+        return;
     }
     average_poles(p1, rel_area, nlat, nlon);
     average_poles(p2, rel_area, nlat, nlon);
@@ -698,67 +739,86 @@ extern "C" __global__ void tpcore_sum_vertical(
     totals[horizontal] = total;
 }
 
-extern "C" __global__ void tpcore_prepare_pressure_correction(
+extern "C" __global__ void tpcore_prepare_pressure_rows(
     const double* p1,
     const double* p2,
     const double* work2,
-    const double* rel_area,
-    const double* geofac,
-    double geofac_pc,
+    const double* pressure_delta,
     double* xfix,
     double* mmfd,
     double* mmf,
-    double* fxintegral,
     int nlat,
     int nlon
+) {
+    const int lat = blockDim.x * blockIdx.x + threadIdx.x;
+    if (lat >= nlat) {
+        return;
+    }
+    const double dgpress = pressure_delta[0];
+    double total = 0.0;
+    for (int lon = 0; lon < nlon; ++lon) {
+        const int horizontal = lat * nlon + lon;
+        total += p2[horizontal] - p1[horizontal] - work2[horizontal];
+        xfix[horizontal] = 0.0;
+    }
+    mmfd[lat] = -(total / nlon - dgpress);
+    mmf[lat] = 0.0;
+    if (lat < 2 || lat >= nlat - 2) {
+        const int horizontal = lat * nlon;
+        mmfd[lat] = -(
+            p2[horizontal] - p1[horizontal] - work2[horizontal] - dgpress
+        );
+    }
+}
+
+extern "C" __global__ void tpcore_prepare_meridional_correction(
+    const double* mmfd,
+    const double* geofac,
+    double geofac_pc,
+    double* mmf,
+    int nlat
 ) {
     if (blockIdx.x != 0 || threadIdx.x != 0) {
         return;
     }
-    const int horizontal_size = nlat * nlon;
-    double dgpress = 0.0;
-    for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
-        dgpress += (
-            p2[horizontal] - p1[horizontal] - work2[horizontal]
-        ) * rel_area[horizontal];
-    }
-    for (int lat = 0; lat < nlat; ++lat) {
-        double total = 0.0;
-        for (int lon = 0; lon < nlon; ++lon) {
-            const int horizontal = lat * nlon + lon;
-            total += p2[horizontal] - p1[horizontal] - work2[horizontal];
-            xfix[horizontal] = 0.0;
-        }
-        mmfd[lat] = -(total / nlon - dgpress);
-        mmf[lat] = 0.0;
-    }
-    mmfd[0] = -(p2[0] - p1[0] - work2[0] - dgpress);
-    mmfd[1] = -(p2[nlon] - p1[nlon] - work2[nlon] - dgpress);
-    mmfd[nlat - 2] = -(
-        p2[(nlat - 2) * nlon] - p1[(nlat - 2) * nlon]
-        - work2[(nlat - 2) * nlon] - dgpress
-    );
-    mmfd[nlat - 1] = -(
-        p2[(nlat - 1) * nlon] - p1[(nlat - 1) * nlon]
-        - work2[(nlat - 1) * nlon] - dgpress
-    );
     mmf[2] = mmfd[0] / geofac_pc;
     for (int lat = 2; lat <= nlat - 3; ++lat) {
         mmf[lat + 1] = mmf[lat] + mmfd[lat] / geofac[lat];
-        fxintegral[0] = 0.0;
-        double total = 0.0;
-        for (int lon = 0; lon < nlon; ++lon) {
-            const int horizontal = lat * nlon + lon;
-            const double ddps =
-                p2[horizontal] - p1[horizontal] - work2[horizontal];
-            fxintegral[lon + 1] =
-                fxintegral[lon] - (ddps - dgpress) - mmfd[lat];
-            total += fxintegral[lon + 1];
-        }
-        const double mean = total / nlon;
-        for (int lon = 0; lon < nlon; ++lon) {
-            xfix[lat * nlon + lon] = fxintegral[lon] - mean;
-        }
+    }
+}
+
+extern "C" __global__ void tpcore_prepare_zonal_correction(
+    const double* p1,
+    const double* p2,
+    const double* work2,
+    const double* pressure_delta,
+    const double* mmfd,
+    double* xfix,
+    int nlat,
+    int nlon
+) {
+    const int lat = blockDim.x * blockIdx.x + threadIdx.x + 2;
+    if (lat > nlat - 3) {
+        return;
+    }
+    const double dgpress = pressure_delta[0];
+    double integral = 0.0;
+    double total = 0.0;
+    for (int lon = 0; lon < nlon; ++lon) {
+        const int horizontal = lat * nlon + lon;
+        const double ddps =
+            p2[horizontal] - p1[horizontal] - work2[horizontal];
+        integral = integral - (ddps - dgpress) - mmfd[lat];
+        total += integral;
+    }
+    const double mean = total / nlon;
+    integral = 0.0;
+    for (int lon = 0; lon < nlon; ++lon) {
+        const int horizontal = lat * nlon + lon;
+        xfix[horizontal] = integral - mean;
+        const double ddps =
+            p2[horizontal] - p1[horizontal] - work2[horizontal];
+        integral = integral - (ddps - dgpress) - mmfd[lat];
     }
 }
 
@@ -787,25 +847,21 @@ extern "C" __global__ void tpcore_apply_pressure_correction(
     }
 }
 
-extern "C" __global__ void tpcore_restore_pressure(
+extern "C" __global__ void tpcore_copy_pressure(
     const double* p1_input,
     const double* p2_input,
-    const double* rel_area,
     double* p1,
     double* p2,
     int nlat,
     int nlon
 ) {
-    if (blockIdx.x != 0 || threadIdx.x != 0) {
+    const int horizontal = blockDim.x * blockIdx.x + threadIdx.x;
+    const int horizontal_size = nlat * nlon;
+    if (horizontal >= horizontal_size) {
         return;
     }
-    const int horizontal_size = nlat * nlon;
-    for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
-        p1[horizontal] = p1_input[horizontal];
-        p2[horizontal] = p2_input[horizontal];
-    }
-    average_poles(p1, rel_area, nlat, nlon);
-    average_poles(p2, rel_area, nlat, nlon);
+    p1[horizontal] = p1_input[horizontal];
+    p2[horizontal] = p2_input[horizontal];
 }
 
 extern "C" __global__ void tpcore_prepare_pressure_terms(
@@ -822,6 +878,8 @@ extern "C" __global__ void tpcore_prepare_pressure_terms(
     double* pu,
     double* cx,
     double* cy,
+    long long* jn,
+    long long* js,
     int nlev,
     int nlat,
     int nlon
@@ -850,7 +908,24 @@ extern "C" __global__ void tpcore_prepare_pressure_terms(
             * (p1[west_horizontal] + p2[west_horizontal]);
         const double pu_value = 0.5 * (pmid + west_pmid);
         pu[center] = pu_value;
-        cx[center] = xmass[center] / pu_value;
+        const double cx_value = xmass[center] / pu_value;
+        cx[center] = cx_value;
+        if (cx_value > 1.0 || cx_value < -1.0) {
+            const int js0 = (nlat + 1) / 2 - 1;
+            const int jn0 = nlat - (js0 + 1);
+            if (lat <= js0) {
+                atomicMax(
+                    reinterpret_cast<unsigned long long*>(&js[lev]),
+                    static_cast<unsigned long long>(lat)
+                );
+            }
+            if (lat >= jn0) {
+                atomicMin(
+                    reinterpret_cast<unsigned long long*>(&jn[lev]),
+                    static_cast<unsigned long long>(lat)
+                );
+            }
+        }
         const int south_horizontal = horizontal - nlon;
         const double south_pmid = dap_top[lev] + dbk_top[lev] * 0.5
             * (p1[south_horizontal] + p2[south_horizontal]);
@@ -932,52 +1007,18 @@ extern "C" __global__ void tpcore_prepare_cross_terms(
     }
 }
 
-extern "C" __global__ void tpcore_prepare_jn_js(
-    const double* cx,
+extern "C" __global__ void tpcore_initialize_jn_js(
     long long* jn,
     long long* js,
     int nlev,
-    int nlat,
-    int nlon
+    int nlat
 ) {
     const int lev = blockDim.x * blockIdx.x + threadIdx.x;
     if (lev >= nlev) {
         return;
     }
-    const int js0 = (nlat + 1) / 2 - 1;
-    const int jn0 = nlat - (js0 + 1);
-    long long js_value = 2;
-    for (int lat = js0 < nlat - 1 ? js0 : nlat - 2; lat >= 2; --lat) {
-        bool found = false;
-        for (int lon = 0; lon < nlon; ++lon) {
-            const double value = cx[(lev * nlat + lat) * nlon + lon];
-            if (value > 1.0 || value < -1.0) {
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            js_value = lat;
-            break;
-        }
-    }
-    long long jn_value = nlat - 3;
-    for (int lat = jn0 > 0 ? jn0 : 0; lat <= nlat - 3; ++lat) {
-        bool found = false;
-        for (int lon = 0; lon < nlon; ++lon) {
-            const double value = cx[(lev * nlat + lat) * nlon + lon];
-            if (value > 1.0 || value < -1.0) {
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            jn_value = lat;
-            break;
-        }
-    }
-    js[lev] = js_value;
-    jn[lev] = jn_value;
+    js[lev] = 2;
+    jn[lev] = nlat - 3;
 }
 
 template <typename T>
@@ -1006,19 +1047,20 @@ extern "C" __global__ void compute_vdiff_start_level(
         return;
     }
     const int horizontal_size = nlat * nlon;
+    double surface_pressure_total = 0.0;
+    for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
+        surface_pressure_total += wet_surface_pressure[horizontal];
+    }
+    const double mean_surface_pressure =
+        surface_pressure_total / static_cast<double>(horizontal_size);
     int break_index = 0;
     for (int top = nlev - 1; top >= 0; --top) {
         const int bottom = nlev - 1 - top;
-        double total = 0.0;
-        for (int horizontal = 0; horizontal < horizontal_size; ++horizontal) {
-            const double ps = wet_surface_pressure[horizontal];
-            const double edge_lower =
-                hyai[bottom] + hybi[bottom] * ps;
-            const double edge_upper =
-                hyai[bottom + 1] + hybi[bottom + 1] * ps;
-            total += 0.5 * (edge_lower + edge_upper);
-        }
-        const double mean = total / static_cast<double>(horizontal_size);
+        const double edge_lower =
+            hyai[bottom] + hybi[bottom] * mean_surface_pressure;
+        const double edge_upper =
+            hyai[bottom + 1] + hybi[bottom + 1] * mean_surface_pressure;
+        const double mean = 0.5 * (edge_lower + edge_upper);
         if (mean < 400.0) {
             break_index = top;
             break;

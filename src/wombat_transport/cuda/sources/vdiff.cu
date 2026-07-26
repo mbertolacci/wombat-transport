@@ -45,9 +45,15 @@ __global__ void apply_vdiff(
     const int start_level = start_level_value[0];
     const T ztodtgor = dt_s * static_cast<T>(9.80665) /
         static_cast<T>(287.0);
+    const T surface_flux_value = has_flux
+        ? surface_flux[flux_index]
+        : static_cast<T>(0);
+    const bool column_has_flux =
+        surface_flux_value > static_cast<T>(0)
+        || surface_flux_value < static_cast<T>(0);
 
     bool adjust = false;
-    if (has_flux) {
+    if (column_has_flux) {
         for (int lev = 0; lev < nlev; ++lev) {
             const int tracer_index =
                 tracer_block_offset +
@@ -63,7 +69,7 @@ __global__ void apply_vdiff(
             const T scale = ztodtgor * rpdel[center];
             const T term_next = potbar[edge_next] * kvh[edge_next];
             const T term_now = potbar[edge_now] * kvh[edge_now];
-            const T flux_rrho = surface_flux[flux_index] * rrho[horizontal];
+            const T flux_rrho = surface_flux_value * rrho[horizontal];
             const T cgq_next = flux_rrho * cgs[edge_next];
             const T cgq_now = flux_rrho * cgs[edge_now];
             const T value = tracer_in[block_tracer_index] +
@@ -87,7 +93,7 @@ __global__ void apply_vdiff(
         tracer_block_offset + ((lat * nlon + lon) * nlane) + lane;
     int center = horizontal;
     T before_mass = tracer_in[tracer_index] * dry_mass[center];
-    T source = has_flux ? qmx[tracer_index] : tracer_in[tracer_index];
+    T source = column_has_flux ? qmx[tracer_index] : tracer_in[tracer_index];
     tracer_out[tracer_index] = source * termh[center];
 
     for (int lev = 1; lev < nlev - 1; ++lev) {
@@ -99,7 +105,7 @@ __global__ void apply_vdiff(
             tracer_block_offset +
             (((lev - 1) * nlat + lat) * nlon + lon) * nlane + lane;
         before_mass += tracer_in[tracer_index] * dry_mass[center];
-        source = has_flux ? qmx[tracer_index] : tracer_in[tracer_index];
+        source = column_has_flux ? qmx[tracer_index] : tracer_in[tracer_index];
         tracer_out[tracer_index] =
             (source + cch[center] * tracer_out[previous]) * termh[center];
     }
@@ -118,10 +124,10 @@ __global__ void apply_vdiff(
         (static_cast<T>(1) + cch[center] *
             (static_cast<T>(1) - zeh[penultimate_center]));
     before_mass += tracer_in[tracer_index] * dry_mass[center];
-    source = has_flux ? qmx[tracer_index] : tracer_in[tracer_index];
+    source = column_has_flux ? qmx[tracer_index] : tracer_in[tracer_index];
     tracer_out[tracer_index] =
         (source +
-         (has_flux ? surface_flux[flux_index] * tmp1[horizontal]
+         (column_has_flux ? surface_flux_value * tmp1[horizontal]
                    : static_cast<T>(0)) +
          cch[center] * tracer_out[previous]) *
         tmp1d;
@@ -156,8 +162,8 @@ __global__ void apply_vdiff(
         atomicAdd(negative_count, local_negative_count);
     }
 
-    if (has_flux) {
-        before_mass += surface_flux[flux_index] * area_m2[horizontal] * dt_s;
+    if (column_has_flux) {
+        before_mass += surface_flux_value * area_m2[horizontal] * dt_s;
     }
     T ratio = static_cast<T>(1);
     const bool before_nonzero =
