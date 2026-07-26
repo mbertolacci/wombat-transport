@@ -576,11 +576,39 @@ eight-P-core CPU reference, maximum differences were `4.743e-17` for HISTORY,
 `2.954e-17` for restart tracers, and `1.158e-12 hPa` for `Met_DELPDRY`; the
 other written meteorology fields matched exactly.
 
-This is still not presented as an end-to-end GPU speedup. The immediate
+At 24 tracers this is still not an end-to-end GPU speedup. The immediate
 performance targets are VDIFF preparation's column-local storage pressure,
 overlap/double-buffering when forcing chunks change, and profiling repeated
 A3-dependent work that may be reusable across the 18 steps in a meteorology
 window.
+
+### 128-tracer resident-run checkpoint
+
+A larger ordinary-run fixture extends the 24 real residual tracers to 128
+CO2-like tracers. The original 24 retain their configured emissions; the
+additional 104 use the same `4e-4` background and zero emissions. This keeps
+the meteorology and active flux workload realistic while measuring the complete
+128-tracer transport and emissions-packing path.
+
+The process was pinned to CPUs `0,2,4,6,8,10,12,14`. Each backend received a
+one-step warm-up before the timed 18-step run. Timings include tracer
+initialization, real forcing reads, nine emissions evaluations, transport, and
+final host materialization. HISTORY, ObsOperator, and NetCDF output were
+disabled.
+
+| execution | wall s | speedup vs 8-P-core CPU | final state bytes | max abs vs CPU f64 | RMSE |
+|---|---:|---:|---:|---:|---:|
+| CPU float64, 8 P-cores | 8.701 | reference | 630,669,312 | reference | reference |
+| resident CUDA float64 | 6.853 | 1.27x | 630,669,312 | 2.992e-17 | 1.735e-18 |
+| resident CUDA float32 | 5.845 | 1.49x | 315,334,656 | 2.972e-8 | 1.318e-9 |
+
+This establishes an end-to-end speedup at 128 tracers even on the development
+GPU's relatively weak float64 hardware. The gain is smaller than the
+prepared-operator result because initialization, forcing I/O, emissions
+evaluation, device setup, and final materialization remain fixed or host-side.
+The sequential comparison process peaked at about 3.71 GiB RSS while retaining
+the CPU reference for both drift comparisons; that is not a per-backend memory
+measurement.
 
 The actual-GPU validation comprises 29 CUDA tests. It covers both state
 dtypes, all three transport operators and their handoffs, padded tracer blocks,
