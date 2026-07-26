@@ -244,18 +244,14 @@ __global__ void tpcore_horizontal_initialize(
 }
 
 template <typename T>
-__global__ void tpcore_horizontal(
+__global__ void tpcore_horizontal_zonal_warp(
     T* q,
     T* dq,
     T* qqu,
     T* qqv,
     const T* pu,
     const T* xmass,
-    const T* ymass,
     const T* cx,
-    const T* cy,
-    const T* geofac,
-    T geofac_pc,
     const T* ua,
     const T* va,
     const long long* jn,
@@ -266,7 +262,10 @@ __global__ void tpcore_horizontal(
     int nlon,
     int lane_width
 ) {
-    const int work = blockDim.x * blockIdx.x + threadIdx.x;
+    const int lane = threadIdx.x & 31;
+    const int warp_in_block = threadIdx.x >> 5;
+    const int warps_per_block = blockDim.x >> 5;
+    const int work = blockIdx.x * warps_per_block + warp_in_block;
     const int work_size = nlev * tracer_count;
     if (work >= work_size || nlon > WOMBAT_MAX_LON || nlat > WOMBAT_MAX_LAT) {
         return;
@@ -282,81 +281,86 @@ __global__ void tpcore_horizontal(
     const T r13 = static_cast<T>(1) / static_cast<T>(3);
     const T r23 = static_cast<T>(2) / static_cast<T>(3);
     const T r24 = static_cast<T>(1) / static_cast<T>(24);
-    T w0[WOMBAT_MAX_LON];
-    T w1[WOMBAT_MAX_LON];
-    T w2[WOMBAT_MAX_LON];
+    extern __shared__ T shared[];
+    T* warp_shared = shared + warp_in_block * 4 * WOMBAT_MAX_LON;
+    T* w0 = warp_shared;
+    T* w1 = w0 + WOMBAT_MAX_LON;
+    T* w2 = w1 + WOMBAT_MAX_LON;
+    T* fluxes = w2 + WOMBAT_MAX_LON;
 
     T south = static_cast<T>(0);
     T north = static_cast<T>(0);
 
-    for (int j = j1p; j <= j2p; ++j) {
-        for (int i = 0; i < nlon; ++i) {
-            const T ua_value = ua[scalar_offset + j * nlon + i];
-            const int iu0 = wnint(ua_value);
-            const T ru = static_cast<T>(iu0) - ua_value;
-            const int iu = i - iu0;
-            const int im1 = wmod(iu - 1, nlon);
-            const int iu_mod = wmod(iu, nlon);
-            const int ip1 = wmod(iu + 1, nlon);
-            const T q_i = qqv[tracer_index<T>(
-                active_tracer, level, j, iu_mod,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T q_ip1 = qqv[tracer_index<T>(
-                active_tracer, level, j, ip1,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T q_im1 = qqv[tracer_index<T>(
-                active_tracer, level, j, im1,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T a1 = static_cast<T>(0.5) * (q_ip1 + q_im1) - q_i;
-            const T b1 = static_cast<T>(0.5) * (q_ip1 - q_im1);
-            const int index = tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            );
-            q[index] += ru * (
-                a1 * ru + b1
-            ) + q_i - qqv[index];
-        }
+    const int interior_cells = (j2p - j1p + 1) * nlon;
+    for (int cell = lane; cell < interior_cells; cell += 32) {
+        const int j = j1p + cell / nlon;
+        const int i = cell % nlon;
+        const T ua_value = ua[scalar_offset + j * nlon + i];
+        const int iu0 = wnint(ua_value);
+        const T ru = static_cast<T>(iu0) - ua_value;
+        const int iu = i - iu0;
+        const int im1 = wmod(iu - 1, nlon);
+        const int iu_mod = wmod(iu, nlon);
+        const int ip1 = wmod(iu + 1, nlon);
+        const T q_i = qqv[tracer_index<T>(
+            active_tracer, level, j, iu_mod,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T q_ip1 = qqv[tracer_index<T>(
+            active_tracer, level, j, ip1,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T q_im1 = qqv[tracer_index<T>(
+            active_tracer, level, j, im1,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T a1 = static_cast<T>(0.5) * (q_ip1 + q_im1) - q_i;
+        const T b1 = static_cast<T>(0.5) * (q_ip1 - q_im1);
+        const int index = tracer_index<T>(
+            active_tracer, level, j, i, nlev, nlat, nlon, lane_width
+        );
+        q[index] += ru * (
+            a1 * ru + b1
+        ) + q_i - qqv[index];
     }
 
-    for (int j = j1p; j <= j2p; ++j) {
-        for (int i = 0; i < nlon; ++i) {
-            const T va_value = va[scalar_offset + j * nlon + i];
-            const int jv0 = wnint(va_value);
-            const T rv = static_cast<T>(jv0) - va_value;
-            const int jv = j - jv0;
-            const int jm1 = jv - 1;
-            const int jp1 = jv + 1;
-            const T q_j = jv >= 0 && jv < nlat
-                ? qqu[tracer_index<T>(
-                    active_tracer, level, jv, i,
-                    nlev, nlat, nlon, lane_width
-                )] : static_cast<T>(0);
-            const T q_jp1 = jp1 >= 0 && jp1 < nlat
-                ? qqu[tracer_index<T>(
-                    active_tracer, level, jp1, i,
-                    nlev, nlat, nlon, lane_width
-                )] : static_cast<T>(0);
-            const T q_jm1 = jm1 >= 0 && jm1 < nlat
-                ? qqu[tracer_index<T>(
-                    active_tracer, level, jm1, i,
-                    nlev, nlat, nlon, lane_width
-                )] : static_cast<T>(0);
-            const T a1 = static_cast<T>(0.5) * (q_jp1 + q_jm1) - q_j;
-            const T b1 = static_cast<T>(0.5) * (q_jp1 - q_jm1);
-            const int index = tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            );
-            q[index] += rv * (
-                a1 * rv + b1
-            ) + q_j - qqu[index];
-        }
+    for (int cell = lane; cell < interior_cells; cell += 32) {
+        const int j = j1p + cell / nlon;
+        const int i = cell % nlon;
+        const T va_value = va[scalar_offset + j * nlon + i];
+        const int jv0 = wnint(va_value);
+        const T rv = static_cast<T>(jv0) - va_value;
+        const int jv = j - jv0;
+        const int jm1 = jv - 1;
+        const int jp1 = jv + 1;
+        const T q_j = jv >= 0 && jv < nlat
+            ? qqu[tracer_index<T>(
+                active_tracer, level, jv, i,
+                nlev, nlat, nlon, lane_width
+            )] : static_cast<T>(0);
+        const T q_jp1 = jp1 >= 0 && jp1 < nlat
+            ? qqu[tracer_index<T>(
+                active_tracer, level, jp1, i,
+                nlev, nlat, nlon, lane_width
+            )] : static_cast<T>(0);
+        const T q_jm1 = jm1 >= 0 && jm1 < nlat
+            ? qqu[tracer_index<T>(
+                active_tracer, level, jm1, i,
+                nlev, nlat, nlon, lane_width
+            )] : static_cast<T>(0);
+        const T a1 = static_cast<T>(0.5) * (q_jp1 + q_jm1) - q_j;
+        const T b1 = static_cast<T>(0.5) * (q_jp1 - q_jm1);
+        const int index = tracer_index<T>(
+            active_tracer, level, j, i, nlev, nlat, nlon, lane_width
+        );
+        q[index] += rv * (
+            a1 * rv + b1
+        ) + q_j - qqu[index];
     }
+    __syncwarp();
     T sumsp = static_cast<T>(0);
     T sumnp = static_cast<T>(0);
-    for (int i = 0; i < nlon; ++i) {
+    for (int i = lane; i < nlon; i += 32) {
         int j = 1;
         T va_value = va[scalar_offset + j * nlon + i];
         int jv0 = wnint(va_value);
@@ -415,15 +419,21 @@ __global__ void tpcore_horizontal(
         );
         w1[i] = rv * (a1 * rv + b1) + q_j - qqu[north_index];
     }
-    south = static_cast<T>(0);
-    north = static_cast<T>(0);
-    for (int i = 0; i < nlon; ++i) {
-        south += w0[i];
-        north += w1[i];
+    __syncwarp();
+    if (lane == 0) {
+        south = static_cast<T>(0);
+        north = static_cast<T>(0);
+        for (int i = 0; i < nlon; ++i) {
+            south += w0[i];
+            north += w1[i];
+        }
+        w2[0] = south / static_cast<T>(nlon);
+        w2[1] = north / static_cast<T>(nlon);
     }
-    south /= static_cast<T>(nlon);
-    north /= static_cast<T>(nlon);
-    for (int i = 0; i < nlon; ++i) {
+    __syncwarp();
+    south = w2[0];
+    north = w2[1];
+    for (int i = lane; i < nlon; i += 32) {
         q[tracer_index<T>(
             active_tracer, level, 0, i, nlev, nlat, nlon, lane_width
         )] += south;
@@ -439,11 +449,12 @@ __global__ void tpcore_horizontal(
             nlev, nlat, nlon, lane_width
         )] += north;
     }
+    __syncwarp();
 
     const int jvan = wmax(1, nlat / 18);
     for (int j = j1p; j <= j2p; ++j) {
         if (j > j1p && j < j2p) {
-            for (int i = 0; i < nlon; ++i) {
+            for (int i = lane; i < nlon; i += 32) {
                 const int im1 = wmod(i - 1, nlon);
                 const int ip1 = wmod(i + 1, nlon);
                 const int im2 = wmod(i - 2, nlon);
@@ -476,12 +487,13 @@ __global__ void tpcore_horizontal(
                 w0[i] = tmp >= static_cast<T>(0) ? bounded : -bounded;
             }
         }
+        __syncwarp();
 
         const bool local_courant = j > js_level && j < jn_level;
         const bool edge_row = j == j1p || j == j2p;
         const bool near_edge_row = j <= j1p + jvan || j >= j2p - jvan;
         if (local_courant && !edge_row && !near_edge_row) {
-            for (int i = 0; i < nlon; ++i) {
+            for (int i = lane; i < nlon; i += 32) {
                 const int im1 = wmod(i - 1, nlon);
                 w1[i] = static_cast<T>(0.5) * (
                     qqv[tracer_index<T>(
@@ -494,7 +506,8 @@ __global__ void tpcore_horizontal(
                 ) + (w0[im1] - w0[i]) * r13;
                 w2[im1] = w1[i];
             }
-            for (int i = 0; i < nlon; ++i) {
+            __syncwarp();
+            for (int i = lane; i < nlon; i += 32) {
                 const T q_value = qqv[tracer_index<T>(
                     active_tracer, level, j, i,
                     nlev, nlat, nlon, lane_width
@@ -520,10 +533,9 @@ __global__ void tpcore_horizontal(
                 }
                 w0[i] = a6;
             }
+            __syncwarp();
         }
-        T first_flux = static_cast<T>(0);
-        T previous_flux = static_cast<T>(0);
-        for (int i = 0; i < nlon; ++i) {
+        for (int i = lane; i < nlon; i += 32) {
             const T c = cx[scalar_offset + j * nlon + i];
             T flux;
             if (local_courant) {
@@ -605,131 +617,188 @@ __global__ void tpcore_horizontal(
                 }
                 flux = pu[scalar_offset + j * nlon + i] * value;
             }
-            if (i == 0) {
-                first_flux = flux;
-            } else {
-                dq[tracer_index<T>(
-                    active_tracer, level, j, i - 1,
-                    nlev, nlat, nlon, lane_width
-                )] += previous_flux - flux;
-            }
-            previous_flux = flux;
+            fluxes[i] = flux;
         }
-        dq[tracer_index<T>(
-            active_tracer, level, j, nlon - 1,
-            nlev, nlat, nlon, lane_width
-        )] += previous_flux - first_flux;
-    }
-
-    for (int i = 0; i < nlon; ++i) {
-        w0[0] = static_cast<T>(0);
-        w0[nlat - 1] = static_cast<T>(0);
-        for (int j = 1; j < nlat - 1; ++j) {
-            const T qjm2 = j < 2 ? static_cast<T>(0) :
-                qqu[tracer_index<T>(
-                    active_tracer, level, j - 2, i,
-                    nlev, nlat, nlon, lane_width
-                )];
-            const T qjm1 = qqu[tracer_index<T>(
-                active_tracer, level, j - 1, i,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T qj = qqu[tracer_index<T>(
-                active_tracer, level, j, i,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T qjp1 = qqu[tracer_index<T>(
-                active_tracer, level, j + 1, i,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T qjp2 = j + 2 >= nlat ? static_cast<T>(0) :
-                qqu[tracer_index<T>(
-                    active_tracer, level, j + 2, i,
-                    nlev, nlat, nlon, lane_width
-                )];
-            const T tmp = (
-                static_cast<T>(8) * (qjp1 - qjm1) + qjm2 - qjp2
-            ) * r24;
-            const T pmax = wmax3(qjm1, qj, qjp1) - qj;
-            const T pmin = qj - wmin3(qjm1, qj, qjp1);
-            const T bounded = wmin(wabs(tmp), wmin(pmin, pmax));
-            w0[j] = tmp >= static_cast<T>(0) ? bounded : -bounded;
-        }
-        for (int j = 1; j < nlat; ++j) {
-            w1[j] = static_cast<T>(0.5) * (
-                qqu[tracer_index<T>(
-                    active_tracer, level, j - 1, i,
-                    nlev, nlat, nlon, lane_width
-                )] + qqu[tracer_index<T>(
-                    active_tracer, level, j, i,
-                    nlev, nlat, nlon, lane_width
-                )]
-            ) + (w0[j - 1] - w0[j]) * r13;
-            w2[j - 1] = w1[j];
-        }
-        for (int j = 1; j < nlat - 1; ++j) {
-            const T qj = qqu[tracer_index<T>(
-                active_tracer, level, j, i,
-                nlev, nlat, nlon, lane_width
-            )];
-            const T slope = w0[j];
-            w0[j] = static_cast<T>(3) * (
-                qj + qj - (w1[j] + w2[j])
-            );
-            if (slope == static_cast<T>(0)) {
-                w0[j] = static_cast<T>(0);
-                w1[j] = qj;
-                w2[j] = qj;
-            } else {
-                const T da1 = w2[j] - w1[j];
-                const T da2 = da1 * da1;
-                const T a6da = w0[j] * da1;
-                if (a6da < -da2) {
-                    w0[j] = static_cast<T>(3) * (w1[j] - qj);
-                    w2[j] = w1[j] - w0[j];
-                } else if (a6da > da2) {
-                    w0[j] = static_cast<T>(3) * (w2[j] - qj);
-                    w1[j] = w2[j] - w0[j];
-                }
-            }
-        }
-        for (int j = j1p; j < j2p + 2; ++j) {
-            const int jm1 = j - 1;
-            const T c = cy[scalar_offset + j * nlon + i];
-            T flux;
-            if (c > static_cast<T>(0)) {
-                flux = w2[jm1] + static_cast<T>(0.5) * c * (
-                    w1[jm1] - w2[jm1] +
-                    w0[jm1] * (static_cast<T>(1) - r23 * c)
-                );
-            } else {
-                flux = w1[j] - static_cast<T>(0.5) * c * (
-                    w2[j] - w1[j] +
-                    w0[j] * (static_cast<T>(1) + r23 * c)
-                );
-            }
-            qqv[tracer_index<T>(
-                active_tracer, level, j, i,
-                nlev, nlat, nlon, lane_width
-            )] = flux;
-        }
-        int index = tracer_index<T>(
-            active_tracer, level, j1p, i,
-            nlev, nlat, nlon, lane_width
-        );
-        qqv[index] *= ymass[scalar_offset + j1p * nlon + i];
-        for (int j = j1p; j <= j2p; ++j) {
-            const int next_index = tracer_index<T>(
-                active_tracer, level, j + 1, i,
-                nlev, nlat, nlon, lane_width
-            );
-            qqv[next_index] *= ymass[scalar_offset + (j + 1) * nlon + i];
+        __syncwarp();
+        for (int i = lane; i < nlon; i += 32) {
+            const int ip1 = i + 1 == nlon ? 0 : i + 1;
             dq[tracer_index<T>(
                 active_tracer, level, j, i,
                 nlev, nlat, nlon, lane_width
-            )] += (qqv[index] - qqv[next_index]) * geofac[j];
-            index = next_index;
+            )] += fluxes[i] - fluxes[ip1];
         }
+        __syncwarp();
+    }
+
+}
+
+template <typename T>
+__global__ void tpcore_horizontal_meridional(
+    T* dq,
+    const T* qqu,
+    T* qqv,
+    const T* ymass,
+    const T* cy,
+    const T* geofac,
+    int tracer_count,
+    int nlev,
+    int nlat,
+    int nlon,
+    int lane_width
+) {
+    const int work = blockDim.x * blockIdx.x + threadIdx.x;
+    const int work_size = nlev * nlon * tracer_count;
+    if (work >= work_size || nlat > WOMBAT_MAX_LAT) {
+        return;
+    }
+    const int active_tracer = work % tracer_count;
+    const int column = work / tracer_count;
+    const int i = column % nlon;
+    const int level = column / nlon;
+    const int horizontal = nlat * nlon;
+    const int scalar_offset = level * horizontal;
+    const int j1p = 2;
+    const int j2p = nlat - 3;
+    const T r13 = static_cast<T>(1) / static_cast<T>(3);
+    const T r23 = static_cast<T>(2) / static_cast<T>(3);
+    const T r24 = static_cast<T>(1) / static_cast<T>(24);
+    T w0[WOMBAT_MAX_LAT];
+    T w1[WOMBAT_MAX_LAT];
+    T w2[WOMBAT_MAX_LAT];
+
+    w0[0] = static_cast<T>(0);
+    w0[nlat - 1] = static_cast<T>(0);
+    for (int j = 1; j < nlat - 1; ++j) {
+        const T qjm2 = j < 2 ? static_cast<T>(0) :
+            qqu[tracer_index<T>(
+                active_tracer, level, j - 2, i,
+                nlev, nlat, nlon, lane_width
+            )];
+        const T qjm1 = qqu[tracer_index<T>(
+            active_tracer, level, j - 1, i,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T qj = qqu[tracer_index<T>(
+            active_tracer, level, j, i,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T qjp1 = qqu[tracer_index<T>(
+            active_tracer, level, j + 1, i,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T qjp2 = j + 2 >= nlat ? static_cast<T>(0) :
+            qqu[tracer_index<T>(
+                active_tracer, level, j + 2, i,
+                nlev, nlat, nlon, lane_width
+            )];
+        const T tmp = (
+            static_cast<T>(8) * (qjp1 - qjm1) + qjm2 - qjp2
+        ) * r24;
+        const T pmax = wmax3(qjm1, qj, qjp1) - qj;
+        const T pmin = qj - wmin3(qjm1, qj, qjp1);
+        const T bounded = wmin(wabs(tmp), wmin(pmin, pmax));
+        w0[j] = tmp >= static_cast<T>(0) ? bounded : -bounded;
+    }
+    for (int j = 1; j < nlat; ++j) {
+        w1[j] = static_cast<T>(0.5) * (
+            qqu[tracer_index<T>(
+                active_tracer, level, j - 1, i,
+                nlev, nlat, nlon, lane_width
+            )] + qqu[tracer_index<T>(
+                active_tracer, level, j, i,
+                nlev, nlat, nlon, lane_width
+            )]
+        ) + (w0[j - 1] - w0[j]) * r13;
+        w2[j - 1] = w1[j];
+    }
+    for (int j = 1; j < nlat - 1; ++j) {
+        const T qj = qqu[tracer_index<T>(
+            active_tracer, level, j, i,
+            nlev, nlat, nlon, lane_width
+        )];
+        const T slope = w0[j];
+        w0[j] = static_cast<T>(3) * (
+            qj + qj - (w1[j] + w2[j])
+        );
+        if (slope == static_cast<T>(0)) {
+            w0[j] = static_cast<T>(0);
+            w1[j] = qj;
+            w2[j] = qj;
+        } else {
+            const T da1 = w2[j] - w1[j];
+            const T da2 = da1 * da1;
+            const T a6da = w0[j] * da1;
+            if (a6da < -da2) {
+                w0[j] = static_cast<T>(3) * (w1[j] - qj);
+                w2[j] = w1[j] - w0[j];
+            } else if (a6da > da2) {
+                w0[j] = static_cast<T>(3) * (w2[j] - qj);
+                w1[j] = w2[j] - w0[j];
+            }
+        }
+    }
+    for (int j = j1p; j < j2p + 2; ++j) {
+        const int jm1 = j - 1;
+        const T c = cy[scalar_offset + j * nlon + i];
+        T flux;
+        if (c > static_cast<T>(0)) {
+            flux = w2[jm1] + static_cast<T>(0.5) * c * (
+                w1[jm1] - w2[jm1] +
+                w0[jm1] * (static_cast<T>(1) - r23 * c)
+            );
+        } else {
+            flux = w1[j] - static_cast<T>(0.5) * c * (
+                w2[j] - w1[j] +
+                w0[j] * (static_cast<T>(1) + r23 * c)
+            );
+        }
+        qqv[tracer_index<T>(
+            active_tracer, level, j, i,
+            nlev, nlat, nlon, lane_width
+        )] = flux;
+    }
+    int index = tracer_index<T>(
+        active_tracer, level, j1p, i,
+        nlev, nlat, nlon, lane_width
+    );
+    qqv[index] *= ymass[scalar_offset + j1p * nlon + i];
+    for (int j = j1p; j <= j2p; ++j) {
+        const int next_index = tracer_index<T>(
+            active_tracer, level, j + 1, i,
+            nlev, nlat, nlon, lane_width
+        );
+        qqv[next_index] *= ymass[scalar_offset + (j + 1) * nlon + i];
+        dq[tracer_index<T>(
+            active_tracer, level, j, i,
+            nlev, nlat, nlon, lane_width
+        )] += (qqv[index] - qqv[next_index]) * geofac[j];
+        index = next_index;
+    }
+}
+
+template <typename T>
+__global__ void tpcore_horizontal_finalize_poles(
+    T* dq,
+    const T* qqv,
+    T geofac_pc,
+    int tracer_count,
+    int nlev,
+    int nlat,
+    int nlon,
+    int lane_width
+) {
+    const int work = blockDim.x * blockIdx.x + threadIdx.x;
+    const int work_size = nlev * tracer_count;
+    if (work >= work_size) {
+        return;
+    }
+    const int active_tracer = work % tracer_count;
+    const int level = work / tracer_count;
+    const int j1p = 2;
+    const int j2p = nlat - 3;
+    T sumsp = static_cast<T>(0);
+    T sumnp = static_cast<T>(0);
+    for (int i = 0; i < nlon; ++i) {
         sumsp += qqv[tracer_index<T>(
             active_tracer, level, j1p, i,
             nlev, nlat, nlon, lane_width

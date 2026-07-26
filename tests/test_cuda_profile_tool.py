@@ -77,7 +77,7 @@ def test_cuda_profile_redirects_outputs_but_preserves_inputs(tmp_path):
         diagnostics={},
         comparison={},
         simulation={},
-        meteorology={},
+        meteorology={"root": "Met"},
         emissions="emissions.yml",
         outputs={
             "expid": "Original/GEOSChem",
@@ -107,4 +107,6 @@ def test_cuda_profile_redirects_outputs_but_preserves_inputs(tmp_path):
     assert obsoperator["output_file"].startswith(str(redirected.root))
     assert obsoperator["restart_file"].startswith(str(redirected.root))
     assert redirected.emissions == str((source / "emissions.yml").resolve())
+    assert redirected.meteorology["root"] == str((source / "Met").resolve())
     assert config.outputs["expid"] == "Original/GEOSChem"
+    assert config.meteorology["root"] == "Met"

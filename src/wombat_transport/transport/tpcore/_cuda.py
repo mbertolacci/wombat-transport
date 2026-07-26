@@ -12,6 +12,12 @@ from wombat_transport.cuda.runtime import CudaRuntime
 from wombat_transport.transport.tpcore._plan import TpcorePlan
 
 
+_CUDA_WARP_SIZE = 32
+_ZONAL_WARPS_PER_BLOCK = 4
+_ZONAL_SHARED_ARRAYS = 4
+_MAX_LONGITUDES = 144
+
+
 @dataclass(frozen=True)
 class CudaTpcorePlan:
     delp1: Any
@@ -56,7 +62,9 @@ class CudaTpcoreExecutor:
             for name in (
                 "tpcore_horizontal_poles",
                 "tpcore_horizontal_initialize",
-                "tpcore_horizontal",
+                "tpcore_horizontal_zonal_warp",
+                "tpcore_horizontal_meridional",
+                "tpcore_horizontal_finalize_poles",
                 "tpcore_vertical",
             )
         )
@@ -65,8 +73,10 @@ class CudaTpcoreExecutor:
         self._dtype = resolved_dtype
         self._horizontal_poles = module.get_function(expressions[0])
         self._horizontal_initialize = module.get_function(expressions[1])
-        self._horizontal = module.get_function(expressions[2])
-        self._vertical = module.get_function(expressions[3])
+        self._horizontal_zonal_warp = module.get_function(expressions[2])
+        self._horizontal_meridional = module.get_function(expressions[3])
+        self._horizontal_finalize_poles = module.get_function(expressions[4])
+        self._vertical = module.get_function(expressions[5])
         self._qqu: Any | None = None
         self._qqv: Any | None = None
 
@@ -138,13 +148,13 @@ class CudaTpcoreExecutor:
 
         scalar_type = self._dtype.type
         horizontal_work = nlev * tracer_count
-        horizontal_threads = 32
-        horizontal_blocks = (
-            horizontal_work + horizontal_threads - 1
-        ) // horizontal_threads
+        serial_horizontal_threads = _CUDA_WARP_SIZE
+        serial_horizontal_blocks = (
+            horizontal_work + serial_horizontal_threads - 1
+        ) // serial_horizontal_threads
         self._horizontal_poles(
-            (horizontal_blocks,),
-            (horizontal_threads,),
+            (serial_horizontal_blocks,),
+            (serial_horizontal_threads,),
             (
                 tracer_blocks,
                 plan.delp1,
@@ -181,9 +191,12 @@ class CudaTpcoreExecutor:
                 np.int32(lane_width),
             ),
         )
-        self._horizontal(
-            (horizontal_blocks,),
-            (horizontal_threads,),
+        self._horizontal_zonal_warp(
+            (
+                (horizontal_work + _ZONAL_WARPS_PER_BLOCK - 1)
+                // _ZONAL_WARPS_PER_BLOCK,
+            ),
+            (_CUDA_WARP_SIZE * _ZONAL_WARPS_PER_BLOCK,),
             (
                 tracer_blocks,
                 output,
@@ -191,15 +204,53 @@ class CudaTpcoreExecutor:
                 self._qqv,
                 plan.pu,
                 plan.xmass,
-                plan.ymass,
                 plan.cx,
-                plan.cy,
-                plan.geofac,
-                scalar_type(plan.geofac_pc),
                 plan.ua,
                 plan.va,
                 plan.jn,
                 plan.js,
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+            shared_mem=(
+                _ZONAL_WARPS_PER_BLOCK
+                * _ZONAL_SHARED_ARRAYS
+                * _MAX_LONGITUDES
+                * self._dtype.itemsize
+            ),
+        )
+        meridional_work = horizontal_work * nlon
+        meridional_threads = 128
+        self._horizontal_meridional(
+            (
+                (meridional_work + meridional_threads - 1)
+                // meridional_threads,
+            ),
+            (meridional_threads,),
+            (
+                output,
+                self._qqu,
+                self._qqv,
+                plan.ymass,
+                plan.cy,
+                plan.geofac,
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+        )
+        self._horizontal_finalize_poles(
+            (serial_horizontal_blocks,),
+            (serial_horizontal_threads,),
+            (
+                output,
+                self._qqv,
+                scalar_type(plan.geofac_pc),
                 np.int32(tracer_count),
                 np.int32(nlev),
                 np.int32(nlat),

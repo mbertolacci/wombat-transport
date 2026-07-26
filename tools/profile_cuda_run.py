@@ -459,7 +459,18 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
                 "_horizontal_initialize",
                 "kernel.tpcore_horizontal_initialize",
             ),
-            ("_horizontal", "kernel.tpcore_horizontal"),
+            (
+                "_horizontal_zonal_warp",
+                "kernel.tpcore_horizontal_zonal_warp",
+            ),
+            (
+                "_horizontal_meridional",
+                "kernel.tpcore_horizontal_meridional",
+            ),
+            (
+                "_horizontal_finalize_poles",
+                "kernel.tpcore_horizontal_finalize_poles",
+            ),
             ("_vertical", "kernel.tpcore_vertical"),
         ),
     )
@@ -604,12 +615,20 @@ def _redirect_config(
         emissions_path = Path(emissions)
         if not emissions_path.is_absolute():
             emissions = str((config.root / emissions_path).resolve())
+    meteorology = deepcopy(config.meteorology)
+    meteorology_root = meteorology.get("root")
+    if meteorology_root is not None:
+        meteorology_path = Path(str(meteorology_root))
+        if not meteorology_path.is_absolute():
+            meteorology_path = config.root / meteorology_path
+        meteorology["root"] = str(meteorology_path.resolve())
     return replace(
         config,
         name=f"{config.name}_{name_suffix}",
         root=root,
         source_run_dir=root,
         output_dir=root / "OutputDir",
+        meteorology=meteorology,
         emissions=emissions,
         outputs=outputs,
     )

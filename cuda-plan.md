@@ -1089,6 +1089,67 @@ still owns the three longitude scratch arrays and about 1,003 ms float64 or
 side-by-side cooperative-warp implementation of that recurrence region; there
 is no longer value in moving more initialization work around it.
 
+### Cooperative-warp horizontal transport, 2026-07-26
+
+The horizontal recurrence now follows the natural independence boundaries
+inside TPCORE rather than assigning the complete horizontal grid to one CUDA
+thread:
+
+1. one warp owns a level/tracer pair for the horizontal adjustments and zonal
+   transport;
+2. four longitude-sized arrays are shared by the warp, eliminating the
+   recurrence kernel's compiler-local scratch;
+3. zonal slopes, interface values, fluxes, and flux differences are distributed
+   across the warp while each individual flux expression retains its original
+   operation order;
+4. meridional transport is a separate kernel with one worker per
+   level/tracer/longitude column; and
+5. a small final kernel performs the two polar flux sums in their original
+   left-to-right longitude order and broadcasts the resulting polar mass.
+
+The first experiment kept the complete meridional longitude loop on lane zero
+of each warp. It was numerically exact but slow: the 24-tracer float64 zonal
+kernel took 1,554 ms over eighteen steps. The idle lanes remained allocated
+while one lane performed all 144 meridional columns. That version was removed.
+Making columns independent reduced the same complete horizontal sequence to
+about 217 ms, including pole averaging and initialization.
+
+The established resident full-chain harness gives the cleanest before/after
+comparison. Timings include a device-to-device state reset but no compilation,
+plan preparation, or host transfers:
+
+| tracers | dtype | serial recurrence step ms | cooperative/column step ms | speedup |
+|---:|---|---:|---:|---:|
+| 24 | float64 | 90.569 | 22.073 | 4.10x |
+| 24 | float32 | 63.157 | 9.784 | 6.46x |
+| 128 | float64 | 193.149 | 98.856 | 1.95x |
+| 128 | float32 | 145.695 | 51.782 | 2.81x |
+| 256 | float64 | n/a | 195.824 | n/a |
+| 256 | float32 | n/a | 110.148 | n/a |
+| 512 | float32 | n/a | 231.570 | n/a |
+
+Throughput remains nearly flat from 128 through 256 tracers at about 0.8
+billion grid-cell-tracers/s in float64. Float32 sustains 1.36--1.52 billion
+through 512 tracers. This indicates that the warp mapping does not depend on
+the CPU's 16-tracer blocking crossover and continues to scale when outer
+tracer parallelism is abundant.
+
+The strict tests pass for every packaged TPCORE case and the complete CUDA
+transport-step handoffs. At 128 tracers, float64 maximum final drift remains
+`2.071e-17` with mass-relative drift `5.323e-16`; float32 remains
+`8.404e-9` with mass-relative drift `1.228e-8`. The 256- and 512-tracer
+measurements remain finite and nonnegative with the same drift class. The
+validation-heavy 512-tracer float64 harness exceeded the 16 GiB device after
+allocating captured handoff copies; this is a harness-memory limit, not a
+kernel failure, and no 1,024-tracer claim is made.
+
+An ordinary 24-tracer run including forcing, HISTORY, ObsOperator, and NetCDF
+output measured 1.718 seconds in float64 and 1.571 seconds in float32. Its
+eighteen-step horizontal breakdown was 217 ms and 122 ms respectively. The
+profiler also now resolves relative meteorology input paths before relocating
+its output root; previously a temporary run could incorrectly resolve them
+under `/external_data`.
+
 ### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
 
 The next pass tested the CPU executor's deferred pressure-mass handoff directly.
