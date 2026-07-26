@@ -54,6 +54,8 @@ class CudaTpcoreExecutor:
         expressions = tuple(
             f"{name}<{cuda_type}>"
             for name in (
+                "tpcore_horizontal_poles",
+                "tpcore_horizontal_initialize",
                 "tpcore_horizontal",
                 "tpcore_vertical",
             )
@@ -61,8 +63,10 @@ class CudaTpcoreExecutor:
         module = load_raw_module("tpcore.cu", name_expressions=expressions)
         self._runtime = runtime
         self._dtype = resolved_dtype
-        self._horizontal = module.get_function(expressions[0])
-        self._vertical = module.get_function(expressions[1])
+        self._horizontal_poles = module.get_function(expressions[0])
+        self._horizontal_initialize = module.get_function(expressions[1])
+        self._horizontal = module.get_function(expressions[2])
+        self._vertical = module.get_function(expressions[3])
         self._qqu: Any | None = None
         self._qqv: Any | None = None
 
@@ -135,15 +139,56 @@ class CudaTpcoreExecutor:
         scalar_type = self._dtype.type
         horizontal_work = nlev * tracer_count
         horizontal_threads = 32
-        self._horizontal(
-            ((horizontal_work + horizontal_threads - 1) // horizontal_threads,),
+        horizontal_blocks = (
+            horizontal_work + horizontal_threads - 1
+        ) // horizontal_threads
+        self._horizontal_poles(
+            (horizontal_blocks,),
             (horizontal_threads,),
+            (
+                tracer_blocks,
+                plan.delp1,
+                plan.area_1d,
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+        )
+        initialize_work = nlev * nlat * nlon * tracer_count
+        initialize_threads = 128
+        self._horizontal_initialize(
+            (
+                (initialize_work + initialize_threads - 1)
+                // initialize_threads,
+            ),
+            (initialize_threads,),
             (
                 tracer_blocks,
                 output,
                 self._qqu,
                 self._qqv,
                 plan.delp1,
+                plan.ua,
+                plan.va,
+                plan.jn,
+                plan.js,
+                np.int32(tracer_count),
+                np.int32(nlev),
+                np.int32(nlat),
+                np.int32(nlon),
+                np.int32(lane_width),
+            ),
+        )
+        self._horizontal(
+            (horizontal_blocks,),
+            (horizontal_threads,),
+            (
+                tracer_blocks,
+                output,
+                self._qqu,
+                self._qqv,
                 plan.pu,
                 plan.xmass,
                 plan.ymass,
@@ -155,7 +200,6 @@ class CudaTpcoreExecutor:
                 plan.va,
                 plan.jn,
                 plan.js,
-                plan.area_1d,
                 np.int32(tracer_count),
                 np.int32(nlev),
                 np.int32(nlat),

@@ -59,12 +59,196 @@ __device__ __forceinline__ int tracer_index(
 }
 
 template <typename T>
+__global__ void tpcore_horizontal_poles(
+    T* q,
+    const T* delp1,
+    const T* area_1d,
+    int tracer_count,
+    int nlev,
+    int nlat,
+    int nlon,
+    int lane_width
+) {
+    const int work = blockDim.x * blockIdx.x + threadIdx.x;
+    const int work_size = nlev * tracer_count;
+    if (work >= work_size) {
+        return;
+    }
+    const int active_tracer = work % tracer_count;
+    const int level = work / tracer_count;
+    const int scalar_offset = level * nlat * nlon;
+    T south_denom = static_cast<T>(0);
+    T north_denom = static_cast<T>(0);
+    T south = static_cast<T>(0);
+    T north = static_cast<T>(0);
+    for (int j = 0; j < 2; ++j) {
+        const T area = area_1d[j];
+        for (int i = 0; i < nlon; ++i) {
+            const int center = scalar_offset + j * nlon + i;
+            const T weight = delp1[center] * area;
+            south_denom += weight;
+            south += q[tracer_index<T>(
+                active_tracer, level, j, i,
+                nlev, nlat, nlon, lane_width
+            )] * weight;
+        }
+    }
+    for (int j = nlat - 2; j < nlat; ++j) {
+        const T area = area_1d[j];
+        for (int i = 0; i < nlon; ++i) {
+            const int center = scalar_offset + j * nlon + i;
+            const T weight = delp1[center] * area;
+            north_denom += weight;
+            north += q[tracer_index<T>(
+                active_tracer, level, j, i,
+                nlev, nlat, nlon, lane_width
+            )] * weight;
+        }
+    }
+    south /= south_denom;
+    north /= north_denom;
+    for (int j = 0; j < 2; ++j) {
+        for (int i = 0; i < nlon; ++i) {
+            q[tracer_index<T>(
+                active_tracer, level, j, i,
+                nlev, nlat, nlon, lane_width
+            )] = south;
+        }
+    }
+    for (int j = nlat - 2; j < nlat; ++j) {
+        for (int i = 0; i < nlon; ++i) {
+            q[tracer_index<T>(
+                active_tracer, level, j, i,
+                nlev, nlat, nlon, lane_width
+            )] = north;
+        }
+    }
+}
+
+template <typename T>
+__global__ void tpcore_horizontal_initialize(
+    const T* q,
+    T* dq,
+    T* qqu,
+    T* qqv,
+    const T* delp1,
+    const T* ua,
+    const T* va,
+    const long long* jn,
+    const long long* js,
+    int tracer_count,
+    int nlev,
+    int nlat,
+    int nlon,
+    int lane_width
+) {
+    const int work = blockDim.x * blockIdx.x + threadIdx.x;
+    const int horizontal = nlat * nlon;
+    const int work_size = nlev * horizontal * tracer_count;
+    if (work >= work_size) {
+        return;
+    }
+    const int active_tracer = work % tracer_count;
+    const int cell = work / tracer_count;
+    const int level = cell / horizontal;
+    const int horizontal_cell = cell % horizontal;
+    const int j = horizontal_cell / nlon;
+    const int i = horizontal_cell % nlon;
+    const int scalar_offset = level * horizontal;
+    const int index = tracer_index<T>(
+        active_tracer, level, j, i, nlev, nlat, nlon, lane_width
+    );
+    const T q_center = q[index];
+    dq[index] = q_center * delp1[scalar_offset + horizontal_cell];
+    if (j < 2 || j > nlat - 3) {
+        qqu[index] = q_center;
+        qqv[index] = q_center;
+        return;
+    }
+
+    const T ua_value = ua[scalar_offset + horizontal_cell];
+    const T va_value = va[scalar_offset + horizontal_cell];
+    const int jn_level = static_cast<int>(jn[level]);
+    const int js_level = static_cast<int>(js[level]);
+    T qqu_value;
+    if (j <= js_level || j >= jn_level) {
+        const int iu0 = static_cast<int>(ua_value);
+        const T ru = ua_value - static_cast<T>(iu0);
+        const int iu = i - iu0;
+        const int iu_mod = wmod(iu, nlon);
+        if (ua_value >= static_cast<T>(0)) {
+            const int im1 = wmod(iu - 1, nlon);
+            const T q_i = q[tracer_index<T>(
+                active_tracer, level, j, iu_mod,
+                nlev, nlat, nlon, lane_width
+            )];
+            qqu_value = q_center + static_cast<T>(0.5) * (
+                q_i + ru * (
+                    q[tracer_index<T>(
+                        active_tracer, level, j, im1,
+                        nlev, nlat, nlon, lane_width
+                    )] - q_i
+                ) - q_center
+            );
+        } else {
+            const int ip1 = wmod(iu + 1, nlon);
+            const T q_i = q[tracer_index<T>(
+                active_tracer, level, j, iu_mod,
+                nlev, nlat, nlon, lane_width
+            )];
+            qqu_value = q_center + static_cast<T>(0.5) * (
+                q_i + ru * (
+                    q_i - q[tracer_index<T>(
+                        active_tracer, level, j, ip1,
+                        nlev, nlat, nlon, lane_width
+                    )]
+                ) - q_center
+            );
+        }
+    } else {
+        const int iu = static_cast<int>(
+            static_cast<T>(i + 1) - ua_value
+        ) - 1;
+        const int iu_mod = wmod(iu, nlon);
+        const int ip1 = wmod(iu + 1, nlon);
+        qqu_value = q_center + static_cast<T>(0.5) * ua_value * (
+            q[tracer_index<T>(
+                active_tracer, level, j, iu_mod,
+                nlev, nlat, nlon, lane_width
+            )] - q[tracer_index<T>(
+                active_tracer, level, j, ip1,
+                nlev, nlat, nlon, lane_width
+            )]
+        );
+    }
+    qqu[index] = qqu_value;
+
+    const int jv = static_cast<int>(
+        static_cast<T>(j + 1) - va_value
+    ) - 1;
+    const int jvp1 = jv + 1;
+    T vdiff = static_cast<T>(0);
+    if (jv >= 0 && jv < nlat) {
+        vdiff += q[tracer_index<T>(
+            active_tracer, level, jv, i,
+            nlev, nlat, nlon, lane_width
+        )];
+    }
+    if (jvp1 >= 0 && jvp1 < nlat) {
+        vdiff -= q[tracer_index<T>(
+            active_tracer, level, jvp1, i,
+            nlev, nlat, nlon, lane_width
+        )];
+    }
+    qqv[index] = q_center + static_cast<T>(0.5) * va_value * vdiff;
+}
+
+template <typename T>
 __global__ void tpcore_horizontal(
     T* q,
     T* dq,
     T* qqu,
     T* qqv,
-    const T* delp1,
     const T* pu,
     const T* xmass,
     const T* ymass,
@@ -76,7 +260,6 @@ __global__ void tpcore_horizontal(
     const T* va,
     const long long* jn,
     const long long* js,
-    const T* area_1d,
     int tracer_count,
     int nlev,
     int nlat,
@@ -103,145 +286,8 @@ __global__ void tpcore_horizontal(
     T w1[WOMBAT_MAX_LON];
     T w2[WOMBAT_MAX_LON];
 
-    T south_denom = static_cast<T>(0);
-    T north_denom = static_cast<T>(0);
     T south = static_cast<T>(0);
     T north = static_cast<T>(0);
-    for (int j = 0; j < 2; ++j) {
-        const T area = area_1d[j];
-        for (int i = 0; i < nlon; ++i) {
-            const int center = scalar_offset + j * nlon + i;
-            const T weight = delp1[center] * area;
-            south_denom += weight;
-            south += q[tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            )] * weight;
-        }
-    }
-    for (int j = nlat - 2; j < nlat; ++j) {
-        const T area = area_1d[j];
-        for (int i = 0; i < nlon; ++i) {
-            const int center = scalar_offset + j * nlon + i;
-            const T weight = delp1[center] * area;
-            north_denom += weight;
-            north += q[tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            )] * weight;
-        }
-    }
-    south /= south_denom;
-    north /= north_denom;
-    for (int j = 0; j < 2; ++j) {
-        for (int i = 0; i < nlon; ++i) {
-            q[tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            )] = south;
-        }
-    }
-    for (int j = nlat - 2; j < nlat; ++j) {
-        for (int i = 0; i < nlon; ++i) {
-            q[tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            )] = north;
-        }
-    }
-
-    for (int j = 0; j < nlat; ++j) {
-        for (int i = 0; i < nlon; ++i) {
-            const int index = tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            );
-            dq[index] = q[index] * delp1[scalar_offset + j * nlon + i];
-        }
-    }
-
-    for (int j = 0; j < nlat; ++j) {
-        for (int i = 0; i < nlon; ++i) {
-            const int index = tracer_index<T>(
-                active_tracer, level, j, i, nlev, nlat, nlon, lane_width
-            );
-            if (j < j1p || j > j2p) {
-                qqu[index] = q[index];
-                qqv[index] = q[index];
-                continue;
-            }
-            const int center = scalar_offset + j * nlon + i;
-            const T ua_value = ua[center];
-            const T va_value = va[center];
-            const T q_center = q[index];
-            T qqu_value;
-            if (j <= js_level || j >= jn_level) {
-                const int iu0 = static_cast<int>(ua_value);
-                const T ru = ua_value - static_cast<T>(iu0);
-                const int iu = i - iu0;
-                const int iu_mod = wmod(iu, nlon);
-                if (ua_value >= static_cast<T>(0)) {
-                    const int im1 = wmod(iu - 1, nlon);
-                    const T q_i = q[tracer_index<T>(
-                        active_tracer, level, j, iu_mod,
-                        nlev, nlat, nlon, lane_width
-                    )];
-                    qqu_value = q_center + static_cast<T>(0.5) * (
-                        q_i + ru * (
-                            q[tracer_index<T>(
-                                active_tracer, level, j, im1,
-                                nlev, nlat, nlon, lane_width
-                            )] - q_i
-                        ) - q_center
-                    );
-                } else {
-                    const int ip1 = wmod(iu + 1, nlon);
-                    const T q_i = q[tracer_index<T>(
-                        active_tracer, level, j, iu_mod,
-                        nlev, nlat, nlon, lane_width
-                    )];
-                    qqu_value = q_center + static_cast<T>(0.5) * (
-                        q_i + ru * (
-                            q_i - q[tracer_index<T>(
-                                active_tracer, level, j, ip1,
-                                nlev, nlat, nlon, lane_width
-                            )]
-                        ) - q_center
-                    );
-                }
-            } else {
-                const int iu = static_cast<int>(
-                    static_cast<T>(i + 1) - ua_value
-                ) - 1;
-                const int iu_mod = wmod(iu, nlon);
-                const int ip1 = wmod(iu + 1, nlon);
-                qqu_value = q_center + static_cast<T>(0.5) * ua_value * (
-                    q[tracer_index<T>(
-                        active_tracer, level, j, iu_mod,
-                        nlev, nlat, nlon, lane_width
-                    )] - q[tracer_index<T>(
-                        active_tracer, level, j, ip1,
-                        nlev, nlat, nlon, lane_width
-                    )]
-                );
-            }
-            qqu[index] = qqu_value;
-
-            const int jv = static_cast<int>(
-                static_cast<T>(j + 1) - va_value
-            ) - 1;
-            const int jvp1 = jv + 1;
-            T vdiff = static_cast<T>(0);
-            if (jv >= 0 && jv < nlat) {
-                vdiff += q[tracer_index<T>(
-                    active_tracer, level, jv, i,
-                    nlev, nlat, nlon, lane_width
-                )];
-            }
-            if (jvp1 >= 0 && jvp1 < nlat) {
-                vdiff -= q[tracer_index<T>(
-                    active_tracer, level, jvp1, i,
-                    nlev, nlat, nlon, lane_width
-                )];
-            }
-            qqv[index] = q_center + static_cast<T>(0.5) * va_value * vdiff;
-        }
-    }
 
     for (int j = j1p; j <= j2p; ++j) {
         for (int i = 0; i < nlon; ++i) {

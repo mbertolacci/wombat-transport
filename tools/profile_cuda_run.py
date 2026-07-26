@@ -454,6 +454,11 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
     profiler.instrument_kernel_attributes(
         CudaTpcoreExecutor,
         (
+            ("_horizontal_poles", "kernel.tpcore_horizontal_poles"),
+            (
+                "_horizontal_initialize",
+                "kernel.tpcore_horizontal_initialize",
+            ),
             ("_horizontal", "kernel.tpcore_horizontal"),
             ("_vertical", "kernel.tpcore_vertical"),
         ),

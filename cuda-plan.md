@@ -894,6 +894,7 @@ not shared storage semantics and not CUDA defaults.
 | experiment | decision |
 |---|---|
 | Persistent pinned host staging plus a nonblocking copy stream | Rejected for now. Recorded refresh events fell from apparent multi-second host waits to about 7 ms, but complete wall time did not improve: the original host timer was largely waiting for already queued GPU work. The extra pinned allocation and stream/event coordination therefore bought no measured throughput. |
+| Explicit coalesced horizontal scratch workspace | Rejected. It removed all reported compiler-local storage, but raised registers from 46 to 56 and horizontal time from 1,267.9 to 1,313.3 ms in float64. Float32 rose from 845.8 to 901.2 ms. CUDA local memory was already coalesced effectively; explicit indexing added overhead and persistent storage. |
 | Horizontal launch sizes 16, 64, or 128 | Rejected for the current kernel and device. Thirty-two threads was fastest. |
 | Vertical launch sizes 64 or 256 | Rejected for the current kernel and device. The differences were small; 128 remained marginally best. |
 | Native-float32 plan preparation | Deferred as a distinct numerical experiment. Strict float32 currently computes plans in float64 and casts the finalized arrays. All TPCORE plus VDIFF/convection preparation is only 58.3 ms over the complete 3.239-second run, and casting itself is 4.7 ms. Even making plan preparation free would save at most 1.8%; actual savings would be smaller. A native-float32 mode is therefore primarily a drift and memory-policy question, not an obvious performance fix. It should be opt-in and compared over increasing step counts before adoption. |
@@ -1045,6 +1046,48 @@ The remaining NetCDF field loop is about 331–334 ms. The simple staging change
 captures enough benefit to keep, but not enough to justify a background writer
 yet. The next performance work returns to the side-by-side horizontal TPCORE
 decomposition.
+
+### Parallel horizontal initialization, 2026-07-26
+
+The first TPCORE decomposition separates three phases that were formerly
+serialized by one thread for each level/tracer task:
+
+1. ordered north/south pole averaging remains one task per level/tracer;
+2. initial mass plus `qqu`/`qqv` cross-term construction runs independently
+   across grid-cell/tracer work;
+3. the existing horizontal adjustment and flux recurrences run only after
+   those two kernels complete.
+
+The pole reductions retain their original loop and operation order. Every
+cellwise expression is unchanged; only independent destinations execute in
+parallel. Obsolete serial initialization code was removed rather than retained
+as a second implementation.
+
+At 128 tracers over eighteen steps:
+
+| dtype | horizontal before ms | pole ms | parallel initialize ms | remaining recurrence ms | total after ms | improvement |
+|---|---:|---:|---:|---:|---:|---:|
+| float64 | 1,267.9 | 2.6 | 77.3 | 1,002.8 | 1,082.6 | 14.6% |
+| float32 | 845.8 | 1.1 | 38.7 | 648.7 | 688.5 | 18.6% |
+
+Transport-only wall time measured 4.157 seconds in float64 and approximately
+3.04–3.08 seconds in float32, compared with 4.345 and 3.224 seconds before the
+split. The established CPU comparison is unchanged:
+
+| dtype | max abs vs CPU float64 | RMSE |
+|---|---:|---:|
+| float64 | 2.9923979961e-17 | 1.7349636207e-18 |
+| float32 | 2.9715031337e-8 | 1.3176232434e-9 |
+
+Combined with GPU-finalized HISTORY, the 128-tracer complete-output profile
+falls from 5.080 to 4.732 seconds in float64 and from 3.935 to 3.602 seconds in
+float32. These are 6.8% and 8.5% full-run improvements respectively.
+
+The remaining horizontal recurrence kernel is now isolated more cleanly. It
+still owns the three longitude scratch arrays and about 1,003 ms float64 or
+649 ms float32 over the profile. The next substantial experiment is a
+side-by-side cooperative-warp implementation of that recurrence region; there
+is no longer value in moving more initialization work around it.
 
 ### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
 
