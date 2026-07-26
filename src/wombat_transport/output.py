@@ -97,7 +97,7 @@ class HistoryOutputManager:
                 collection=collection,
                 start=start,
                 accumulator_index=index,
-                materialize=self._materialize_array,
+                materialize_average=self._materialize_average,
             )
             for index, collection in enumerate(
                 collection
@@ -121,7 +121,10 @@ class HistoryOutputManager:
         self._prepared_timestamp: datetime | None = None
         self._last_state: TracerField | None = None
         self._zeros = lambda shape: np.zeros(shape, dtype=np.float64)
-        self._array_materializer = lambda values: values
+        self._average_materializer = lambda values, count, dtype: (
+            values,
+            float(count),
+        )
         self._state_materializer = lambda state: state
         self._snapshot_materializer = lambda snapshot: snapshot
 
@@ -165,7 +168,23 @@ class HistoryOutputManager:
         if self._sums is not None:
             raise ValueError("cannot change HISTORY storage after accumulation starts")
         self._zeros = lambda shape: runtime.zeros(shape, dtype=np.float64)
-        self._array_materializer = runtime.to_host
+        from wombat_transport.cuda.history import (
+            CudaHistoryAverageMaterializer,
+        )
+
+        materializer = CudaHistoryAverageMaterializer(runtime)
+
+        def materialize_average(
+            values: Any,
+            count: int,
+            dtype: str,
+        ) -> tuple[np.ndarray, float]:
+            return (
+                materializer.materialize(values, count, dtype=dtype),
+                1.0,
+            )
+
+        self._average_materializer = materialize_average
 
         def materialize_state(state: TracerField) -> TracerField:
             return TracerField(
@@ -263,8 +282,13 @@ class HistoryOutputManager:
                 f"to {expected[1:]}"
             )
 
-    def _materialize_array(self, values: Any) -> np.ndarray:
-        return self._array_materializer(values)
+    def _materialize_average(
+        self,
+        values: Any,
+        count: int,
+        dtype: str,
+    ) -> tuple[np.ndarray, float]:
+        return self._average_materializer(values, count, dtype)
 
     def _materialize_state(self, state: TracerField) -> TracerField:
         return self._state_materializer(state)
@@ -286,7 +310,7 @@ class _AverageCollection:
         collection: OutputCollectionConfig,
         start: datetime,
         accumulator_index: int,
-        materialize: Any,
+        materialize_average: Any,
     ) -> None:
         self._root = root
         self._template_path = template_path
@@ -294,7 +318,7 @@ class _AverageCollection:
         self._collection = collection
         self._start = start
         self.accumulator_index = accumulator_index
-        self._materialize = materialize
+        self._materialize_average = materialize_average
         self._window_start: datetime | None = None
         self._window_end: datetime | None = None
         self._group_start: datetime | None = None
@@ -396,6 +420,7 @@ class _AverageCollection:
             raise ValueError("SpeciesConc schedule is not initialized")
         if self._count <= 0:
             return
+        storage = _collection_storage(self._collection)
         if self._file is None:
             self._file = _StreamingSpeciesConcFile(
                 path=_collection_path(
@@ -406,14 +431,19 @@ class _AverageCollection:
                 ),
                 template_path=self._template_path,
                 title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
-                storage=_collection_storage(self._collection),
+                storage=storage,
                 first_timestamp=self._window_start,
                 first_state=metadata,
             )
+        materialized, denominator = self._materialize_average(
+            summed,
+            self._count,
+            storage.netcdf_dtype,
+        )
         self._file.append_average(
             self._window_start,
-            self._materialize(summed),
-            self._count,
+            materialized,
+            denominator,
             metadata,
         )
 
@@ -473,17 +503,20 @@ class _StreamingSpeciesConcFile:
         self,
         timestamp: datetime,
         summed: np.ndarray,
-        count: int,
+        denominator: float,
         metadata: TracerField,
     ) -> None:
         self._validate_open_sample(metadata)
         if summed.shape != self._storage_shape:
             raise ValueError("all SpeciesConc samples must have the same shape")
-        if count <= 0:
-            raise ValueError("SpeciesConc average count must be positive")
+        if denominator <= 0:
+            raise ValueError("SpeciesConc average denominator must be positive")
 
         self._write_time_sample(timestamp)
-        self._write_average(summed, metadata, float(count))
+        if denominator == 1.0:
+            self._write_preaveraged(summed, metadata)
+        else:
+            self._write_average(summed, metadata, denominator)
         self._sample_index += 1
 
     def _write_state(self, sample: TracerField) -> None:
@@ -505,6 +538,18 @@ class _StreamingSpeciesConcFile:
                 out=self._write_buffer,
             )
             variable[self._sample_index, :, :, :] = self._write_buffer
+
+    def _write_preaveraged(
+        self,
+        values: np.ndarray,
+        metadata: TracerField,
+    ) -> None:
+        for tracer_index, variable in enumerate(self._variables):
+            variable[self._sample_index, :, :, :] = _summed_tracer(
+                values,
+                metadata,
+                tracer_index,
+            )[::-1, :, :]
 
     def close(self) -> None:
         if self._dataset is not None:

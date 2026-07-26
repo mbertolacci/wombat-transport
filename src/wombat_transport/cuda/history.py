@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from wombat_transport.cuda.runtime import require_cupy
 
 
@@ -43,6 +45,43 @@ def accumulate_history_sums(accumulators: Any, values: Any) -> None:
             f"accumulators, found {accumulators.dtype} and {values.dtype}"
         )
     cupy.add(accumulators, values[None, ...], out=accumulators)
+
+
+class CudaHistoryAverageMaterializer:
+    """Finalize float64 sums in output precision before one host transfer."""
+
+    def __init__(self, runtime: Any) -> None:
+        self._runtime = runtime
+        self._buffers: dict[tuple[tuple[int, ...], str], Any] = {}
+
+    def materialize(
+        self,
+        summed: Any,
+        count: int,
+        *,
+        dtype: np.dtype[Any] | type[Any] | str,
+    ) -> np.ndarray:
+        cupy = require_cupy()
+        _validate_device_array(cupy, summed, "summed")
+        if summed.dtype != np.dtype(np.float64):
+            raise TypeError("CUDA HISTORY sums must use float64 accumulation")
+        if count <= 0:
+            raise ValueError("HISTORY average count must be positive")
+        output_dtype = np.dtype(dtype)
+        if output_dtype not in {np.dtype(np.float32), np.dtype(np.float64)}:
+            raise TypeError("CUDA HISTORY output must use float32 or float64")
+        key = (tuple(summed.shape), output_dtype.str)
+        output = self._buffers.get(key)
+        if output is None:
+            output = self._runtime.empty(tuple(summed.shape), dtype=output_dtype)
+            self._buffers[key] = output
+        cupy.divide(
+            summed,
+            np.float64(count),
+            out=output,
+            casting="unsafe",
+        )
+        return self._runtime.to_host(output)
 
 
 def _validate_device_array(cupy: Any, values: Any, label: str) -> None:

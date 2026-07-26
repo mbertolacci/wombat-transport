@@ -19,6 +19,7 @@ import wombat_transport.runner as runner_module
 import wombat_transport.cuda.history as cuda_history_module
 from wombat_transport.cuda.executor import CudaRunExecutor
 from wombat_transport.cuda.forcing import CudaForcingChunks
+from wombat_transport.cuda.history import CudaHistoryAverageMaterializer
 from wombat_transport.cuda.preparation import CudaPlanPreparation
 from wombat_transport.cuda.runtime import CudaRuntime
 from wombat_transport.emissions import EmissionsOperator
@@ -362,6 +363,11 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             "_write_average",
             "history.netcdf_write_fields",
         ),
+        (
+            _StreamingSpeciesConcFile,
+            "_write_preaveraged",
+            "history.netcdf_write_fields",
+        ),
         (ObsOperatorManager, "sample", "obsoperator.manager_sample"),
         (ObsOperatorManager, "_initialize_for_date", "obsoperator.plan_update"),
         (ObsOperatorManager, "close", "obsoperator.close"),
@@ -425,6 +431,13 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             CudaObsSampler,
             "sync_to_host",
             "cuda.obsoperator_sync",
+            None,
+            None,
+        ),
+        (
+            CudaHistoryAverageMaterializer,
+            "materialize",
+            "cuda.history_materialize",
             None,
             None,
         ),

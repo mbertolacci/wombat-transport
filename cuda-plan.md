@@ -1006,18 +1006,45 @@ nonblocking copy-stream experiment removed the apparent wait but did not
 improve complete wall time. The full profile confirms that the blocked host
 timer must not be treated as removable work.
 
-The next target should therefore be HISTORY boundary staging. Retain strict
-float64 accumulation, finalize and cast the completed average to the configured
-output dtype on the GPU, transfer only the output-width buffer, and measure
-parity and wall time. For float32 output this halves the 128-tracer HISTORY
-transfer. If the approximately 466 ms NetCDF loop remains dominant, evaluate a
-double-buffered/background writer so disk output can overlap the next transport
-interval. This is a more direct full-run opportunity than further ObsOperator
-kernel work.
+The resulting HISTORY boundary experiment is recorded below. ObsOperator
+kernel optimization is not justified by these profiles.
 
-After the HISTORY experiment, return to the side-by-side warp-owned horizontal
-TPCORE kernel. ObsOperator kernel optimization is not justified by these
-profiles.
+### GPU-finalized HISTORY averages, 2026-07-26
+
+HISTORY continues to accumulate in float64. At a completed interval, CuPy now
+divides by the sample count in float64, casts into one reusable buffer in the
+configured NetCDF dtype, and transfers that buffer. The synchronous NetCDF
+writer accepts the pre-averaged values directly, avoiding its former CPU
+float64 divide buffer.
+
+The CUDA operation is element-for-element identical to
+`(host_float64_sum / count).astype(output_dtype)` for both float32 and float64
+output. An end-to-end test also reads the resulting float32 NetCDF file and
+checks the completed average exactly.
+
+With the full-profile float32 output configuration:
+
+| tracers | dtype | wall before s | wall after s | HISTORY append before ms | after ms |
+|---:|---|---:|---:|---:|---:|
+| 24 | float64 | 2.690 | 2.655 | 105.8 | 77.0 |
+| 24 | float32 | 2.147 | 2.101 | 115.8 | 76.5 |
+| 128 | float64 | 5.080 | 4.912 | 574.9 | 395.5 |
+| 128 | float32 | 3.935 | 3.754 | 572.1 | 399.0 |
+
+At 128 tracers, HISTORY D2H falls from 630,669,312 to 315,334,656
+bytes. Complete wall time improves by 3.3% in float64 and 4.6% in float32;
+the output boundary itself improves by about 31%.
+
+The reusable float32 staging buffer adds 315,334,656 bytes to peak device-pool
+allocation at 128 tracers. This is the direct space-for-time tradeoff; float64
+accumulation and transport storage are unchanged. Chunked staging could reduce
+that peak but would complicate the writer boundary, so it is deferred unless a
+future device-memory target requires it.
+
+The remaining NetCDF field loop is about 331–334 ms. The simple staging change
+captures enough benefit to keep, but not enough to justify a background writer
+yet. The next performance work returns to the side-by-side horizontal TPCORE
+decomposition.
 
 ### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
 

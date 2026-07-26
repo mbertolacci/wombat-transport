@@ -1,17 +1,31 @@
 from __future__ import annotations
 
+from datetime import datetime
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from wombat_transport.cuda import CudaRuntime, CudaUnavailableError
 from wombat_transport.cuda.history import (
+    CudaHistoryAverageMaterializer,
     accumulate_history_sum,
     accumulate_history_sums,
 )
 from wombat_transport.fields import TracerField
+from wombat_transport.io import FIXED_GRID, load_species_conc
+from wombat_transport.output import (
+    HistoryOutputManager,
+    OutputCollectionConfig,
+    OutputSnapshot,
+    OutputStorageConfig,
+    parse_history_interval,
+)
+
+
+BASE_RESTART = "tests/fixtures/io_readers_2x25_v1/restart.nc4"
 
 
 def test_importing_cuda_support_does_not_import_cupy():
@@ -122,6 +136,88 @@ def test_cuda_history_accumulates_float32_state_into_float64_sums():
     np.testing.assert_array_equal(
         runtime.to_host(summed),
         host.astype(np.float64) * 7.0,
+    )
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("dtype", (np.float32, np.float64))
+def test_cuda_history_materializes_average_in_output_precision(dtype):
+    runtime = _cuda_runtime_or_skip()
+    host = np.linspace(-3.0, 5.0, 96, dtype=np.float64).reshape(2, 3, 4, 4)
+    summed = runtime.to_device(host)
+    runtime.reset_transfer_stats()
+    materializer = CudaHistoryAverageMaterializer(runtime)
+
+    actual = materializer.materialize(summed, 7, dtype=dtype)
+    expected = (host / np.float64(7)).astype(dtype)
+
+    np.testing.assert_array_equal(actual, expected)
+    assert runtime.transfer_stats.device_to_host_count == 1
+    assert runtime.transfer_stats.device_to_host_bytes == expected.nbytes
+
+
+@pytest.mark.cuda
+def test_cuda_history_writes_gpu_finalized_float32_average(tmp_path):
+    runtime = _cuda_runtime_or_skip()
+    manager = HistoryOutputManager(
+        root=tmp_path,
+        template_path=BASE_RESTART,
+        expid="OutputDir/GEOSChem",
+        collections=(
+            OutputCollectionConfig(
+                name="SpeciesConcTwentyMinute",
+                filename=None,
+                template="%y4%m2%d2_%h2%n2z.nc4",
+                frequency=parse_history_interval("00000000 002000"),
+                duration=parse_history_interval("00000001 000000"),
+                mode="time-averaged",
+                fields=("SpeciesConcVV_?ADV?",),
+                storage=OutputStorageConfig(dtype="float32"),
+            ),
+        ),
+        start=datetime(2014, 9, 1),
+    )
+    manager.use_cuda(runtime)
+    shape = (1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"], 1)
+    forcing = SimpleNamespace()
+
+    for minute, value in ((10, 1.0), (20, 4.0)):
+        host = np.full(shape, value, dtype=np.float32)
+        state = TracerField(
+            names=("A",),
+            data=runtime.to_device(host)[None, ...],
+            units=("mol mol-1 dry",),
+            coords={},
+        )
+        sums = manager.prepare_step(datetime(2014, 9, 1, 0, minute), state)
+        accumulate_history_sums(sums, state.block_data[0])
+        manager.complete_step(
+            OutputSnapshot(
+                datetime(2014, 9, 1, 0, minute),
+                state,
+                runtime.zeros(
+                    (
+                        1,
+                        FIXED_GRID["lev"],
+                        FIXED_GRID["lat"],
+                        FIXED_GRID["lon"],
+                    ),
+                    dtype=np.float64,
+                ),
+                forcing,  # type: ignore[arg-type]
+            )
+        )
+    manager.close()
+
+    output = (
+        tmp_path
+        / "OutputDir"
+        / "GEOSChem.SpeciesConcTwentyMinute.20140901_0000z.nc4"
+    )
+    actual = load_species_conc(output).to_canonical()
+    np.testing.assert_array_equal(
+        actual,
+        np.full(actual.shape, np.float32(2.5), dtype=np.float32),
     )
 
 
