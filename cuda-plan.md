@@ -1150,6 +1150,96 @@ profiler also now resolves relative meteorology input paths before relocating
 its output root; previously a temporary run could incorrectly resolve them
 under `/external_data`.
 
+### Horizontal and vertical follow-up experiments, 2026-07-26
+
+Three parity-preserving follow-ups tested the remaining TPCORE kernels. Only
+the zonal launch policy was retained.
+
+#### Cooperative meridional columns
+
+A warp-per-level/tracer/longitude kernel moved the three 91-element latitude
+arrays from compiler-local storage into shared memory. Warp lanes computed
+independent latitude values for the slope, interface, limiter, flux, mass, and
+flux-difference passes, with warp synchronization between passes. Both four-
+and eight-warps-per-block launches passed the strict TPCORE and complete-chain
+handoff tests.
+
+The shape was nevertheless slower. With eight warps/block, the 128-tracer
+complete step rose from 98.9 to 114.7 ms in float64 and from 51.8 to 62.7 ms
+in float32. Four warps/block was no better and reached 72.2 ms in float32.
+The latitude-strided global accesses and synchronization cost more than the
+private-array traffic saved. The cooperative implementation was removed.
+Retuning the retained one-thread-per-column kernel at 64, 128, and 256
+threads/block produced differences below one percent, so 128 remains the
+simple default.
+
+#### Staged vertical finalization
+
+The vertical recurrence and negative-fill walk remained column-local while
+the final pressure division and clamp moved to one worker per
+level/column/tracer, followed by a small polar-row copy kernel. Results were
+bitwise-equivalent to the fused path. The complete-step change was inconsistent
+and below one percent: 128-tracer float64 moved from 98.9 to 98.8 ms and
+float32 from 51.8 to 51.3 ms, while 256-tracer float64 regressed from 195.3
+to 196.0 ms. Two extra launches and a synchronization boundary were not
+justified, so the existing fused vertical kernel was restored.
+
+#### Zonal launch geometry
+
+The shared-memory zonal warp kernel has a real precision- and count-dependent
+launch optimum:
+
+- float64 retains four warps/block at every measured tracer count;
+- float32 retains four warps/block below 32 tracers; and
+- float32 uses eight warps/block from 32 tracers upward.
+
+This is implemented as one small launch-policy function; both cases execute
+the same kernel. Two warps/block was slower except for a smaller float32 gain
+at high counts, and eight warps/block was slower for float64 and 24-tracer
+float32.
+
+| float32 tracers | four-warps step ms | eight-warps step ms | improvement |
+|---:|---:|---:|---:|
+| 32 | 11.792 | 11.133 | 5.6% |
+| 64 | 24.629 | 23.131 | 6.1% |
+| 96 | 38.411 | 33.981 | 11.5% |
+| 128 | 51.788 | 45.913 | 11.3% |
+| 256 | 110.201 | 93.240 | 15.4% |
+| 512 | 231.570 | 188.294 | 18.7% |
+
+The final retained complete-step profile, using seven repetitions after two
+warm-ups, is:
+
+| tracers | float64 ms | float32 ms | float32 grid-cell-tracers/s |
+|---:|---:|---:|---:|
+| 24 | 22.319 | 9.743 | 1.52 billion |
+| 128 | 99.281 | 45.913 | 1.72 billion |
+| 256 | 196.499 | 93.240 | 1.69 billion |
+
+Maximum and mass-relative drift remain exactly in the previously reported
+classes. At 128 tracers they are `2.071e-17` and `5.323e-16` for float64,
+and `8.404e-9` and `1.228e-8` for float32.
+
+The final ordinary 24-tracer, 18-step profile includes real forcing,
+emissions, HISTORY, ObsOperator, and NetCDF output:
+
+| region | float64 ms | float32 ms |
+|---|---:|---:|
+| complete wall | 1,703.1 | 1,579.9 |
+| TPCORE application | 352.0 | 160.4 |
+| VDIFF application | 30.4 | 11.7 |
+| convection application | 19.8 | 5.8 |
+| TPCORE plus VDIFF/convection preparation | 54.1 | 59.0 |
+| HISTORY device work | 19.7 | 17.6 |
+| initial forcing host boundary | 607.3 | 623.4 |
+| emissions host boundary | 320.8 | 315.6 |
+
+The host boundaries include synchronization inherited from earlier queued GPU
+work and are not additive with device events. At 24 tracers, forcing, emissions,
+and output boundaries dominate the complete run. For larger tracer counts,
+the retained float32 launch policy materially reduces the scaling transport
+term while those input costs remain mostly fixed.
+
 ### TPCORE/VDIFF lifetime and vertical pass, 2026-07-26
 
 The next pass tested the CPU executor's deferred pressure-mass handoff directly.

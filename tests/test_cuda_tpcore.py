@@ -8,7 +8,10 @@ import pytest
 
 from wombat_transport.cuda import CudaRuntime, CudaUnavailableError
 from wombat_transport.transport.tpcore import run_tpcore_one_step_with_setup
-from wombat_transport.transport.tpcore._cuda import CudaTpcoreExecutor
+from wombat_transport.transport.tpcore._cuda import (
+    CudaTpcoreExecutor,
+    _zonal_warps_per_block,
+)
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_met_plan
 
 
@@ -17,6 +20,23 @@ TPCORE_CASES = (
     Path("tests/fixtures/tpcore_x_fxppm_low_courant_v2"),
     Path("tests/fixtures/tpcore_x_large_courant_polar_v2"),
 )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "tracer_count", "expected"),
+    (
+        (np.dtype(np.float64), 128, 4),
+        (np.dtype(np.float32), 24, 4),
+        (np.dtype(np.float32), 32, 8),
+        (np.dtype(np.float32), 512, 8),
+    ),
+)
+def test_cuda_tpcore_selects_zonal_launch_geometry(
+    dtype,
+    tracer_count,
+    expected,
+):
+    assert _zonal_warps_per_block(dtype, tracer_count) == expected
 
 
 def _cuda_runtime_or_skip() -> CudaRuntime:

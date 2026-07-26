@@ -13,9 +13,20 @@ from wombat_transport.transport.tpcore._plan import TpcorePlan
 
 
 _CUDA_WARP_SIZE = 32
-_ZONAL_WARPS_PER_BLOCK = 4
+_DEFAULT_ZONAL_WARPS_PER_BLOCK = 4
+_WIDE_FLOAT32_ZONAL_WARPS_PER_BLOCK = 8
+_WIDE_FLOAT32_TRACER_THRESHOLD = 32
 _ZONAL_SHARED_ARRAYS = 4
 _MAX_LONGITUDES = 144
+
+
+def _zonal_warps_per_block(dtype: np.dtype[Any], tracer_count: int) -> int:
+    if (
+        dtype == np.dtype(np.float32)
+        and tracer_count >= _WIDE_FLOAT32_TRACER_THRESHOLD
+    ):
+        return _WIDE_FLOAT32_ZONAL_WARPS_PER_BLOCK
+    return _DEFAULT_ZONAL_WARPS_PER_BLOCK
 
 
 @dataclass(frozen=True)
@@ -191,12 +202,16 @@ class CudaTpcoreExecutor:
                 np.int32(lane_width),
             ),
         )
+        zonal_warps_per_block = _zonal_warps_per_block(
+            self._dtype,
+            tracer_count,
+        )
         self._horizontal_zonal_warp(
             (
-                (horizontal_work + _ZONAL_WARPS_PER_BLOCK - 1)
-                // _ZONAL_WARPS_PER_BLOCK,
+                (horizontal_work + zonal_warps_per_block - 1)
+                // zonal_warps_per_block,
             ),
-            (_CUDA_WARP_SIZE * _ZONAL_WARPS_PER_BLOCK,),
+            (_CUDA_WARP_SIZE * zonal_warps_per_block,),
             (
                 tracer_blocks,
                 output,
@@ -216,7 +231,7 @@ class CudaTpcoreExecutor:
                 np.int32(lane_width),
             ),
             shared_mem=(
-                _ZONAL_WARPS_PER_BLOCK
+                zonal_warps_per_block
                 * _ZONAL_SHARED_ARRAYS
                 * _MAX_LONGITUDES
                 * self._dtype.itemsize
