@@ -22,6 +22,8 @@ from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emiss
 from wombat_transport.run_config import load_run_config, logging_level, meteorology_chunk_multiple, meteorology_root
 from wombat_transport.runner import (
     RUN_METADATA_NAME,
+    _CudaHostStep,
+    _cuda_batch_requires_completion,
     _is_time_for_emissions,
     _cuda_block_width,
     _load_emissions_operator,
@@ -273,6 +275,77 @@ def test_cuda_host_step_prefetches_forcing_and_scheduled_emissions():
         ("forcing", datetime(2014, 9, 1), 600.0),
         ("emissions", datetime(2014, 9, 1, 0, 10)),
     ]
+
+
+def test_cuda_batch_completion_tracks_resident_input_and_output_events():
+    blocks = SimpleNamespace(a1_block=object(), a3_block=object(), i3_block=object())
+    current = _CudaHostStep(
+        timestamp=datetime(2014, 9, 1),
+        forcing_selection=blocks,
+        emissions=None,
+        emission_midpoint=None,
+    )
+    following = _CudaHostStep(
+        timestamp=datetime(2014, 9, 1, 0, 10),
+        forcing_selection=SimpleNamespace(
+            a1_block=blocks.a1_block,
+            a3_block=blocks.a3_block,
+            i3_block=blocks.i3_block,
+        ),
+        emissions=None,
+        emission_midpoint=None,
+    )
+    no_output = SimpleNamespace(requires_host_completion=lambda timestamp: False)
+    no_obs_event = SimpleNamespace(requires_cuda_flush_before=lambda timestamp: False)
+
+    assert not _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=following,
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=replace(
+            following,
+            forcing_selection=SimpleNamespace(
+                a1_block=object(),
+                a3_block=blocks.a3_block,
+                i3_block=blocks.i3_block,
+            ),
+        ),
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=replace(
+            following,
+            emissions=object(),  # type: ignore[arg-type]
+            emission_midpoint=following.timestamp,
+        ),
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=following,
+        step_end=following.timestamp,
+        output_manager=SimpleNamespace(
+            requires_host_completion=lambda timestamp: True
+        ),
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=None,
+        step_end=following.timestamp,
+        output_manager=None,
+        obsoperator_manager=None,
+    )
 
 
 @requires_residual_data

@@ -379,6 +379,10 @@ def test_output_manager_uses_post_step_arithmetic_averages(tmp_path):
     )
     delp = np.ones((1, FIXED_GRID["lev"], FIXED_GRID["lat"], FIXED_GRID["lon"]))
 
+    assert not manager.requires_host_completion(
+        datetime(2014, 9, 1, 0, 10)
+    )
+    assert manager.requires_host_completion(datetime(2014, 9, 1, 0, 30))
     manager.record_step(
         OutputSnapshot(datetime(2014, 9, 1, 0, 10), _field(("A",), values=(1.0,)), delp, forcing)  # type: ignore[arg-type]
     )

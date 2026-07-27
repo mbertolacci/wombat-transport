@@ -132,18 +132,30 @@ def test_cuda_manager_defers_accumulator_sync_until_completion(
         time_index=0,
         snapshot=_snapshot(),
     )
+    manager.launch_cuda_sample(
+        step_start=START + timedelta(minutes=10),
+        time_index=1,
+        snapshot=_snapshot(),
+    )
 
-    assert events == ["invalidate", "launch"]
+    assert events == ["invalidate", "launch", "launch"]
+    assert not manager.requires_cuda_flush_before(
+        START + timedelta(minutes=20)
+    )
+    assert (
+        manager._pending_cuda_samples[0].output_path
+        != manager._pending_cuda_samples[1].output_path
+    )
     assert manager._position_us == _time_us(START)
     assert manager._plan.first_unexpired == 0
     assert not list(tmp_path.glob("out-*.nc4"))
 
-    manager.complete_cuda_sample()
+    manager.complete_cuda_samples()
 
-    assert events == ["invalidate", "launch", "sync"]
-    assert manager._position_us == _time_us(START + timedelta(minutes=10))
+    assert events == ["invalidate", "launch", "launch", "sync"]
+    assert manager._position_us == _time_us(START + timedelta(minutes=20))
     assert manager._plan.first_unexpired == 1
-    manager.close(boundary_time=START + timedelta(minutes=10))
+    manager.close(boundary_time=START + timedelta(minutes=20))
     output_files = list(tmp_path.glob("out-*.nc4"))
     assert len(output_files) == 1
     with netCDF4.Dataset(output_files[0]) as dataset:

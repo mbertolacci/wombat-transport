@@ -1395,6 +1395,56 @@ seconds less host time inherited by ObsOperator completion. Every variable in
 the two HISTORY files, two restarts, and 280 ObsOperator files was bit-for-bit
 identical to the pre-lookahead run for both dtypes.
 
+### Event-bounded single-thread CUDA batches
+
+The CUDA runner now extends same-thread lookahead across multiple transport
+steps instead of completing ObsOperator work after every step. Transport,
+resident preparation, ObsOperator sampling, and HISTORY accumulation remain
+ordered on the default CUDA stream. The main thread prepares the following
+host step while that queued work executes, and synchronizes only at the next
+host-visible event.
+
+The conservative first implementation ends a batch before:
+
+- replacing a resident A1, A3, or I3 forcing chunk;
+- uploading a newly evaluated emissions field;
+- materializing a HISTORY average or instantaneous restart;
+- changing the daily ObsOperator input plan;
+- the final or `max_steps` boundary.
+
+ObsOperator output filenames are not CUDA boundaries. Pending samples retain
+their intended output paths, the accumulator is copied to the host once per
+batch, and completed entry ranges are then written to their original files in
+order. HISTORY exposes only a schedule query; its existing synchronous CPU
+path and writer behavior are unchanged.
+
+The canonical residual configuration evaluates emissions every two transport
+steps, so that cadence is the limiting event in this profile. The maintained
+profiler reports 144 `cuda.batch_synchronize` calls for 288 steps, down from
+288 per-step ObsOperator completions. An hourly emissions configuration would
+naturally permit six-step batches until a different event intervened.
+
+One summary-only two-day measurement after a warm-up step gave:
+
+| dtype | pre-batch median s | batched s | tracer-steps/s | throughput change |
+|---|---:|---:|---:|---:|
+| float64 | 13.915 | 13.178 | 524.5 | +5.6% |
+| float32 | 12.349 | 11.104 | 622.5 | +11.2% |
+
+These are single post-change measurements against the previous three-run
+medians, so they describe the observed effect rather than a final statistical
+benchmark. A fully instrumented float32 run measured 144 batch joins, 288
+transport/ObsOperator/HISTORY launches, and the same 281 ObsOperator NetCDF
+flushes. The joins occupied 1.995 seconds of host time; forcing selection,
+emissions evaluation, and HISTORY field writes took 2.426, 0.942, and 0.661
+seconds respectively and overlap queued device work where the event schedule
+allows.
+
+All 1,570 variables in 284 retained NetCDF files were bit-for-bit identical to
+the pre-batch two-day output for both float32 and float64. No transfer stream,
+pinned staging allocation, worker thread, queue, lock, or CPU-runner
+abstraction was added.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.

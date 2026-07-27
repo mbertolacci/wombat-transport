@@ -258,6 +258,17 @@ class HistoryOutputManager:
         self._last_state = snapshot.state
         self._prepared_timestamp = None
 
+    def requires_host_completion(self, timestamp: datetime) -> bool:
+        """Return whether completing this CUDA step materializes host output."""
+
+        return any(
+            average.requires_host_completion(timestamp)
+            for average in self._averages
+        ) or any(
+            restart.requires_host_completion(timestamp)
+            for restart in self._restarts
+        )
+
     def close(self) -> None:
         self._prepared_timestamp = None
         if self._sums is not None:
@@ -351,6 +362,12 @@ class _AverageCollection:
             self._finish_and_advance(summed, state)
         elif timestamp > self._window_end:
             raise ValueError("SpeciesConc sample advanced beyond its prepared window")
+
+    def requires_host_completion(self, timestamp: datetime) -> bool:
+        if self._window_end is None:
+            self._initialize_schedule(timestamp)
+        assert self._window_end is not None
+        return timestamp >= self._window_end
 
     def close(
         self,
@@ -636,6 +653,9 @@ class _InstantaneousRestartWriter:
         self._collection = collection
         self._next_output = collection.frequency.add_to(start)
         self._materialize_snapshot = materialize_snapshot
+
+    def requires_host_completion(self, timestamp: datetime) -> bool:
+        return timestamp >= self._next_output
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
         while snapshot.timestamp >= self._next_output:

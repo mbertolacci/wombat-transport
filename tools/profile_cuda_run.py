@@ -382,9 +382,10 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
         ),
         (
             ObsOperatorManager,
-            "complete_cuda_sample",
+            "complete_cuda_samples",
             "obsoperator.manager_complete",
         ),
+        (CudaRuntime, "synchronize", "cuda.batch_synchronize"),
         (ObsOperatorManager, "_initialize_for_date", "obsoperator.plan_update"),
         (ObsOperatorManager, "close", "obsoperator.close"),
         (

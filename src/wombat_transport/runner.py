@@ -220,6 +220,7 @@ def _run_tracer_simulation(
     emissions_steps = 0
     active_emissions: SurfaceEmissions | None = None
     cuda_host_step: _CudaHostStep | None = None
+    cuda_batch_steps = 0
 
     while current < end:
         if max_steps is not None and transport_steps >= max_steps:
@@ -390,8 +391,27 @@ def _run_tracer_simulation(
                         emissions_dt_s=emissions_dt_s,
                     )
             finally:
-                if obsoperator_manager is not None:
-                    obsoperator_manager.complete_cuda_sample()
+                cuda_batch_steps += 1
+                cuda_batch_boundary = _cuda_batch_requires_completion(
+                    current_step=cuda_host_step,
+                    next_step=next_cuda_host_step,
+                    step_end=step_end,
+                    output_manager=output_manager,
+                    obsoperator_manager=obsoperator_manager,
+                )
+                if cuda_batch_boundary:
+                    logger.debug(
+                        "completing_cuda_batch steps=%d timestamp=%s",
+                        cuda_batch_steps,
+                        step_end.isoformat(),
+                    )
+                    cuda_executor.runtime.synchronize()
+                    if (
+                        obsoperator_manager is not None
+                        and obsoperator_manager.has_pending_cuda_samples
+                    ):
+                        obsoperator_manager.complete_cuda_samples()
+                    cuda_batch_steps = 0
                 transport_steps += 1
                 logger.debug(
                     "completed_transport step=%d",
@@ -702,6 +722,42 @@ def _prepare_cuda_host_step(
         forcing_selection=forcing_selection,
         emissions=emissions,
         emission_midpoint=emission_midpoint,
+    )
+
+
+def _cuda_batch_requires_completion(
+    *,
+    current_step: _CudaHostStep,
+    next_step: _CudaHostStep | None,
+    step_end: datetime,
+    output_manager: HistoryOutputManager | None,
+    obsoperator_manager: ObsOperatorManager | None,
+) -> bool:
+    """Keep queued steps within buffers whose host contents remain stable."""
+
+    if next_step is None:
+        return True
+    if (
+        output_manager is not None
+        and output_manager.requires_host_completion(step_end)
+    ):
+        return True
+    if (
+        obsoperator_manager is not None
+        and obsoperator_manager.requires_cuda_flush_before(step_end)
+    ):
+        return True
+    if next_step.emission_midpoint is not None:
+        return True
+    current_forcing = current_step.forcing_selection
+    next_forcing = next_step.forcing_selection
+    return any(
+        current is not following
+        for current, following in (
+            (current_forcing.a1_block, next_forcing.a1_block),
+            (current_forcing.a3_block, next_forcing.a3_block),
+            (current_forcing.i3_block, next_forcing.i3_block),
+        )
     )
 
 
