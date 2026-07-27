@@ -395,6 +395,7 @@ def _run_tracer_simulation(
                 cuda_batch_boundary = _cuda_batch_requires_completion(
                     current_step=cuda_host_step,
                     next_step=next_cuda_host_step,
+                    active_emissions=active_emissions,
                     step_end=step_end,
                     output_manager=output_manager,
                     obsoperator_manager=obsoperator_manager,
@@ -729,6 +730,7 @@ def _cuda_batch_requires_completion(
     *,
     current_step: _CudaHostStep,
     next_step: _CudaHostStep | None,
+    active_emissions: SurfaceEmissions | None,
     step_end: datetime,
     output_manager: HistoryOutputManager | None,
     obsoperator_manager: ObsOperatorManager | None,
@@ -747,7 +749,10 @@ def _cuda_batch_requires_completion(
         and obsoperator_manager.requires_cuda_flush_before(step_end)
     ):
         return True
-    if next_step.emission_midpoint is not None:
+    if (
+        next_step.emission_midpoint is not None
+        and next_step.emissions is not active_emissions
+    ):
         return True
     current_forcing = current_step.forcing_selection
     next_forcing = next_step.forcing_selection

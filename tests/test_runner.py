@@ -301,6 +301,7 @@ def test_cuda_batch_completion_tracks_resident_input_and_output_events():
     assert not _cuda_batch_requires_completion(
         current_step=current,
         next_step=following,
+        active_emissions=None,
         step_end=following.timestamp,
         output_manager=no_output,
         obsoperator_manager=no_obs_event,
@@ -315,6 +316,20 @@ def test_cuda_batch_completion_tracks_resident_input_and_output_events():
                 i3_block=blocks.i3_block,
             ),
         ),
+        active_emissions=None,
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    emissions = object()
+    assert not _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=replace(
+            following,
+            emissions=emissions,  # type: ignore[arg-type]
+            emission_midpoint=following.timestamp,
+        ),
+        active_emissions=emissions,  # type: ignore[arg-type]
         step_end=following.timestamp,
         output_manager=no_output,
         obsoperator_manager=no_obs_event,
@@ -326,6 +341,7 @@ def test_cuda_batch_completion_tracks_resident_input_and_output_events():
             emissions=object(),  # type: ignore[arg-type]
             emission_midpoint=following.timestamp,
         ),
+        active_emissions=emissions,  # type: ignore[arg-type]
         step_end=following.timestamp,
         output_manager=no_output,
         obsoperator_manager=no_obs_event,
@@ -333,6 +349,7 @@ def test_cuda_batch_completion_tracks_resident_input_and_output_events():
     assert _cuda_batch_requires_completion(
         current_step=current,
         next_step=following,
+        active_emissions=None,
         step_end=following.timestamp,
         output_manager=SimpleNamespace(
             requires_host_completion=lambda timestamp: True
@@ -342,6 +359,7 @@ def test_cuda_batch_completion_tracks_resident_input_and_output_events():
     assert _cuda_batch_requires_completion(
         current_step=current,
         next_step=None,
+        active_emissions=None,
         step_end=following.timestamp,
         output_manager=None,
         obsoperator_manager=None,

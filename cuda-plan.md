@@ -1445,6 +1445,42 @@ the pre-batch two-day output for both float32 and float64. No transfer stream,
 pinned staging allocation, worker thread, queue, lock, or CPU-runner
 abstraction was added.
 
+### Effective-hour emissions batches
+
+The 1,200-second emissions timestep is a logical evaluation and accounting
+interval, not the source read frequency. In the residual case, hourly GPP
+fields select the same source slice for three consecutive evaluations while
+monthly fields and masks remain unchanged. Component arrays were already
+cached, but each evaluation still rebuilt an identical `SurfaceEmissions`
+array and made CUDA treat it as a new upload boundary.
+
+`EmissionsOperator` now caches the assembled surface field by the effective
+selection times of every configured field and scale. The 00:10, 00:30, and
+00:50 evaluations therefore return the same field object; 01:10 creates a new
+one. Mass accounting still records three 20-minute intervals per hour, and
+VDIFF still applies the active flux on every ten-minute transport step. The
+CUDA runner ends a batch only when the next scheduled evaluation actually
+replaces that object.
+
+This reduces the canonical two-day run from 144 two-step joins to 48 six-step
+joins without read-ahead or an emissions-slot array. Three summary-only
+repetitions measured:
+
+| dtype | repetitions s | median s | tracer-steps/s | change from two-step batch |
+|---|---|---:|---:|---:|
+| float64 | 12.854, 12.880, 12.881 | 12.880 | 536.7 | +2.3% |
+| float32 | 11.065, 11.010, 11.065 | 11.065 | 624.7 | +0.4% |
+
+The float32 result explains the limited incremental benefit. Relative to the
+two-step profile, assembled-emissions host time fell from 0.942 to 0.696
+seconds, but time waiting at the fewer, longer batch joins rose from 1.995 to
+2.186 seconds. Most of the saved host work moved behind the GPU critical path.
+The larger float64 gain was stable across the three repetitions.
+
+All 1,570 variables in the 284 retained two-day NetCDF files remained
+bit-for-bit identical to the two-step implementation for both transport
+dtypes.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.

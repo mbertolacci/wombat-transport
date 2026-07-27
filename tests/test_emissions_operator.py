@@ -103,7 +103,12 @@ def test_shared_source_file_is_read_once_for_multiple_selected_fields(tmp_path, 
         ]
     )
     source_path = tmp_path / "source.nc"
-    _write_time_npft_file(source_path, [datetime(2014, 9, 1)], values[np.newaxis, ...], npft=None)
+    _write_time_npft_file(
+        source_path,
+        [datetime(2014, 9, 1), datetime(2014, 9, 1, 1)],
+        np.stack((values, values + 100.0)),
+        npft=None,
+    )
     config_path = _write_config(
         tmp_path,
         fields=[
@@ -142,9 +147,19 @@ def test_shared_source_file_is_read_once_for_multiple_selected_fields(tmp_path, 
     again = operator.evaluate_surface_flux(datetime(2014, 9, 1, 0, 30))
 
     assert len(opened) == 1
+    assert again is emissions
     np.testing.assert_array_equal(emissions.data[:, :, 0], np.full((2, 4), 10.0))
     np.testing.assert_array_equal(emissions.data[:, :, 1], np.full((2, 4), 20.0))
     np.testing.assert_array_equal(again.data, emissions.data)
+
+    next_hour = operator.evaluate_surface_flux(datetime(2014, 9, 1, 1, 10))
+
+    assert next_hour is not emissions
+    assert len(opened) == 2
+    np.testing.assert_array_equal(
+        next_hour.data[:, :, 0],
+        np.full((2, 4), 110.0),
+    )
 
 
 def test_constant_file_and_multiple_scale_factors_are_multiplied(tmp_path):
