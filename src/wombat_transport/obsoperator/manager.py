@@ -17,6 +17,7 @@ from wombat_transport.obsoperator.input import _load_obs_plan
 from wombat_transport.obsoperator.restart import _read_obsoperator_restart, _write_obsoperator_restart
 from wombat_transport.obsoperator.sampling import select_sampling_kernel
 from wombat_transport.obsoperator.state import (
+    CompletedObsBatch,
     _completed_batch_range,
     compact_obs_plan,
     completed_prefix,
@@ -41,6 +42,12 @@ class _PendingCudaSample:
     completed_prefix: int
     time_index: int
     output_path: Path
+
+
+@dataclass(frozen=True)
+class _DetachedCudaOutput:
+    output_path: Path
+    batch: CompletedObsBatch
 
 
 class ObsOperatorManager:
@@ -77,6 +84,7 @@ class ObsOperatorManager:
         self._writer: _ObsOperatorNetCDFWriter | None = None
         self._cuda_sampler = None
         self._pending_cuda_samples: list[_PendingCudaSample] = []
+        self._detached_cuda_outputs: list[_DetachedCudaOutput] = []
         self._closed = False
         self._load_restart()
 
@@ -123,6 +131,13 @@ class ObsOperatorManager:
                 "ObsOperator sampling must advance contiguously from the current model position"
             )
         self._initialize_for_date(step_start)
+        self._select_output_path(
+            _resolve_template_path(
+                self._root,
+                self._config.output_file,
+                step_start,
+            )
+        )
         if self._plan.first_unexpired < self._plan.entry_count:
             plan = self._plan
             if self._cuda_sampler is None:
@@ -208,7 +223,13 @@ class ObsOperatorManager:
         )
 
     def complete_cuda_samples(self) -> None:
-        """Synchronize and publish all previously enqueued CUDA samples."""
+        """Detach and synchronously publish all enqueued CUDA samples."""
+
+        self.detach_cuda_samples()
+        self.write_detached_cuda_outputs()
+
+    def detach_cuda_samples(self) -> None:
+        """Materialize a CUDA batch without performing NetCDF writes."""
 
         if not self._pending_cuda_samples:
             raise ValueError("no CUDA ObsOperator sample is pending")
@@ -251,17 +272,29 @@ class ObsOperatorManager:
                     first_unexpired,
                     sample.completed_prefix,
                 )
-                self._select_output_path(sample.output_path)
-                assert self._current_output_path is not None
-                if self._writer is None:
-                    self._writer = _ObsOperatorNetCDFWriter(
-                        self._current_output_path
+                self._detached_cuda_outputs.append(
+                    _DetachedCudaOutput(
+                        output_path=sample.output_path,
+                        batch=batch,
                     )
-                self._writer.write_completed(batch)
+                )
                 first_unexpired = sample.completed_prefix
             plan.first_unexpired = pending.completed_prefix
         self._position_us = pending.boundary_us
         self._pending_cuda_samples = []
+
+    def write_detached_cuda_outputs(self) -> None:
+        """Write CUDA outputs previously detached at a batch boundary."""
+
+        for detached in self._detached_cuda_outputs:
+            self._select_output_path(detached.output_path)
+            assert self._current_output_path is not None
+            if self._writer is None:
+                self._writer = _ObsOperatorNetCDFWriter(
+                    self._current_output_path
+                )
+            self._writer.write_completed(detached.batch)
+        self._detached_cuda_outputs = []
 
     def complete_cuda_sample(self) -> None:
         """Compatibility alias for completing the pending CUDA batch."""
@@ -301,7 +334,8 @@ class ObsOperatorManager:
         if self._closed:
             return
         if self._pending_cuda_samples:
-            self.complete_cuda_samples()
+            self.detach_cuda_samples()
+        self.write_detached_cuda_outputs()
         if self._writer is not None:
             self._writer.close()
             self._writer = None
@@ -325,8 +359,6 @@ class ObsOperatorManager:
 
     def _initialize_for_date(self, timestamp: datetime) -> None:
         input_path = _resolve_template_path(self._root, self._config.input_file, timestamp)
-        output_path = _resolve_template_path(self._root, self._config.output_file, timestamp)
-        self._select_output_path(output_path)
         if input_path == self._previous_input_path:
             return
         current_time_us = _datetime_to_microseconds(timestamp)

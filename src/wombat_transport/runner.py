@@ -378,6 +378,7 @@ def _run_tracer_simulation(
                         state.block_data[0],
                     )
             next_cuda_host_step = None
+            output_step_detached = False
             try:
                 if step_end < end and (
                     max_steps is None or transport_steps + 1 < max_steps
@@ -406,19 +407,35 @@ def _run_tracer_simulation(
                         cuda_batch_steps,
                         step_end.isoformat(),
                     )
+                    _write_detached_cuda_outputs(
+                        output_manager,
+                        obsoperator_manager,
+                    )
                     cuda_executor.runtime.synchronize()
                     if (
                         obsoperator_manager is not None
                         and obsoperator_manager.has_pending_cuda_samples
                     ):
-                        obsoperator_manager.complete_cuda_samples()
+                        obsoperator_manager.detach_cuda_samples()
+                    if output_manager is not None and snapshot is not None:
+                        output_manager.detach_cuda_step(snapshot)
+                        output_step_detached = True
+                    if next_cuda_host_step is None:
+                        _write_detached_cuda_outputs(
+                            output_manager,
+                            obsoperator_manager,
+                        )
                     cuda_batch_steps = 0
                 transport_steps += 1
                 logger.debug(
                     "completed_transport step=%d",
                     transport_steps,
                 )
-                if output_manager is not None and snapshot is not None:
+                if (
+                    output_manager is not None
+                    and snapshot is not None
+                    and not output_step_detached
+                ):
                     output_manager.complete_step(snapshot)
                 current = step_end
             cuda_host_step = next_cuda_host_step
@@ -490,6 +507,18 @@ def _close_obsoperator_manager(
 ) -> None:
     logger.debug("closing_obsoperator")
     manager.close(boundary_time=boundary_time())
+
+
+def _write_detached_cuda_outputs(
+    output_manager: HistoryOutputManager | None,
+    obsoperator_manager: ObsOperatorManager | None,
+) -> None:
+    """Drain the previous host-output slot while the next batch is queued."""
+
+    if obsoperator_manager is not None:
+        obsoperator_manager.write_detached_cuda_outputs()
+    if output_manager is not None:
+        output_manager.write_detached_cuda_outputs()
 
 
 def _write_run_metadata(

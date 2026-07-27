@@ -78,6 +78,24 @@ class OutputCollectionConfig:
 OutputSnapshot = CompletedStepSnapshot
 
 
+@dataclass(frozen=True)
+class _DetachedAverageOutput:
+    owner: _AverageCollection
+    timestamp: datetime
+    values: np.ndarray
+    denominator: float
+    metadata: TracerField
+    group_start: datetime
+    close_file_after: bool
+
+
+@dataclass(frozen=True)
+class _DetachedRestartOutput:
+    owner: _InstantaneousRestartWriter
+    path: Path
+    snapshot: OutputSnapshot
+
+
 class HistoryOutputManager:
     def __init__(
         self,
@@ -120,6 +138,9 @@ class HistoryOutputManager:
         self._sums: Any | None = None
         self._prepared_timestamp: datetime | None = None
         self._last_state: TracerField | None = None
+        self._detached_cuda_outputs: list[
+            _DetachedAverageOutput | _DetachedRestartOutput
+        ] = []
         self._zeros = lambda shape: np.zeros(shape, dtype=np.float64)
         self._average_materializer = lambda values, count, dtype: (
             values,
@@ -258,6 +279,38 @@ class HistoryOutputManager:
         self._last_state = snapshot.state
         self._prepared_timestamp = None
 
+    def detach_cuda_step(self, snapshot: OutputSnapshot) -> None:
+        """Complete a CUDA step while deferring only its host file writes."""
+
+        if self._prepared_timestamp is None:
+            raise ValueError("no output transport step is prepared")
+        if snapshot.timestamp != self._prepared_timestamp:
+            raise ValueError(
+                "output snapshot timestamp does not match the prepared step"
+            )
+        if self._sums is not None:
+            for average in self._averages:
+                detached = average.detach_complete(
+                    snapshot.timestamp,
+                    snapshot.state,
+                    self._sums[average.accumulator_index],
+                )
+                if detached is not None:
+                    self._detached_cuda_outputs.append(detached)
+        for restart in self._restarts:
+            self._detached_cuda_outputs.extend(
+                restart.detach_step(snapshot)
+            )
+        self._last_state = snapshot.state
+        self._prepared_timestamp = None
+
+    def write_detached_cuda_outputs(self) -> None:
+        """Write host payloads detached at an earlier CUDA boundary."""
+
+        for detached in self._detached_cuda_outputs:
+            detached.owner.write_detached(detached)
+        self._detached_cuda_outputs = []
+
     def requires_host_completion(self, timestamp: datetime) -> bool:
         """Return whether completing this CUDA step materializes host output."""
 
@@ -271,6 +324,7 @@ class HistoryOutputManager:
 
     def close(self) -> None:
         self._prepared_timestamp = None
+        self.write_detached_cuda_outputs()
         if self._sums is not None:
             for average in self._averages:
                 average.close(
@@ -363,6 +417,63 @@ class _AverageCollection:
         elif timestamp > self._window_end:
             raise ValueError("SpeciesConc sample advanced beyond its prepared window")
 
+    def detach_complete(
+        self,
+        timestamp: datetime,
+        state: TracerField,
+        summed: np.ndarray,
+    ) -> _DetachedAverageOutput | None:
+        """Finalize a CUDA average into host memory without writing it."""
+
+        if self._window_end is None:
+            raise ValueError("cannot complete an unprepared SpeciesConc step")
+        self._count += 1
+        if timestamp < self._window_end:
+            return None
+        if timestamp > self._window_end:
+            raise ValueError(
+                "SpeciesConc sample advanced beyond its prepared window"
+            )
+        if self._window_start is None or self._group_start is None:
+            raise ValueError("SpeciesConc schedule is not initialized")
+        storage = _collection_storage(self._collection)
+        materialized, denominator = self._materialize_average(
+            summed,
+            self._count,
+            storage.netcdf_dtype,
+        )
+        output = _DetachedAverageOutput(
+            owner=self,
+            timestamp=self._window_start,
+            values=materialized,
+            denominator=denominator,
+            metadata=state,
+            group_start=self._group_start,
+            close_file_after=False,
+        )
+        summed.fill(0.0)
+        self._count = 0
+        close_file_after = self._advance_schedule(close_group_file=False)
+        if close_file_after:
+            output = replace(output, close_file_after=True)
+        return output
+
+    def write_detached(self, output: _DetachedAverageOutput) -> None:
+        self._ensure_file(
+            group_start=output.group_start,
+            first_timestamp=output.timestamp,
+            first_state=output.metadata,
+        )
+        assert self._file is not None
+        self._file.append_average(
+            output.timestamp,
+            output.values,
+            output.denominator,
+            output.metadata,
+        )
+        if output.close_file_after:
+            self._close_file()
+
     def requires_host_completion(self, timestamp: datetime) -> bool:
         if self._window_end is None:
             self._initialize_schedule(timestamp)
@@ -412,6 +523,13 @@ class _AverageCollection:
         summed.fill(0.0)
         self._count = 0
 
+        self._advance_schedule(close_group_file=True)
+
+    def _advance_schedule(self, *, close_group_file: bool) -> bool:
+        """Advance one average window and report a file-group transition."""
+
+        if self._window_end is None or self._group_end is None:
+            raise ValueError("SpeciesConc schedule is not initialized")
         next_window_start = self._window_end
         next_window_end = self._collection.frequency.add_to(next_window_start)
         next_group_start = self._group_start
@@ -421,12 +539,14 @@ class _AverageCollection:
         while next_window_start >= next_group_end:
             next_group_start = next_group_end
             next_group_end = self._collection.duration.add_to(next_group_start)
-        if next_group_start != self._group_start:
+        group_changed = next_group_start != self._group_start
+        if group_changed and close_group_file:
             self._close_file()
         self._window_start = next_window_start
         self._window_end = next_window_end
         self._group_start = next_group_start
         self._group_end = next_group_end
+        return group_changed
 
     def _append_average(
         self,
@@ -438,20 +558,11 @@ class _AverageCollection:
         if self._count <= 0:
             return
         storage = _collection_storage(self._collection)
-        if self._file is None:
-            self._file = _StreamingSpeciesConcFile(
-                path=_collection_path(
-                    self._root,
-                    self._expid,
-                    self._collection,
-                    self._group_start,
-                ),
-                template_path=self._template_path,
-                title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
-                storage=storage,
-                first_timestamp=self._window_start,
-                first_state=metadata,
-            )
+        self._ensure_file(
+            group_start=self._group_start,
+            first_timestamp=self._window_start,
+            first_state=metadata,
+        )
         materialized, denominator = self._materialize_average(
             summed,
             self._count,
@@ -462,6 +573,32 @@ class _AverageCollection:
             materialized,
             denominator,
             metadata,
+        )
+
+    def _ensure_file(
+        self,
+        *,
+        group_start: datetime,
+        first_timestamp: datetime,
+        first_state: TracerField,
+    ) -> None:
+        if self._file is not None:
+            return
+        self._file = _StreamingSpeciesConcFile(
+            path=_collection_path(
+                self._root,
+                self._expid,
+                self._collection,
+                group_start,
+            ),
+            template_path=self._template_path,
+            title=(
+                "GEOS-Chem diagnostic collection: "
+                f"{self._collection.name}"
+            ),
+            storage=_collection_storage(self._collection),
+            first_timestamp=first_timestamp,
+            first_state=first_state,
         )
 
     def _close_file(self) -> None:
@@ -670,6 +807,42 @@ class _InstantaneousRestartWriter:
                 storage=_collection_storage(self._collection),
             )
             self._next_output = self._collection.frequency.add_to(self._next_output)
+
+    def detach_step(
+        self,
+        snapshot: OutputSnapshot,
+    ) -> list[_DetachedRestartOutput]:
+        outputs = []
+        while snapshot.timestamp >= self._next_output:
+            outputs.append(
+                _DetachedRestartOutput(
+                    owner=self,
+                    path=_collection_path(
+                        self._root,
+                        self._expid,
+                        self._collection,
+                        self._next_output,
+                    ),
+                    snapshot=self._materialize_snapshot(snapshot),
+                )
+            )
+            self._next_output = self._collection.frequency.add_to(
+                self._next_output
+            )
+        return outputs
+
+    def write_detached(self, output: _DetachedRestartOutput) -> None:
+        write_restart_collection(
+            output.path,
+            output.snapshot,
+            self._template_path,
+            fields=self._collection.fields,
+            title=(
+                "GEOS-Chem diagnostic collection: "
+                f"{self._collection.name}"
+            ),
+            storage=_collection_storage(self._collection),
+        )
 
     def close(self) -> None:
         return None

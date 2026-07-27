@@ -358,6 +358,12 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
         ),
         (HistoryOutputManager, "prepare_step", "history.prepare"),
         (HistoryOutputManager, "complete_step", "history.complete"),
+        (HistoryOutputManager, "detach_cuda_step", "history.detach"),
+        (
+            HistoryOutputManager,
+            "write_detached_cuda_outputs",
+            "history.write_detached",
+        ),
         (HistoryOutputManager, "close", "history.close"),
         (_AverageCollection, "_append_average", "history.append_average"),
         (
@@ -384,6 +390,16 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             ObsOperatorManager,
             "complete_cuda_samples",
             "obsoperator.manager_complete",
+        ),
+        (
+            ObsOperatorManager,
+            "detach_cuda_samples",
+            "obsoperator.manager_detach",
+        ),
+        (
+            ObsOperatorManager,
+            "write_detached_cuda_outputs",
+            "obsoperator.write_detached",
         ),
         (CudaRuntime, "synchronize", "cuda.batch_synchronize"),
         (ObsOperatorManager, "_initialize_for_date", "obsoperator.plan_update"),

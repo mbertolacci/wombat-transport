@@ -1481,6 +1481,49 @@ All 1,570 variables in the 284 retained two-day NetCDF files remained
 bit-for-bit identical to the two-step implementation for both transport
 dtypes.
 
+### Deferred output pipeline
+
+The first batch executor still wrote the current batch's ObsOperator,
+HISTORY, and restart files before enqueueing the next batch. It overlapped
+input preparation, but left the GPU idle during most NetCDF work.
+
+CUDA diagnostic completion is now split into two phases. At boundary A,
+device results are materialized into an owned host payload, HISTORY sums are
+reset in stream order, and ObsOperator state advances without opening output
+files. The main thread then enqueues all six steps of batch B. Immediately
+before waiting for B, it writes A's detached payload:
+
+```text
+sync A -> detach A -> enqueue B -> write A -> sync B -> detach B
+```
+
+Only one detached host-output slot is retained. This is the current
+single-thread pipeline; no writer thread, queue, lock, transfer stream, or CPU
+runner change is involved. Manager `close()` methods drain a retained payload
+so ordinary cleanup and partial-run behavior remain safe.
+
+Three summary-only two-day repetitions measured:
+
+| dtype | repetitions s | median s | tracer-steps/s | throughput change |
+|---|---|---:|---:|---:|
+| float64 | 11.912, 11.899, 12.006 | 11.912 | 580.2 | +8.1% |
+| float32 | 10.181, 10.142, 10.218 | 10.181 | 678.9 | +8.7% |
+
+The comparison is against the effective-hour six-step medians of 12.880 and
+11.065 seconds. Instrumented float64 wall time fell from 12.898 to 11.943
+seconds, while explicit batch-wait time fell from 5.739 to 4.714 seconds.
+Its detached HISTORY/restart writes still occupied 2.206 seconds and
+ObsOperator writes 0.386 seconds, but those regions now run while the
+following batch is queued.
+
+Instrumented float32 wall fell from 11.079 to 10.224 seconds and batch waiting
+from 2.186 to 1.292 seconds. Float32 HISTORY/restart writing remains expensive
+at 4.102 seconds because its output is poorly compressible; a six-step GPU
+batch cannot hide all of it, but the available overlap is now captured.
+
+All 1,570 variables in 284 retained NetCDF files were again bit-for-bit
+identical to the non-pipelined six-step outputs for both dtypes.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.

@@ -150,11 +150,14 @@ def test_cuda_manager_defers_accumulator_sync_until_completion(
     assert manager._plan.first_unexpired == 0
     assert not list(tmp_path.glob("out-*.nc4"))
 
-    manager.complete_cuda_samples()
+    manager.detach_cuda_samples()
 
     assert events == ["invalidate", "launch", "launch", "sync"]
     assert manager._position_us == _time_us(START + timedelta(minutes=20))
     assert manager._plan.first_unexpired == 1
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    manager.write_detached_cuda_outputs()
     manager.close(boundary_time=START + timedelta(minutes=20))
     output_files = list(tmp_path.glob("out-*.nc4"))
     assert len(output_files) == 1
@@ -999,19 +1002,19 @@ def test_manager_compacts_completion_cursor_before_daily_merge(tmp_path: Path):
         assert _decode_rows(dataset.variables["id"][:]) == ["carried", "second-day"]
 
 
-def test_manager_rotates_output_when_daily_input_path_is_unchanged(tmp_path: Path):
+def test_manager_defers_output_selection_while_daily_input_is_unchanged(
+    tmp_path: Path,
+):
     manager = _manager(tmp_path)
     first = START
     second = START + timedelta(minutes=10)
 
     manager._initialize_for_date(first)
     first_input = manager._previous_input_path
-    first_output = manager._current_output_path
     manager._initialize_for_date(second)
 
     assert manager._previous_input_path == first_input
-    assert manager._current_output_path != first_output
-    assert manager._current_output_path == tmp_path / "out-20140901_0010.nc4"
+    assert manager._current_output_path is None
     manager.close(boundary_time=second)
 
 

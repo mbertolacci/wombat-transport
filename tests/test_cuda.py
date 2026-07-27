@@ -191,22 +191,27 @@ def test_cuda_history_writes_gpu_finalized_float32_average(tmp_path):
         )
         sums = manager.prepare_step(datetime(2014, 9, 1, 0, minute), state)
         accumulate_history_sums(sums, state.block_data[0])
-        manager.complete_step(
-            OutputSnapshot(
-                datetime(2014, 9, 1, 0, minute),
-                state,
-                runtime.zeros(
-                    (
-                        1,
-                        FIXED_GRID["lev"],
-                        FIXED_GRID["lat"],
-                        FIXED_GRID["lon"],
-                    ),
-                    dtype=np.float64,
+        snapshot = OutputSnapshot(
+            datetime(2014, 9, 1, 0, minute),
+            state,
+            runtime.zeros(
+                (
+                    1,
+                    FIXED_GRID["lev"],
+                    FIXED_GRID["lat"],
+                    FIXED_GRID["lon"],
                 ),
-                forcing,  # type: ignore[arg-type]
-            )
+                dtype=np.float64,
+            ),
+            forcing,  # type: ignore[arg-type]
         )
+        if minute == 20:
+            manager.detach_cuda_step(snapshot)
+        else:
+            manager.complete_step(snapshot)
+
+    assert not list(tmp_path.rglob("*.nc4"))
+    manager.write_detached_cuda_outputs()
     manager.close()
 
     output = (
