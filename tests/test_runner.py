@@ -15,6 +15,7 @@ from yaml12 import write_yaml
 
 import wombat_transport.runner as runner_module
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
+from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
@@ -25,6 +26,7 @@ from wombat_transport.runner import (
     _cuda_block_width,
     _load_emissions_operator,
     _load_simulation_forcing,
+    _prepare_cuda_host_step,
     _transport_block_width,
     _transport_executor,
     _validate_timestep_schedule,
@@ -232,6 +234,44 @@ def test_simulation_forcing_uses_provider_timestamps():
         start,
         start + timedelta(minutes=10),
         start + timedelta(hours=3),
+    ]
+
+
+def test_cuda_host_step_prefetches_forcing_and_scheduled_emissions():
+    events = []
+    selection = object()
+    surface = SurfaceEmissions(
+        names=("A",),
+        data=np.ones((1, 1, 1), dtype=np.float64),
+        units=("kg/m2/s",),
+        coords={"AREA": np.ones((1, 1))},
+    )
+
+    class FakeProvider:
+        def chunks_for_step(self, current, *, dt_s):
+            events.append(("forcing", current, dt_s))
+            return selection
+
+    class FakeEmissions:
+        def evaluate_surface_flux(self, valid_time):
+            events.append(("emissions", valid_time))
+            return surface
+
+    prefetched = _prepare_cuda_host_step(
+        FakeProvider(),  # type: ignore[arg-type]
+        FakeEmissions(),  # type: ignore[arg-type]
+        current=datetime(2014, 9, 1),
+        start=datetime(2014, 9, 1),
+        transport_dt_s=600.0,
+        emissions_dt_s=1200.0,
+    )
+
+    assert prefetched.forcing_selection is selection
+    assert prefetched.emissions is surface
+    assert prefetched.emission_midpoint == datetime(2014, 9, 1, 0, 10)
+    assert events == [
+        ("forcing", datetime(2014, 9, 1), 600.0),
+        ("emissions", datetime(2014, 9, 1, 0, 10)),
     ]
 
 

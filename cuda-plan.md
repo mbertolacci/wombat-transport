@@ -1361,6 +1361,40 @@ negative stride. The kernel previously treated it as contiguous. It now
 accepts the actual humidity and temperature level strides, retaining the
 zero-copy handoff, and a reversed-device-view regression covers both dtypes.
 
+### Same-thread host-step lookahead
+
+The CUDA runner now exploits asynchronous kernel launch without introducing a
+CPU worker pool. After enqueueing transport, ObsOperator sampling, and HISTORY
+accumulation for the current step, the main thread loads the next forcing
+selection and evaluates any scheduled emissions. Only then does it complete
+current ObsOperator/HISTORY boundaries. A single `_CudaHostStep` retains the
+future host selection and emissions result until the next iteration.
+
+This scheduling remains confined to the CUDA branch. The CPU runner retains
+its synchronous forcing, emissions, transport, and diagnostic order.
+ObsOperator exposes CUDA-specific launch and completion methods while its
+ordinary synchronous `sample()` contract remains available.
+
+The first version deliberately does not add a transfer stream or duplicate
+device forcing buffers. Current H2D work is below 1% of wall time. Uploading
+the prefetched host selection at the next iteration provides a natural join
+boundary when a chunk changes; otherwise default-stream ordering safely queues
+the next preparation behind current diagnostics. This captures the material
+CPU-I/O overlap without pinned-buffer lifetime or cross-stream dependencies.
+
+Three uninstrumented two-day repetitions measured:
+
+| dtype | before median s | lookahead repetitions s | lookahead median s | tracer-steps/s |
+|---|---:|---|---:|---:|
+| float64 | 14.542 | 13.915, 13.904, 13.973 | 13.915 | 496.7 |
+| float32 | 12.832 | 12.252, 12.398, 12.349 | 12.349 | 559.7 |
+
+This is a 4.5% float64 and 3.9% float32 throughput improvement. Matching fully
+instrumented profiles show unchanged TPCORE device time and about 0.55-0.59
+seconds less host time inherited by ObsOperator completion. Every variable in
+the two HISTORY files, two restarts, and 280 ObsOperator files was bit-for-bit
+identical to the pre-lookahead run for both dtypes.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.

@@ -97,6 +97,62 @@ def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(t
     assert calls == 1
 
 
+def test_cuda_manager_defers_accumulator_sync_until_completion(
+    tmp_path: Path,
+):
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {"entries": [_entry_raw(entry_id="deferred")]},
+    )
+    events: list[str] = []
+
+    class FakeCudaSampler:
+        def __init__(self):
+            self.plan = None
+
+        def sample(self, plan, *, step_time_us, snapshot):
+            self.plan = plan
+            events.append("launch")
+
+        def sync_to_host(self, plan):
+            if self.plan is None:
+                return
+            assert plan is self.plan
+            plan.accumulator.fill(3.0)
+            events.append("sync")
+
+        def invalidate(self):
+            events.append("invalidate")
+
+    manager = _manager(tmp_path)
+    manager._cuda_sampler = FakeCudaSampler()
+
+    manager.launch_cuda_sample(
+        step_start=START,
+        time_index=0,
+        snapshot=_snapshot(),
+    )
+
+    assert events == ["invalidate", "launch"]
+    assert manager._position_us == _time_us(START)
+    assert manager._plan.first_unexpired == 0
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    manager.complete_cuda_sample()
+
+    assert events == ["invalidate", "launch", "sync"]
+    assert manager._position_us == _time_us(START + timedelta(minutes=10))
+    assert manager._plan.first_unexpired == 1
+    manager.close(boundary_time=START + timedelta(minutes=10))
+    output_files = list(tmp_path.glob("out-*.nc4"))
+    assert len(output_files) == 1
+    with netCDF4.Dataset(output_files[0]) as dataset:
+        np.testing.assert_array_equal(
+            dataset.variables["sample"][:],
+            np.array([3.0], dtype=np.float32),
+        )
+
+
 def test_numba_manager_matches_python_array_sampler_for_float64_accumulators(tmp_path: Path, monkeypatch):
     entries = []
     operators = [

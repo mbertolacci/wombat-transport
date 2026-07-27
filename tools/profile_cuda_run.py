@@ -375,7 +375,16 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
             "_write_preaveraged",
             "history.netcdf_write_fields",
         ),
-        (ObsOperatorManager, "sample", "obsoperator.manager_sample"),
+        (
+            ObsOperatorManager,
+            "launch_cuda_sample",
+            "obsoperator.manager_launch",
+        ),
+        (
+            ObsOperatorManager,
+            "complete_cuda_sample",
+            "obsoperator.manager_complete",
+        ),
         (ObsOperatorManager, "_initialize_for_date", "obsoperator.plan_update"),
         (ObsOperatorManager, "close", "obsoperator.close"),
         (

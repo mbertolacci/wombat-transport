@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -31,6 +32,14 @@ from wombat_transport.snapshot import CompletedStepSnapshot
 from wombat_transport.run_config import RunConfig, simulation_start
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PendingCudaSample:
+    step_time_us: int
+    boundary_us: int
+    completed_prefix: int
+    time_index: int
 
 
 class ObsOperatorManager:
@@ -66,6 +75,7 @@ class ObsOperatorManager:
         self._sampling_kernel = select_sampling_kernel()
         self._writer: _ObsOperatorNetCDFWriter | None = None
         self._cuda_sampler = None
+        self._pending_cuda_sample: _PendingCudaSample | None = None
         self._closed = False
         self._load_restart()
 
@@ -97,6 +107,14 @@ class ObsOperatorManager:
         time_index: int,
         snapshot: CompletedStepSnapshot,
     ) -> None:
+        if self._cuda_sampler is not None:
+            self.launch_cuda_sample(
+                step_start=step_start,
+                time_index=time_index,
+                snapshot=snapshot,
+            )
+            self.complete_cuda_sample()
+            return
         self._ensure_open()
         step_time_us = _datetime_to_microseconds(step_start)
         if step_time_us != self._position_us:
@@ -144,6 +162,85 @@ class ObsOperatorManager:
             self._plan.first_unexpired = complete
         self._position_us = boundary_us
 
+    def launch_cuda_sample(
+        self,
+        *,
+        step_start: datetime,
+        time_index: int,
+        snapshot: CompletedStepSnapshot,
+    ) -> None:
+        """Enqueue resident sampling without synchronizing its accumulator."""
+
+        self._ensure_open()
+        if self._cuda_sampler is None:
+            raise ValueError("CUDA ObsOperator sampling is not configured")
+        if self._pending_cuda_sample is not None:
+            raise ValueError("a CUDA ObsOperator sample is already pending")
+        step_time_us = _datetime_to_microseconds(step_start)
+        if step_time_us != self._position_us:
+            raise ValueError(
+                "ObsOperator sampling must advance contiguously from the current model position"
+            )
+        self._initialize_for_date(step_start)
+        if self._plan.first_unexpired < self._plan.entry_count:
+            self._cuda_sampler.sample(
+                self._plan,
+                step_time_us=step_time_us,
+                snapshot=snapshot,
+            )
+        boundary_us = step_time_us + self._transport_dt_us
+        self._pending_cuda_sample = _PendingCudaSample(
+            step_time_us=step_time_us,
+            boundary_us=boundary_us,
+            completed_prefix=completed_prefix(self._plan, boundary_us),
+            time_index=time_index,
+        )
+
+    def complete_cuda_sample(self) -> None:
+        """Synchronize and publish one previously enqueued CUDA sample."""
+
+        pending = self._pending_cuda_sample
+        if pending is None:
+            raise ValueError("no CUDA ObsOperator sample is pending")
+        plan = self._plan
+        synchronized = False
+        if self._config.verbose:
+            self._sync_cuda_accumulator()
+            synchronized = True
+            for entry_index in range(plan.first_unexpired, plan.entry_count):
+                time_slice = _ragged_slice(
+                    plan.time_operator_start,
+                    plan.time_operator_count,
+                    entry_index,
+                )
+                bounds = plan.time_operator_bounds_us[time_slice]
+                if np.any(
+                    (bounds[:, 0] <= pending.step_time_us)
+                    & (pending.step_time_us < bounds[:, 1])
+                ):
+                    logger.info(
+                        "obsoperator_sample id=%s time_index=%d",
+                        plan.ids[entry_index],
+                        pending.time_index,
+                    )
+        if pending.completed_prefix > plan.first_unexpired:
+            if not synchronized:
+                self._sync_cuda_accumulator()
+            batch = _completed_batch_range(
+                plan,
+                plan.first_unexpired,
+                pending.completed_prefix,
+            )
+            assert self._current_output_path is not None
+            if self._writer is None:
+                self._writer = _ObsOperatorNetCDFWriter(
+                    self._current_output_path
+                )
+            self._writer.write_completed(batch)
+            plan.first_unexpired = pending.completed_prefix
+        self._position_us = pending.boundary_us
+        self._pending_cuda_sample = None
+
     def use_cuda(self, runtime, *, dtype) -> None:
         """Sample resident tracer state while retaining host plan management."""
 
@@ -160,6 +257,8 @@ class ObsOperatorManager:
     def close(self, *, boundary_time: datetime) -> None:
         if self._closed:
             return
+        if self._pending_cuda_sample is not None:
+            self.complete_cuda_sample()
         if self._writer is not None:
             self._writer.close()
             self._writer = None
