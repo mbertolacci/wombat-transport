@@ -21,6 +21,7 @@ from wombat_transport.output import (
     OutputStorageConfig,
     OutputSnapshot,
     expand_history_template,
+    parse_output_collections,
     parse_history_interval,
     parse_output_storage,
     parse_output_writer,
@@ -120,6 +121,7 @@ def test_output_storage_defaults_and_validates():
 
     assert storage.dtype == "float32"
     assert storage.compression.enabled
+    assert storage.compression.algorithm == "zlib"
     assert storage.compression.level == 1
     assert storage.compression.shuffle
     assert storage.chunking.rank1 is None
@@ -136,6 +138,50 @@ def test_output_storage_defaults_and_validates():
     assert not explicit.compression.enabled
     assert explicit.chunking.rank3 == (1, 2, 3)
     assert explicit.chunking.rank4 == (1, 1, 2, 3)
+
+
+def test_output_collections_override_inherited_storage():
+    collections = parse_output_collections(
+        {
+            "dtype": "float64",
+            "compression": {
+                "algorithm": "zlib",
+                "level": 1,
+                "shuffle": True,
+            },
+            "chunking": {"rank4": [1, 1, 91, 144]},
+            "collections": {
+                "Restart": {
+                    "filename": "restart.nc4",
+                    "frequency": "00000001 000000",
+                    "mode": "instantaneous",
+                    "fields": ["SpeciesRst_?ALL?"],
+                },
+                "SpeciesConc": {
+                    "filename": "history.nc4",
+                    "frequency": "00000000 030000",
+                    "mode": "time-averaged",
+                    "fields": ["SpeciesConcVV_?ADV?"],
+                    "compression": {
+                        "algorithm": "blosc_zstd",
+                        "level": 1,
+                    },
+                    "chunking": {"rank4": [1, 8, 91, 144]},
+                },
+            },
+        }
+    )
+
+    restart, history = collections
+    assert restart.storage is not None
+    assert restart.storage.dtype == "float64"
+    assert restart.storage.compression.algorithm == "zlib"
+    assert restart.storage.chunking.rank4 == (1, 1, 91, 144)
+    assert history.storage is not None
+    assert history.storage.dtype == "float64"
+    assert history.storage.compression.algorithm == "blosc_zstd"
+    assert history.storage.compression.shuffle
+    assert history.storage.chunking.rank4 == (1, 8, 91, 144)
 
 
 def test_output_writer_defaults_and_validates():
@@ -201,6 +247,7 @@ def test_output_storage_rejects_invalid_values():
     for raw in (
         {"dtype": "float16"},
         {"compression": {"level": 10}},
+        {"compression": {"algorithm": "unknown"}},
         {"chunking": {"rank4": [1, 2, 3]}},
         {"chunking": {"rank3": [1, 0, 3]}},
     ):
@@ -280,6 +327,43 @@ def test_species_conc_writer_honors_float64_dtype_and_explicit_chunks(tmp_path):
         variable = dataset.variables["SpeciesConcVV_A"]
         assert variable.dtype == np.dtype("float64")
         assert variable.chunking() == [1, 2, FIXED_GRID["lat"], FIXED_GRID["lon"]]
+
+
+@pytest.mark.skipif(
+    not getattr(netCDF4, "__has_blosc_support__", False),
+    reason="netCDF4 Blosc filter plugin is unavailable",
+)
+def test_species_conc_writer_supports_blosc_zstd(tmp_path):
+    field = _field(("A",), values=(1.0,))
+    output_path = tmp_path / "blosc_species_conc.nc4"
+    storage = OutputStorageConfig(
+        dtype="float64",
+        compression=parse_output_storage(
+            {
+                "compression": {
+                    "algorithm": "blosc_zstd",
+                    "level": 1,
+                    "shuffle": True,
+                }
+            }
+        ).compression,
+    )
+
+    write_species_conc_collection(
+        output_path,
+        [(datetime(2014, 9, 1), field)],
+        BASE_RESTART,
+        title="Blosc test",
+        storage=storage,
+    )
+
+    with netCDF4.Dataset(output_path) as dataset:
+        variable = dataset.variables["SpeciesConcVV_A"]
+        assert variable.filters()["blosc"] == {
+            "compressor": "blosc_zstd",
+            "shuffle": 1,
+        }
+        np.testing.assert_array_equal(variable[0], field.tracer(0)[0, ::-1])
 
 
 def test_restart_writer_roundtrips_species_and_writes_met_fields(tmp_path):

@@ -21,6 +21,7 @@ SUPPORTED_FIELD_TOKENS = {"SpeciesConcVV_?ADV?", "SpeciesRst_?ALL?", *SUPPORTED_
 @dataclass(frozen=True)
 class OutputCompressionConfig:
     enabled: bool = True
+    algorithm: str = "zlib"
     level: int = 1
     shuffle: bool = True
 
@@ -870,7 +871,11 @@ def parse_output_collections(raw: dict[str, Any]) -> tuple[OutputCollectionConfi
                 duration=parse_history_interval(str(value.get("duration", value["frequency"]))),
                 mode=str(value["mode"]),
                 fields=fields,
-                storage=storage,
+                storage=parse_output_storage(
+                    value,
+                    defaults=storage,
+                    label=f"outputs.collections.{name}",
+                ),
             )
         )
     return tuple(collections)
@@ -901,35 +906,71 @@ def validate_output_collections(collections: tuple[OutputCollectionConfig, ...])
             )
 
 
-def parse_output_storage(raw: dict[str, Any]) -> OutputStorageConfig:
-    dtype = str(raw.get("dtype", "float32")).lower()
+def parse_output_storage(
+    raw: dict[str, Any],
+    *,
+    defaults: OutputStorageConfig | None = None,
+    label: str = "outputs",
+) -> OutputStorageConfig:
+    defaults = defaults or OutputStorageConfig()
+    dtype = str(raw.get("dtype", defaults.dtype)).lower()
     if dtype not in {"float32", "float64"}:
-        raise ValueError("outputs.dtype must be 'float32' or 'float64'")
+        raise ValueError(f"{label}.dtype must be 'float32' or 'float64'")
 
-    compression_raw = raw.get("compression", {})
+    compression_raw = raw.get("compression")
     if compression_raw is None:
         compression_raw = {}
     if not isinstance(compression_raw, dict):
-        raise TypeError("outputs.compression must be a mapping")
-    level = int(compression_raw.get("level", 1))
+        raise TypeError(f"{label}.compression must be a mapping")
+    algorithm = str(
+        compression_raw.get("algorithm", defaults.compression.algorithm)
+    ).lower()
+    supported_algorithms = {"zlib", "zstd", "blosc_lz4", "blosc_zstd"}
+    if algorithm not in supported_algorithms:
+        raise ValueError(
+            f"{label}.compression.algorithm must be one of "
+            f"{', '.join(sorted(supported_algorithms))}"
+        )
+    level = int(compression_raw.get("level", defaults.compression.level))
     if level < 0 or level > 9:
-        raise ValueError("outputs.compression.level must be between 0 and 9")
+        raise ValueError(f"{label}.compression.level must be between 0 and 9")
     compression = OutputCompressionConfig(
-        enabled=bool(compression_raw.get("enabled", True)),
+        enabled=bool(
+            compression_raw.get("enabled", defaults.compression.enabled)
+        ),
+        algorithm=algorithm,
         level=level,
-        shuffle=bool(compression_raw.get("shuffle", True)),
+        shuffle=bool(
+            compression_raw.get("shuffle", defaults.compression.shuffle)
+        ),
     )
 
-    chunking_raw = raw.get("chunking", {})
+    chunking_raw = raw.get("chunking")
     if chunking_raw is None:
         chunking_raw = {}
     if not isinstance(chunking_raw, dict):
-        raise TypeError("outputs.chunking must be a mapping")
+        raise TypeError(f"{label}.chunking must be a mapping")
     chunking = OutputChunkingConfig(
-        rank1=_parse_chunk_array(chunking_raw.get("rank1"), 1, "outputs.chunking.rank1"),
-        rank2=_parse_chunk_array(chunking_raw.get("rank2"), 2, "outputs.chunking.rank2"),
-        rank3=_parse_chunk_array(chunking_raw.get("rank3"), 3, "outputs.chunking.rank3"),
-        rank4=_parse_chunk_array(chunking_raw.get("rank4"), 4, "outputs.chunking.rank4"),
+        rank1=_parse_chunk_array(
+            chunking_raw.get("rank1", defaults.chunking.rank1),
+            1,
+            f"{label}.chunking.rank1",
+        ),
+        rank2=_parse_chunk_array(
+            chunking_raw.get("rank2", defaults.chunking.rank2),
+            2,
+            f"{label}.chunking.rank2",
+        ),
+        rank3=_parse_chunk_array(
+            chunking_raw.get("rank3", defaults.chunking.rank3),
+            3,
+            f"{label}.chunking.rank3",
+        ),
+        rank4=_parse_chunk_array(
+            chunking_raw.get("rank4", defaults.chunking.rank4),
+            4,
+            f"{label}.chunking.rank4",
+        ),
     )
     return OutputStorageConfig(dtype=dtype, compression=compression, chunking=chunking)
 
@@ -1121,14 +1162,7 @@ def _create_output_variable(
         chunks = _chunks_for_variable(output, dimensions, storage)
         if chunks is not None:
             kwargs["chunksizes"] = chunks
-        if storage.compression.enabled:
-            kwargs.update(
-                {
-                    "zlib": True,
-                    "complevel": storage.compression.level,
-                    "shuffle": storage.compression.shuffle,
-                }
-            )
+        kwargs.update(netcdf_compression_kwargs(storage.compression))
     return output.createVariable(name, storage.netcdf_dtype, dimensions, **kwargs)
 
 
@@ -1137,21 +1171,45 @@ def _create_template_variable(
     source: netCDF4.Variable,
     storage: OutputStorageConfig,
 ):
+    storage = _metadata_storage(storage)
     kwargs: dict[str, Any] = {}
     dimensions = source.dimensions
     if dimensions:
         chunks = _chunks_for_variable(output, dimensions, storage)
         if chunks is not None:
             kwargs["chunksizes"] = chunks
-        if storage.compression.enabled:
-            kwargs.update(
-                {
-                    "zlib": True,
-                    "complevel": storage.compression.level,
-                    "shuffle": storage.compression.shuffle,
-                }
-            )
+        kwargs.update(netcdf_compression_kwargs(storage.compression))
     return output.createVariable(source.name, source.datatype, dimensions, **kwargs)
+
+
+def netcdf_compression_kwargs(
+    compression: OutputCompressionConfig,
+) -> dict[str, Any]:
+    if not compression.enabled:
+        return {}
+    if (
+        compression.algorithm == "zstd"
+        and not getattr(netCDF4, "__has_zstandard_support__", False)
+    ):
+        raise RuntimeError(
+            "zstd output requires the netCDF4 HDF5 zstandard filter plugin"
+        )
+    if (
+        compression.algorithm.startswith("blosc_")
+        and not getattr(netCDF4, "__has_blosc_support__", False)
+    ):
+        raise RuntimeError(
+            "Blosc output requires the netCDF4 HDF5 Blosc filter plugin"
+        )
+    kwargs: dict[str, Any] = {
+        "compression": compression.algorithm,
+        "complevel": compression.level,
+    }
+    if compression.algorithm.startswith("blosc_"):
+        kwargs["blosc_shuffle"] = 1 if compression.shuffle else 0
+    else:
+        kwargs["shuffle"] = compression.shuffle
+    return kwargs
 
 
 def _chunks_for_variable(
@@ -1245,13 +1303,27 @@ def _create_time_variable(
     storage: OutputStorageConfig,
     utc: bool = False,
 ):
-    variable = _create_output_variable(output, "time", ("time",), storage)
+    variable = _create_output_variable(
+        output,
+        "time",
+        ("time",),
+        _metadata_storage(storage),
+    )
     variable.long_name = "Time"
     suffix = " UTC" if utc else ""
     variable.units = f"minutes since {base:%Y-%m-%d %H:%M:%S}{suffix}"
     variable.calendar = "gregorian"
     variable.axis = "T"
     return variable
+
+
+def _metadata_storage(storage: OutputStorageConfig) -> OutputStorageConfig:
+    if not storage.compression.algorithm.startswith("blosc_"):
+        return storage
+    return replace(
+        storage,
+        compression=replace(storage.compression, algorithm="zlib"),
+    )
 
 
 def _assert_compatible_samples(

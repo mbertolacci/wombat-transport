@@ -1524,6 +1524,60 @@ batch cannot hide all of it, but the available overlap is now captured.
 All 1,570 variables in 284 retained NetCDF files were again bit-for-bit
 identical to the non-pipelined six-step outputs for both dtypes.
 
+### Blosc-Zstd diagnostic compression
+
+Profiling showed that HDF5 shuffle/deflate, rather than raw storage I/O, was
+the dominant NetCDF output cost. On one retained 24-tracer float64 HISTORY
+sample, the existing `(1, 1, 91, 144)` zlib-level-1 layout took 0.516 seconds
+and produced 33.27 MiB. Blosc-Zstd level 1 with byte shuffle took 0.100 seconds
+with one worker and 0.063 seconds with four workers at the same chunk shape,
+producing 33.53 MiB. A vertical chunk depth of eight and eight workers reached
+0.048 seconds and 33.50 MiB. Blosc-LZ4 reached 0.050 seconds with one worker
+but produced 36.05 MiB.
+
+Output storage now accepts `zlib`, `zstd`, `blosc_lz4`, and `blosc_zstd`.
+HISTORY collections may override inherited dtype, compression, and chunking
+settings independently. ObsOperator science output accepts the same
+compression mapping. The portable default remains zlib, and ObsOperator
+restart files are unchanged. Very small HISTORY coordinate and time variables
+also stay on zlib because the bundled Blosc HDF5 filter rejects some tiny
+buffers. `BLOSC_NTHREADS` controls the filter's internal workers.
+
+The canonical 24-tracer case now uses four-worker Blosc-Zstd level 1 for
+three-hour HISTORY and ObsOperator science output, with HISTORY chunks
+`(1, 8, 91, 144)`. Daily restart output deliberately retains zlib. Three
+summary-only two-day repetitions measured:
+
+| dtype | repetitions s | median s | tracer-steps/s | change from pipelined zlib |
+|---|---|---:|---:|---:|
+| float64 | 11.624, 11.502, 11.530 | 11.530 | 599.5 | +3.3% |
+| float32 | 8.617, 8.742, 8.598 | 8.617 | 802.1 | +18.1% |
+
+The corresponding zlib medians were 11.912 seconds and 10.181 seconds. The
+smaller float64 gain reflects output already hidden behind transport. Float32
+was strongly output-bound, so its wall time fell by 15.4%. Output artifact
+sizes were 43.8 MB for float64 transport and 223.5 MB for float32 transport;
+the previous profiles reported about 51 MB and 235 MB.
+
+Instrumented Blosc profiles split remaining HISTORY output work as follows:
+
+| host region | float64 ms | float32 ms |
+|---|---:|---:|
+| sixteen Blosc HISTORY averages | 1,190 | 1,228 |
+| two zlib daily restarts | 470 | 624 |
+| ObsOperator detached writes | 493 | 358 |
+| CUDA batch synchronization | 4,672 | 1,707 |
+
+ObsOperator remains dominated by many small-file and metadata operations, so
+changing its codec did not materially improve its approximately 0.36--0.49
+second total. A retained two-day float64 comparison covered 284 NetCDF files
+and 1,570 variables; every decoded variable was bit-for-bit identical between
+zlib and Blosc output.
+
+Blosc files remain valid NetCDF4/HDF5 but require the Blosc HDF5 filter plugin
+in downstream readers. This is why restart output retains standard deflate and
+why zlib remains the project-wide default.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.

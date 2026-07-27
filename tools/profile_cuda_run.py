@@ -29,6 +29,7 @@ from wombat_transport.obsoperator.writer import _ObsOperatorNetCDFWriter
 from wombat_transport.output import (
     HistoryOutputManager,
     _AverageCollection,
+    _InstantaneousRestartWriter,
     _StreamingSpeciesConcFile,
 )
 from wombat_transport.run_config import RunConfig, load_run_config
@@ -366,6 +367,26 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
         ),
         (HistoryOutputManager, "close", "history.close"),
         (_AverageCollection, "_append_average", "history.append_average"),
+        (
+            _AverageCollection,
+            "write_detached",
+            "history.average_write_detached",
+        ),
+        (
+            _InstantaneousRestartWriter,
+            "write_detached",
+            "history.restart_write_detached",
+        ),
+        (
+            _StreamingSpeciesConcFile,
+            "_open",
+            "history.netcdf_open",
+        ),
+        (
+            _StreamingSpeciesConcFile,
+            "close",
+            "history.netcdf_close",
+        ),
         (
             _StreamingSpeciesConcFile,
             "append_average",

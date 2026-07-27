@@ -173,7 +173,10 @@ class ObsOperatorManager:
             )
             assert self._current_output_path is not None
             if self._writer is None:
-                self._writer = _ObsOperatorNetCDFWriter(self._current_output_path)
+                self._writer = _ObsOperatorNetCDFWriter(
+                    self._current_output_path,
+                    compression=self._config.compression,
+                )
             self._writer.write_completed(batch)
             self._plan.first_unexpired = complete
         self._position_us = boundary_us
@@ -291,7 +294,8 @@ class ObsOperatorManager:
             assert self._current_output_path is not None
             if self._writer is None:
                 self._writer = _ObsOperatorNetCDFWriter(
-                    self._current_output_path
+                    self._current_output_path,
+                    compression=self._config.compression,
                 )
             self._writer.write_completed(detached.batch)
         self._detached_cuda_outputs = []

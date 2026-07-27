@@ -34,7 +34,7 @@ from wombat_transport.obsoperator.state import (
     completed_batch,
     merge_obs_plans,
 )
-from wombat_transport.output import OutputSnapshot
+from wombat_transport.output import OutputCompressionConfig, OutputSnapshot
 
 
 START = datetime(2014, 9, 1)
@@ -55,6 +55,7 @@ def test_obsoperator_config_and_date_template():
     )
     assert config.activate
     assert config.verbose
+    assert config.compression.algorithm == "zlib"
     assert expand_obsoperator_template(config.output_file or "", datetime(2014, 9, 2, 3, 4, 5)) == (
         "out-20140902_030405.nc4"
     )
@@ -73,6 +74,21 @@ def test_obsoperator_config_and_date_template():
         parse_obsoperator_config({"obsoperator": {"input_mode": "threaded"}})
     with pytest.raises(ValueError, match="no longer supported"):
         parse_obsoperator_config({"obsoperator": {"writer": "threaded"}})
+
+    blosc = parse_obsoperator_config(
+        {
+            "obsoperator": {
+                "compression": {
+                    "algorithm": "blosc_zstd",
+                    "level": 1,
+                    "shuffle": True,
+                }
+            }
+        }
+    )
+    assert blosc.compression.algorithm == "blosc_zstd"
+    assert blosc.compression.level == 1
+    assert blosc.compression.shuffle
 
 
 def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(tmp_path: Path, monkeypatch):
@@ -884,6 +900,42 @@ def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
         np.testing.assert_array_equal(dataset.variables["id_index"][:], [1, 1, 2, 3, 3])
         np.testing.assert_array_equal(dataset.variables["field_index"][:], [1, 2, 2, 3, 1])
         np.testing.assert_array_equal(dataset.variables["sample"][:], [1.0, 2.0, 3.0, 4.0, 5.0])
+
+
+@pytest.mark.skipif(
+    not getattr(netCDF4, "__has_blosc_support__", False),
+    reason="netCDF4 Blosc filter plugin is unavailable",
+)
+def test_science_writer_supports_blosc_zstd(tmp_path: Path):
+    output = tmp_path / "blosc-obspack.nc4"
+    writer = obsoperator_writer._ObsOperatorNetCDFWriter(
+        output,
+        compression=OutputCompressionConfig(
+            algorithm="blosc_zstd",
+            level=1,
+            shuffle=True,
+        ),
+    )
+    writer.write_completed(
+        CompletedObsBatch(
+            ids=("sample",),
+            field_names=("SpeciesConcVV_A",),
+            entry_field_start=np.array([0], dtype=np.int64),
+            entry_field_count=np.array([1], dtype=np.int64),
+            samples=np.array([2.5], dtype=np.float64),
+        )
+    )
+    writer.close()
+
+    with netCDF4.Dataset(output) as dataset:
+        assert dataset.variables["sample"].filters()["blosc"] == {
+            "compressor": "blosc_zstd",
+            "shuffle": 1,
+        }
+        np.testing.assert_array_equal(
+            dataset.variables["sample"][:],
+            np.array([2.5], dtype=np.float32),
+        )
 
 
 def test_science_writer_keeps_pending_registry_state_after_failed_flush(tmp_path: Path):

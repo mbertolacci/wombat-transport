@@ -68,6 +68,7 @@ outputs:
   dtype: float32
   compression:
     enabled: true
+    algorithm: zlib
     level: 1
     shuffle: true
   chunking:
@@ -77,10 +78,35 @@ outputs:
     rank4: [1, 1, 91, 144]
 ```
 
-`dtype` may be `float32` or `float64`. Compression level must be from zero to
-nine. A null chunk entry lets netCDF choose; otherwise each rank-specific
-array must contain that number of positive dimensions. Chunk sizes should be
-adjusted for 4x5 dimensions.
+`dtype` may be `float32` or `float64`. Compression algorithms are `zlib`,
+`zstd`, `blosc_lz4`, and `blosc_zstd`; compression level must be from zero to
+nine. `zlib` is the portable default. The other algorithms require matching
+HDF5 filter plugins in every reader. A null chunk entry lets netCDF choose;
+otherwise each rank-specific array must contain that number of positive
+dimensions. Chunk sizes should be adjusted for 4x5 dimensions.
+
+Collections inherit these settings and may override `dtype`, `compression`,
+or `chunking` directly in their collection mapping. For example, large
+HISTORY fields can use threaded Blosc-Zstd while restart collections retain
+portable zlib:
+
+```yaml
+outputs:
+  compression:
+    algorithm: zlib
+  collections:
+    SpeciesConcThreeHourly:
+      compression:
+        algorithm: blosc_zstd
+        level: 1
+        shuffle: true
+      chunking:
+        rank4: [1, 8, 91, 144]
+```
+
+Set `BLOSC_NTHREADS` before starting Wombat to control Blosc's internal worker
+count. Coordinate and time variables remain on zlib because the Blosc HDF5
+filter does not accept every very small metadata buffer.
 
 ## Synchronous writing
 
