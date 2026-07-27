@@ -15,6 +15,8 @@ from tempfile import TemporaryDirectory
 from time import perf_counter
 from typing import Any
 
+import numpy as np
+
 import wombat_transport.runner as runner_module
 import wombat_transport.cuda.history as cuda_history_module
 from wombat_transport.cuda.executor import CudaRunExecutor
@@ -23,6 +25,7 @@ from wombat_transport.cuda.history import CudaHistoryAverageMaterializer
 from wombat_transport.cuda.preparation import CudaPlanPreparation
 from wombat_transport.cuda.runtime import CudaRuntime
 from wombat_transport.emissions import EmissionsOperator
+from wombat_transport.fields import TracerField
 from wombat_transport.obsoperator.manager import ObsOperatorManager
 from wombat_transport.obsoperator.sampling_cuda import CudaObsSampler
 from wombat_transport.obsoperator.writer import _ObsOperatorNetCDFWriter
@@ -241,6 +244,16 @@ def main(argv: list[str] | None = None) -> int:
         simulation = deepcopy(source_config.simulation)
         simulation["end"] = args.simulation_end
         source_config = replace(source_config, simulation=simulation)
+    if args.output_compression_algorithm is not None:
+        source_config = _override_output_compression_algorithm(
+            source_config,
+            args.output_compression_algorithm,
+        )
+    if args.random_initial_condition:
+        _install_random_initial_condition(
+            seed=args.random_seed,
+            relative_amplitude=args.random_relative_amplitude,
+        )
     temporary_root = None
     if args.run_dir is None:
         temporary_root = TemporaryDirectory(prefix="wombat-cuda-profile-run-")
@@ -295,6 +308,16 @@ def main(argv: list[str] | None = None) -> int:
             "steps": args.steps,
             "warmup_steps": args.warmup_steps,
             "simulation_end": args.simulation_end,
+            "random_initial_condition": args.random_initial_condition,
+            "random_seed": (
+                args.random_seed if args.random_initial_condition else None
+            ),
+            "random_relative_amplitude": (
+                args.random_relative_amplitude
+                if args.random_initial_condition
+                else None
+            ),
+            "output_compression_algorithm": args.output_compression_algorithm,
             "profile_run_root": str(config.root),
             "profile_run_root_temporary": args.run_dir is None,
             "device_id": args.device,
@@ -604,6 +627,37 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--simulation-end",
         help="Override simulation.end from the run configuration.",
     )
+    parser.add_argument(
+        "--random-initial-condition",
+        action="store_true",
+        help=(
+            "Replace the initialized tracer field with deterministic, "
+            "independent multiplicative noise for compression benchmarks."
+        ),
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=_nonnegative_int,
+        default=0,
+        help="Seed for --random-initial-condition (default: 0).",
+    )
+    parser.add_argument(
+        "--random-relative-amplitude",
+        type=_relative_amplitude,
+        default=0.1,
+        help=(
+            "Maximum fractional perturbation for --random-initial-condition "
+            "(default: 0.1, giving +/-10%%)."
+        ),
+    )
+    parser.add_argument(
+        "--output-compression-algorithm",
+        choices=("zlib", "zstd", "blosc_lz4", "blosc_zstd"),
+        help=(
+            "Override the compression algorithm for all configured science "
+            "outputs during this profiling run."
+        ),
+    )
     parser.add_argument("--block-width", type=_positive_int, default=32)
     parser.add_argument("--device", type=_nonnegative_int, default=0)
     parser.add_argument("--nvtx", action="store_true")
@@ -636,6 +690,86 @@ def _nonnegative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be nonnegative")
     return parsed
+
+
+def _relative_amplitude(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 < parsed < 1.0:
+        raise argparse.ArgumentTypeError("must be greater than zero and less than one")
+    return parsed
+
+
+def _randomize_initial_field(
+    field: TracerField,
+    *,
+    seed: int,
+    relative_amplitude: float,
+) -> TracerField:
+    rng = np.random.default_rng(seed)
+    storage = np.array(field.block_data, copy=True)
+    for tracer in range(field.tracer_count):
+        block, lane = divmod(tracer, field.block_width)
+        values = storage[:, block, :, :, :, lane]
+        scale = rng.uniform(
+            1.0 - relative_amplitude,
+            1.0 + relative_amplitude,
+            size=values.shape,
+        )
+        values *= scale
+    return TracerField(
+        names=field.names,
+        data=storage,
+        units=field.units,
+        coords=field.coords,
+    )
+
+
+def _install_random_initial_condition(
+    *,
+    seed: int,
+    relative_amplitude: float,
+) -> None:
+    initialize_tracers = runner_module.initialize_tracers
+
+    def randomized_initialize_tracers(*args: Any, **kwargs: Any) -> TracerField:
+        field = initialize_tracers(*args, **kwargs)
+        return _randomize_initial_field(
+            field,
+            seed=seed,
+            relative_amplitude=relative_amplitude,
+        )
+
+    runner_module.initialize_tracers = randomized_initialize_tracers
+
+
+def _override_output_compression_algorithm(
+    config: RunConfig,
+    algorithm: str,
+) -> RunConfig:
+    outputs = deepcopy(config.outputs)
+    if not outputs:
+        return config
+
+    compression = dict(outputs.get("compression", {}))
+    compression["algorithm"] = algorithm
+    outputs["compression"] = compression
+
+    collections = outputs.get("collections", {})
+    if isinstance(collections, dict):
+        for collection in collections.values():
+            if not isinstance(collection, dict):
+                continue
+            collection_compression = collection.get("compression")
+            if isinstance(collection_compression, dict):
+                collection_compression["algorithm"] = algorithm
+
+    obsoperator = outputs.get("obsoperator")
+    if isinstance(obsoperator, dict):
+        obs_compression = dict(obsoperator.get("compression", {}))
+        obs_compression["algorithm"] = algorithm
+        obsoperator["compression"] = obs_compression
+
+    return replace(config, outputs=outputs)
 
 
 def _json_scalar(value: Any) -> Any:
@@ -671,7 +805,7 @@ def _redirect_config(
                 value = obsoperator.get(key)
                 if value is not None:
                     obsoperator[key] = str(
-                        root / "obsoperator" / Path(str(value)).name
+                        Path("obsoperator") / Path(str(value)).name
                     )
     emissions = config.emissions
     if isinstance(emissions, str):

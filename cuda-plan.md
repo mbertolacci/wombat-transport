@@ -750,6 +750,15 @@ the production runner. Use `--summary-only` for authoritative end-to-end wall
 and device-span measurements without per-region event overhead, and use the
 fully instrumented run for the stage breakdown.
 
+For output and compression benchmarks,
+`--random-initial-condition --random-seed N` replaces the configured tracer
+initialization with reproducible independent multiplicative noise. The default
+amplitude is +/-10%; `--random-relative-amplitude` changes it. This is a
+benchmark-only low-compressibility state, not a numerical-validation fixture.
+`--output-compression-algorithm` provides a profiler-only codec override so
+the identical state and run configuration can be compared without editing its
+YAML.
+
 ```bash
 taskset -c 0,2,4,6,8,10,12,14 \
   python tools/profile_cuda_run.py RUN.yml \
@@ -1557,7 +1566,9 @@ The corresponding zlib medians were 11.912 seconds and 10.181 seconds. The
 smaller float64 gain reflects output already hidden behind transport. Float32
 was strongly output-bound, so its wall time fell by 15.4%. Output artifact
 sizes were 43.8 MB for float64 transport and 223.5 MB for float32 transport;
-the previous profiles reported about 51 MB and 235 MB.
+the previous profiles reported about 51 MB and 235 MB. These figures use the
+case's uniform tracer initialization and must not be used to estimate
+steady-state storage.
 
 Instrumented Blosc profiles split remaining HISTORY output work as follows:
 
@@ -1573,6 +1584,18 @@ changing its codec did not materially improve its approximately 0.36--0.49
 second total. A retained two-day float64 comparison covered 284 NetCDF files
 and 1,570 variables; every decoded variable was bit-for-bit identical between
 zlib and Blosc output.
+
+A follow-up float64 profile used seed-0 independent +/-10% perturbations of
+all 24 tracer backgrounds to remove the uniform-start compression artifact.
+For 288 transport steps and the complete 285-file output set, instrumented
+Blosc-Zstd took 12.558 seconds (550.4 tracer-steps/s) and wrote 683.6 MB.
+The identical zlib run took 19.921 seconds (347.0 tracer-steps/s) and wrote
+648.4 MB. HISTORY detached writes fell from 9.856 seconds with zlib to
+2.503 seconds with Blosc, while CUDA batch synchronization was unchanged at
+about 4.9 seconds. Blosc was therefore 1.59x faster end to end but produced
+5.4% more data. The random-state size was more than fifteen times the
+uniform-start Blosc artifact size, confirming that short uniform-start runs
+are unsuitable for capacity planning.
 
 Blosc files remain valid NetCDF4/HDF5 but require the Blosc HDF5 filter plugin
 in downstream readers. This is why restart output retains standard deflate and
