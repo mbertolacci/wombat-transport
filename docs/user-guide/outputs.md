@@ -86,15 +86,22 @@ otherwise each rank-specific array must contain that number of positive
 dimensions. Chunk sizes should be adjusted for 4x5 dimensions.
 
 Collections inherit these settings and may override `dtype`, `compression`,
-or `chunking` directly in their collection mapping. For example, large
-HISTORY fields can use threaded Blosc-Zstd while restart collections retain
-portable zlib:
+or `chunking` directly in their collection mapping. This applies equally to
+time-averaged and restart collections. For example, both can use threaded
+Blosc-Zstd while the project-wide default remains portable zlib:
 
 ```yaml
 outputs:
   compression:
     algorithm: zlib
   collections:
+    Restart:
+      compression:
+        algorithm: blosc_zstd
+        level: 1
+        shuffle: true
+      chunking:
+        rank4: [1, 8, 91, 144]
     SpeciesConcThreeHourly:
       compression:
         algorithm: blosc_zstd

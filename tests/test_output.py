@@ -156,6 +156,11 @@ def test_output_collections_override_inherited_storage():
                     "frequency": "00000001 000000",
                     "mode": "instantaneous",
                     "fields": ["SpeciesRst_?ALL?"],
+                    "compression": {
+                        "algorithm": "blosc_zstd",
+                        "level": 1,
+                    },
+                    "chunking": {"rank4": [1, 8, 91, 144]},
                 },
                 "SpeciesConc": {
                     "filename": "history.nc4",
@@ -175,8 +180,9 @@ def test_output_collections_override_inherited_storage():
     restart, history = collections
     assert restart.storage is not None
     assert restart.storage.dtype == "float64"
-    assert restart.storage.compression.algorithm == "zlib"
-    assert restart.storage.chunking.rank4 == (1, 1, 91, 144)
+    assert restart.storage.compression.algorithm == "blosc_zstd"
+    assert restart.storage.compression.shuffle
+    assert restart.storage.chunking.rank4 == (1, 8, 91, 144)
     assert history.storage is not None
     assert history.storage.dtype == "float64"
     assert history.storage.compression.algorithm == "blosc_zstd"

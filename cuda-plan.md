@@ -1554,8 +1554,8 @@ buffers. `BLOSC_NTHREADS` controls the filter's internal workers.
 
 The canonical 24-tracer case now uses four-worker Blosc-Zstd level 1 for
 three-hour HISTORY and ObsOperator science output, with HISTORY chunks
-`(1, 8, 91, 144)`. Daily restart output deliberately retains zlib. Three
-summary-only two-day repetitions measured:
+`(1, 8, 91, 144)`. In this initial measurement, daily restart output retained
+zlib. Three summary-only two-day repetitions measured:
 
 | dtype | repetitions s | median s | tracer-steps/s | change from pipelined zlib |
 |---|---|---:|---:|---:|
@@ -1597,9 +1597,21 @@ about 4.9 seconds. Blosc was therefore 1.59x faster end to end but produced
 uniform-start Blosc artifact size, confirming that short uniform-start runs
 are unsuitable for capacity planning.
 
+The same compression and `(1, 8, 91, 144)` chunking were then enabled for the
+daily HISTORY restart collection. On the identical random-state float64
+profile, the two restart writes fell from 1.076 seconds to 0.269 seconds and
+wall time fell from 12.558 to 11.738 seconds. Throughput rose from 550.4 to
+588.8 tracer-steps/s. Restart size rose from 79.7 to 80.9 MB (1.5%), while
+total output rose only 0.17%. The approximately 807 ms reduction in restart
+work appeared almost one-for-one as an 820 ms wall reduction, confirming that
+the daily restart bursts had exhausted the queued CUDA runway. The canonical
+24-tracer case now uses Blosc-Zstd for both average and restart HISTORY
+collections.
+
 Blosc files remain valid NetCDF4/HDF5 but require the Blosc HDF5 filter plugin
-in downstream readers. This is why restart output retains standard deflate and
-why zlib remains the project-wide default.
+in downstream readers. ObsOperator restart files retain standard deflate, and
+zlib remains the project-wide default; HISTORY restart collections can opt
+into Blosc when all downstream readers provide the plugin.
 
 ### Phase 10: consolidate or retreat
 

@@ -43,6 +43,12 @@ outputs:
       frequency: 00000001 000000
       duration: 00000001 000000
       mode: instantaneous
+      compression:
+        algorithm: blosc_zstd
+        level: 1
+        shuffle: true
+      chunking:
+        rank4: [1, 8, 91, 144]
       fields:
         - SpeciesRst_?ALL?
         - Met_DELPDRY
