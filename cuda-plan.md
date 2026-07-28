@@ -757,7 +757,9 @@ amplitude is +/-10%; `--random-relative-amplitude` changes it. This is a
 benchmark-only low-compressibility state, not a numerical-validation fixture.
 `--output-compression-algorithm` provides a profiler-only codec override so
 the identical state and run configuration can be compared without editing its
-YAML.
+YAML. `--tracer-count` retains the configured species and emissions-bearing
+names, then adds zero-emission copies of the first species in an isolated
+profiler-owned species database.
 
 ```bash
 taskset -c 0,2,4,6,8,10,12,14 \
@@ -1612,6 +1614,45 @@ Blosc files remain valid NetCDF4/HDF5 but require the Blosc HDF5 filter plugin
 in downstream readers. ObsOperator restart files retain standard deflate, and
 zlib remains the project-wide default; HISTORY restart collections can opt
 into Blosc when all downstream readers provide the plugin.
+
+### High-tracer output scaling
+
+The random-state two-day profile was repeated at 128 and 256 tracers with
+32-lane blocks, float32 output, Blosc-Zstd level 1 for three-hour HISTORY and
+daily restart output, and `SpeciesConcVV_?ALL?` ObsOperator sampling. The first
+24 tracers retained their normal emissions and added tracers had zero
+emissions. Each run wrote 16 averages, two restarts, and 280 ObsOperator
+science files:
+
+| tracers | transport dtype | wall s | tracer-steps/s | CUDA boundary wait s | HISTORY writes s | output GB | CUDA pool GB |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 128 | float64 | 39.407 | 935.5 | 20.609 | 9.475 | 3.583 | 3.858 |
+| 256 | float64 | 77.449 | 952.0 | 41.489 | 19.544 | 7.151 | 7.382 |
+| 128 | float32 | 26.133 | 1,410.6 | 7.946 | 9.272 | 3.597 | 2.625 |
+| 256 | float32 | 49.974 | 1,475.3 | 16.279 | 19.060 | 7.178 | 4.881 |
+
+Output scales almost exactly linearly at about 14 MB per tracer per simulated
+day for this deliberately low-compressibility state. Float64 remains
+transport-limited: its large CUDA boundary waits persist while output runs on
+the host. Float32 is faster but burstier. At 128 tracers, a six-step CUDA
+runway is roughly 0.3 seconds while a three-hour average write is about
+0.5 seconds; at 256 tracers those values are roughly 0.6 and 1.0 seconds.
+Consequently the host still waits for CUDA on ordinary batches, but the GPU can
+drain and wait during output batches. More than one queued six-step tranche or
+another detached-output slot would be needed to hide those float32 bursts.
+
+TPCORE dominates device work. At 128 and 256 tracers it consumed 25.752 and
+50.966 seconds in float64, and 12.260 and 25.017 seconds in float32. The
+corresponding vertical, zonal, and meridional regions all scaled close to
+linearly. This supports optimizing the existing TPCORE kernels rather than
+changing tracer blocking at these counts.
+
+The final float32-versus-float64 restart comparison is a stress test of dtype
+drift, not a GEOS-Chem parity claim. Both counts had the same maximum
+difference, `6.056e-7` mole fraction (`0.606 ppm`), and approximately
+`2.09e-8` RMS (`0.0209 ppm`). The repeated maximum at the same tracer is
+expected because the first 128 seeded random tracer fields are identical in
+the 128- and 256-tracer runs.
 
 ### Phase 10: consolidate or retreat
 

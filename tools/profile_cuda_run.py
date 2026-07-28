@@ -16,6 +16,7 @@ from time import perf_counter
 from typing import Any
 
 import numpy as np
+from yaml12 import read_yaml, write_yaml
 
 import wombat_transport.runner as runner_module
 import wombat_transport.cuda.history as cuda_history_module
@@ -261,6 +262,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         profile_root = args.run_dir.resolve()
         profile_root.mkdir(parents=True, exist_ok=True)
+    if args.tracer_count is not None:
+        species_path = profile_root / "inputs" / "species_database.yml"
+        _write_expanded_species_database(
+            source_config.species_database,
+            species_path,
+            tracer_count=args.tracer_count,
+        )
+        source_config = replace(
+            source_config,
+            species_database=species_path,
+        )
 
     if args.warmup_steps:
         warm_config = _redirect_config(
@@ -304,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
         "metadata": {
             "config": str(args.config.resolve()),
             "dtype": args.dtype,
+            "tracer_count": result.state.tracer_count,
+            "configured_tracer_count_override": args.tracer_count,
             "block_width": args.block_width,
             "steps": args.steps,
             "warmup_steps": args.warmup_steps,
@@ -620,6 +634,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         )
     )
     parser.add_argument("config", type=Path)
+    parser.add_argument(
+        "--tracer-count",
+        type=_positive_int,
+        help=(
+            "Expand the configured species database to this many tracers "
+            "inside the isolated profiler run."
+        ),
+    )
     parser.add_argument("--dtype", choices=("float64", "float32"), default="float64")
     parser.add_argument("--steps", type=_positive_int, default=18)
     parser.add_argument("--warmup-steps", type=_nonnegative_int, default=1)
@@ -697,6 +719,35 @@ def _relative_amplitude(value: str) -> float:
     if not 0.0 < parsed < 1.0:
         raise argparse.ArgumentTypeError("must be greater than zero and less than one")
     return parsed
+
+
+def _write_expanded_species_database(
+    source: Path,
+    output: Path,
+    *,
+    tracer_count: int,
+) -> None:
+    raw = read_yaml(source)
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("source species database must be a non-empty mapping")
+    items = list(raw.items())
+    if tracer_count < len(items):
+        raise ValueError(
+            "profiler tracer count cannot remove configured species"
+        )
+    expanded = {
+        str(name): deepcopy(value)
+        for name, value in items[:tracer_count]
+    }
+    template = items[0][1]
+    for index in range(len(expanded), tracer_count):
+        value = deepcopy(template)
+        if not isinstance(value, dict):
+            raise TypeError("species database entries must be mappings")
+        value["FullName"] = f"CUDA profiler tracer {index + 1}"
+        expanded[f"cuda_profile_{index + 1:06d}"] = value
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_yaml(expanded, output)
 
 
 def _randomize_initial_field(

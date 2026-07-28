@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from yaml12 import read_yaml, write_yaml
 
 from wombat_transport.fields import TracerField
 from wombat_transport.run_config import RunConfig
@@ -28,6 +29,8 @@ def test_cuda_profile_cli_parses_reproducibility_controls():
     args = tool._parse_args(
         [
             "run.yml",
+            "--tracer-count",
+            "128",
             "--dtype",
             "float32",
             "--steps",
@@ -57,6 +60,7 @@ def test_cuda_profile_cli_parses_reproducibility_controls():
     )
 
     assert args.config == Path("run.yml")
+    assert args.tracer_count == 128
     assert args.dtype == "float32"
     assert args.steps == 24
     assert args.warmup_steps == 2
@@ -105,6 +109,55 @@ def test_cuda_profile_random_initial_condition_is_reproducible():
     assert np.all(first.block_data >= 3.6e-4)
     assert np.all(first.block_data <= 4.4e-4)
     assert not np.array_equal(first.block_data, field.block_data)
+
+
+def test_cuda_profile_expands_species_database_without_renaming_sources(
+    tmp_path,
+):
+    tool = _load_tool()
+    source = tmp_path / "source.yml"
+    output = tmp_path / "profile" / "species.yml"
+    write_yaml(
+        {
+            "emitted_a": {
+                "Formula": "CO2",
+                "Is_Tracer": True,
+                "Background_VV": 4.0e-4,
+                "FullName": "A",
+            },
+            "emitted_b": {
+                "Formula": "CO2",
+                "Is_Tracer": True,
+                "Background_VV": 4.0e-4,
+                "FullName": "B",
+            },
+        },
+        source,
+    )
+
+    tool._write_expanded_species_database(
+        source,
+        output,
+        tracer_count=4,
+    )
+
+    expanded = read_yaml(output)
+    assert list(expanded) == [
+        "emitted_a",
+        "emitted_b",
+        "cuda_profile_000003",
+        "cuda_profile_000004",
+    ]
+    assert expanded["emitted_a"]["FullName"] == "A"
+    assert expanded["cuda_profile_000004"]["FullName"] == (
+        "CUDA profiler tracer 4"
+    )
+    with pytest.raises(ValueError, match="cannot remove"):
+        tool._write_expanded_species_database(
+            source,
+            output,
+            tracer_count=1,
+        )
 
 
 def test_cuda_profile_overrides_all_science_output_compression(tmp_path):
