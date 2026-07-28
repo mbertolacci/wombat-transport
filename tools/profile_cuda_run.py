@@ -562,6 +562,10 @@ def _install_instrumentation(profiler: RunProfiler) -> None:
                 "_horizontal_finalize_poles",
                 "kernel.tpcore_horizontal_finalize_poles",
             ),
+            (
+                "_prepare_vertical_coefficients",
+                "kernel.tpcore_prepare_vertical_coefficients",
+            ),
             ("_vertical", "kernel.tpcore_vertical"),
         ),
     )

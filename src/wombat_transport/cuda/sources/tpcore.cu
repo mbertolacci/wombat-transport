@@ -837,6 +837,75 @@ __global__ void tpcore_horizontal_finalize_poles(
 }
 
 template <typename T>
+__global__ void tpcore_prepare_vertical_coefficients(
+    const T* delp1,
+    T* slope_c0,
+    T* slope_c1,
+    T* slope_c2,
+    T* interface_c2,
+    T* interface_a1,
+    T* interface_a2,
+    T* top_fac2,
+    T* top_ratio,
+    T* bottom_ratio,
+    int nlev,
+    int nlat,
+    int nlon
+) {
+    const int work = blockDim.x * blockIdx.x + threadIdx.x;
+    const int ncol = nlat * nlon;
+    const int work_size = nlev * ncol;
+    if (work >= work_size) {
+        return;
+    }
+    const int k = work / ncol;
+    const int col = work % ncol;
+
+    if (k >= 1 && k < nlev - 1) {
+        const T dlp_km1 = delp1[(k - 1) * ncol + col];
+        const T dlp_k = delp1[k * ncol + col];
+        const T dlp_kp1 = delp1[(k + 1) * ncol + col];
+        slope_c0[work] = dlp_k / (dlp_km1 + dlp_k + dlp_kp1);
+        slope_c1[work] = (
+            dlp_km1 + static_cast<T>(0.5) * dlp_k
+        ) / (dlp_kp1 + dlp_k);
+        slope_c2[work] = (
+            dlp_kp1 + static_cast<T>(0.5) * dlp_k
+        ) / (dlp_km1 + dlp_k);
+    }
+
+    if (k >= 2 && k < nlev - 1) {
+        const T dlp_km2 = delp1[(k - 2) * ncol + col];
+        const T dlp_km1 = delp1[(k - 1) * ncol + col];
+        const T dlp_k = delp1[k * ncol + col];
+        const T dlp_kp1 = delp1[(k + 1) * ncol + col];
+        interface_c2[work] = static_cast<T>(2) /
+            (dlp_km2 + dlp_km1 + dlp_k + dlp_kp1);
+        interface_a1[work] = (dlp_km2 + dlp_km1) /
+            (static_cast<T>(2) * dlp_km1 + dlp_k);
+        interface_a2[work] = (dlp_k + dlp_kp1) /
+            (static_cast<T>(2) * dlp_k + dlp_km1);
+    }
+
+    if (k == 0) {
+        const T dlp0 = delp1[col];
+        const T dlp1_value = delp1[ncol + col];
+        const T dlp2_value = delp1[2 * ncol + col];
+        top_fac2[col] = (dlp1_value + dlp2_value) *
+            (dlp0 + dlp1_value + dlp2_value);
+        top_ratio[col] = (dlp1_value + dlp2_value) /
+            (dlp0 + dlp1_value);
+
+        const T dlp_last = delp1[(nlev - 1) * ncol + col];
+        const T dlp_prev = delp1[(nlev - 2) * ncol + col];
+        bottom_ratio[col] = (dlp_last * dlp_last) /
+            ((dlp_last + dlp_prev) * (
+                static_cast<T>(2) * dlp_last + dlp_prev
+            ));
+    }
+}
+
+template <typename T, bool UsePreparedCoefficients>
 __global__ void tpcore_vertical(
     const T* q,
     T* dq,
@@ -844,6 +913,15 @@ __global__ void tpcore_vertical(
     const T* delp2,
     const T* wz,
     const T* normalized_vertical_courant,
+    const T* slope_c0,
+    const T* slope_c1,
+    const T* slope_c2,
+    const T* interface_c2,
+    const T* interface_a1,
+    const T* interface_a2,
+    const T* top_fac2,
+    const T* top_ratio,
+    const T* bottom_ratio,
     int fill,
     int finalize_output,
     int tracer_count,
@@ -888,14 +966,24 @@ __global__ void tpcore_vertical(
         )];
     }
     for (int k = 1; k < nlev - 1; ++k) {
-        const T dlp_km1 = delp1[(k - 1) * ncol + col];
-        const T dlp_k = delp1[k * ncol + col];
-        const T dlp_kp1 = delp1[(k + 1) * ncol + col];
-        const T c0 = dlp_k / (dlp_km1 + dlp_k + dlp_kp1);
-        const T c1 = (dlp_km1 + static_cast<T>(0.5) * dlp_k) /
-            (dlp_kp1 + dlp_k);
-        const T c2 = (dlp_kp1 + static_cast<T>(0.5) * dlp_k) /
-            (dlp_km1 + dlp_k);
+        T c0;
+        T c1;
+        T c2;
+        if (UsePreparedCoefficients) {
+            const int pressure_index = k * ncol + col;
+            c0 = slope_c0[pressure_index];
+            c1 = slope_c1[pressure_index];
+            c2 = slope_c2[pressure_index];
+        } else {
+            const T dlp_km1 = delp1[(k - 1) * ncol + col];
+            const T dlp_k = delp1[k * ncol + col];
+            const T dlp_kp1 = delp1[(k + 1) * ncol + col];
+            c0 = dlp_k / (dlp_km1 + dlp_k + dlp_kp1);
+            c1 = (dlp_km1 + static_cast<T>(0.5) * dlp_k) /
+                (dlp_kp1 + dlp_k);
+            c2 = (dlp_kp1 + static_cast<T>(0.5) * dlp_k) /
+                (dlp_km1 + dlp_k);
+        }
         const T tmp = c0 * (c1 * dpi[k] + c2 * dpi[k - 1]);
         const T q_center = q[tracer_index<T>(
             active_tracer, k, lat, lon,
@@ -917,12 +1005,19 @@ __global__ void tpcore_vertical(
 
     const T dlp0 = delp1[col];
     const T dlp1_value = delp1[ncol + col];
-    const T dlp2_value = delp1[2 * ncol + col];
-    const T fac2 = (dlp1_value + dlp2_value) *
-        (dlp0 + dlp1_value + dlp2_value);
-    const T top_ratio = (dlp1_value + dlp2_value) /
-        (dlp0 + dlp1_value);
-    const T fac1 = dpi[1] - dpi[0] * top_ratio;
+    T fac2;
+    T top_ratio_value;
+    if (UsePreparedCoefficients) {
+        fac2 = top_fac2[col];
+        top_ratio_value = top_ratio[col];
+    } else {
+        const T dlp2_value = delp1[2 * ncol + col];
+        fac2 = (dlp1_value + dlp2_value) *
+            (dlp0 + dlp1_value + dlp2_value);
+        top_ratio_value = (dlp1_value + dlp2_value) /
+            (dlp0 + dlp1_value);
+    }
+    const T fac1 = dpi[1] - dpi[0] * top_ratio_value;
     const T aa = static_cast<T>(3) * fac1 / fac2;
     T bb = static_cast<T>(2) * dpi[0] / (dlp0 + dlp1_value);
     bb -= r23 * aa * (static_cast<T>(2) * dlp0 + dlp1_value);
@@ -942,13 +1037,18 @@ __global__ void tpcore_vertical(
         dca_top = q_top - al[0];
     }
 
-    const T dlp_last = delp1[(nlev - 1) * ncol + col];
-    const T dlp_prev = delp1[(nlev - 2) * ncol + col];
-    const T bottom_ratio = (dlp_last * dlp_last) /
-        ((dlp_last + dlp_prev) * (
-            static_cast<T>(2) * dlp_last + dlp_prev
-        ));
-    const T fac1b = dpi[nlev - 2] * bottom_ratio;
+    T bottom_ratio_value;
+    if (UsePreparedCoefficients) {
+        bottom_ratio_value = bottom_ratio[col];
+    } else {
+        const T dlp_last = delp1[(nlev - 1) * ncol + col];
+        const T dlp_prev = delp1[(nlev - 2) * ncol + col];
+        bottom_ratio_value = (dlp_last * dlp_last) /
+            ((dlp_last + dlp_prev) * (
+                static_cast<T>(2) * dlp_last + dlp_prev
+            ));
+    }
+    const T fac1b = dpi[nlev - 2] * bottom_ratio_value;
     const T q_bottom = q[tracer_index<T>(
         active_tracer, nlev - 1, lat, lon,
         nlev, nlat, nlon, lane_width
@@ -961,16 +1061,26 @@ __global__ void tpcore_vertical(
     dca_bottom = ar[nlev - 1] - q_bottom;
 
     for (int k = 2; k < nlev - 1; ++k) {
-        const T dlp_km2 = delp1[(k - 2) * ncol + col];
         const T dlp_km1 = delp1[(k - 1) * ncol + col];
         const T dlp_k = delp1[k * ncol + col];
-        const T dlp_kp1 = delp1[(k + 1) * ncol + col];
-        const T c2 = static_cast<T>(2) /
-            (dlp_km2 + dlp_km1 + dlp_k + dlp_kp1);
-        const T a1_value = (dlp_km2 + dlp_km1) /
-            (static_cast<T>(2) * dlp_km1 + dlp_k);
-        const T a2_value = (dlp_k + dlp_kp1) /
-            (static_cast<T>(2) * dlp_k + dlp_km1);
+        T c2;
+        T a1_value;
+        T a2_value;
+        if (UsePreparedCoefficients) {
+            const int pressure_index = k * ncol + col;
+            c2 = interface_c2[pressure_index];
+            a1_value = interface_a1[pressure_index];
+            a2_value = interface_a2[pressure_index];
+        } else {
+            const T dlp_km2 = delp1[(k - 2) * ncol + col];
+            const T dlp_kp1 = delp1[(k + 1) * ncol + col];
+            c2 = static_cast<T>(2) /
+                (dlp_km2 + dlp_km1 + dlp_k + dlp_kp1);
+            a1_value = (dlp_km2 + dlp_km1) /
+                (static_cast<T>(2) * dlp_km1 + dlp_k);
+            a2_value = (dlp_k + dlp_kp1) /
+                (static_cast<T>(2) * dlp_k + dlp_km1);
+        }
         const T c1_value = dpi[k - 1] * dlp_km1 /
             (dlp_km1 + dlp_k);
         al[k] = q[tracer_index<T>(

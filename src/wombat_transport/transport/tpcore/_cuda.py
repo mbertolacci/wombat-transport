@@ -68,6 +68,7 @@ class CudaTpcoreExecutor:
             cuda_type = "double"
         else:
             raise ValueError("CUDA TPCORE supports only float32 and float64")
+        use_prepared_vertical_coefficients = resolved_dtype == np.dtype(np.float64)
         expressions = tuple(
             f"{name}<{cuda_type}>"
             for name in (
@@ -76,20 +77,29 @@ class CudaTpcoreExecutor:
                 "tpcore_horizontal_zonal_warp",
                 "tpcore_horizontal_meridional",
                 "tpcore_horizontal_finalize_poles",
-                "tpcore_vertical",
+                "tpcore_prepare_vertical_coefficients",
             )
+        ) + (
+            "tpcore_vertical"
+            f"<{cuda_type}, {str(use_prepared_vertical_coefficients).lower()}>",
         )
         module = load_raw_module("tpcore.cu", name_expressions=expressions)
         self._runtime = runtime
         self._dtype = resolved_dtype
+        self._use_prepared_vertical_coefficients = (
+            use_prepared_vertical_coefficients
+        )
         self._horizontal_poles = module.get_function(expressions[0])
         self._horizontal_initialize = module.get_function(expressions[1])
         self._horizontal_zonal_warp = module.get_function(expressions[2])
         self._horizontal_meridional = module.get_function(expressions[3])
         self._horizontal_finalize_poles = module.get_function(expressions[4])
-        self._vertical = module.get_function(expressions[5])
+        self._prepare_vertical_coefficients = module.get_function(expressions[5])
+        self._vertical = module.get_function(expressions[6])
         self._qqu: Any | None = None
         self._qqv: Any | None = None
+        self._vertical_coefficients: Any | None = None
+        self._vertical_boundary_coefficients: Any | None = None
 
     @property
     def dtype(self) -> np.dtype[Any]:
@@ -156,6 +166,19 @@ class CudaTpcoreExecutor:
         if self._qqu is None or self._qqu.shape != tracer_blocks.shape:
             self._qqu = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
             self._qqv = self._runtime.empty(tracer_blocks.shape, dtype=self._dtype)
+        center_shape = (nlev, nlat, nlon)
+        if self._use_prepared_vertical_coefficients and (
+            self._vertical_coefficients is None
+            or self._vertical_coefficients.shape[1:] != center_shape
+        ):
+            self._vertical_coefficients = self._runtime.empty(
+                (6, *center_shape),
+                dtype=self._dtype,
+            )
+            self._vertical_boundary_coefficients = self._runtime.empty(
+                (3, nlat, nlon),
+                dtype=self._dtype,
+            )
 
         scalar_type = self._dtype.type
         horizontal_work = nlev * tracer_count
@@ -276,6 +299,30 @@ class CudaTpcoreExecutor:
         q_after_horizontal = tracer_blocks.copy() if capture_handoffs else None
         dq_after_horizontal = output.copy() if capture_handoffs else None
 
+        if self._use_prepared_vertical_coefficients:
+            coefficient_work = nlev * nlat * nlon
+            coefficient_threads = 128
+            self._prepare_vertical_coefficients(
+                (
+                    (coefficient_work + coefficient_threads - 1)
+                    // coefficient_threads,
+                ),
+                (coefficient_threads,),
+                (
+                    plan.delp1,
+                    *self._vertical_coefficients,
+                    *self._vertical_boundary_coefficients,
+                    np.int32(nlev),
+                    np.int32(nlat),
+                    np.int32(nlon),
+                ),
+            )
+            coefficient_arguments = (
+                *self._vertical_coefficients,
+                *self._vertical_boundary_coefficients,
+            )
+        else:
+            coefficient_arguments = (plan.delp1,) * 9
         column_work = nlat * nlon * tracer_count
         column_threads = 128
         column_blocks = (column_work + column_threads - 1) // column_threads
@@ -289,6 +336,7 @@ class CudaTpcoreExecutor:
                 plan.delp2,
                 plan.vertical_mass_flux,
                 plan.normalized_vertical_courant,
+                *coefficient_arguments,
                 np.int32(fill),
                 np.int32(finalize_output),
                 np.int32(tracer_count),

@@ -1654,6 +1654,47 @@ difference, `6.056e-7` mole fraction (`0.606 ppm`), and approximately
 expected because the first 128 seeded random tracer fields are identical in
 the 128- and 256-tracer runs.
 
+### Float64 vertical pressure coefficients
+
+TPCORE's vertical reconstruction originally recalculated the same
+pressure-only slope and interface coefficients in every tracer worker. A
+tracer-independent CUDA kernel now prepares those coefficients once per
+pressure plan application. The vertical kernel reuses six level-dependent
+coefficient fields and three horizontal boundary fields. Tracer-dependent
+operations and their order are unchanged.
+
+This optimization is deliberately float64-only. A controlled 20-repetition
+prepared-chain A/B at 128 and 256 tracers gave:
+
+| tracers | legacy float64 ms | prepared float64 ms | change |
+|---:|---:|---:|---:|
+| 128 | 110.522 | 95.780 | -13.3% |
+| 256 | 218.082 | 188.283 | -13.7% |
+
+The identical float32 experiment regressed from 50.971 to 51.949 ms at 128
+tracers and from 102.950 to 105.332 ms at 256 tracers. Fast native float32
+division did not repay the additional coefficient traffic, so float32 keeps
+the original in-kernel arithmetic and allocates no coefficient workspace.
+Compile-time specialization avoids a runtime branch in either vertical
+kernel.
+
+An instrumented 18-step, 256-tracer real-run A/B isolated the benefit:
+
+| float64 region | legacy total ms | prepared total ms | change |
+|---|---:|---:|---:|
+| coefficient preparation | - | 2.123 | - |
+| vertical kernel | 1,329.180 | 830.546 | -37.5% |
+| coefficient preparation + vertical | 1,329.180 | 832.668 | -37.4% |
+| whole TPCORE | 3,155.731 | 2,658.607 | -15.8% |
+| whole profiled run | 8,950.129 | 8,297.162 | -7.3% |
+
+The other TPCORE kernels differed by less than 0.1%, which makes the vertical
+comparison well controlled. The six level fields and three boundary fields
+add 29,877,760 bytes of float64 device-pool capacity at 2x2.5. CUDA handoff
+error metrics were identical to the legacy kernel at the reported precision,
+and the strict float64 CPU/GEOS and bounded-drift float32 CUDA tests continued
+to pass.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.
