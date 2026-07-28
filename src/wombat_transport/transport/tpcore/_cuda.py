@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from wombat_transport.cuda.modules import load_raw_module
+from wombat_transport.cuda.modules import STRICT_CUDA_OPTIONS, load_raw_module
 from wombat_transport.cuda.runtime import CudaRuntime
 from wombat_transport.transport.tpcore._plan import TpcorePlan
 
@@ -83,7 +83,14 @@ class CudaTpcoreExecutor:
             "tpcore_vertical"
             f"<{cuda_type}, {str(use_prepared_vertical_coefficients).lower()}>",
         )
-        module = load_raw_module("tpcore.cu", name_expressions=expressions)
+        options = STRICT_CUDA_OPTIONS
+        if resolved_dtype == np.dtype(np.float32):
+            options += ("-DWOMBAT_TPCORE_HOIST_VERTICAL_INDEX=1",)
+        module = load_raw_module(
+            "tpcore.cu",
+            name_expressions=expressions,
+            options=options,
+        )
         self._runtime = runtime
         self._dtype = resolved_dtype
         self._use_prepared_vertical_coefficients = (

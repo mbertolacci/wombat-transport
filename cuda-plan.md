@@ -1695,6 +1695,49 @@ error metrics were identical to the legacy kernel at the reported precision,
 and the strict float64 CPU/GEOS and bounded-drift float32 CUDA tests continued
 to pass.
 
+### Pointer aliasing and vertical index hoisting
+
+Blanket `__restrict__` qualifiers were tested across the TPCORE kernels and
+rejected. They left float64 effectively unchanged but made the float32 zonal
+kernel about 3.7% slower, increasing total float32 TPCORE time by about 1.6%.
+Isolating the qualifier to the meridional kernel produced a small repeatable
+float32 win: its 18-step, 256-tracer time fell from 438.469 to 434.8 ms in two
+repeat profiles. Float64 meridional timing was unchanged.
+
+Vertical tracer indexing was then reduced from repeated block-layout
+calculation to one tracer base plus fixed level and row strides. This is also
+compile-time specialized. Float32 uses the hoisted form, while float64 retains
+the original index calculation because the hoisted version increased its
+vertical register count from 61 to 66 without improving elapsed time.
+
+The retained float32 build uses 54 rather than 50 registers and keeps the same
+752 bytes of local memory per vertical worker. Its instrumented stage results
+were:
+
+| tracers | region | original ms | retained ms | change |
+|---:|---|---:|---:|---:|
+| 128 | meridional | 218.478 | 217.002 | -0.7% |
+| 128 | vertical | 132.433 | 126.150 | -4.7% |
+| 128 | whole TPCORE | 745.394 | 740.309 | -0.7% |
+| 256 | meridional | 438.469 | 434.751 | -0.8% |
+| 256 | vertical | 264.130 | 246.369 | -6.7% |
+| 256 | whole TPCORE | 1,530.566 | 1,507.619 | -1.5% |
+
+The less-instrumented prepared-chain A/B includes state reset, TPCORE, VDIFF,
+and convection:
+
+| tracers | dtype | original ms | retained ms | change |
+|---:|---|---:|---:|---:|
+| 128 | float64 | 85.433 | 85.559 | +0.1% |
+| 256 | float64 | 168.595 | 168.955 | +0.2% |
+| 128 | float32 | 44.523 | 44.084 | -1.0% |
+| 256 | float32 | 90.931 | 89.892 | -1.1% |
+
+The float64 differences are measurement noise: its compiled vertical resource
+counts are unchanged, and its indexing specialization is disabled. CUDA
+handoff and final error metrics were identical to the pre-change build at
+every reported digit for both dtypes and tracer counts.
+
 ### Phase 10: consolidate or retreat
 
 - [ ] Remove spike-only APIs and unused abstractions.

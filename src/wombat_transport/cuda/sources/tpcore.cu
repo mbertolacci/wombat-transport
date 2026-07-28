@@ -634,12 +634,12 @@ __global__ void tpcore_horizontal_zonal_warp(
 
 template <typename T>
 __global__ void tpcore_horizontal_meridional(
-    T* dq,
-    const T* qqu,
-    T* qqv,
-    const T* ymass,
-    const T* cy,
-    const T* geofac,
+    T* __restrict__ dq,
+    const T* __restrict__ qqu,
+    T* __restrict__ qqv,
+    const T* __restrict__ ymass,
+    const T* __restrict__ cy,
+    const T* __restrict__ geofac,
     int tracer_count,
     int nlev,
     int nlat,
@@ -943,6 +943,35 @@ __global__ void tpcore_vertical(
     if (lat == 1 || lat == nlat - 2) {
         return;
     }
+    // Base-plus-stride indexing wins for float32 but raises float64 register use.
+#if WOMBAT_TPCORE_HOIST_VERTICAL_INDEX
+    const int tracer_block = active_tracer / lane_width;
+    const int tracer_lane = active_tracer % lane_width;
+    const int tracer_level_stride = ncol * lane_width;
+    const int tracer_row_stride = nlon * lane_width;
+    const int tracer_base = (
+        tracer_block * nlev * ncol + col
+    ) * lane_width + tracer_lane;
+#define WOMBAT_VERTICAL_INDEX(level, target_lat) ( \
+    tracer_base + (level) * tracer_level_stride + \
+    ((target_lat) - lat) * tracer_row_stride \
+)
+#define WOMBAT_VERTICAL_LEVEL_OFFSET(index, level, offset) ( \
+    (index) + (offset) * tracer_level_stride \
+)
+#define WOMBAT_VERTICAL_ROW_OFFSET(index, level, target_lat) ( \
+    (index) + ((target_lat) - lat) * tracer_row_stride \
+)
+#else
+#define WOMBAT_VERTICAL_INDEX(level, target_lat) tracer_index<T>( \
+    active_tracer, level, target_lat, lon, \
+    nlev, nlat, nlon, lane_width \
+)
+#define WOMBAT_VERTICAL_LEVEL_OFFSET(index, level, offset) \
+    WOMBAT_VERTICAL_INDEX((level) + (offset), lat)
+#define WOMBAT_VERTICAL_ROW_OFFSET(index, level, target_lat) \
+    WOMBAT_VERTICAL_INDEX(level, target_lat)
+#endif
     const T r13 = static_cast<T>(1) / static_cast<T>(3);
     const T r23 = static_cast<T>(2) / static_cast<T>(3);
     T dpi[WOMBAT_MAX_LEV];
@@ -957,13 +986,8 @@ __global__ void tpcore_vertical(
     T dca_bottom;
 
     for (int k = 0; k < nlev - 1; ++k) {
-        dpi[k] = q[tracer_index<T>(
-            active_tracer, k + 1, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )] - q[tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
+        const int index = WOMBAT_VERTICAL_INDEX(k, lat);
+        dpi[k] = q[WOMBAT_VERTICAL_LEVEL_OFFSET(index, k, 1)] - q[index];
     }
     for (int k = 1; k < nlev - 1; ++k) {
         T c0;
@@ -985,18 +1009,10 @@ __global__ void tpcore_vertical(
                 (dlp_km1 + dlp_k);
         }
         const T tmp = c0 * (c1 * dpi[k] + c2 * dpi[k - 1]);
-        const T q_center = q[tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
-        const T q_prev = q[tracer_index<T>(
-            active_tracer, k - 1, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
-        const T q_next = q[tracer_index<T>(
-            active_tracer, k + 1, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
+        const int index = WOMBAT_VERTICAL_INDEX(k, lat);
+        const T q_center = q[index];
+        const T q_prev = q[WOMBAT_VERTICAL_LEVEL_OFFSET(index, k, -1)];
+        const T q_next = q[WOMBAT_VERTICAL_LEVEL_OFFSET(index, k, 1)];
         const T qmax = wmax3(q_prev, q_center, q_next) - q_center;
         const T qmin = q_center - wmin3(q_prev, q_center, q_next);
         const T bounded = wmin(wabs(tmp), wmin(qmax, qmin));
@@ -1021,15 +1037,10 @@ __global__ void tpcore_vertical(
     const T aa = static_cast<T>(3) * fac1 / fac2;
     T bb = static_cast<T>(2) * dpi[0] / (dlp0 + dlp1_value);
     bb -= r23 * aa * (static_cast<T>(2) * dlp0 + dlp1_value);
-    al[0] = q[tracer_index<T>(
-        active_tracer, 0, lat, lon,
-        nlev, nlat, nlon, lane_width
-    )] - dlp0 * (r13 * aa * dlp0 + static_cast<T>(0.5) * bb);
+    al[0] = q[WOMBAT_VERTICAL_INDEX(0, lat)] -
+        dlp0 * (r13 * aa * dlp0 + static_cast<T>(0.5) * bb);
     al[1] = dlp0 * (aa * dlp0 + bb) + al[0];
-    const T q_top = q[tracer_index<T>(
-        active_tracer, 0, lat, lon,
-        nlev, nlat, nlon, lane_width
-    )];
+    const T q_top = q[WOMBAT_VERTICAL_INDEX(0, lat)];
     if (q_top * al[0] <= static_cast<T>(0)) {
         al[0] = static_cast<T>(0);
         dca_top = static_cast<T>(0);
@@ -1049,10 +1060,7 @@ __global__ void tpcore_vertical(
             ));
     }
     const T fac1b = dpi[nlev - 2] * bottom_ratio_value;
-    const T q_bottom = q[tracer_index<T>(
-        active_tracer, nlev - 1, lat, lon,
-        nlev, nlat, nlon, lane_width
-    )];
+    const T q_bottom = q[WOMBAT_VERTICAL_INDEX(nlev - 1, lat)];
     ar[nlev - 1] = q_bottom + fac1b;
     al[nlev - 1] = q_bottom - (fac1b + fac1b);
     if (q_bottom * ar[nlev - 1] <= static_cast<T>(0)) {
@@ -1083,10 +1091,8 @@ __global__ void tpcore_vertical(
         }
         const T c1_value = dpi[k - 1] * dlp_km1 /
             (dlp_km1 + dlp_k);
-        al[k] = q[tracer_index<T>(
-            active_tracer, k - 1, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )] + c1_value + c2 * (
+        al[k] = q[WOMBAT_VERTICAL_INDEX(k - 1, lat)] +
+            c1_value + c2 * (
             dlp_k * (
                 c1_value * (a1_value - a2_value) +
                 a2_value * dc[k - 1]
@@ -1099,10 +1105,7 @@ __global__ void tpcore_vertical(
 
     for (int endpoint = 0; endpoint < 2; ++endpoint) {
         const int k = endpoint == 0 ? 0 : nlev - 1;
-        const T qa = q[tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
+        const T qa = q[WOMBAT_VERTICAL_INDEX(k, lat)];
         T a6_value = static_cast<T>(3) * (
             qa + qa - (al[k] + ar[k])
         );
@@ -1131,10 +1134,7 @@ __global__ void tpcore_vertical(
     }
     for (int endpoint = 0; endpoint < 2; ++endpoint) {
         const int k = endpoint == 0 ? 1 : nlev - 2;
-        const T qa = q[tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
+        const T qa = q[WOMBAT_VERTICAL_INDEX(k, lat)];
         T a6_value = static_cast<T>(3) * (
             qa + qa - (al[k] + ar[k])
         );
@@ -1164,10 +1164,7 @@ __global__ void tpcore_vertical(
         dc[k] = dpi[k] - dpi[k - 1];
     }
     for (int k = 2; k < nlev - 2; ++k) {
-        const T qq = q[tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )];
+        const T qq = q[WOMBAT_VERTICAL_INDEX(k, lat)];
         T qmp = qq + static_cast<T>(2) * dpi[k - 1];
         T lac = qq + static_cast<T>(1.5) * dc[k - 1] +
             static_cast<T>(0.5) * dpi[k - 1];
@@ -1197,10 +1194,7 @@ __global__ void tpcore_vertical(
         );
         previous_flux = wz[col] * value;
     }
-    dq[tracer_index<T>(
-        active_tracer, 0, lat, lon,
-        nlev, nlat, nlon, lane_width
-    )] -= previous_flux;
+    dq[WOMBAT_VERTICAL_INDEX(0, lat)] -= previous_flux;
     for (int k = 1; k < nlev - 1; ++k) {
         courant = normalized_vertical_courant[k * ncol + col];
         T value;
@@ -1211,10 +1205,7 @@ __global__ void tpcore_vertical(
             } else if (k == nlev - 2) {
                 a6_value = a6_penultimate;
             } else {
-                const T qa = q[tracer_index<T>(
-                    active_tracer, k, lat, lon,
-                    nlev, nlat, nlon, lane_width
-                )];
+                const T qa = q[WOMBAT_VERTICAL_INDEX(k, lat)];
                 a6_value = static_cast<T>(3) * (
                     qa + qa - (ar[k] + al[k])
                 );
@@ -1231,10 +1222,7 @@ __global__ void tpcore_vertical(
             } else if (next_k == nlev - 2) {
                 a6_value = a6_penultimate;
             } else {
-                const T qa = q[tracer_index<T>(
-                    active_tracer, next_k, lat, lon,
-                    nlev, nlat, nlon, lane_width
-                )];
+                const T qa = q[WOMBAT_VERTICAL_INDEX(next_k, lat)];
                 a6_value = static_cast<T>(3) * (
                     qa + qa - (ar[next_k] + al[next_k])
                 );
@@ -1247,44 +1235,25 @@ __global__ void tpcore_vertical(
             );
         }
         const T flux = wz[k * ncol + col] * value;
-        dq[tracer_index<T>(
-            active_tracer, k, lat, lon,
-            nlev, nlat, nlon, lane_width
-        )] += previous_flux - flux;
+        dq[WOMBAT_VERTICAL_INDEX(k, lat)] += previous_flux - flux;
         previous_flux = flux;
     }
-    dq[tracer_index<T>(
-        active_tracer, nlev - 1, lat, lon,
-        nlev, nlat, nlon, lane_width
-    )] += previous_flux;
+    dq[WOMBAT_VERTICAL_INDEX(nlev - 1, lat)] += previous_flux;
 
     if (fill && lat >= 2 && lat <= nlat - 3) {
-        int index = tracer_index<T>(
-            active_tracer, 0, lat, lon,
-            nlev, nlat, nlon, lane_width
-        );
+        int index = WOMBAT_VERTICAL_INDEX(0, lat);
         if (dq[index] < static_cast<T>(0)) {
-            const int next = tracer_index<T>(
-                active_tracer, 1, lat, lon,
-                nlev, nlat, nlon, lane_width
-            );
+            const int next = WOMBAT_VERTICAL_LEVEL_OFFSET(index, 0, 1);
             dq[next] += dq[index];
             dq[index] = static_cast<T>(0);
         }
         for (int k = 1; k < nlev - 1; ++k) {
-            index = tracer_index<T>(
-                active_tracer, k, lat, lon,
-                nlev, nlat, nlon, lane_width
-            );
+            index = WOMBAT_VERTICAL_INDEX(k, lat);
             if (dq[index] < static_cast<T>(0)) {
-                const int previous = tracer_index<T>(
-                    active_tracer, k - 1, lat, lon,
-                    nlev, nlat, nlon, lane_width
+                const int previous = WOMBAT_VERTICAL_LEVEL_OFFSET(
+                    index, k, -1
                 );
-                const int next = tracer_index<T>(
-                    active_tracer, k + 1, lat, lon,
-                    nlev, nlat, nlon, lane_width
-                );
+                const int next = WOMBAT_VERTICAL_LEVEL_OFFSET(index, k, 1);
                 const T qup = dq[previous];
                 const T qly = -dq[index];
                 const T dup = wmin(qly, qup);
@@ -1294,14 +1263,10 @@ __global__ void tpcore_vertical(
                 dq[index] = static_cast<T>(0);
             }
         }
-        index = tracer_index<T>(
-            active_tracer, nlev - 1, lat, lon,
-            nlev, nlat, nlon, lane_width
-        );
+        index = WOMBAT_VERTICAL_INDEX(nlev - 1, lat);
         if (dq[index] < static_cast<T>(0)) {
-            const int previous = tracer_index<T>(
-                active_tracer, nlev - 2, lat, lon,
-                nlev, nlat, nlon, lane_width
+            const int previous = WOMBAT_VERTICAL_LEVEL_OFFSET(
+                index, nlev - 1, -1
             );
             const T qup = dq[previous];
             const T qly = -dq[index];
@@ -1313,26 +1278,20 @@ __global__ void tpcore_vertical(
 
     if (finalize_output) {
         for (int k = 0; k < nlev; ++k) {
-            const int index = tracer_index<T>(
-                active_tracer, k, lat, lon,
-                nlev, nlat, nlon, lane_width
-            );
+            const int index = WOMBAT_VERTICAL_INDEX(k, lat);
             T value = dq[index] / delp2[k * ncol + col];
             if (value < static_cast<T>(0)) {
                 value = static_cast<T>(1.0e-26);
             }
             dq[index] = value;
             if (lat == 0) {
-                dq[tracer_index<T>(
-                    active_tracer, k, 1, lon,
-                    nlev, nlat, nlon, lane_width
-                )] = value;
+                dq[WOMBAT_VERTICAL_ROW_OFFSET(index, k, 1)] = value;
             } else if (lat == nlat - 1) {
-                dq[tracer_index<T>(
-                    active_tracer, k, nlat - 2, lon,
-                    nlev, nlat, nlon, lane_width
-                )] = value;
+                dq[WOMBAT_VERTICAL_ROW_OFFSET(index, k, nlat - 2)] = value;
             }
         }
     }
+#undef WOMBAT_VERTICAL_ROW_OFFSET
+#undef WOMBAT_VERTICAL_LEVEL_OFFSET
+#undef WOMBAT_VERTICAL_INDEX
 }
