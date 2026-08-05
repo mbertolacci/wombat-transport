@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from wombat_transport.output import OutputCompressionConfig, parse_output_storage
+
 
 @dataclass(frozen=True)
 class ObsOperatorConfig:
@@ -13,6 +16,9 @@ class ObsOperatorConfig:
     output_file: str | None = None
     restart_file: str | None = None
     restart_missing: str = "warn"
+    compression: OutputCompressionConfig = field(
+        default_factory=OutputCompressionConfig
+    )
 
 def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
     raw = outputs.get("obsoperator", {})
@@ -26,6 +32,10 @@ def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
     output_file = _optional_config_string(raw, "output_file")
     restart_file = _optional_config_string(raw, "restart_file")
     restart_missing = str(raw.get("restart_missing", "warn"))
+    compression = parse_output_storage(
+        raw,
+        label="outputs.obsoperator",
+    ).compression
     if restart_missing not in {"warn", "error", "ignore"}:
         raise ValueError("outputs.obsoperator.restart_missing must be 'warn', 'error', or 'ignore'")
     if "input_mode" in raw or "writer" in raw:
@@ -43,6 +53,7 @@ def parse_obsoperator_config(outputs: dict[str, Any]) -> ObsOperatorConfig:
         output_file=output_file,
         restart_file=restart_file,
         restart_missing=restart_missing,
+        compression=compression,
     )
 
 

@@ -5,6 +5,10 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
+from wombat_transport.output import (
+    OutputCompressionConfig,
+    netcdf_compression_kwargs,
+)
 from wombat_transport.obsoperator.state import (
     CompletedObsBatch,
     MAX_FIELD_NAME_LENGTH,
@@ -19,8 +23,14 @@ SCIENCE_STAGE_ENTRIES = SCIENCE_ENTRY_CHUNK
 SCIENCE_STAGE_SAMPLES = SCIENCE_SAMPLE_CHUNK
 
 class _ObsOperatorNetCDFWriter:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        compression: OutputCompressionConfig | None = None,
+    ) -> None:
         self._path = path
+        self._compression = compression or OutputCompressionConfig()
         self._dataset: netCDF4.Dataset | None = None
         self._field_indices: dict[str, int] = {}
         self._field_names: list[str] = []
@@ -165,6 +175,7 @@ class _ObsOperatorNetCDFWriter:
             "S1",
             ("entries", "id_chars"),
             chunksizes=(SCIENCE_ENTRY_CHUNK, MAX_ID_LENGTH),
+            compression=self._compression,
             long_name="ids",
             description="id",
         )
@@ -174,6 +185,7 @@ class _ObsOperatorNetCDFWriter:
             "S1",
             ("fields", "field_chars"),
             chunksizes=(SCIENCE_FIELD_CHUNK, MAX_FIELD_NAME_LENGTH),
+            compression=self._compression,
             long_name="fields",
             description="field name",
         )
@@ -183,6 +195,7 @@ class _ObsOperatorNetCDFWriter:
             "i4",
             ("samples",),
             chunksizes=(SCIENCE_SAMPLE_CHUNK,),
+            compression=self._compression,
             long_name="id_index",
             description="index of the id in the id list",
         )
@@ -192,6 +205,7 @@ class _ObsOperatorNetCDFWriter:
             "i4",
             ("samples",),
             chunksizes=(SCIENCE_SAMPLE_CHUNK,),
+            compression=self._compression,
             long_name="field_index",
             description="index of the field in the field list",
         )
@@ -201,6 +215,7 @@ class _ObsOperatorNetCDFWriter:
             "f4",
             ("samples",),
             chunksizes=(SCIENCE_SAMPLE_CHUNK,),
+            compression=self._compression,
             long_name="samples",
             description="sample of the id and field",
         )
@@ -214,6 +229,7 @@ def _create_variable(
     dimensions: tuple[str, ...],
     *,
     chunksizes: tuple[int, ...],
+    compression: OutputCompressionConfig,
     long_name: str,
     description: str,
 ) -> netCDF4.Variable:
@@ -221,10 +237,8 @@ def _create_variable(
         name,
         dtype,
         dimensions,
-        zlib=True,
-        complevel=1,
-        shuffle=True,
         chunksizes=chunksizes,
+        **netcdf_compression_kwargs(compression),
     )
     variable.long_name = long_name
     variable.units = "1"

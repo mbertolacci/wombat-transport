@@ -39,7 +39,11 @@ from wombat_transport.transport.pbl import (
     run_vdiffdr_one_step,
 )
 from wombat_transport.transport.pbl._plan import prepare_vdiff_met_plan
+from wombat_transport.transport.pbl._plan import VdiffPlan
+from wombat_transport.transport.pbl._plan import VdiffPlanWorkspace
 from wombat_transport.transport.tpcore._plan import prepare_tpcore_met_plan
+from wombat_transport.transport.tpcore._plan import TpcorePlan
+from wombat_transport.transport.tpcore._plan import TpcorePlanWorkspace
 from wombat_transport.transport.tpcore._operator import (
     _run_tpcore_borrowed_mass_with_setup,
     _run_tpcore_consuming_mass_with_setup,
@@ -80,6 +84,28 @@ class TransportStepResult:
     ymass_hpa: np.ndarray | None
     zmass_hpa: np.ndarray | None
     transport_operators: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PreparedTransportStep:
+    """CPU-prepared, tracer-independent inputs for one transport application."""
+
+    tpcore_plan: TpcorePlan
+    vdiff_plan: VdiffPlan
+    surface_flux_kg_m2_s: np.ndarray
+    cmfmc: np.ndarray
+    dtrain: np.ndarray
+    delp_hpa: np.ndarray
+    delp_dry: np.ndarray
+    bmass: np.ndarray
+    dqrcu: np.ndarray
+    reevapcn: np.ndarray
+    reconstruct_conv_precip_flux: bool
+    internal_steps: int
+    internal_dt_s: float
+    next_dry_air_mass_kg: np.ndarray
+    next_delp_dry_hpa: np.ndarray
+    specific_humidity_after_kg_kg: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -282,6 +308,51 @@ def run_transport_step_with_executor(
     tpcore_workspace = executor.workspace.tpcore
     if not _is_exact_storage(tpcore_workspace.state_a, tracer_field.block_data[0]):
         raise ValueError("transport executor does not own the supplied tracer field")
+    prepared = prepare_transport_step(
+        tracer_field,
+        forcing,
+        grid,
+        dt_s=dt_s,
+        active_emissions=active_emissions,
+        surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
+        dry_air_mass_kg=dry_air_mass_kg,
+        tpcore_static_terms=tpcore_static_terms,
+        validate_tpcore_branches=validate_tpcore_branches,
+        workers=executor.workspace.workers,
+        tpcore_workspace=executor.workspace.tpcore_plan,
+        vdiff_workspace=executor.workspace.vdiff_plan,
+    )
+    apply_prepared_transport(
+        prepared,
+        executor,
+        execution=execution,
+    )
+    state = TracerField(
+        names=tracer_field.names,
+        data=tpcore_workspace.state_a[np.newaxis, ...],
+        units=tracer_field.units,
+        coords=tracer_field.coords,
+    )
+    return transport_result_from_prepared(state, prepared)
+
+
+def prepare_transport_step(
+    tracer_field: TracerField,
+    forcing: TransportForcing,
+    grid: TransportGrid,
+    *,
+    dt_s: float = 600.0,
+    active_emissions: SurfaceEmissions | None = None,
+    surface_flux_to_vmr_factor: np.ndarray | None = None,
+    dry_air_mass_kg: np.ndarray | None = None,
+    tpcore_static_terms: TpcoreStaticTerms | None = None,
+    validate_tpcore_branches: bool = True,
+    workers: int,
+    tpcore_workspace: TpcorePlanWorkspace | None = None,
+    vdiff_workspace: VdiffPlanWorkspace | None = None,
+) -> PreparedTransportStep:
+    """Prepare all host-side inputs shared by CPU and CUDA transport."""
+
     if active_emissions is not None and active_emissions.names != tracer_field.names:
         raise ValueError("active emissions names do not match tracer field names")
     area = grid.area_m2
@@ -304,7 +375,7 @@ def run_transport_step_with_executor(
         lat_deg=forcing.lat_deg,
         dt_s=dt_s,
         static_terms=tpcore_static_terms,
-        workspace=executor.workspace.tpcore_plan,
+        workspace=tpcore_workspace,
     )
     if validate_tpcore_branches:
         validate_tpcore_branch_support(tpcore_plan.setup)
@@ -340,8 +411,8 @@ def run_transport_step_with_executor(
         ustar_m_s=np.asarray(forcing.friction_velocity_m_s[0], dtype=np.float64),
         area_m2=area,
         dt_s=dt_s,
-        workers=executor.workspace.workers,
-        workspace=executor.workspace.vdiff_plan,
+        workers=workers,
+        workspace=vdiff_workspace,
     )
     if active_emissions is None:
         surface_flux = np.zeros((*area.shape, tracer_field.tracer_count), dtype=np.float64)
@@ -354,10 +425,9 @@ def run_transport_step_with_executor(
     )
     delp_top = np.asarray(next_delp[0], dtype=np.float64)[::-1]
     internal_steps = max(int(dt_s) // 300, 1)
-    apply_transport(
+    return PreparedTransportStep(
         tpcore_plan=tpcore_plan,
         vdiff_plan=vdiff_plan,
-        workspace=executor.workspace,
         surface_flux_kg_m2_s=surface_flux,
         cmfmc=np.asarray(forcing.convective_mass_flux_kg_m2_s[0], dtype=np.float64)[::-1],
         dtrain=np.asarray(forcing.convective_detrainment_kg_m2_s[0], dtype=np.float64)[::-1],
@@ -369,19 +439,52 @@ def run_transport_step_with_executor(
         reconstruct_conv_precip_flux=False,
         internal_steps=internal_steps,
         internal_dt_s=dt_s / internal_steps,
+        next_dry_air_mass_kg=next_dry_air_mass,
+        next_delp_dry_hpa=next_delp,
+        specific_humidity_after_kg_kg=vdiff_plan.specific_humidity_after[
+            np.newaxis, ::-1, :, :
+        ],
+    )
+
+
+def apply_prepared_transport(
+    prepared: PreparedTransportStep,
+    executor: TransportExecutor,
+    *,
+    execution: str = "blocks",
+) -> int:
+    """Apply one prepared step to a CPU executor's resident state."""
+
+    return apply_transport(
+        tpcore_plan=prepared.tpcore_plan,
+        vdiff_plan=prepared.vdiff_plan,
+        workspace=executor.workspace,
+        surface_flux_kg_m2_s=prepared.surface_flux_kg_m2_s,
+        cmfmc=prepared.cmfmc,
+        dtrain=prepared.dtrain,
+        delp_hpa=prepared.delp_hpa,
+        delp_dry=prepared.delp_dry,
+        bmass=prepared.bmass,
+        dqrcu=prepared.dqrcu,
+        reevapcn=prepared.reevapcn,
+        reconstruct_conv_precip_flux=prepared.reconstruct_conv_precip_flux,
+        internal_steps=prepared.internal_steps,
+        internal_dt_s=prepared.internal_dt_s,
         execution=execution,
     )
-    state = TracerField(
-        names=tracer_field.names,
-        data=tpcore_workspace.state_a[np.newaxis, ...],
-        units=tracer_field.units,
-        coords=tracer_field.coords,
-    )
+
+
+def transport_result_from_prepared(
+    state: TracerField,
+    prepared: PreparedTransportStep,
+) -> TransportStepResult:
+    """Attach host-side step metadata to an applied resident tracer state."""
+
     return TransportStepResult(
         state=state,
-        dry_air_mass_kg=next_dry_air_mass,
-        delp_dry_hpa=next_delp,
-        specific_humidity_kg_kg=vdiff_plan.specific_humidity_after[np.newaxis, ::-1, :, :],
+        dry_air_mass_kg=prepared.next_dry_air_mass_kg,
+        delp_dry_hpa=prepared.next_delp_dry_hpa,
+        specific_humidity_kg_kg=prepared.specific_humidity_after_kg_kg,
         xmass_hpa=None,
         ymass_hpa=None,
         zmass_hpa=None,

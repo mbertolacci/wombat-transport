@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ SUPPORTED_FIELD_TOKENS = {"SpeciesConcVV_?ADV?", "SpeciesRst_?ALL?", *SUPPORTED_
 @dataclass(frozen=True)
 class OutputCompressionConfig:
     enabled: bool = True
+    algorithm: str = "zlib"
     level: int = 1
     shuffle: bool = True
 
@@ -78,6 +79,24 @@ class OutputCollectionConfig:
 OutputSnapshot = CompletedStepSnapshot
 
 
+@dataclass(frozen=True)
+class _DetachedAverageOutput:
+    owner: _AverageCollection
+    timestamp: datetime
+    values: np.ndarray
+    denominator: float
+    metadata: TracerField
+    group_start: datetime
+    close_file_after: bool
+
+
+@dataclass(frozen=True)
+class _DetachedRestartOutput:
+    owner: _InstantaneousRestartWriter
+    path: Path
+    snapshot: OutputSnapshot
+
+
 class HistoryOutputManager:
     def __init__(
         self,
@@ -97,6 +116,7 @@ class HistoryOutputManager:
                 collection=collection,
                 start=start,
                 accumulator_index=index,
+                materialize_average=self._materialize_average,
             )
             for index, collection in enumerate(
                 collection
@@ -111,13 +131,24 @@ class HistoryOutputManager:
                 expid=expid,
                 collection=collection,
                 start=start,
+                materialize_snapshot=self._materialize_snapshot,
             )
             for collection in collections
             if collection.mode == "instantaneous"
         ]
-        self._sums: np.ndarray | None = None
+        self._sums: Any | None = None
         self._prepared_timestamp: datetime | None = None
         self._last_state: TracerField | None = None
+        self._detached_cuda_outputs: list[
+            _DetachedAverageOutput | _DetachedRestartOutput
+        ] = []
+        self._zeros = lambda shape: np.zeros(shape, dtype=np.float64)
+        self._average_materializer = lambda values, count, dtype: (
+            values,
+            float(count),
+        )
+        self._state_materializer = lambda state: state
+        self._snapshot_materializer = lambda snapshot: snapshot
 
     @classmethod
     def from_run_config(
@@ -153,11 +184,71 @@ class HistoryOutputManager:
             accumulate_history_sums(sums, snapshot.state.block_data[0])
         self.complete_step(snapshot)
 
+    def use_cuda(self, runtime: Any) -> None:
+        """Keep HISTORY sums resident and materialize only writer boundaries."""
+
+        if self._sums is not None:
+            raise ValueError("cannot change HISTORY storage after accumulation starts")
+        self._zeros = lambda shape: runtime.zeros(shape, dtype=np.float64)
+        from wombat_transport.cuda.history import (
+            CudaHistoryAverageMaterializer,
+        )
+
+        materializer = CudaHistoryAverageMaterializer(runtime)
+
+        def materialize_average(
+            values: Any,
+            count: int,
+            dtype: str,
+        ) -> tuple[np.ndarray, float]:
+            return (
+                materializer.materialize(values, count, dtype=dtype),
+                1.0,
+            )
+
+        self._average_materializer = materialize_average
+
+        def materialize_state(state: TracerField) -> TracerField:
+            return TracerField(
+                names=state.names,
+                data=runtime.to_host(state.block_data),
+                units=state.units,
+                coords=state.coords,
+            )
+
+        self._state_materializer = materialize_state
+
+        def materialize_array(values: Any) -> Any:
+            return runtime.to_host(values) if runtime.is_device_array(values) else values
+
+        def materialize_snapshot(snapshot: OutputSnapshot) -> OutputSnapshot:
+            forcing = snapshot.forcing
+            return replace(
+                snapshot,
+                state=materialize_state(snapshot.state),
+                delp_dry_hpa=materialize_array(snapshot.delp_dry_hpa),
+                forcing=replace(
+                    forcing,
+                    wet_surface_pressure_hpa=materialize_array(
+                        forcing.wet_surface_pressure_hpa
+                    ),
+                    dry_surface_pressure_hpa=materialize_array(
+                        forcing.dry_surface_pressure_hpa
+                    ),
+                    specific_humidity_kg_kg=materialize_array(
+                        forcing.specific_humidity_kg_kg
+                    ),
+                    temperature_k=materialize_array(forcing.temperature_k),
+                ),
+            )
+
+        self._snapshot_materializer = materialize_snapshot
+
     def prepare_step(
         self,
         timestamp: datetime,
         state: TracerField,
-    ) -> np.ndarray | None:
+    ) -> Any | None:
         if self._prepared_timestamp is not None:
             raise ValueError("an output transport step is already prepared")
         self._ensure_accumulators(state)
@@ -189,8 +280,52 @@ class HistoryOutputManager:
         self._last_state = snapshot.state
         self._prepared_timestamp = None
 
+    def detach_cuda_step(self, snapshot: OutputSnapshot) -> None:
+        """Complete a CUDA step while deferring only its host file writes."""
+
+        if self._prepared_timestamp is None:
+            raise ValueError("no output transport step is prepared")
+        if snapshot.timestamp != self._prepared_timestamp:
+            raise ValueError(
+                "output snapshot timestamp does not match the prepared step"
+            )
+        if self._sums is not None:
+            for average in self._averages:
+                detached = average.detach_complete(
+                    snapshot.timestamp,
+                    snapshot.state,
+                    self._sums[average.accumulator_index],
+                )
+                if detached is not None:
+                    self._detached_cuda_outputs.append(detached)
+        for restart in self._restarts:
+            self._detached_cuda_outputs.extend(
+                restart.detach_step(snapshot)
+            )
+        self._last_state = snapshot.state
+        self._prepared_timestamp = None
+
+    def write_detached_cuda_outputs(self) -> None:
+        """Write host payloads detached at an earlier CUDA boundary."""
+
+        for detached in self._detached_cuda_outputs:
+            detached.owner.write_detached(detached)
+        self._detached_cuda_outputs = []
+
+    def requires_host_completion(self, timestamp: datetime) -> bool:
+        """Return whether completing this CUDA step materializes host output."""
+
+        return any(
+            average.requires_host_completion(timestamp)
+            for average in self._averages
+        ) or any(
+            restart.requires_host_completion(timestamp)
+            for restart in self._restarts
+        )
+
     def close(self) -> None:
         self._prepared_timestamp = None
+        self.write_detached_cuda_outputs()
         if self._sums is not None:
             for average in self._averages:
                 average.close(
@@ -205,13 +340,30 @@ class HistoryOutputManager:
             return
         expected = (len(self._averages), *state.block_data.shape[1:])
         if self._sums is None:
-            self._sums = np.zeros(expected, dtype=np.float64)
+            self._sums = self._zeros(expected)
             return
         if self._sums.shape != expected:
             raise ValueError(
                 f"HISTORY tracer storage changed from {self._sums.shape[1:]} "
                 f"to {expected[1:]}"
             )
+
+    def _materialize_average(
+        self,
+        values: Any,
+        count: int,
+        dtype: str,
+    ) -> tuple[np.ndarray, float]:
+        return self._average_materializer(values, count, dtype)
+
+    def _materialize_state(self, state: TracerField) -> TracerField:
+        return self._state_materializer(state)
+
+    def _materialize_snapshot(
+        self,
+        snapshot: OutputSnapshot,
+    ) -> OutputSnapshot:
+        return self._snapshot_materializer(snapshot)
 
 
 class _AverageCollection:
@@ -224,6 +376,7 @@ class _AverageCollection:
         collection: OutputCollectionConfig,
         start: datetime,
         accumulator_index: int,
+        materialize_average: Any,
     ) -> None:
         self._root = root
         self._template_path = template_path
@@ -231,6 +384,7 @@ class _AverageCollection:
         self._collection = collection
         self._start = start
         self.accumulator_index = accumulator_index
+        self._materialize_average = materialize_average
         self._window_start: datetime | None = None
         self._window_end: datetime | None = None
         self._group_start: datetime | None = None
@@ -263,6 +417,69 @@ class _AverageCollection:
             self._finish_and_advance(summed, state)
         elif timestamp > self._window_end:
             raise ValueError("SpeciesConc sample advanced beyond its prepared window")
+
+    def detach_complete(
+        self,
+        timestamp: datetime,
+        state: TracerField,
+        summed: np.ndarray,
+    ) -> _DetachedAverageOutput | None:
+        """Finalize a CUDA average into host memory without writing it."""
+
+        if self._window_end is None:
+            raise ValueError("cannot complete an unprepared SpeciesConc step")
+        self._count += 1
+        if timestamp < self._window_end:
+            return None
+        if timestamp > self._window_end:
+            raise ValueError(
+                "SpeciesConc sample advanced beyond its prepared window"
+            )
+        if self._window_start is None or self._group_start is None:
+            raise ValueError("SpeciesConc schedule is not initialized")
+        storage = _collection_storage(self._collection)
+        materialized, denominator = self._materialize_average(
+            summed,
+            self._count,
+            storage.netcdf_dtype,
+        )
+        output = _DetachedAverageOutput(
+            owner=self,
+            timestamp=self._window_start,
+            values=materialized,
+            denominator=denominator,
+            metadata=state,
+            group_start=self._group_start,
+            close_file_after=False,
+        )
+        summed.fill(0.0)
+        self._count = 0
+        close_file_after = self._advance_schedule(close_group_file=False)
+        if close_file_after:
+            output = replace(output, close_file_after=True)
+        return output
+
+    def write_detached(self, output: _DetachedAverageOutput) -> None:
+        self._ensure_file(
+            group_start=output.group_start,
+            first_timestamp=output.timestamp,
+            first_state=output.metadata,
+        )
+        assert self._file is not None
+        self._file.append_average(
+            output.timestamp,
+            output.values,
+            output.denominator,
+            output.metadata,
+        )
+        if output.close_file_after:
+            self._close_file()
+
+    def requires_host_completion(self, timestamp: datetime) -> bool:
+        if self._window_end is None:
+            self._initialize_schedule(timestamp)
+        assert self._window_end is not None
+        return timestamp >= self._window_end
 
     def close(
         self,
@@ -307,6 +524,13 @@ class _AverageCollection:
         summed.fill(0.0)
         self._count = 0
 
+        self._advance_schedule(close_group_file=True)
+
+    def _advance_schedule(self, *, close_group_file: bool) -> bool:
+        """Advance one average window and report a file-group transition."""
+
+        if self._window_end is None or self._group_end is None:
+            raise ValueError("SpeciesConc schedule is not initialized")
         next_window_start = self._window_end
         next_window_end = self._collection.frequency.add_to(next_window_start)
         next_group_start = self._group_start
@@ -316,12 +540,14 @@ class _AverageCollection:
         while next_window_start >= next_group_end:
             next_group_start = next_group_end
             next_group_end = self._collection.duration.add_to(next_group_start)
-        if next_group_start != self._group_start:
+        group_changed = next_group_start != self._group_start
+        if group_changed and close_group_file:
             self._close_file()
         self._window_start = next_window_start
         self._window_end = next_window_end
         self._group_start = next_group_start
         self._group_end = next_group_end
+        return group_changed
 
     def _append_average(
         self,
@@ -332,25 +558,48 @@ class _AverageCollection:
             raise ValueError("SpeciesConc schedule is not initialized")
         if self._count <= 0:
             return
-        if self._file is None:
-            self._file = _StreamingSpeciesConcFile(
-                path=_collection_path(
-                    self._root,
-                    self._expid,
-                    self._collection,
-                    self._group_start,
-                ),
-                template_path=self._template_path,
-                title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
-                storage=_collection_storage(self._collection),
-                first_timestamp=self._window_start,
-                first_state=metadata,
-            )
-        self._file.append_average(
-            self._window_start,
+        storage = _collection_storage(self._collection)
+        self._ensure_file(
+            group_start=self._group_start,
+            first_timestamp=self._window_start,
+            first_state=metadata,
+        )
+        materialized, denominator = self._materialize_average(
             summed,
             self._count,
+            storage.netcdf_dtype,
+        )
+        self._file.append_average(
+            self._window_start,
+            materialized,
+            denominator,
             metadata,
+        )
+
+    def _ensure_file(
+        self,
+        *,
+        group_start: datetime,
+        first_timestamp: datetime,
+        first_state: TracerField,
+    ) -> None:
+        if self._file is not None:
+            return
+        self._file = _StreamingSpeciesConcFile(
+            path=_collection_path(
+                self._root,
+                self._expid,
+                self._collection,
+                group_start,
+            ),
+            template_path=self._template_path,
+            title=(
+                "GEOS-Chem diagnostic collection: "
+                f"{self._collection.name}"
+            ),
+            storage=_collection_storage(self._collection),
+            first_timestamp=first_timestamp,
+            first_state=first_state,
         )
 
     def _close_file(self) -> None:
@@ -409,17 +658,20 @@ class _StreamingSpeciesConcFile:
         self,
         timestamp: datetime,
         summed: np.ndarray,
-        count: int,
+        denominator: float,
         metadata: TracerField,
     ) -> None:
         self._validate_open_sample(metadata)
         if summed.shape != self._storage_shape:
             raise ValueError("all SpeciesConc samples must have the same shape")
-        if count <= 0:
-            raise ValueError("SpeciesConc average count must be positive")
+        if denominator <= 0:
+            raise ValueError("SpeciesConc average denominator must be positive")
 
         self._write_time_sample(timestamp)
-        self._write_average(summed, metadata, float(count))
+        if denominator == 1.0:
+            self._write_preaveraged(summed, metadata)
+        else:
+            self._write_average(summed, metadata, denominator)
         self._sample_index += 1
 
     def _write_state(self, sample: TracerField) -> None:
@@ -441,6 +693,18 @@ class _StreamingSpeciesConcFile:
                 out=self._write_buffer,
             )
             variable[self._sample_index, :, :, :] = self._write_buffer
+
+    def _write_preaveraged(
+        self,
+        values: np.ndarray,
+        metadata: TracerField,
+    ) -> None:
+        for tracer_index, variable in enumerate(self._variables):
+            variable[self._sample_index, :, :, :] = _summed_tracer(
+                values,
+                metadata,
+                tracer_index,
+            )[::-1, :, :]
 
     def close(self) -> None:
         if self._dataset is not None:
@@ -519,25 +783,67 @@ class _InstantaneousRestartWriter:
         expid: str,
         collection: OutputCollectionConfig,
         start: datetime,
+        materialize_snapshot: Any,
     ) -> None:
         self._root = root
         self._template_path = template_path
         self._expid = expid
         self._collection = collection
         self._next_output = collection.frequency.add_to(start)
+        self._materialize_snapshot = materialize_snapshot
+
+    def requires_host_completion(self, timestamp: datetime) -> bool:
+        return timestamp >= self._next_output
 
     def record_step(self, snapshot: OutputSnapshot) -> None:
         while snapshot.timestamp >= self._next_output:
             path = _collection_path(self._root, self._expid, self._collection, self._next_output)
+            host_snapshot = self._materialize_snapshot(snapshot)
             write_restart_collection(
                 path,
-                snapshot,
+                host_snapshot,
                 self._template_path,
                 fields=self._collection.fields,
                 title=f"GEOS-Chem diagnostic collection: {self._collection.name}",
                 storage=_collection_storage(self._collection),
             )
             self._next_output = self._collection.frequency.add_to(self._next_output)
+
+    def detach_step(
+        self,
+        snapshot: OutputSnapshot,
+    ) -> list[_DetachedRestartOutput]:
+        outputs = []
+        while snapshot.timestamp >= self._next_output:
+            outputs.append(
+                _DetachedRestartOutput(
+                    owner=self,
+                    path=_collection_path(
+                        self._root,
+                        self._expid,
+                        self._collection,
+                        self._next_output,
+                    ),
+                    snapshot=self._materialize_snapshot(snapshot),
+                )
+            )
+            self._next_output = self._collection.frequency.add_to(
+                self._next_output
+            )
+        return outputs
+
+    def write_detached(self, output: _DetachedRestartOutput) -> None:
+        write_restart_collection(
+            output.path,
+            output.snapshot,
+            self._template_path,
+            fields=self._collection.fields,
+            title=(
+                "GEOS-Chem diagnostic collection: "
+                f"{self._collection.name}"
+            ),
+            storage=_collection_storage(self._collection),
+        )
 
     def close(self) -> None:
         return None
@@ -565,7 +871,11 @@ def parse_output_collections(raw: dict[str, Any]) -> tuple[OutputCollectionConfi
                 duration=parse_history_interval(str(value.get("duration", value["frequency"]))),
                 mode=str(value["mode"]),
                 fields=fields,
-                storage=storage,
+                storage=parse_output_storage(
+                    value,
+                    defaults=storage,
+                    label=f"outputs.collections.{name}",
+                ),
             )
         )
     return tuple(collections)
@@ -596,35 +906,71 @@ def validate_output_collections(collections: tuple[OutputCollectionConfig, ...])
             )
 
 
-def parse_output_storage(raw: dict[str, Any]) -> OutputStorageConfig:
-    dtype = str(raw.get("dtype", "float32")).lower()
+def parse_output_storage(
+    raw: dict[str, Any],
+    *,
+    defaults: OutputStorageConfig | None = None,
+    label: str = "outputs",
+) -> OutputStorageConfig:
+    defaults = defaults or OutputStorageConfig()
+    dtype = str(raw.get("dtype", defaults.dtype)).lower()
     if dtype not in {"float32", "float64"}:
-        raise ValueError("outputs.dtype must be 'float32' or 'float64'")
+        raise ValueError(f"{label}.dtype must be 'float32' or 'float64'")
 
-    compression_raw = raw.get("compression", {})
+    compression_raw = raw.get("compression")
     if compression_raw is None:
         compression_raw = {}
     if not isinstance(compression_raw, dict):
-        raise TypeError("outputs.compression must be a mapping")
-    level = int(compression_raw.get("level", 1))
+        raise TypeError(f"{label}.compression must be a mapping")
+    algorithm = str(
+        compression_raw.get("algorithm", defaults.compression.algorithm)
+    ).lower()
+    supported_algorithms = {"zlib", "zstd", "blosc_lz4", "blosc_zstd"}
+    if algorithm not in supported_algorithms:
+        raise ValueError(
+            f"{label}.compression.algorithm must be one of "
+            f"{', '.join(sorted(supported_algorithms))}"
+        )
+    level = int(compression_raw.get("level", defaults.compression.level))
     if level < 0 or level > 9:
-        raise ValueError("outputs.compression.level must be between 0 and 9")
+        raise ValueError(f"{label}.compression.level must be between 0 and 9")
     compression = OutputCompressionConfig(
-        enabled=bool(compression_raw.get("enabled", True)),
+        enabled=bool(
+            compression_raw.get("enabled", defaults.compression.enabled)
+        ),
+        algorithm=algorithm,
         level=level,
-        shuffle=bool(compression_raw.get("shuffle", True)),
+        shuffle=bool(
+            compression_raw.get("shuffle", defaults.compression.shuffle)
+        ),
     )
 
-    chunking_raw = raw.get("chunking", {})
+    chunking_raw = raw.get("chunking")
     if chunking_raw is None:
         chunking_raw = {}
     if not isinstance(chunking_raw, dict):
-        raise TypeError("outputs.chunking must be a mapping")
+        raise TypeError(f"{label}.chunking must be a mapping")
     chunking = OutputChunkingConfig(
-        rank1=_parse_chunk_array(chunking_raw.get("rank1"), 1, "outputs.chunking.rank1"),
-        rank2=_parse_chunk_array(chunking_raw.get("rank2"), 2, "outputs.chunking.rank2"),
-        rank3=_parse_chunk_array(chunking_raw.get("rank3"), 3, "outputs.chunking.rank3"),
-        rank4=_parse_chunk_array(chunking_raw.get("rank4"), 4, "outputs.chunking.rank4"),
+        rank1=_parse_chunk_array(
+            chunking_raw.get("rank1", defaults.chunking.rank1),
+            1,
+            f"{label}.chunking.rank1",
+        ),
+        rank2=_parse_chunk_array(
+            chunking_raw.get("rank2", defaults.chunking.rank2),
+            2,
+            f"{label}.chunking.rank2",
+        ),
+        rank3=_parse_chunk_array(
+            chunking_raw.get("rank3", defaults.chunking.rank3),
+            3,
+            f"{label}.chunking.rank3",
+        ),
+        rank4=_parse_chunk_array(
+            chunking_raw.get("rank4", defaults.chunking.rank4),
+            4,
+            f"{label}.chunking.rank4",
+        ),
     )
     return OutputStorageConfig(dtype=dtype, compression=compression, chunking=chunking)
 
@@ -816,14 +1162,7 @@ def _create_output_variable(
         chunks = _chunks_for_variable(output, dimensions, storage)
         if chunks is not None:
             kwargs["chunksizes"] = chunks
-        if storage.compression.enabled:
-            kwargs.update(
-                {
-                    "zlib": True,
-                    "complevel": storage.compression.level,
-                    "shuffle": storage.compression.shuffle,
-                }
-            )
+        kwargs.update(netcdf_compression_kwargs(storage.compression))
     return output.createVariable(name, storage.netcdf_dtype, dimensions, **kwargs)
 
 
@@ -832,21 +1171,45 @@ def _create_template_variable(
     source: netCDF4.Variable,
     storage: OutputStorageConfig,
 ):
+    storage = _metadata_storage(storage)
     kwargs: dict[str, Any] = {}
     dimensions = source.dimensions
     if dimensions:
         chunks = _chunks_for_variable(output, dimensions, storage)
         if chunks is not None:
             kwargs["chunksizes"] = chunks
-        if storage.compression.enabled:
-            kwargs.update(
-                {
-                    "zlib": True,
-                    "complevel": storage.compression.level,
-                    "shuffle": storage.compression.shuffle,
-                }
-            )
+        kwargs.update(netcdf_compression_kwargs(storage.compression))
     return output.createVariable(source.name, source.datatype, dimensions, **kwargs)
+
+
+def netcdf_compression_kwargs(
+    compression: OutputCompressionConfig,
+) -> dict[str, Any]:
+    if not compression.enabled:
+        return {}
+    if (
+        compression.algorithm == "zstd"
+        and not getattr(netCDF4, "__has_zstandard_support__", False)
+    ):
+        raise RuntimeError(
+            "zstd output requires the netCDF4 HDF5 zstandard filter plugin"
+        )
+    if (
+        compression.algorithm.startswith("blosc_")
+        and not getattr(netCDF4, "__has_blosc_support__", False)
+    ):
+        raise RuntimeError(
+            "Blosc output requires the netCDF4 HDF5 Blosc filter plugin"
+        )
+    kwargs: dict[str, Any] = {
+        "compression": compression.algorithm,
+        "complevel": compression.level,
+    }
+    if compression.algorithm.startswith("blosc_"):
+        kwargs["blosc_shuffle"] = 1 if compression.shuffle else 0
+    else:
+        kwargs["shuffle"] = compression.shuffle
+    return kwargs
 
 
 def _chunks_for_variable(
@@ -940,13 +1303,27 @@ def _create_time_variable(
     storage: OutputStorageConfig,
     utc: bool = False,
 ):
-    variable = _create_output_variable(output, "time", ("time",), storage)
+    variable = _create_output_variable(
+        output,
+        "time",
+        ("time",),
+        _metadata_storage(storage),
+    )
     variable.long_name = "Time"
     suffix = " UTC" if utc else ""
     variable.units = f"minutes since {base:%Y-%m-%d %H:%M:%S}{suffix}"
     variable.calendar = "gregorian"
     variable.axis = "T"
     return variable
+
+
+def _metadata_storage(storage: OutputStorageConfig) -> OutputStorageConfig:
+    if not storage.compression.algorithm.startswith("blosc_"):
+        return storage
+    return replace(
+        storage,
+        compression=replace(storage.compression, algorithm="zlib"),
+    )
 
 
 def _assert_compatible_samples(

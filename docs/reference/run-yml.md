@@ -43,6 +43,7 @@ outputs:
   dtype: float32
   compression:
     enabled: true
+    algorithm: zlib
     level: 1
     shuffle: true
   chunking:
@@ -136,6 +137,7 @@ See [inputs](../user-guide/inputs.md) for source fields and regridding.
 | `expid` | `OutputDir/GEOSChem` | Filename prefix used with collection `template` |
 | `dtype` | `float32` | `float32`, `float64` |
 | `compression.enabled` | `true` | boolean |
+| `compression.algorithm` | `zlib` | `zlib`, `zstd`, `blosc_lz4`, `blosc_zstd` |
 | `compression.level` | `1` | integer 0--9 |
 | `compression.shuffle` | `true` | boolean |
 | `chunking.rank1`--`rank4` | null | null or matching-length positive integer array |
@@ -144,6 +146,8 @@ See [inputs](../user-guide/inputs.md) for source fields and regridding.
 
 Each collection requires `frequency`, `mode`, and `fields`, plus either
 `filename` or `template`. `duration` defaults to `frequency`.
+Collection-level `dtype`, `compression`, and `chunking` mappings override the
+corresponding inherited `outputs` storage settings.
 
 Currently supported collection combinations are:
 
@@ -164,6 +168,7 @@ naming.
 | `output_file` | null | Required when active |
 | `restart_file` | null | Required when active |
 | `restart_missing` | `warn` | `warn`, `error`, or `ignore` |
+| `compression` | zlib level 1 | Same fields as `outputs.compression`; applies to science output |
 
 See [ObsOperator](../user-guide/obsoperator.md) for compact time-window and
 continuation semantics.

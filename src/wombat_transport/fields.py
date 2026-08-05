@@ -1,8 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+from typing import Protocol
 
 import numpy as np
+
+
+class ArrayStorage(Protocol):
+    """Array behavior needed by :class:`TracerField` storage."""
+
+    ndim: int
+    shape: tuple[int, ...]
+    dtype: np.dtype[Any]
+
+    def __getitem__(self, key: Any) -> Any: ...
+
+    def __setitem__(self, key: Any, value: Any) -> None: ...
 
 
 @dataclass(frozen=True, init=False)
@@ -16,7 +30,7 @@ class TracerField:
     """
 
     names: tuple[str, ...]
-    _data: np.ndarray
+    _data: ArrayStorage
     units: tuple[str, ...]
     coords: dict[str, np.ndarray]
 
@@ -24,11 +38,11 @@ class TracerField:
         self,
         *,
         names: tuple[str, ...],
-        data: np.ndarray,
+        data: ArrayStorage,
         units: tuple[str, ...],
         coords: dict[str, np.ndarray],
     ) -> None:
-        storage = np.asarray(data)
+        storage = _coerce_storage(data)
         if storage.ndim == 5:
             if storage.shape[-1] != len(names):
                 raise ValueError("canonical tracer width does not match tracer names")
@@ -60,7 +74,7 @@ class TracerField:
         cls,
         *,
         names: tuple[str, ...],
-        data: np.ndarray,
+        data: ArrayStorage,
         units: tuple[str, ...],
         coords: dict[str, np.ndarray],
         block_width: int | None = None,
@@ -69,13 +83,13 @@ class TracerField:
         return field if block_width is None else field.reblock(block_width)
 
     @property
-    def block_data(self) -> np.ndarray:
+    def block_data(self) -> ArrayStorage:
         """Return physical ``(time, block, lev, lat, lon, lane)`` storage."""
 
         return self._data
 
     @property
-    def data(self) -> np.ndarray:
+    def data(self) -> ArrayStorage:
         """Return a zero-copy canonical view for a one-block field.
 
         Call :meth:`to_canonical` explicitly when multiple blocks must be
@@ -129,7 +143,7 @@ class TracerField:
         for block in range(self.block_count):
             yield self.block(block)
 
-    def tracer(self, tracer: int) -> np.ndarray:
+    def tracer(self, tracer: int) -> ArrayStorage:
         """Return one logical tracer as a zero-copy ``(time, lev, lat, lon)`` view."""
 
         if tracer < 0 or tracer >= self.tracer_count:
@@ -137,7 +151,7 @@ class TracerField:
         block, lane = divmod(tracer, self.block_width)
         return self._data[:, block, :, :, :, lane]
 
-    def canonical_view(self) -> np.ndarray:
+    def canonical_view(self) -> ArrayStorage:
         """Return canonical storage without copying, requiring one block."""
 
         if self.block_count != 1:
@@ -147,12 +161,13 @@ class TracerField:
             )
         return self._data[:, 0, :, :, :, : self.tracer_count]
 
-    def to_canonical(self) -> np.ndarray:
+    def to_canonical(self) -> ArrayStorage:
         """Return canonical ``(time, lev, lat, lon, tracer)`` storage."""
 
         if self.block_count == 1:
             return self.canonical_view()
-        canonical = np.empty(self.shape, dtype=self._data.dtype)
+        array_module = _storage_array_module(self._data)
+        canonical = array_module.empty(self.shape, dtype=self._data.dtype)
         for block in range(self.block_count):
             start, stop = self.block_bounds(block)
             canonical[..., start:stop] = self._data[
@@ -169,19 +184,58 @@ class TracerField:
             return self
         ntime, nlev, nlat, nlon, _ = self.shape
         nblock = (self.tracer_count + block_width - 1) // block_width
-        storage = np.zeros(
+        array_module = _storage_array_module(self._data)
+        storage = array_module.zeros(
             (ntime, nblock, nlev, nlat, nlon, block_width),
             dtype=self._data.dtype,
         )
-        for tracer in range(self.tracer_count):
-            block, lane = divmod(tracer, block_width)
-            storage[:, block, :, :, :, lane] = self.tracer(tracer)
+        start = 0
+        while start < self.tracer_count:
+            source_block, source_lane = divmod(start, self.block_width)
+            target_block, target_lane = divmod(start, block_width)
+            count = min(
+                self.block_width - source_lane,
+                block_width - target_lane,
+                self.tracer_count - start,
+            )
+            storage[
+                :, target_block, :, :, :, target_lane : target_lane + count
+            ] = self._data[
+                :, source_block, :, :, :, source_lane : source_lane + count
+            ]
+            start += count
         return TracerField(
             names=self.names,
             data=storage,
             units=self.units,
             coords=self.coords,
         )
+
+
+def _coerce_storage(values: ArrayStorage) -> ArrayStorage:
+    if isinstance(values, np.ndarray):
+        return np.asarray(values)
+    if hasattr(values, "__cuda_array_interface__"):
+        _cupy_for_storage(values)
+        return values
+    return np.asarray(values)
+
+
+def _storage_array_module(values: ArrayStorage) -> Any:
+    if isinstance(values, np.ndarray):
+        return np
+    if hasattr(values, "__cuda_array_interface__"):
+        return _cupy_for_storage(values)
+    raise TypeError(f"unsupported tracer storage type {type(values).__name__}")
+
+
+def _cupy_for_storage(values: ArrayStorage) -> Any:
+    from wombat_transport.cuda.runtime import require_cupy
+
+    cupy = require_cupy()
+    if not isinstance(values, cupy.ndarray):
+        raise TypeError("CUDA tracer storage must be a CuPy array")
+    return cupy
 
 
 def public_tracer5_to_canonical(values: np.ndarray) -> np.ndarray:

@@ -58,6 +58,14 @@ class EmissionsStep:
 
 
 @dataclass(frozen=True)
+class _CudaHostStep:
+    timestamp: datetime
+    forcing_selection: Any
+    emissions: SurfaceEmissions | None
+    emission_midpoint: datetime | None
+
+
+@dataclass(frozen=True)
 class TracerSimulationResult:
     state: TracerField
     emissions_processed: tuple[EmissionsStep, ...]
@@ -88,9 +96,11 @@ def _run_tracer_simulation(
     max_steps: int | None,
     resources: ExitStack,
 ) -> TracerSimulationResult:
-    warn_if_numba_disabled(logger)
     logger.info("simulation_start name=%s max_steps=%s", config.name, max_steps)
-    _write_run_metadata(config)
+    execution_backend = _execution_backend()
+    if execution_backend == "cpu":
+        warn_if_numba_disabled(logger)
+    _write_run_metadata(config, execution_backend=execution_backend)
     species = load_species_database(config.species_database)
     logger.debug("loaded_species count=%d", len(species))
     initial_state = initialize_tracers(
@@ -100,13 +110,21 @@ def _run_tracer_simulation(
     )
     parallel_strategy = _transport_executor()
     numba_transport = numba_available_and_enabled()
-    if parallel_strategy == "blocks" and not numba_transport:
+    if (
+        execution_backend == "cpu"
+        and parallel_strategy == "blocks"
+        and not numba_transport
+    ):
         raise ValueError(
             "WOMBAT_TRANSPORT_EXECUTOR=blocks requires WOMBAT_NUMBA to be enabled"
         )
-    block_width = _transport_block_width(parallel_strategy, initial_state.tracer_count)
+    block_width = (
+        _cuda_block_width(initial_state.tracer_count)
+        if execution_backend == "cuda"
+        else _transport_block_width(parallel_strategy, initial_state.tracer_count)
+    )
     state = initial_state.reblock(block_width)
-    use_unified_numba = numba_transport
+    use_unified_numba = numba_transport and execution_backend == "cpu"
     transport_executor = (
         TransportExecutor.create(state)
         if use_unified_numba
@@ -121,6 +139,7 @@ def _run_tracer_simulation(
         parallel_strategy,
     )
     grid = load_transport_grid(config.grid_template)
+    cuda_executor = None
     tpcore_static_terms = build_tpcore_static_terms(
         area_m2=grid.area_m2,
         hyai_hpa=grid.hyai_hpa,
@@ -167,12 +186,41 @@ def _run_tracer_simulation(
         transport_dt_s=transport_dt_s,
     )
     dry_air_mass = _initial_dry_air_mass(config, first_forcing, grid)
+    if execution_backend == "cuda":
+        from wombat_transport.cuda.executor import CudaRunExecutor
+
+        cuda_executor = CudaRunExecutor(
+            state,
+            dtype=_cuda_dtype(),
+            device_id=_cuda_device(),
+            grid=grid,
+            tpcore_static_terms=tpcore_static_terms,
+            initial_dry_surface_pressure_hpa=(
+                first_forcing.dry_surface_pressure_start_hpa
+            ),
+        )
+        state = cuda_executor.state
+        logger.info(
+            "cuda_initialized device=%s dtype=%s block_width=%d",
+            cuda_executor.runtime.device_info.name,
+            cuda_executor.dtype.name,
+            state.block_width,
+        )
+        if output_manager is not None:
+            output_manager.use_cuda(cuda_executor.runtime)
+        if obsoperator_manager is not None:
+            obsoperator_manager.use_cuda(
+                cuda_executor.runtime,
+                dtype=cuda_executor.dtype,
+            )
     emitted_mass_by_tracer = np.zeros(len(species), dtype=np.float64)
     emissions_processed: list[EmissionsStep] = []
     final_delp_dry_hpa = None
     transport_steps = 0
     emissions_steps = 0
     active_emissions: SurfaceEmissions | None = None
+    cuda_host_step: _CudaHostStep | None = None
+    cuda_batch_steps = 0
 
     while current < end:
         if max_steps is not None and transport_steps >= max_steps:
@@ -181,23 +229,61 @@ def _run_tracer_simulation(
 
         logger.info("transport_timestep step=%d time=%s", transport_steps + 1, current.isoformat())
         logger.debug("loading_forcing step=%d time=%s", transport_steps + 1, current.isoformat())
-        forcing = _load_simulation_forcing(
-            forcing_provider,
-            current,
-            transport_dt_s=transport_dt_s,
-        )
+        if execution_backend == "cuda":
+            if cuda_host_step is None:
+                cuda_host_step = _prepare_cuda_host_step(
+                    forcing_provider,
+                    configured_emissions,
+                    current=current,
+                    start=start,
+                    transport_dt_s=transport_dt_s,
+                    emissions_dt_s=emissions_dt_s,
+                )
+            if cuda_host_step.timestamp != current:
+                raise AssertionError("prefetched CUDA host step is out of sequence")
+            forcing = None
+            forcing_selection = cuda_host_step.forcing_selection
+        else:
+            forcing = _load_simulation_forcing(
+                forcing_provider,
+                current,
+                transport_dt_s=transport_dt_s,
+            )
+            forcing_selection = None
         elapsed_s = int(round((current - start).total_seconds()))
-        if _is_time_for_emissions(elapsed_s, transport_dt_s, emissions_dt_s):
-            emission_midpoint = current + timedelta(seconds=emissions_dt_s / 2.0)
-            logger.debug("evaluating_emissions step=%d midpoint=%s", transport_steps + 1, emission_midpoint.isoformat())
-            emissions = configured_emissions.evaluate_surface_flux(emission_midpoint)
-            if has_invalid_emissions(emissions):
-                raise ValueError(f"configured emissions contain invalid values at {emission_midpoint:%Y-%m-%d %H:%M}")
-            emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(emissions, emissions_dt_s)
+        emissions = None
+        if execution_backend == "cuda":
+            assert cuda_host_step is not None
+            emission_midpoint = cuda_host_step.emission_midpoint
+            emissions = cuda_host_step.emissions
+        elif _is_time_for_emissions(
+            elapsed_s,
+            transport_dt_s,
+            emissions_dt_s,
+        ):
+            emission_midpoint, emissions = _evaluate_surface_emissions(
+                configured_emissions,
+                current=current,
+                emissions_dt_s=emissions_dt_s,
+            )
+        else:
+            emission_midpoint = None
+        if emission_midpoint is not None:
+            assert emissions is not None
+            emitted_mass_by_tracer += emitted_mass_by_tracer_for_step(
+                emissions,
+                emissions_dt_s,
+            )
             active_emissions = emissions
-            emissions_processed.append(EmissionsStep(timestamp=emission_midpoint))
+            emissions_processed.append(
+                EmissionsStep(timestamp=emission_midpoint)
+            )
             emissions_steps += 1
-            logger.debug("refreshed_emissions step=%d emissions_steps=%d", transport_steps + 1, emissions_steps)
+            logger.debug(
+                "refreshed_emissions step=%d emissions_steps=%d",
+                transport_steps + 1,
+                emissions_steps,
+            )
 
         logger.debug("running_transport step=%d", transport_steps + 1)
         step_end = current + timedelta(seconds=transport_dt_s)
@@ -211,11 +297,22 @@ def _run_tracer_simulation(
                 elapsed_s == 0 or elapsed_s % 10800 < int(round(transport_dt_s))
             ),
         )
-        if transport_executor is None:
+        if execution_backend == "cuda":
+            assert cuda_executor is not None
+            assert forcing_selection is not None
+            transport_result = cuda_executor.apply_resident(
+                forcing_selection,
+                dt_s=transport_dt_s,
+                active_emissions=active_emissions,
+                surface_flux_to_vmr_factor=surface_flux_to_vmr_factor,
+            )
+        elif transport_executor is None:
+            assert forcing is not None
             transport_result = run_transport_one_step(
                 state, forcing, grid, consume_input=True, **transport_kwargs
             )
         else:
+            assert forcing is not None
             transport_result = run_transport_step_with_executor(
                 state,
                 forcing,
@@ -229,9 +326,15 @@ def _run_tracer_simulation(
         final_delp_dry_hpa = transport_result.delp_dry_hpa
         snapshot: CompletedStepSnapshot | None = None
         if output_manager is not None or obsoperator_manager is not None:
-            snapshot_forcing = replace(
-                forcing,
-                specific_humidity_kg_kg=transport_result.specific_humidity_kg_kg,
+            snapshot_forcing = (
+                cuda_executor.snapshot_forcing(first_forcing)
+                if execution_backend == "cuda"
+                else replace(
+                    forcing,
+                    specific_humidity_kg_kg=(
+                        transport_result.specific_humidity_kg_kg
+                    ),
+                )
             )
             snapshot = CompletedStepSnapshot(
                 timestamp=step_end,
@@ -239,6 +342,104 @@ def _run_tracer_simulation(
                 delp_dry_hpa=transport_result.delp_dry_hpa,
                 forcing=snapshot_forcing,
             )
+        if execution_backend == "cuda":
+            assert cuda_executor is not None
+            if obsoperator_manager is not None:
+                assert snapshot is not None
+                if snapshot.timestamp != step_end:
+                    raise AssertionError(
+                        "ObsOperator must sample the completed "
+                        "transport-step snapshot"
+                    )
+                logger.debug(
+                    "sampling_obsoperator step=%d time_index=%d",
+                    transport_steps + 1,
+                    transport_steps,
+                )
+                obsoperator_manager.launch_cuda_sample(
+                    step_start=current,
+                    time_index=transport_steps,
+                    snapshot=snapshot,
+                )
+            if output_manager is not None and snapshot is not None:
+                logger.debug(
+                    "recording_outputs step=%d timestamp=%s",
+                    transport_steps + 1,
+                    step_end.isoformat(),
+                )
+                output_sums = output_manager.prepare_step(step_end, state)
+                if output_sums is not None:
+                    from wombat_transport.cuda.history import (
+                        accumulate_history_sums as accumulate_cuda_history_sums,
+                    )
+
+                    accumulate_cuda_history_sums(
+                        output_sums,
+                        state.block_data[0],
+                    )
+            next_cuda_host_step = None
+            output_step_detached = False
+            try:
+                if step_end < end and (
+                    max_steps is None or transport_steps + 1 < max_steps
+                ):
+                    next_cuda_host_step = _prepare_cuda_host_step(
+                        forcing_provider,
+                        configured_emissions,
+                        current=step_end,
+                        start=start,
+                        transport_dt_s=transport_dt_s,
+                        emissions_dt_s=emissions_dt_s,
+                    )
+            finally:
+                cuda_batch_steps += 1
+                cuda_batch_boundary = _cuda_batch_requires_completion(
+                    current_step=cuda_host_step,
+                    next_step=next_cuda_host_step,
+                    active_emissions=active_emissions,
+                    step_end=step_end,
+                    output_manager=output_manager,
+                    obsoperator_manager=obsoperator_manager,
+                )
+                if cuda_batch_boundary:
+                    logger.debug(
+                        "completing_cuda_batch steps=%d timestamp=%s",
+                        cuda_batch_steps,
+                        step_end.isoformat(),
+                    )
+                    _write_detached_cuda_outputs(
+                        output_manager,
+                        obsoperator_manager,
+                    )
+                    cuda_executor.runtime.synchronize()
+                    if (
+                        obsoperator_manager is not None
+                        and obsoperator_manager.has_pending_cuda_samples
+                    ):
+                        obsoperator_manager.detach_cuda_samples()
+                    if output_manager is not None and snapshot is not None:
+                        output_manager.detach_cuda_step(snapshot)
+                        output_step_detached = True
+                    if next_cuda_host_step is None:
+                        _write_detached_cuda_outputs(
+                            output_manager,
+                            obsoperator_manager,
+                        )
+                    cuda_batch_steps = 0
+                transport_steps += 1
+                logger.debug(
+                    "completed_transport step=%d",
+                    transport_steps,
+                )
+                if (
+                    output_manager is not None
+                    and snapshot is not None
+                    and not output_step_detached
+                ):
+                    output_manager.complete_step(snapshot)
+                current = step_end
+            cuda_host_step = next_cuda_host_step
+            continue
         if obsoperator_manager is not None:
             assert snapshot is not None
             if snapshot.timestamp != step_end:
@@ -261,8 +462,30 @@ def _run_tracer_simulation(
         emissions_steps,
         float(np.sum(emitted_mass_by_tracer)),
     )
+    final_state = (
+        cuda_executor.to_host_state()
+        if cuda_executor is not None
+        else state
+    )
+    if cuda_executor is not None:
+        if final_delp_dry_hpa is not None and cuda_executor.runtime.is_device_array(
+            final_delp_dry_hpa
+        ):
+            final_delp_dry_hpa = cuda_executor.runtime.to_host(
+                final_delp_dry_hpa
+            )
+        transfers = cuda_executor.runtime.transfer_stats
+        logger.info(
+            "cuda_transfers_before_close h2d_count=%d h2d_bytes=%d d2h_count=%d "
+            "d2h_bytes=%d synchronizations=%d",
+            transfers.host_to_device_count,
+            transfers.host_to_device_bytes,
+            transfers.device_to_host_count,
+            transfers.device_to_host_bytes,
+            transfers.explicit_synchronizations,
+        )
     return TracerSimulationResult(
-        state=state,
+        state=final_state,
         emissions_processed=tuple(emissions_processed),
         emitted_mass_by_tracer=emitted_mass_by_tracer,
         transport_steps=transport_steps,
@@ -286,7 +509,35 @@ def _close_obsoperator_manager(
     manager.close(boundary_time=boundary_time())
 
 
-def _write_run_metadata(config: RunConfig) -> None:
+def _write_detached_cuda_outputs(
+    output_manager: HistoryOutputManager | None,
+    obsoperator_manager: ObsOperatorManager | None,
+) -> None:
+    """Drain the previous host-output slot while the next batch is queued."""
+
+    if obsoperator_manager is not None:
+        obsoperator_manager.write_detached_cuda_outputs()
+    if output_manager is not None:
+        output_manager.write_detached_cuda_outputs()
+
+
+def _write_run_metadata(
+    config: RunConfig,
+    *,
+    execution_backend: str,
+) -> None:
+    execution: dict[str, Any] = {
+        "backend": execution_backend,
+        "transport_executor": _transport_executor(),
+    }
+    if execution_backend == "cuda":
+        execution.update(
+            {
+                "device_id": _cuda_device(),
+                "dtype": _cuda_dtype().name,
+                "numerical_mode": "strict",
+            }
+        )
     metadata = {
         "schema_version": 1,
         "kind": "wombat-run",
@@ -294,6 +545,7 @@ def _write_run_metadata(config: RunConfig) -> None:
         "run_directory": str(config.root),
         "written_at_utc": datetime.now(timezone.utc).isoformat(),
         "git": _git_provenance(config.root),
+        "execution": execution,
     }
     path = config.root / RUN_METADATA_NAME
     try:
@@ -371,6 +623,38 @@ def _transport_executor() -> str:
     return value
 
 
+def _execution_backend() -> str:
+    value = os.environ.get("WOMBAT_BACKEND", "cpu").strip().lower()
+    if value not in {"cpu", "cuda"}:
+        raise ValueError("WOMBAT_BACKEND must be 'cpu' or 'cuda'")
+    return value
+
+
+def _cuda_dtype() -> np.dtype:
+    value = os.environ.get("WOMBAT_CUDA_DTYPE", "float64").strip().lower()
+    if value not in {"float32", "float64"}:
+        raise ValueError("WOMBAT_CUDA_DTYPE must be 'float32' or 'float64'")
+    return np.dtype(value)
+
+
+def _cuda_device() -> int:
+    value = os.environ.get("WOMBAT_CUDA_DEVICE", "0").strip()
+    try:
+        device = int(value)
+    except ValueError as exc:
+        raise ValueError("WOMBAT_CUDA_DEVICE must be a nonnegative integer") from exc
+    if device < 0:
+        raise ValueError("WOMBAT_CUDA_DEVICE must be a nonnegative integer")
+    return device
+
+
+def _cuda_block_width(tracer_count: int) -> int:
+    configured = os.environ.get("WOMBAT_TRANSPORT_BLOCK_WIDTH")
+    if configured is None or not configured.strip():
+        return min(32, tracer_count)
+    return _transport_block_width("blocks", tracer_count)
+
+
 def _transport_block_width(executor: str, tracer_count: int) -> int:
     configured = os.environ.get("WOMBAT_TRANSPORT_BLOCK_WIDTH")
     if configured is None or not configured.strip():
@@ -428,6 +712,110 @@ def _is_time_for_emissions(elapsed_s: int, transport_dt_s: float, emissions_dt_s
     multiplier = emissions // transport
     center = max(multiplier // 2, 1)
     return elapsed_s % emissions == (center - 1) * transport
+
+
+def _prepare_cuda_host_step(
+    forcing_provider: TransportForcingProvider,
+    emissions_operator: EmissionsOperator,
+    *,
+    current: datetime,
+    start: datetime,
+    transport_dt_s: float,
+    emissions_dt_s: float,
+) -> _CudaHostStep:
+    """Load one future CUDA step while the preceding device work is queued."""
+
+    forcing_selection = forcing_provider.chunks_for_step(
+        current,
+        dt_s=transport_dt_s,
+    )
+    elapsed_s = int(round((current - start).total_seconds()))
+    emission_midpoint = None
+    emissions = None
+    if _is_time_for_emissions(
+        elapsed_s,
+        transport_dt_s,
+        emissions_dt_s,
+    ):
+        emission_midpoint, emissions = _evaluate_surface_emissions(
+            emissions_operator,
+            current=current,
+            emissions_dt_s=emissions_dt_s,
+        )
+        logger.debug(
+            "prefetching_cuda_emissions time=%s midpoint=%s",
+            current.isoformat(),
+            emission_midpoint.isoformat(),
+        )
+    return _CudaHostStep(
+        timestamp=current,
+        forcing_selection=forcing_selection,
+        emissions=emissions,
+        emission_midpoint=emission_midpoint,
+    )
+
+
+def _cuda_batch_requires_completion(
+    *,
+    current_step: _CudaHostStep,
+    next_step: _CudaHostStep | None,
+    active_emissions: SurfaceEmissions | None,
+    step_end: datetime,
+    output_manager: HistoryOutputManager | None,
+    obsoperator_manager: ObsOperatorManager | None,
+) -> bool:
+    """Keep queued steps within buffers whose host contents remain stable."""
+
+    if next_step is None:
+        return True
+    if (
+        output_manager is not None
+        and output_manager.requires_host_completion(step_end)
+    ):
+        return True
+    if (
+        obsoperator_manager is not None
+        and obsoperator_manager.requires_cuda_flush_before(step_end)
+    ):
+        return True
+    if (
+        next_step.emission_midpoint is not None
+        and next_step.emissions is not active_emissions
+    ):
+        return True
+    current_forcing = current_step.forcing_selection
+    next_forcing = next_step.forcing_selection
+    return any(
+        current is not following
+        for current, following in (
+            (current_forcing.a1_block, next_forcing.a1_block),
+            (current_forcing.a3_block, next_forcing.a3_block),
+            (current_forcing.i3_block, next_forcing.i3_block),
+        )
+    )
+
+
+def _evaluate_surface_emissions(
+    emissions_operator: EmissionsOperator,
+    *,
+    current: datetime,
+    emissions_dt_s: float,
+) -> tuple[datetime, SurfaceEmissions]:
+    emission_midpoint = current + timedelta(
+        seconds=emissions_dt_s / 2.0
+    )
+    logger.debug(
+        "evaluating_emissions time=%s midpoint=%s",
+        current.isoformat(),
+        emission_midpoint.isoformat(),
+    )
+    emissions = emissions_operator.evaluate_surface_flux(emission_midpoint)
+    if has_invalid_emissions(emissions):
+        raise ValueError(
+            "configured emissions contain invalid values at "
+            f"{emission_midpoint:%Y-%m-%d %H:%M}"
+        )
+    return emission_midpoint, emissions
 
 
 def _load_simulation_forcing(

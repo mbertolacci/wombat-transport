@@ -81,6 +81,8 @@ class EmissionsOperator:
         self._scale_cache: dict[tuple[str, datetime], np.ndarray | float] = {}
         self._source_cache: dict[tuple[object, ...], _SourceSlice] = {}
         self._regrid_cache: dict[tuple[bytes, bytes], ConservativeRemappingWeights] = {}
+        self._surface_cache_key: tuple[datetime, ...] | None = None
+        self._surface_cache_value: SurfaceEmissions | None = None
 
         for field in self.config.fields:
             species_name = str(field["species"])
@@ -128,6 +130,12 @@ class EmissionsOperator:
         return self.evaluate_surface_flux(valid_time).to_tracer_field(self.grid.shape[0])
 
     def evaluate_surface_flux(self, valid_time: datetime) -> SurfaceEmissions:
+        cache_key = self._surface_emissions_key(valid_time)
+        if (
+            cache_key == self._surface_cache_key
+            and self._surface_cache_value is not None
+        ):
+            return self._surface_cache_value
         _nlev, nlat, nlon = self.grid.shape
         data = np.zeros((nlat, nlon, len(self.species)), dtype=np.float64)
         units = [""] * len(self.species)
@@ -144,7 +152,7 @@ class EmissionsOperator:
             units[tracer_index] = str(field.get("units", units[tracer_index]))
 
         self._prune_temporal_caches(valid_time)
-        return SurfaceEmissions(
+        result = SurfaceEmissions(
             names=tuple(item.name for item in self.species),
             data=data,
             units=tuple(units),
@@ -155,6 +163,31 @@ class EmissionsOperator:
                 "AREA": self.grid.area_m2,
             },
         )
+        self._surface_cache_key = cache_key
+        self._surface_cache_value = result
+        return result
+
+    def _surface_emissions_key(
+        self,
+        valid_time: datetime,
+    ) -> tuple[datetime, ...]:
+        selections: list[datetime] = []
+        for field in self.config.fields:
+            selections.append(
+                _selection_time(
+                    valid_time,
+                    str(field.get("frequency", "constant")),
+                )
+            )
+            for scale_name in field.get("scales", ()):
+                scale = self.config.scales[str(scale_name)]
+                selections.append(
+                    _selection_time(
+                        valid_time,
+                        str(scale.get("frequency", "constant")),
+                    )
+                )
+        return tuple(selections)
 
     def _evaluate_field(self, field: dict[str, Any], valid_time: datetime) -> np.ndarray:
         selection_time = _selection_time(valid_time, str(field.get("frequency", "constant")))

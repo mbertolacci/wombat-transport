@@ -14,11 +14,19 @@ outputs:
     output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
     restart_file: ./Restarts/Wombat.ObsOperator.Restart.YYYYMMDD_hhmmss.nc4
     restart_missing: warn
+    compression:
+      algorithm: zlib
+      level: 1
+      shuffle: true
 ```
 
 When active, `input_file`, `output_file`, and `restart_file` are required.
 `restart_missing` may be `warn`, `error`, or `ignore`. The former asynchronous
 `input_mode` and `writer` options are not supported.
+
+The optional `compression` mapping controls ObsOperator science output and
+accepts the same algorithms as HISTORY output. ObsOperator restart files
+remain on portable zlib.
 
 Relative paths resolve from the run YAML directory. `YYYY`, `MM`, `DD`, `hh`,
 `mm`, and `ss` expand from model time. Missing daily input is logged and

@@ -50,11 +50,40 @@ python -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-Numba is strongly recommended for useful transport performance:
+The CPU extra installs the supported Numba version and is strongly recommended
+for useful transport performance:
 
 ```bash
-.venv/bin/python -m pip install numba
+.venv/bin/python -m pip install -e '.[cpu]'
 ```
+
+For CUDA-kernel development on CUDA 12, install the CUDA extra (add `cpu` as
+well when developing or benchmarking the Numba reference):
+
+```bash
+.venv/bin/python -m pip install -e '.[cuda]'
+```
+
+The CUDA extra provides CuPy for device ownership and raw CUDA C++ kernels. A
+CUDA 12 toolkit and a compatible NVIDIA driver are required. Both the CPU and
+CUDA development environments support NumPy 1.26 and NumPy 2.x through 2.3.
+
+An experimental end-to-end CUDA runner is selectable with environment
+variables:
+
+```bash
+WOMBAT_BACKEND=cuda \
+WOMBAT_CUDA_DTYPE=float64 \
+.venv/bin/python -m wombat_transport.run run.yml
+```
+
+`WOMBAT_CUDA_DTYPE` accepts `float32` or `float64`, and
+`WOMBAT_CUDA_DEVICE` selects the device index. The CUDA path does not require
+Numba: it uploads each forcing chunk once, interpolates the current timestep
+and prepares the transport operators on the GPU. Tracer state, static transport
+terms, reusable plan storage, HISTORY sums, and ObsOperator sampling remain on
+the GPU. NetCDF inputs, scheduling, emissions evaluation, and writes remain
+host-side.
 
 Real runs also require MERRA-2 meteorology and a compatible restart/grid
 template. See the [external-data guide](https://mbertolacci.github.io/wombat-transport/getting-started/external-data/).
@@ -150,6 +179,11 @@ deviations.
 - [`tools/benchmark_gc_transport_frontier.py`](tools/benchmark_gc_transport_frontier.py)
   measures the comparable GEOS-Chem harness process/OpenMP frontier using the
   existing full-chain oracle handoffs.
+- [`tools/cuda_transport_step_harness.py`](tools/cuda_transport_step_harness.py)
+  validates and benchmarks resident CUDA operator handoffs.
+- [`tools/profile_cuda_run.py`](tools/profile_cuda_run.py) profiles an ordinary
+  CUDA run with nested transport, HISTORY, ObsOperator, transfer, output-I/O,
+  memory-pool, compiled-kernel, and optional NVTX measurements.
 - [`performance.md`](performance.md) is the benchmark and profiling notebook.
 - [`oracle_data/README.md`](oracle_data/README.md) describes the local
   large-fixture cache.
@@ -163,7 +197,7 @@ Run the test suite with:
 Install the development tools and run the static-analysis baseline with:
 
 ```bash
-.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pip install -e '.[dev,cpu]'
 .venv/bin/ruff check
 .venv/bin/vulture --config pyproject.toml
 ```

@@ -288,6 +288,23 @@ class _I3Block:
         )
 
 
+@dataclass(frozen=True)
+class TransportForcingChunkSelection:
+    """Host forcing chunks and indices needed for one transport step."""
+
+    a1_block: _A1Block
+    a3_block: _A3Block
+    i3_block: _I3Block
+    a1_offset: int
+    a3_offset: int
+    i3_start_offset: int
+    i3_end_offset: int
+    i3_restart_offset: int
+    start_fraction: float
+    end_fraction: float
+    midpoint_fraction: float
+
+
 class TransportForcingProvider:
     """Block-oriented MERRA2 forcing loader for GEOS-Chem-timed steps."""
 
@@ -317,6 +334,109 @@ class TransportForcingProvider:
         return self._start
 
     def forcing_for_step(self, current: datetime, *, dt_s: float) -> TransportForcing:
+        forcing, _ = self.forcing_and_chunks_for_step(current, dt_s=dt_s)
+        return forcing
+
+    def forcing_and_chunks_for_step(
+        self,
+        current: datetime,
+        *,
+        dt_s: float,
+    ) -> tuple[TransportForcing, TransportForcingChunkSelection]:
+        """Return host forcing plus the reusable source chunks that produced it."""
+
+        selection = self.chunks_for_step(current, dt_s=dt_s)
+        a1 = selection.a1_block.field(
+            selection.a1_block.start_index + selection.a1_offset
+        )
+        a3 = selection.a3_block.field(
+            selection.a3_block.start_index + selection.a3_offset
+        )
+        i3_start = selection.i3_block.field(
+            selection.i3_block.start_index + selection.i3_start_offset
+        )
+        i3_end = selection.i3_block.field(
+            selection.i3_block.start_index + selection.i3_end_offset
+        )
+        i3_restart = selection.i3_block.field(
+            selection.i3_block.start_index + selection.i3_restart_offset
+        )
+        dry_surface_start_endpoint = _i3_dry_surface_pressure_hpa(i3_start, self._grid)
+        dry_surface_end_endpoint = _i3_dry_surface_pressure_hpa(i3_end, self._grid)
+        wet_surface_start_endpoint = _i3_wet_surface_pressure_hpa(i3_start, self._grid)
+        wet_surface_end_endpoint = _i3_wet_surface_pressure_hpa(i3_end, self._grid)
+        forcing = _assemble_transport_forcing(
+            a1,
+            a3,
+            surface_pressure_start=_interpolate(
+                i3_start.surface_pressure,
+                i3_end.surface_pressure,
+                selection.start_fraction,
+            ),
+            surface_pressure_end=_interpolate(
+                i3_start.surface_pressure,
+                i3_end.surface_pressure,
+                selection.end_fraction,
+            ),
+            restart_surface_pressure=i3_restart.surface_pressure,
+            wet_surface_pressure_start=_interpolate(
+                wet_surface_start_endpoint,
+                wet_surface_end_endpoint,
+                selection.start_fraction,
+            ),
+            wet_surface_pressure_end=_interpolate(
+                wet_surface_start_endpoint,
+                wet_surface_end_endpoint,
+                selection.end_fraction,
+            ),
+            restart_wet_surface_pressure=_i3_wet_surface_pressure_hpa(
+                i3_restart,
+                self._grid,
+            ),
+            dry_surface_pressure_start=_interpolate(
+                dry_surface_start_endpoint,
+                dry_surface_end_endpoint,
+                selection.start_fraction,
+            ),
+            dry_surface_pressure_end=_interpolate(
+                dry_surface_start_endpoint,
+                dry_surface_end_endpoint,
+                selection.end_fraction,
+            ),
+            restart_dry_surface_pressure=_i3_dry_surface_pressure_hpa(
+                i3_restart,
+                self._grid,
+            ),
+            i3_start_dry_surface_pressure=dry_surface_start_endpoint,
+            i3_start_wet_surface_pressure=wet_surface_start_endpoint,
+            i3_start_specific_humidity=i3_start.qv,
+            specific_humidity=_interpolate(
+                i3_start.qv,
+                i3_end.qv,
+                selection.midpoint_fraction,
+            ),
+            restart_specific_humidity=i3_restart.qv,
+            i3_start_temperature=i3_start.temperature,
+            temperature=_interpolate(
+                i3_start.temperature,
+                i3_end.temperature,
+                selection.midpoint_fraction,
+            ),
+            restart_temperature=i3_restart.temperature,
+            i3_path=i3_start.path,
+            grid=self._grid,
+            vertical_mapping=MERRA2_72_TO_47_MAPPING,
+        )
+        return forcing, selection
+
+    def chunks_for_step(
+        self,
+        current: datetime,
+        *,
+        dt_s: float,
+    ) -> TransportForcingChunkSelection:
+        """Return source chunks and indices without assembling host forcing."""
+
         if dt_s <= 0:
             raise ValueError("dt_s must be positive")
         elapsed_s = (current - self._start).total_seconds()
@@ -328,52 +448,38 @@ class TransportForcingProvider:
         i3_end_index = i3_start_index + 1
         restart_i3_index = self._initial_met_time_index + int((elapsed_s + dt_s) // 10800.0)
 
-        a1 = self._a1_field(hour_index)
-        a3 = self._a3_field(i3_start_index)
-        i3_start = self._i3_field(i3_start_index, base=True)
-        i3_end = self._i3_field(i3_end_index, base=False)
-        if restart_i3_index == i3_start_index:
-            i3_restart = i3_start
-        elif restart_i3_index == i3_end_index:
-            i3_restart = i3_end
-        else:
-            i3_restart = self._i3_field(restart_i3_index, base=False)
+        self._a1_field(hour_index)
+        self._a3_field(i3_start_index)
+        self._i3_field(i3_start_index, base=True)
+        self._i3_field(i3_end_index, base=False)
 
         seconds_into_i3_window = elapsed_s % 10800.0
         if seconds_into_i3_window + float(dt_s) > 10800.0 + 1.0e-9:
             raise ValueError(
                 "transport step crosses a three-hour meteorology interpolation boundary"
             )
+        if restart_i3_index not in (i3_start_index, i3_end_index):
+            raise AssertionError(
+                "restart meteorology must be a current-step I3 endpoint"
+            )
         start_fraction = seconds_into_i3_window / 10800.0
         end_fraction = (seconds_into_i3_window + float(dt_s)) / 10800.0
         midpoint_fraction = (seconds_into_i3_window + float(dt_s) / 2.0) / 10800.0
-        dry_surface_start_endpoint = _i3_dry_surface_pressure_hpa(i3_start, self._grid)
-        dry_surface_end_endpoint = _i3_dry_surface_pressure_hpa(i3_end, self._grid)
-        wet_surface_start_endpoint = _i3_wet_surface_pressure_hpa(i3_start, self._grid)
-        wet_surface_end_endpoint = _i3_wet_surface_pressure_hpa(i3_end, self._grid)
-        return _assemble_transport_forcing(
-            a1,
-            a3,
-            surface_pressure_start=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, start_fraction),
-            surface_pressure_end=_interpolate(i3_start.surface_pressure, i3_end.surface_pressure, end_fraction),
-            restart_surface_pressure=i3_restart.surface_pressure,
-            wet_surface_pressure_start=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, start_fraction),
-            wet_surface_pressure_end=_interpolate(wet_surface_start_endpoint, wet_surface_end_endpoint, end_fraction),
-            restart_wet_surface_pressure=_i3_wet_surface_pressure_hpa(i3_restart, self._grid),
-            dry_surface_pressure_start=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, start_fraction),
-            dry_surface_pressure_end=_interpolate(dry_surface_start_endpoint, dry_surface_end_endpoint, end_fraction),
-            restart_dry_surface_pressure=_i3_dry_surface_pressure_hpa(i3_restart, self._grid),
-            i3_start_dry_surface_pressure=dry_surface_start_endpoint,
-            i3_start_wet_surface_pressure=wet_surface_start_endpoint,
-            i3_start_specific_humidity=i3_start.qv,
-            specific_humidity=_interpolate(i3_start.qv, i3_end.qv, midpoint_fraction),
-            restart_specific_humidity=i3_restart.qv,
-            i3_start_temperature=i3_start.temperature,
-            temperature=_interpolate(i3_start.temperature, i3_end.temperature, midpoint_fraction),
-            restart_temperature=i3_restart.temperature,
-            i3_path=i3_start.path,
-            grid=self._grid,
-            vertical_mapping=MERRA2_72_TO_47_MAPPING,
+        assert self._a1_block is not None
+        assert self._a3_block is not None
+        assert self._i3_block is not None
+        return TransportForcingChunkSelection(
+            a1_block=self._a1_block,
+            a3_block=self._a3_block,
+            i3_block=self._i3_block,
+            a1_offset=hour_index - self._a1_block.start_index,
+            a3_offset=i3_start_index - self._a3_block.start_index,
+            i3_start_offset=i3_start_index - self._i3_block.start_index,
+            i3_end_offset=i3_end_index - self._i3_block.start_index,
+            i3_restart_offset=restart_i3_index - self._i3_block.start_index,
+            start_fraction=start_fraction,
+            end_fraction=end_fraction,
+            midpoint_fraction=midpoint_fraction,
         )
 
     def _a1_field(self, index: int) -> _A1Fields:

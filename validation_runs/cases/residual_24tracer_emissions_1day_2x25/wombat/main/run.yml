@@ -22,6 +22,10 @@ outputs:
     output_file: ./OutputDir/GEOSChem.ObsOperator.YYYYMMDD_hhmmz.nc4
     restart_file: ./Restarts/Wombat.ObsOperator.Restart.YYYYMMDD_hhmmss.nc4
     restart_missing: warn
+    compression:
+      algorithm: blosc_zstd
+      level: 1
+      shuffle: true
   expid: OutputDir/GEOSChem
   dtype: float32
   compression:
@@ -39,6 +43,12 @@ outputs:
       frequency: 00000001 000000
       duration: 00000001 000000
       mode: instantaneous
+      compression:
+        algorithm: blosc_zstd
+        level: 1
+        shuffle: true
+      chunking:
+        rank4: [1, 8, 91, 144]
       fields:
         - SpeciesRst_?ALL?
         - Met_DELPDRY
@@ -51,6 +61,12 @@ outputs:
       frequency: 00000000 030000
       duration: 00000001 000000
       mode: time-averaged
+      compression:
+        algorithm: blosc_zstd
+        level: 1
+        shuffle: true
+      chunking:
+        rank4: [1, 8, 91, 144]
       fields:
         - SpeciesConcVV_?ADV?
 diagnostics: {}

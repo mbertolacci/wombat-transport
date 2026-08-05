@@ -164,6 +164,48 @@ def test_transport_forcing_provider_interpolates_i3_like_geos_chem(monkeypatch):
     np.testing.assert_allclose(forcing.restart_surface_pressure_pa, 0.0)
 
 
+def test_transport_forcing_provider_selects_chunks_without_host_assembly(
+    monkeypatch,
+):
+    grid = _fake_grid()
+    monkeypatch.setattr(
+        "wombat_transport.transport.forcing._load_a1_block",
+        lambda *args: _fake_a1_block(0, 24),
+    )
+    monkeypatch.setattr(
+        "wombat_transport.transport.forcing._load_a3_block",
+        lambda *args: _fake_a3_block(0, 4),
+    )
+    monkeypatch.setattr(
+        "wombat_transport.transport.forcing._load_i3_block",
+        lambda *args: _fake_i3_block(0, 4),
+    )
+    monkeypatch.setattr(
+        "wombat_transport.transport.forcing._assemble_transport_forcing",
+        lambda *args, **kwargs: pytest.fail("assembled host forcing"),
+    )
+    start = datetime(2014, 9, 1)
+    provider = forcing_module.TransportForcingProvider(
+        "met",
+        start,
+        grid,  # type: ignore[arg-type]
+    )
+
+    selection = provider.chunks_for_step(
+        start + timedelta(hours=1),
+        dt_s=600.0,
+    )
+
+    assert selection.a1_offset == 1
+    assert selection.a3_offset == 0
+    assert selection.i3_start_offset == 0
+    assert selection.i3_end_offset == 1
+    assert selection.i3_restart_offset == 0
+    assert selection.start_fraction == pytest.approx(1.0 / 3.0)
+    assert selection.end_fraction == pytest.approx(4200.0 / 10800.0)
+    assert selection.midpoint_fraction == pytest.approx(3900.0 / 10800.0)
+
+
 def test_transport_forcing_rejects_step_crossing_i3_boundary(monkeypatch):
     grid = _fake_grid()
     monkeypatch.setattr("wombat_transport.transport.forcing._load_a1_block", lambda *args: _fake_a1_block(0, 24))

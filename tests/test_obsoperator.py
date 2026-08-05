@@ -34,7 +34,7 @@ from wombat_transport.obsoperator.state import (
     completed_batch,
     merge_obs_plans,
 )
-from wombat_transport.output import OutputSnapshot
+from wombat_transport.output import OutputCompressionConfig, OutputSnapshot
 
 
 START = datetime(2014, 9, 1)
@@ -55,6 +55,7 @@ def test_obsoperator_config_and_date_template():
     )
     assert config.activate
     assert config.verbose
+    assert config.compression.algorithm == "zlib"
     assert expand_obsoperator_template(config.output_file or "", datetime(2014, 9, 2, 3, 4, 5)) == (
         "out-20140902_030405.nc4"
     )
@@ -73,6 +74,21 @@ def test_obsoperator_config_and_date_template():
         parse_obsoperator_config({"obsoperator": {"input_mode": "threaded"}})
     with pytest.raises(ValueError, match="no longer supported"):
         parse_obsoperator_config({"obsoperator": {"writer": "threaded"}})
+
+    blosc = parse_obsoperator_config(
+        {
+            "obsoperator": {
+                "compression": {
+                    "algorithm": "blosc_zstd",
+                    "level": 1,
+                    "shuffle": True,
+                }
+            }
+        }
+    )
+    assert blosc.compression.algorithm == "blosc_zstd"
+    assert blosc.compression.level == 1
+    assert blosc.compression.shuffle
 
 
 def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(tmp_path: Path, monkeypatch):
@@ -95,6 +111,77 @@ def test_reference_manager_executes_one_array_kernel_for_all_entries_at_a_step(t
     manager.close(boundary_time=START + timedelta(minutes=10))
 
     assert calls == 1
+
+
+def test_cuda_manager_defers_accumulator_sync_until_completion(
+    tmp_path: Path,
+):
+    _write_yaml(
+        tmp_path / "obs-20140901.yml",
+        {"entries": [_entry_raw(entry_id="deferred")]},
+    )
+    events: list[str] = []
+
+    class FakeCudaSampler:
+        def __init__(self):
+            self.plan = None
+
+        def sample(self, plan, *, step_time_us, snapshot):
+            self.plan = plan
+            events.append("launch")
+
+        def sync_to_host(self, plan):
+            if self.plan is None:
+                return
+            assert plan is self.plan
+            plan.accumulator.fill(3.0)
+            events.append("sync")
+
+        def invalidate(self):
+            events.append("invalidate")
+
+    manager = _manager(tmp_path)
+    manager._cuda_sampler = FakeCudaSampler()
+
+    manager.launch_cuda_sample(
+        step_start=START,
+        time_index=0,
+        snapshot=_snapshot(),
+    )
+    manager.launch_cuda_sample(
+        step_start=START + timedelta(minutes=10),
+        time_index=1,
+        snapshot=_snapshot(),
+    )
+
+    assert events == ["invalidate", "launch", "launch"]
+    assert not manager.requires_cuda_flush_before(
+        START + timedelta(minutes=20)
+    )
+    assert (
+        manager._pending_cuda_samples[0].output_path
+        != manager._pending_cuda_samples[1].output_path
+    )
+    assert manager._position_us == _time_us(START)
+    assert manager._plan.first_unexpired == 0
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    manager.detach_cuda_samples()
+
+    assert events == ["invalidate", "launch", "launch", "sync"]
+    assert manager._position_us == _time_us(START + timedelta(minutes=20))
+    assert manager._plan.first_unexpired == 1
+    assert not list(tmp_path.glob("out-*.nc4"))
+
+    manager.write_detached_cuda_outputs()
+    manager.close(boundary_time=START + timedelta(minutes=20))
+    output_files = list(tmp_path.glob("out-*.nc4"))
+    assert len(output_files) == 1
+    with netCDF4.Dataset(output_files[0]) as dataset:
+        np.testing.assert_array_equal(
+            dataset.variables["sample"][:],
+            np.array([3.0], dtype=np.float32),
+        )
 
 
 def test_numba_manager_matches_python_array_sampler_for_float64_accumulators(tmp_path: Path, monkeypatch):
@@ -815,6 +902,42 @@ def test_science_writer_stages_bounded_batches_and_flushes_remainder_on_close(
         np.testing.assert_array_equal(dataset.variables["sample"][:], [1.0, 2.0, 3.0, 4.0, 5.0])
 
 
+@pytest.mark.skipif(
+    not getattr(netCDF4, "__has_blosc_support__", False),
+    reason="netCDF4 Blosc filter plugin is unavailable",
+)
+def test_science_writer_supports_blosc_zstd(tmp_path: Path):
+    output = tmp_path / "blosc-obspack.nc4"
+    writer = obsoperator_writer._ObsOperatorNetCDFWriter(
+        output,
+        compression=OutputCompressionConfig(
+            algorithm="blosc_zstd",
+            level=1,
+            shuffle=True,
+        ),
+    )
+    writer.write_completed(
+        CompletedObsBatch(
+            ids=("sample",),
+            field_names=("SpeciesConcVV_A",),
+            entry_field_start=np.array([0], dtype=np.int64),
+            entry_field_count=np.array([1], dtype=np.int64),
+            samples=np.array([2.5], dtype=np.float64),
+        )
+    )
+    writer.close()
+
+    with netCDF4.Dataset(output) as dataset:
+        assert dataset.variables["sample"].filters()["blosc"] == {
+            "compressor": "blosc_zstd",
+            "shuffle": 1,
+        }
+        np.testing.assert_array_equal(
+            dataset.variables["sample"][:],
+            np.array([2.5], dtype=np.float32),
+        )
+
+
 def test_science_writer_keeps_pending_registry_state_after_failed_flush(tmp_path: Path):
     class FakeVariable:
         def __init__(self, *, fail_once: bool = False) -> None:
@@ -931,19 +1054,19 @@ def test_manager_compacts_completion_cursor_before_daily_merge(tmp_path: Path):
         assert _decode_rows(dataset.variables["id"][:]) == ["carried", "second-day"]
 
 
-def test_manager_rotates_output_when_daily_input_path_is_unchanged(tmp_path: Path):
+def test_manager_defers_output_selection_while_daily_input_is_unchanged(
+    tmp_path: Path,
+):
     manager = _manager(tmp_path)
     first = START
     second = START + timedelta(minutes=10)
 
     manager._initialize_for_date(first)
     first_input = manager._previous_input_path
-    first_output = manager._current_output_path
     manager._initialize_for_date(second)
 
     assert manager._previous_input_path == first_input
-    assert manager._current_output_path != first_output
-    assert manager._current_output_path == tmp_path / "out-20140901_0010.nc4"
+    assert manager._current_output_path is None
     manager.close(boundary_time=second)
 
 

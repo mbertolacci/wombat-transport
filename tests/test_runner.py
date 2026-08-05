@@ -15,15 +15,20 @@ from yaml12 import write_yaml
 
 import wombat_transport.runner as runner_module
 from wombat_transport.compare import compare_to_time_slice, tracer_mass_kg
+from wombat_transport.emissions import SurfaceEmissions
 from wombat_transport.fields import TracerField
 from wombat_transport.grid import load_transport_grid
 from wombat_transport.io import FIXED_GRID, initialize_tracers, load_hemco_emissions, load_species_conc, load_restart
 from wombat_transport.run_config import load_run_config, logging_level, meteorology_chunk_multiple, meteorology_root
 from wombat_transport.runner import (
     RUN_METADATA_NAME,
+    _CudaHostStep,
+    _cuda_batch_requires_completion,
     _is_time_for_emissions,
+    _cuda_block_width,
     _load_emissions_operator,
     _load_simulation_forcing,
+    _prepare_cuda_host_step,
     _transport_block_width,
     _transport_executor,
     _validate_timestep_schedule,
@@ -169,11 +174,14 @@ def test_transport_executor_and_block_width_environment(monkeypatch):
     assert _transport_executor() == "spatial"
     assert _transport_block_width("spatial", 24) == 24
     assert _transport_block_width("blocks", 24) == 8
+    assert _cuda_block_width(24) == 24
+    assert _cuda_block_width(128) == 32
 
     monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "blocks")
     monkeypatch.setenv("WOMBAT_TRANSPORT_BLOCK_WIDTH", "16")
     assert _transport_executor() == "blocks"
     assert _transport_block_width("blocks", 24) == 16
+    assert _cuda_block_width(24) == 16
 
     monkeypatch.setenv("WOMBAT_TRANSPORT_EXECUTOR", "threads")
     with pytest.raises(ValueError, match="WOMBAT_TRANSPORT_EXECUTOR"):
@@ -229,6 +237,133 @@ def test_simulation_forcing_uses_provider_timestamps():
         start + timedelta(minutes=10),
         start + timedelta(hours=3),
     ]
+
+
+def test_cuda_host_step_prefetches_forcing_and_scheduled_emissions():
+    events = []
+    selection = object()
+    surface = SurfaceEmissions(
+        names=("A",),
+        data=np.ones((1, 1, 1), dtype=np.float64),
+        units=("kg/m2/s",),
+        coords={"AREA": np.ones((1, 1))},
+    )
+
+    class FakeProvider:
+        def chunks_for_step(self, current, *, dt_s):
+            events.append(("forcing", current, dt_s))
+            return selection
+
+    class FakeEmissions:
+        def evaluate_surface_flux(self, valid_time):
+            events.append(("emissions", valid_time))
+            return surface
+
+    prefetched = _prepare_cuda_host_step(
+        FakeProvider(),  # type: ignore[arg-type]
+        FakeEmissions(),  # type: ignore[arg-type]
+        current=datetime(2014, 9, 1),
+        start=datetime(2014, 9, 1),
+        transport_dt_s=600.0,
+        emissions_dt_s=1200.0,
+    )
+
+    assert prefetched.forcing_selection is selection
+    assert prefetched.emissions is surface
+    assert prefetched.emission_midpoint == datetime(2014, 9, 1, 0, 10)
+    assert events == [
+        ("forcing", datetime(2014, 9, 1), 600.0),
+        ("emissions", datetime(2014, 9, 1, 0, 10)),
+    ]
+
+
+def test_cuda_batch_completion_tracks_resident_input_and_output_events():
+    blocks = SimpleNamespace(a1_block=object(), a3_block=object(), i3_block=object())
+    current = _CudaHostStep(
+        timestamp=datetime(2014, 9, 1),
+        forcing_selection=blocks,
+        emissions=None,
+        emission_midpoint=None,
+    )
+    following = _CudaHostStep(
+        timestamp=datetime(2014, 9, 1, 0, 10),
+        forcing_selection=SimpleNamespace(
+            a1_block=blocks.a1_block,
+            a3_block=blocks.a3_block,
+            i3_block=blocks.i3_block,
+        ),
+        emissions=None,
+        emission_midpoint=None,
+    )
+    no_output = SimpleNamespace(requires_host_completion=lambda timestamp: False)
+    no_obs_event = SimpleNamespace(requires_cuda_flush_before=lambda timestamp: False)
+
+    assert not _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=following,
+        active_emissions=None,
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=replace(
+            following,
+            forcing_selection=SimpleNamespace(
+                a1_block=object(),
+                a3_block=blocks.a3_block,
+                i3_block=blocks.i3_block,
+            ),
+        ),
+        active_emissions=None,
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    emissions = object()
+    assert not _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=replace(
+            following,
+            emissions=emissions,  # type: ignore[arg-type]
+            emission_midpoint=following.timestamp,
+        ),
+        active_emissions=emissions,  # type: ignore[arg-type]
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=replace(
+            following,
+            emissions=object(),  # type: ignore[arg-type]
+            emission_midpoint=following.timestamp,
+        ),
+        active_emissions=emissions,  # type: ignore[arg-type]
+        step_end=following.timestamp,
+        output_manager=no_output,
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=following,
+        active_emissions=None,
+        step_end=following.timestamp,
+        output_manager=SimpleNamespace(
+            requires_host_completion=lambda timestamp: True
+        ),
+        obsoperator_manager=no_obs_event,
+    )
+    assert _cuda_batch_requires_completion(
+        current_step=current,
+        next_step=None,
+        active_emissions=None,
+        step_end=following.timestamp,
+        output_manager=None,
+        obsoperator_manager=None,
+    )
 
 
 @requires_residual_data
